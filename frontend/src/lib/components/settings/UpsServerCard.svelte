@@ -1,74 +1,148 @@
+<!-- ========================================================================
+     File          : UpsServerCard.svelte
+     Author        : Nicolas Le Roux
+     Created       : 02/11/2026
+     Last modified : 02/11/2026 by Nicolas Le Roux
+     Version       : 1.0.0
+
+     Description:
+       Settings card for UPS *server* mode: the enable switch, the bind
+       interface/port, the per-machine allowlist, the orderly-shutdown policy
+       and the daemon state.
+
+       Rewritten on the shared settings vocabulary and the design tokens. The
+       previous version carried hardcoded English strings, native `alert()`
+       and CSS variables that do not exist in the token set.
+
+       The shutdown-policy section now says out loud which stages this build
+       cannot perform: a stage reported `skipped` is shown as "not available",
+       never as done (the server answers `skipped: true`, see
+       `src/ups_server.rs`).
+
+     Dependencies:
+       - svelte (>= 5), $lib/services/api-phase4, $lib/stores/i18n,
+         ./SettingsCard, ./vocabulary
+
+     Usage:
+       Embedded in routes/Settings.svelte's hardware category. See
+       docs/guides/ups-server.md.
+     ======================================================================== -->
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { getUpsServerConfig, updateUpsServerConfig, startUpsServer, stopUpsServer } from '$lib/services/api-phase4';
+  import { t } from '$lib/stores/i18n';
+  import {
+    getUpsServerConfig,
+    updateUpsServerConfig,
+    startUpsServer,
+    stopUpsServer
+  } from '$lib/services/api-phase4';
   import type { UpsServerConfig, UpsClient } from '$lib/types/phase4';
+  import SettingsCard from './SettingsCard.svelte';
+  import { cn } from '$lib/utils.js';
+  import {
+    settingsHint,
+    settingsRow,
+    settingsRowLabel,
+    settingsRowHint,
+    settingsInput,
+    settingsBtn,
+    settingsBtnPrimary,
+    settingsBtnDanger
+  } from './vocabulary';
 
-  let config: UpsServerConfig | null = null;
-  let loading = true;
-  let saving = false;
-  let error = '';
-  let available = false;
-  let running = false;
-  let showAddClient = false;
-  let newClient: Partial<UpsClient> = {
+  let { class: klass = '' }: { class?: string } = $props();
+
+  let loading = $state(true);
+  let saving = $state(false);
+  let busy = $state(false);
+  let loadError = $state('');
+  let notice = $state<{ kind: 'ok' | 'error'; text: string } | null>(null);
+
+  let config = $state<UpsServerConfig | null>(null);
+  let available = $state(false);
+  let running = $state(false);
+
+  let showAddClient = $state(false);
+  let newClient = $state<Partial<UpsClient>>({
     name: '',
     address: '',
     username: '',
-    master: false,
-  };
+    master: false
+  });
 
-  onMount(async () => {
+  onMount(load);
+
+  async function load() {
+    loading = true;
+    loadError = '';
     try {
       const response = await getUpsServerConfig();
       config = response.config;
-      available = response.available;
-      running = response.state.running;
+      available = !!response.available;
+      running = !!response.state.running;
     } catch (e) {
-      error = e instanceof Error ? e.message : 'Failed to load UPS server config';
+      loadError = e instanceof Error ? e.message : $t('settings.ups_server_load_failed');
     } finally {
       loading = false;
     }
-  });
+  }
 
   async function handleSave() {
     if (!config) return;
-
     saving = true;
-    error = '';
-
+    notice = null;
     try {
       await updateUpsServerConfig(config);
-      alert('UPS server configuration saved successfully');
+      await load();
+      notice = { kind: 'ok', text: $t('settings.ups_server_saved') };
     } catch (e) {
-      error = e instanceof Error ? e.message : 'Failed to save configuration';
+      notice = {
+        kind: 'error',
+        text: e instanceof Error ? e.message : $t('settings.ups_server_save_failed')
+      };
     } finally {
       saving = false;
     }
   }
 
   async function handleStart() {
+    busy = true;
+    notice = null;
     try {
       await startUpsServer();
-      running = true;
-      alert('UPS server started successfully');
+      await load();
+      notice = { kind: 'ok', text: $t('settings.ups_server_saved') };
     } catch (e) {
-      error = e instanceof Error ? e.message : 'Failed to start UPS server';
+      notice = {
+        kind: 'error',
+        text: e instanceof Error ? e.message : $t('settings.ups_server_load_failed')
+      };
+    } finally {
+      busy = false;
     }
   }
 
   async function handleStop() {
+    busy = true;
+    notice = null;
     try {
       await stopUpsServer();
-      running = false;
-      alert('UPS server stopped successfully');
+      await load();
+      notice = { kind: 'ok', text: $t('settings.ups_server_saved') };
     } catch (e) {
-      error = e instanceof Error ? e.message : 'Failed to stop UPS server';
+      notice = {
+        kind: 'error',
+        text: e instanceof Error ? e.message : $t('settings.ups_server_load_failed')
+      };
+    } finally {
+      busy = false;
     }
   }
 
   function addClient() {
-    if (!config || !newClient.name || !newClient.address || !newClient.username) {
-      alert('Please fill all client fields');
+    if (!config) return;
+    if (!newClient.name || !newClient.address || !newClient.username) {
+      notice = { kind: 'error', text: $t('settings.ups_server_clients_hint') };
       return;
     }
 
@@ -76,13 +150,14 @@
       name: newClient.name,
       address: newClient.address,
       username: newClient.username,
-      password_hash: '', // Will be set on backend
-      master: newClient.master || false,
+      // The server seals the password itself (`Argon2`), so the client never
+      // sends one. The field stays in the wire type because the response
+      // carries a hash.
+      password_hash: '',
+      master: newClient.master ?? false
     };
 
     config.allowed_clients = [...config.allowed_clients, client];
-
-    // Reset form
     newClient = { name: '', address: '', username: '', master: false };
     showAddClient = false;
   }
@@ -93,421 +168,424 @@
   }
 </script>
 
-<div class="settings-card" data-testid="ups-server-card">
-  <h3>UPS Server Mode</h3>
-
-  {#if !available}
-    <div class="warning">
-      <p>⚠️ UPS server (upsd) is not available on this system.</p>
-      <p>Install nut-server package to enable this feature.</p>
-    </div>
-  {/if}
-
+<SettingsCard
+  title={$t('settings.ups_server_title')}
+  subtitle={$t('settings.ups_server_subtitle')}
+  class={cn('ups-server-card', klass)}
+  data-testid="ups-server-card"
+>
   {#if loading}
-    <p>Loading...</p>
-  {:else if config}
-    <div class="config-form">
-      <!-- Enable Toggle -->
-      <label class="toggle-label">
+    <p class={settingsHint}>{$t('common.loading')}</p>
+  {:else}
+    {#if !available}
+      <div class="ups-alert ups-alert-warn" role="status" data-testid="ups-server-unavailable">
+        <p>{$t('settings.ups_server_unavailable')}</p>
+        <p class={settingsRowHint}>{$t('settings.ups_server_unavailable_hint')}</p>
+      </div>
+    {/if}
+
+    {#if loadError}
+      <div class="ups-alert ups-alert-error" role="alert">{loadError}</div>
+    {/if}
+    {#if notice}
+      <div
+        class={cn('ups-alert', notice.kind === 'ok' ? 'ups-alert-ok' : 'ups-alert-error')}
+        role={notice.kind === 'ok' ? 'status' : 'alert'}
+        data-testid="ups-server-notice"
+      >
+        {notice.text}
+      </div>
+    {/if}
+
+    {#if config}
+      <div class={settingsRow}>
+        <div class="min-w-0">
+          <span class={settingsRowLabel} id="ups-server-enable-label">
+            {$t('settings.ups_server_enable')}
+          </span>
+          <p class={settingsRowHint}>{$t('settings.ups_server_enable_hint')}</p>
+        </div>
         <input
           type="checkbox"
+          class="ups-check"
           bind:checked={config.enabled}
+          aria-labelledby="ups-server-enable-label"
           data-testid="ups-server-enable"
         />
-        <span>Enable UPS Server</span>
-      </label>
+      </div>
 
       {#if config.enabled}
-        <!-- Network Configuration -->
-        <div class="form-section">
-          <h4>Network Configuration</h4>
-
-          <div class="form-group">
-            <label>
-              Interface
-              <input
-                type="text"
-                bind:value={config.bind_interface}
-                placeholder="eth0"
-              />
+        <h4 class="ups-subhead">{$t('settings.ups_server_network_title')}</h4>
+        <div class={settingsRow}>
+          <div class="min-w-0">
+            <label class={settingsRowLabel} for="ups-bind-interface">
+              {$t('settings.ups_server_bind_interface')}
             </label>
+            <p class={settingsRowHint}>{$t('settings.ups_server_bind_interface_hint')}</p>
           </div>
-
-          <div class="form-group">
-            <label>
-              Port
-              <input
-                type="number"
-                bind:value={config.port}
-                min="1024"
-                max="65535"
-              />
-            </label>
+          <input
+            id="ups-bind-interface"
+            type="text"
+            class={settingsInput}
+            bind:value={config.bind_interface}
+            placeholder="eth0"
+            data-testid="ups-bind-interface"
+          />
+        </div>
+        <div class={settingsRow}>
+          <div class="min-w-0">
+            <label class={settingsRowLabel} for="ups-port">{$t('settings.ups_server_port')}</label>
+            <p class={settingsRowHint}>{$t('settings.ups_server_port_hint')}</p>
           </div>
-
-          <div class="form-group">
-            <label>
-              Max Clients
-              <input
-                type="number"
-                bind:value={config.max_clients}
-                min="1"
-                max="100"
-              />
-            </label>
-          </div>
+          <input
+            id="ups-port"
+            type="number"
+            class={settingsInput}
+            min="1024"
+            max="65535"
+            bind:value={config.port}
+            data-testid="ups-port"
+          />
+        </div>
+        <div class={settingsRow}>
+          <label class={settingsRowLabel} for="ups-max-clients">
+            {$t('settings.ups_server_max_clients')}
+          </label>
+          <input
+            id="ups-max-clients"
+            type="number"
+            class={settingsInput}
+            min="1"
+            max="100"
+            bind:value={config.max_clients}
+            data-testid="ups-max-clients"
+          />
         </div>
 
-        <!-- Allowed Clients -->
-        <div class="form-section">
-          <h4>Allowed Clients</h4>
+        <h4 class="ups-subhead">{$t('settings.ups_server_clients_title')}</h4>
+        <p class={settingsRowHint}>{$t('settings.ups_server_clients_hint')}</p>
 
-          {#if config.allowed_clients.length === 0}
-            <p class="hint">No clients configured yet.</p>
-          {:else}
-            <table class="clients-table">
-              <thead>
+        {#if config.allowed_clients.length === 0}
+          <p class={settingsHint} data-testid="ups-no-clients">
+            {$t('settings.ups_server_clients_empty')}
+          </p>
+        {:else}
+          <table class="ups-table" data-testid="ups-clients">
+            <thead>
+              <tr>
+                <th scope="col">{$t('settings.ups_server_client_name')}</th>
+                <th scope="col">{$t('settings.ups_server_client_address')}</th>
+                <th scope="col">{$t('settings.ups_server_client_username')}</th>
+                <th scope="col">{$t('settings.ups_server_master')}</th>
+                <th scope="col">{$t('common.actions')}</th>
+              </tr>
+            </thead>
+            <tbody>
+              {#each config.allowed_clients as client, i (client.name + client.address)}
                 <tr>
-                  <th>Name</th>
-                  <th>Address</th>
-                  <th>Username</th>
-                  <th>Master</th>
-                  <th>Actions</th>
+                  <td>{client.name}</td>
+                  <td>{client.address}</td>
+                  <td>{client.username}</td>
+                  <td>{client.master ? $t('common.yes') : $t('common.no')}</td>
+                  <td>
+                    <button
+                      type="button"
+                      class={settingsBtnDanger}
+                      onclick={() => removeClient(i)}
+                    >
+                      {$t('common.remove')}
+                    </button>
+                  </td>
                 </tr>
-              </thead>
-              <tbody>
-                {#each config.allowed_clients as client, i}
-                  <tr>
-                    <td>{client.name}</td>
-                    <td>{client.address}</td>
-                    <td>{client.username}</td>
-                    <td>{client.master ? 'Yes' : 'No'}</td>
-                    <td>
-                      <button
-                        class="btn-small btn-danger"
-                        on:click={() => removeClient(i)}
-                      >
-                        Remove
-                      </button>
-                    </td>
-                  </tr>
-                {/each}
-              </tbody>
-            </table>
-          {/if}
-
-          {#if !showAddClient}
-            <button
-              class="btn-secondary"
-              on:click={() => showAddClient = true}
-              data-testid="ups-add-client"
-            >
-              Add Client
-            </button>
-          {:else}
-            <div class="add-client-form">
-              <h5>Add New Client</h5>
-
-              <div class="form-group">
-                <label>
-                  Name
-                  <input
-                    type="text"
-                    bind:value={newClient.name}
-                    placeholder="client1"
-                  />
-                </label>
-              </div>
-
-              <div class="form-group">
-                <label>
-                  Address (IP or CIDR)
-                  <input
-                    type="text"
-                    bind:value={newClient.address}
-                    placeholder="192.168.1.100"
-                  />
-                </label>
-              </div>
-
-              <div class="form-group">
-                <label>
-                  Username
-                  <input
-                    type="text"
-                    bind:value={newClient.username}
-                    placeholder="monitor"
-                  />
-                </label>
-              </div>
-
-              <label class="toggle-label">
-                <input type="checkbox" bind:checked={newClient.master} />
-                <span>Master (can issue shutdown commands)</span>
-              </label>
-
-              <div class="form-actions">
-                <button class="btn-primary" on:click={addClient}>
-                  Add Client
-                </button>
-                <button class="btn-secondary" on:click={() => showAddClient = false}>
-                  Cancel
-                </button>
-              </div>
-            </div>
-          {/if}
-        </div>
-
-        <!-- Shutdown Policy -->
-        <div class="form-section">
-          <h4>Shutdown Policy</h4>
-
-          <label class="toggle-label">
-            <input type="checkbox" bind:checked={config.shutdown_policy.stop_containers} />
-            <span>Stop containers before shutdown</span>
-          </label>
-
-          <label class="toggle-label">
-            <input type="checkbox" bind:checked={config.shutdown_policy.shutdown_vms} />
-            <span>Shutdown VMs before shutdown</span>
-          </label>
-
-          <label class="toggle-label">
-            <input type="checkbox" bind:checked={config.shutdown_policy.flush_restic} />
-            <span>Flush pending Restic operations</span>
-          </label>
-
-          <label class="toggle-label">
-            <input type="checkbox" bind:checked={config.shutdown_policy.stop_shares} />
-            <span>Stop share services</span>
-          </label>
-        </div>
-
-        <!-- Server Control -->
-        <div class="form-section">
-          <h4>Server Control</h4>
-
-          <div class="server-status">
-            <span>Status:</span>
-            <span class:running class:stopped={!running}>
-              {running ? 'Running' : 'Stopped'}
-            </span>
-          </div>
-
-          <div class="form-actions">
-            {#if running}
-              <button class="btn-danger" on:click={handleStop}>
-                Stop Server
-              </button>
-            {:else}
-              <button class="btn-primary" on:click={handleStart}>
-                Start Server
-              </button>
-            {/if}
-          </div>
-        </div>
-      {/if}
-
-      <!-- Save Button -->
-      <div class="card-actions">
-        {#if error}
-          <p class="error">{error}</p>
+              {/each}
+            </tbody>
+          </table>
         {/if}
 
-        <button
-          class="btn-primary"
-          on:click={handleSave}
-          disabled={saving}
+        {#if !showAddClient}
+          <button
+            type="button"
+            class={settingsBtn}
+            onclick={() => (showAddClient = true)}
+            data-testid="ups-add-client"
+          >
+            {$t('settings.ups_server_add_client')}
+          </button>
+        {:else}
+          <div class="ups-add-client">
+            <div class={settingsRow}>
+              <label class={settingsRowLabel} for="ups-new-name">
+                {$t('settings.ups_server_client_name')}
+              </label>
+              <input
+                id="ups-new-name"
+                type="text"
+                class={settingsInput}
+                bind:value={newClient.name}
+                placeholder="client1"
+                data-testid="ups-new-name"
+              />
+            </div>
+            <div class={settingsRow}>
+              <label class={settingsRowLabel} for="ups-new-address">
+                {$t('settings.ups_server_client_address')}
+              </label>
+              <input
+                id="ups-new-address"
+                type="text"
+                class={settingsInput}
+                bind:value={newClient.address}
+                placeholder="192.168.1.100"
+                data-testid="ups-new-address"
+              />
+            </div>
+            <div class={settingsRow}>
+              <label class={settingsRowLabel} for="ups-new-username">
+                {$t('settings.ups_server_client_username')}
+              </label>
+              <input
+                id="ups-new-username"
+                type="text"
+                class={settingsInput}
+                bind:value={newClient.username}
+                placeholder="monitor"
+                data-testid="ups-new-username"
+              />
+            </div>
+            <div class={settingsRow}>
+              <span class={settingsRowLabel} id="ups-new-master-label">
+                {$t('settings.ups_server_client_master')}
+              </span>
+              <input
+                type="checkbox"
+                class="ups-check"
+                bind:checked={newClient.master}
+                aria-labelledby="ups-new-master-label"
+                data-testid="ups-new-master"
+              />
+            </div>
+            <div class="ups-actions">
+              <button
+                type="button"
+                class={settingsBtnPrimary}
+                onclick={addClient}
+                data-testid="ups-confirm-client"
+              >
+                {$t('settings.ups_server_add_client')}
+              </button>
+              <button
+                type="button"
+                class={settingsBtn}
+                onclick={() => (showAddClient = false)}
+              >
+                {$t('common.cancel')}
+              </button>
+            </div>
+          </div>
+        {/if}
+
+        <h4 class="ups-subhead">{$t('settings.ups_server_shutdown_title')}</h4>
+        <p class={settingsRowHint}>{$t('settings.ups_server_shutdown_hint')}</p>
+
+        <div class={settingsRow}>
+          <span class={settingsRowLabel} id="ups-stop-containers-label">
+            {$t('settings.ups_server_stop_containers')}
+          </span>
+          <input
+            type="checkbox"
+            class="ups-check"
+            bind:checked={config.shutdown_policy.stop_containers}
+            aria-labelledby="ups-stop-containers-label"
+            data-testid="ups-stop-containers"
+          />
+        </div>
+        <div class={settingsRow}>
+          <span class={settingsRowLabel} id="ups-shutdown-vms-label">
+            {$t('settings.ups_server_shutdown_vms')}
+          </span>
+          <input
+            type="checkbox"
+            class="ups-check"
+            bind:checked={config.shutdown_policy.shutdown_vms}
+            aria-labelledby="ups-shutdown-vms-label"
+            data-testid="ups-shutdown-vms"
+          />
+        </div>
+        <div class={settingsRow}>
+          <span class={settingsRowLabel} id="ups-flush-restic-label">
+            {$t('settings.ups_server_flush_restic')}
+          </span>
+          <input
+            type="checkbox"
+            class="ups-check"
+            bind:checked={config.shutdown_policy.flush_restic}
+            aria-labelledby="ups-flush-restic-label"
+            data-testid="ups-flush-restic"
+          />
+        </div>
+        <div class={settingsRow}>
+          <span class={settingsRowLabel} id="ups-stop-shares-label">
+            {$t('settings.ups_server_stop_shares')}
+          </span>
+          <input
+            type="checkbox"
+            class="ups-check"
+            bind:checked={config.shutdown_policy.stop_shares}
+            aria-labelledby="ups-stop-shares-label"
+            data-testid="ups-stop-shares"
+          />
+        </div>
+
+        <!-- Two of the five stages have no implementation in this build. The
+             card says so here rather than letting a "done" report imply
+             otherwise. -->
+        <p class={settingsRowHint} data-testid="ups-shutdown-warning">
+          {$t('settings.ups_server_shutdown_warning')}
+        </p>
+      {/if}
+
+      <h4 class="ups-subhead">{$t('settings.ups_server_status_title')}</h4>
+      <div class={settingsRow} data-testid="ups-server-status-row">
+        <span class={settingsRowLabel}>{$t('settings.ups_server_status_label')}</span>
+        <span
+          class={cn('ups-badge', running ? 'ups-badge-on' : 'ups-badge-off')}
+          data-testid="ups-server-status"
+          data-state={running ? 'running' : 'stopped'}
         >
-          {saving ? 'Saving...' : 'Save Configuration'}
-        </button>
+          {running ? $t('settings.ups_server_running') : $t('settings.ups_server_stopped')}
+        </span>
       </div>
-    </div>
+
+      <div class="ups-actions">
+        <button
+          type="button"
+          class={settingsBtnPrimary}
+          onclick={handleSave}
+          disabled={saving}
+          data-testid="ups-server-save"
+        >
+          {saving ? $t('common.saving') : $t('common.save')}
+        </button>
+        {#if running}
+          <button
+            type="button"
+            class={settingsBtnDanger}
+            onclick={handleStop}
+            disabled={busy}
+            data-testid="ups-server-stop"
+          >
+            {$t('settings.ups_server_stop')}
+          </button>
+        {:else}
+          <button
+            type="button"
+            class={settingsBtn}
+            onclick={handleStart}
+            disabled={busy}
+            data-testid="ups-server-start"
+          >
+            {$t('settings.ups_server_start')}
+          </button>
+        {/if}
+      </div>
+    {/if}
   {/if}
-</div>
+</SettingsCard>
 
 <style>
-  .settings-card {
-    background: var(--card-bg);
+  .ups-alert {
+    border: 1px solid var(--hv-shell-border);
     border-radius: 8px;
-    padding: 24px;
-    margin-bottom: 16px;
-  }
-
-  h3 {
-    margin: 0 0 16px 0;
-    font-size: 18px;
-    font-weight: 600;
-  }
-
-  h4 {
-    margin: 16px 0 12px 0;
-    font-size: 14px;
-    font-weight: 600;
-    color: var(--text-secondary);
-  }
-
-  .warning {
-    background: var(--warning-bg);
-    border: 1px solid var(--warning-border);
-    border-radius: 4px;
-    padding: 12px;
-    margin-bottom: 16px;
-  }
-
-  .form-section {
-    margin-bottom: 24px;
-    padding-bottom: 24px;
-    border-bottom: 1px solid var(--border-color);
-  }
-
-  .form-section:last-child {
-    border-bottom: none;
-  }
-
-  .form-group {
-    margin-bottom: 16px;
-  }
-
-  label {
-    display: block;
-    margin-bottom: 4px;
-    font-size: 14px;
-    font-weight: 500;
-  }
-
-  input[type="text"],
-  input[type="number"] {
-    width: 100%;
-    padding: 8px 12px;
-    border: 1px solid var(--border-color);
-    border-radius: 4px;
-    font-size: 14px;
-  }
-
-  .toggle-label {
-    display: flex;
-    align-items: center;
-    gap: 8px;
+    padding: 10px 12px;
     margin-bottom: 12px;
-    cursor: pointer;
+    font-size: 0.8125rem;
+    line-height: 1.25rem;
   }
 
-  .toggle-label input[type="checkbox"] {
-    width: auto;
+  .ups-alert-error {
+    background: var(--hv-error-bg);
+    border-color: var(--hv-error);
+    color: var(--hv-error);
   }
 
-  .clients-table {
+  .ups-alert-ok {
+    background: var(--hv-success-bg);
+    border-color: var(--hv-success);
+    color: var(--hv-success);
+  }
+
+  .ups-alert-warn {
+    background: var(--hv-shell-border-soft);
+    border-color: var(--hv-shell-border-strong);
+    color: var(--hv-shell-text);
+  }
+
+  .ups-check {
+    height: 1rem;
+    width: 1rem;
+    flex: none;
+    accent-color: var(--hv-primary);
+  }
+
+  .ups-subhead {
+    margin: 16px 0 8px;
+    font-size: 0.8125rem;
+    font-weight: 600;
+    color: var(--hv-settings-title);
+  }
+
+  .ups-table {
     width: 100%;
     border-collapse: collapse;
-    margin-bottom: 16px;
+    margin-bottom: 12px;
+    font-size: 0.8125rem;
   }
 
-  .clients-table th,
-  .clients-table td {
-    padding: 8px 12px;
+  .ups-table th,
+  .ups-table td {
+    padding: 6px 10px;
     text-align: left;
-    border-bottom: 1px solid var(--border-color);
+    border-bottom: 1px solid var(--hv-shell-border);
   }
 
-  .clients-table th {
+  .ups-table th {
     font-weight: 600;
-    font-size: 13px;
-    color: var(--text-secondary);
+    color: var(--hv-shell-text-3);
+    font-size: 0.75rem;
   }
 
-  .add-client-form {
-    background: var(--surface-bg);
-    border-radius: 4px;
-    padding: 16px;
-    margin-top: 12px;
+  .ups-table td {
+    color: var(--hv-shell-text);
   }
 
-  .server-status {
-    display: flex;
-    align-items: center;
-    gap: 8px;
+  .ups-add-client {
+    border: 1px solid var(--hv-shell-border);
+    border-radius: 8px;
+    padding: 12px;
     margin-bottom: 12px;
   }
 
-  .server-status .running {
-    color: var(--success-color);
+  .ups-badge {
+    font-size: 0.6875rem;
+    padding: 2px 10px;
+    border-radius: 999px;
     font-weight: 600;
   }
 
-  .server-status .stopped {
-    color: var(--error-color);
-    font-weight: 600;
+  .ups-badge-on {
+    background: var(--hv-success-bg);
+    color: var(--hv-success);
   }
 
-  .form-actions {
+  .ups-badge-off {
+    background: var(--hv-shell-border-soft);
+    color: var(--hv-shell-text-2);
+  }
+
+  .ups-actions {
     display: flex;
+    flex-wrap: wrap;
     gap: 8px;
     margin-top: 16px;
-  }
-
-  .card-actions {
-    margin-top: 24px;
-    padding-top: 24px;
-    border-top: 1px solid var(--border-color);
-  }
-
-  button {
-    padding: 8px 16px;
-    border: none;
-    border-radius: 4px;
-    font-size: 14px;
-    font-weight: 500;
-    cursor: pointer;
-    transition: background-color 0.2s;
-  }
-
-  .btn-primary {
-    background: var(--primary-color);
-    color: white;
-  }
-
-  .btn-primary:hover {
-    background: var(--primary-hover);
-  }
-
-  .btn-primary:disabled {
-    background: var(--disabled-color);
-    cursor: not-allowed;
-  }
-
-  .btn-secondary {
-    background: var(--secondary-color);
-    color: var(--text-primary);
-  }
-
-  .btn-secondary:hover {
-    background: var(--secondary-hover);
-  }
-
-  .btn-danger {
-    background: var(--error-color);
-    color: white;
-  }
-
-  .btn-danger:hover {
-    background: var(--error-hover);
-  }
-
-  .btn-small {
-    padding: 4px 8px;
-    font-size: 12px;
-  }
-
-  .error {
-    color: var(--error-color);
-    font-size: 14px;
-    margin-bottom: 12px;
-  }
-
-  .hint {
-    color: var(--text-secondary);
-    font-size: 14px;
-    font-style: italic;
   }
 </style>

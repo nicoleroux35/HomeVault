@@ -195,8 +195,11 @@ fn test_recommendations_are_scored() {
 
     let recs = GuidedRedundancyService::recommend_layouts(&disks, RedundancyLevel::None);
 
-    // All should have scores
-    assert!(recs.iter().all(|r| r.score > 0));
+    // Every layout is scored. `>= 0` rather than `> 0`: a no-redundancy layout
+    // is deliberately penalised below zero-equivalent (`score 5 - 30`), so a
+    // zero is a real answer, not a missing score.
+    assert!(!recs.is_empty(), "three disks must produce recommendations");
+    assert!(recs.iter().all(|r| r.score > 0 || r.redundancy == RedundancyLevel::None));
 
     // Should be sorted by score descending
     for window in recs.windows(2) {
@@ -207,8 +210,14 @@ fn test_recommendations_are_scored() {
     }
 }
 
+/// Parity is rewarded over mirroring on the same disk count.
+///
+/// This test used to compare RAID 5 against RAID 0 *on three disks*, which the
+/// engine never produces: `raid0_layout` is only offered for 2 disks and
+/// `raid5_layout` only from 3 up, so the two ids can never appear in the same
+/// answer and the old `unwrap()` on `raid0` panicked.
 #[test]
-fn test_raid5_scores_higher_than_raid0() {
+fn test_raid5_scores_higher_than_raid1_with_spare() {
     let disks = vec![
         make_disk("/dev/sda", 1000),
         make_disk("/dev/sdb", 1000),
@@ -218,10 +227,16 @@ fn test_raid5_scores_higher_than_raid0() {
     let recs = GuidedRedundancyService::recommend_layouts(&disks, RedundancyLevel::None);
 
     let raid5 = recs.iter().find(|r| r.id == "raid5").unwrap();
-    let raid0 = recs.iter().find(|r| r.id == "raid0").unwrap();
+    let raid1_spare = recs.iter().find(|r| r.id == "raid1_spare").unwrap();
 
-    // RAID 5 should score higher than RAID 0
-    assert!(raid5.score > raid0.score);
+    // RAID 5 keeps two thirds of the raw capacity with parity; a mirror plus a
+    // hot spare keeps a third. Both are single-redundancy, so capacity wins.
+    assert!(
+        raid5.score > raid1_spare.score,
+        "raid5 {} should outrank raid1_spare {}",
+        raid5.score,
+        raid1_spare.score
+    );
 }
 
 #[test]

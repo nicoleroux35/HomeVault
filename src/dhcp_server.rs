@@ -23,10 +23,18 @@ use std::collections::HashMap;
 use std::net::Ipv4Addr;
 use std::path::{Path, PathBuf};
 use tokio::process::Command;
-use tokio::time::{timeout, Duration};
+use tokio::time::Duration;
+
+use crate::utils::process::{run_timed_async, run_timed_async_with_stdin};
 
 const DNSMASQ_TIMEOUT: Duration = Duration::from_secs(30);
 const DHCP_DISCOVER_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Deadline for a read-only probe (`dnsmasq --version`, `systemctl is-active`).
+const PROBE_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Deadline for writing the root-owned dnsmasq drop-in (`sudo tee`).
+const CONFIG_WRITE_TIMEOUT: Duration = Duration::from_secs(15);
 
 /// DHCP/TFTP server configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -138,7 +146,9 @@ impl DhcpServerService {
         for (mac, ip) in &config.reservations {
             Self::validate_mac(mac)?;
 
-            if config.dhcp_enabled && !Self::ip_in_range(*ip, config.dhcp_range_start, config.dhcp_range_end) {
+            if config.dhcp_enabled
+                && !Self::ip_in_range(*ip, config.dhcp_range_start, config.dhcp_range_end)
+            {
                 return Err(format!("reservation {} is outside DHCP range", ip));
             }
         }
@@ -220,17 +230,25 @@ impl DhcpServerService {
         }
 
         // Cannot contain ..
-        if path.components().any(|c| c == std::path::Component::ParentDir) {
+        if path
+            .components()
+            .any(|c| c == std::path::Component::ParentDir)
+        {
             return Err("tftp_root cannot contain '..'".to_string());
         }
 
         // Must not be system paths
-        let forbidden = ["/", "/bin", "/boot", "/dev", "/etc", "/lib", "/proc", "/root", "/run", "/sbin", "/sys", "/usr"];
+        let forbidden = [
+            "/", "/bin", "/boot", "/dev", "/etc", "/lib", "/proc", "/root", "/run", "/sbin",
+            "/sys", "/usr",
+        ];
 
         let path_str = path.to_string_lossy();
         for forbidden_path in &forbidden {
             if path_str.starts_with(forbidden_path)
-                && (path_str.len() == forbidden_path.len() || path_str.as_bytes().get(forbidden_path.len()) == Some(&b'/')) {
+                && (path_str.len() == forbidden_path.len()
+                    || path_str.as_bytes().get(forbidden_path.len()) == Some(&b'/'))
+            {
                 return Err(format!("tftp_root cannot be in {}", forbidden_path));
             }
         }
@@ -240,29 +258,28 @@ impl DhcpServerService {
 
     /// Check if dnsmasq is available
     pub async fn is_available() -> bool {
-        timeout(
-            Duration::from_secs(5),
-            Command::new("dnsmasq").arg("--version").output()
-        )
-        .await
-        .ok()
-        .and_then(|r| r.ok())
-        .map(|o| o.status.success())
-        .unwrap_or(false)
+        let mut cmd = Command::new("dnsmasq");
+        cmd.arg("--version");
+        run_timed_async(&mut cmd, PROBE_TIMEOUT)
+            .await
+            .map(|o| o.status.success())
+            .unwrap_or(false)
     }
 
     /// Detect DHCP conflict on interface
     pub async fn detect_conflict(interface: &str) -> Result<bool, String> {
         // Send DHCP discover and listen for responses
-        let output = timeout(
-            DHCP_DISCOVER_TIMEOUT,
-            Command::new("sudo")
-                .args(&["nmap", "--script", "broadcast-dhcp-discover", "-e", interface])
-                .output()
-        )
-        .await
-        .map_err(|_| "conflict detection timed out".to_string())?
-        .map_err(|e| format!("failed to run conflict detection: {}", e))?;
+        let mut cmd = Command::new("sudo");
+        cmd.args([
+            "nmap",
+            "--script",
+            "broadcast-dhcp-discover",
+            "-e",
+            interface,
+        ]);
+        let output = run_timed_async(&mut cmd, DHCP_DISCOVER_TIMEOUT)
+            .await
+            .ok_or_else(|| "conflict detection timed out".to_string())?;
 
         if !output.status.success() {
             return Ok(false); // Cannot detect, assume safe
@@ -283,7 +300,10 @@ impl DhcpServerService {
         if config.dhcp_enabled {
             let conflict = Self::detect_conflict(&config.interface).await?;
             if conflict {
-                return Err(format!("DHCP server already active on {}", config.interface));
+                return Err(format!(
+                    "DHCP server already active on {}",
+                    config.interface
+                ));
             }
         }
 
@@ -291,15 +311,11 @@ impl DhcpServerService {
         Self::write_dnsmasq_conf(config).await?;
 
         // Start dnsmasq
-        let result = timeout(
-            DNSMASQ_TIMEOUT,
-            Command::new("sudo")
-                .args(&["systemctl", "start", "dnsmasq"])
-                .output()
-        )
-        .await
-        .map_err(|_| "dnsmasq start timed out".to_string())?
-        .map_err(|e| format!("failed to start dnsmasq: {}", e))?;
+        let mut start = Command::new("sudo");
+        start.args(["systemctl", "start", "dnsmasq"]);
+        let result = run_timed_async(&mut start, DNSMASQ_TIMEOUT)
+            .await
+            .ok_or_else(|| "dnsmasq start timed out".to_string())?;
 
         if !result.status.success() {
             let stderr = String::from_utf8_lossy(&result.stderr);
@@ -318,15 +334,11 @@ impl DhcpServerService {
 
     /// Stop DHCP/TFTP server
     pub async fn stop_server() -> Result<(), String> {
-        let result = timeout(
-            DNSMASQ_TIMEOUT,
-            Command::new("sudo")
-                .args(&["systemctl", "stop", "dnsmasq"])
-                .output()
-        )
-        .await
-        .map_err(|_| "dnsmasq stop timed out".to_string())?
-        .map_err(|e| format!("failed to stop dnsmasq: {}", e))?;
+        let mut stop = Command::new("sudo");
+        stop.args(["systemctl", "stop", "dnsmasq"]);
+        let result = run_timed_async(&mut stop, DNSMASQ_TIMEOUT)
+            .await
+            .ok_or_else(|| "dnsmasq stop timed out".to_string())?;
 
         if !result.status.success() {
             let stderr = String::from_utf8_lossy(&result.stderr);
@@ -338,17 +350,12 @@ impl DhcpServerService {
 
     /// Check if dnsmasq is running
     pub async fn is_running() -> bool {
-        timeout(
-            Duration::from_secs(5),
-            Command::new("systemctl")
-                .args(&["is-active", "dnsmasq"])
-                .output()
-        )
-        .await
-        .ok()
-        .and_then(|r| r.ok())
-        .map(|o| o.status.success())
-        .unwrap_or(false)
+        let mut cmd = Command::new("systemctl");
+        cmd.args(["is-active", "dnsmasq"]);
+        run_timed_async(&mut cmd, PROBE_TIMEOUT)
+            .await
+            .map(|o| o.status.success())
+            .unwrap_or(false)
     }
 
     /// Get current leases
@@ -387,7 +394,7 @@ impl DhcpServerService {
     async fn write_dnsmasq_conf(config: &DhcpServerConfig) -> Result<(), String> {
         let mut conf = String::from(
             "# HomeVault DHCP/TFTP Server\n\
-             # Generated automatically - do not edit manually\n\n"
+             # Generated automatically - do not edit manually\n\n",
         );
 
         // Interface binding
@@ -411,7 +418,8 @@ impl DhcpServerService {
 
             // DNS servers
             if !config.dns_servers.is_empty() {
-                let dns_list: Vec<String> = config.dns_servers.iter().map(|ip| ip.to_string()).collect();
+                let dns_list: Vec<String> =
+                    config.dns_servers.iter().map(|ip| ip.to_string()).collect();
                 conf.push_str(&format!("dhcp-option=6,{}\n", dns_list.join(",")));
             }
 
@@ -437,25 +445,16 @@ impl DhcpServerService {
         Self::write_config_file("/etc/dnsmasq.d/homevault.conf", &conf).await
     }
 
-    /// Write configuration file with sudo
+    /// Write configuration file with sudo.
+    ///
+    /// `sudo tee` reads the body from stdin and the whole exchange is bounded:
+    /// a password prompt that never returns must not hang the save path.
     async fn write_config_file(path: &str, content: &str) -> Result<(), String> {
-        use tokio::io::AsyncWriteExt;
-
-        let mut child = Command::new("sudo")
-            .args(&["tee", path])
-            .stdin(std::process::Stdio::piped())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::piped())
-            .spawn()
-            .map_err(|e| format!("failed to spawn tee: {}", e))?;
-
-        if let Some(mut stdin) = child.stdin.take() {
-            stdin.write_all(content.as_bytes()).await
-                .map_err(|e| format!("failed to write config: {}", e))?;
-        }
-
-        let output = child.wait_with_output().await
-            .map_err(|e| format!("tee failed: {}", e))?;
+        let mut tee = Command::new("sudo");
+        tee.args(["tee", path]);
+        let output = run_timed_async_with_stdin(&mut tee, CONFIG_WRITE_TIMEOUT, content.as_bytes())
+            .await
+            .map_err(|e| format!("failed to write {}: {}", path, e))?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
@@ -587,10 +586,22 @@ mod tests {
         let start = Ipv4Addr::new(192, 168, 1, 100);
         let end = Ipv4Addr::new(192, 168, 1, 200);
 
-        assert!(DhcpServerService::ip_in_range(Ipv4Addr::new(192, 168, 1, 150), start, end));
+        assert!(DhcpServerService::ip_in_range(
+            Ipv4Addr::new(192, 168, 1, 150),
+            start,
+            end
+        ));
         assert!(DhcpServerService::ip_in_range(start, start, end));
         assert!(DhcpServerService::ip_in_range(end, start, end));
-        assert!(!DhcpServerService::ip_in_range(Ipv4Addr::new(192, 168, 1, 50), start, end));
-        assert!(!DhcpServerService::ip_in_range(Ipv4Addr::new(192, 168, 1, 250), start, end));
+        assert!(!DhcpServerService::ip_in_range(
+            Ipv4Addr::new(192, 168, 1, 50),
+            start,
+            end
+        ));
+        assert!(!DhcpServerService::ip_in_range(
+            Ipv4Addr::new(192, 168, 1, 250),
+            start,
+            end
+        ));
     }
 }

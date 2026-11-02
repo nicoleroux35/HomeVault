@@ -1352,6 +1352,119 @@ frontend cards in Settings (`UpsCard.svelte`/`SnmpCard.svelte`) — see
 | GET | `/snmp/storage` | admin |
 | GET/PUT | `/snmp/settings` | admin — `version` is `1` or `2c`; `3` answers `400` because the card does not collect v3 credentials |
 
+## DHCP / TFTP / PXE server — `network/dhcp-server/*`
+
+Serves IPv4 addresses through `dnsmasq` on one interface, and optionally
+boot files over TFTP/PXE. Configuration lives in
+`{DATA_DIRECTORY}/data/dhcp_server.json` (a single document, no migration).
+
+**Guard order matters.** Every mutation takes the raw request body and
+deserializes it *after* `require_admin` succeeds, so an unauthenticated caller
+always gets `401` with the standard JSON envelope and learns nothing about the
+payload shape. Extracting the typed body first (the shape before this fix)
+answered `422` and echoed the deserializer's message.
+
+| Method | Path | Auth |
+|--------|------|------|
+| GET | `/network/dhcp-server` | auth — `{ config, state, available }`; `state` carries `running`, `leases[]`, `conflict_detected`, `last_error` |
+| PUT | `/network/dhcp-server` | admin — `{ config }`; validates, checks for a conflict, saves **and applies** |
+| POST | `/network/dhcp-server/start` | admin — starts from the saved config; `400` when both switches are off |
+| POST | `/network/dhcp-server/stop` | admin |
+| GET | `/network/dhcp-server/leases` | auth — the live lease table |
+
+A second address server already answering on the interface is a **`409`**, never
+a silent takeover. Validation and the conflict probe both run before anything is
+written, so a refused configuration leaves the previous one and the daemon
+untouched.
+
+## USB one-touch copy — `usb-copy/*`
+
+Copy rules that pull files off a removable device into a folder on the
+appliance. Profiles live in `{DATA_DIRECTORY}/data/usb_copy_profiles.json`.
+
+| Method | Path | Auth |
+|--------|------|------|
+| GET | `/usb-copy/profiles` | auth |
+| POST | `/usb-copy/profiles` | admin — body is the profile itself |
+| PUT | `/usb-copy/profiles/{id}` | admin — the path id wins over the body id |
+| DELETE | `/usb-copy/profiles/{id}` | admin |
+| GET | `/usb-copy/devices` | auth — attached removable devices, each with `matching_profile` |
+| POST | `/usb-copy/execute/{profile_id}` | admin — schedules the copy (`202`-style answer: `{ status, message }`) |
+
+`POST …/execute` answers as soon as the task is spawned; the task writes
+`last_run` / `last_status` itself, so an outcome is visible even when nothing is
+polling. A disabled profile is a `400`; a source that is a pool member is a
+`400`; an unknown profile or an absent device is a `404`.
+
+## Fan and thermal control — `system/fans/*`
+
+hwmon channels, temperature curves and the active profile. The saved profile
+lives in `{DATA_DIRECTORY}/data/fan_control.json`.
+
+| Method | Path | Auth |
+|--------|------|------|
+| GET | `/system/fans` | auth — `{ channels[], is_laptop, message }` |
+| GET | `/system/fans/config` | auth |
+| PUT | `/system/fans/config` | admin — **applies** before saving, so a refused profile never becomes the persisted one |
+| POST | `/system/fans/restore-auto` | admin — hands control back to the firmware **and** resets the saved profile to `auto` |
+
+A laptop is refused with a `400` and a sentence. The 20 % duty floor is enforced
+in `set_pwm_duty` and in `calculate_duty`, so no curve, manual value or
+per-channel override can go below it.
+
+## UPS server mode — `power/ups-server/*`
+
+Exposes the appliance as a NUT server. Config lives in
+`{DATA_DIRECTORY}/data/ups_server.json`.
+
+| Method | Path | Auth |
+|--------|------|------|
+| GET | `/power/ups-server` | auth — `{ available, config, state }` |
+| PUT | `/power/ups-server` | admin — validates, saves **and applies** (restarts `upsd` or stops it) |
+| POST | `/power/ups-server/start` | admin — `400` when the feature is not enabled |
+| POST | `/power/ups-server/stop` | admin |
+| POST | `/power/ups-server/shutdown` | admin **+ `confirm: true`** |
+
+`POST …/shutdown` answers:
+
+```json
+{ "success": false, "stages": [
+  { "stage": "stop_containers", "success": true,  "skipped": false, "duration_ms": 812, "error": null },
+  { "stage": "shutdown_vms",    "success": false, "skipped": true,  "duration_ms": 0,
+    "error": "VM shutdown is not wired to the Incus service yet" }
+] }
+```
+
+- **`skipped` is a first-class field.** A stage the policy enabled but this
+  build cannot perform is `success: false, skipped: true` with a reason — never
+  a silent `success: true`. Two stages are in that state today
+  (`shutdown_vms`, `flush_restic`); both used to return `Ok(())` for work they
+  did not do.
+- **The top-level `success` is `false` when any enabled stage was skipped**, so
+  "did not happen" is never reported as "done".
+- **The shutdown runs in a fixed order**: `stop_containers` → `shutdown_vms` →
+  `flush_restic` → `stop_shares` → `final_poweroff`. `final_poweroff` always
+  runs whatever the policy says.
+- **A body without `confirm: true` is a `400` naming the rule**, never a silent
+  no-op.
+- Reserved ports are `0`, `22`, `80`, `443` and `8443` — the last because it is
+  HomeVault's own alternative HTTPS listener.
+
+## Guided redundancy — `storage/guided-redundancy`
+
+| Method | Path | Auth |
+|--------|------|------|
+| GET | `/storage/guided-redundancy?min_redundancy=none\|single\|double` | auth — `{ recommendations[], total_disks, available_disks }` |
+| POST | `/storage/guided-redundancy/apply/{id}` | admin → **`501`** |
+
+The recommendation engine is complete. **Creating the array is not
+implemented**: `apply` answers `501` with a sentence pointing at the Storage
+screen, and the dialog says so before the click. The route is admin-only from
+the start so the privilege boundary does not have to be renegotiated when the
+creation path lands. The disk inventory handed to the engine is currently empty
+— connecting it to `disk.rs` is the precondition for the feature being useful
+end to end.
+
 ## Desktop monitor state — `monitor-layout`, `weather-location` (`auth`)
 
 Per-user persisted UI state, not tied to any specific monitor widget:

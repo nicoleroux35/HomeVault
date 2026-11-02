@@ -1,45 +1,84 @@
+<!-- ========================================================================
+     File          : DhcpServerCard.svelte
+     Author        : Nicolas Le Roux
+     Created       : 02/11/2026
+     Last modified : 02/11/2026 by Nicolas Le Roux
+     Version       : 1.0.0
+
+     Description:
+       Settings card for the DHCP/TFTP/PXE server: the two switches, the
+       address range, fixed addresses, the boot file, the live server state
+       and the active lease table.
+
+       Rewritten on the shared settings vocabulary, the design tokens and the
+       shared `Modal` (which traps focus). The previous version carried
+       hardcoded English strings, native `alert()`, a hand-rolled modal with no
+       focus trap, and CSS variables that do not exist in the token set
+       (`--card-bg`, `--primary-color`), so it rendered unstyled.
+
+     Dependencies:
+       - svelte (>= 5), $lib/services/api-phase4, $lib/stores/i18n,
+         ./SettingsCard, ./vocabulary, $lib/components/theme/Modal
+
+     Usage:
+       Embedded in routes/Settings.svelte's network category. See
+       docs/guides/dhcp.md.
+     ======================================================================== -->
 <script lang="ts">
   import { onMount } from 'svelte';
+  import { t } from '$lib/stores/i18n';
   import {
     getDhcpServerConfig,
     updateDhcpServerConfig,
     startDhcpServer,
     stopDhcpServer,
-    getDhcpLeases,
+    getDhcpLeases
   } from '$lib/services/api-phase4';
   import type { DhcpServerConfig, DhcpLease } from '$lib/types/phase4';
+  import SettingsCard from './SettingsCard.svelte';
+  import Modal from '$lib/components/theme/Modal.svelte';
+  import { cn } from '$lib/utils.js';
+  import {
+    settingsHint,
+    settingsRow,
+    settingsRowLabel,
+    settingsRowHint,
+    settingsInput,
+    settingsBtn,
+    settingsBtnPrimary,
+    settingsBtnDanger
+  } from './vocabulary';
 
-  let config: DhcpServerConfig | null = null;
-  let leases: DhcpLease[] = [];
-  let loading = true;
-  let saving = false;
-  let error = '';
-  let available = false;
-  let running = false;
+  let { class: klass = '' }: { class?: string } = $props();
 
-  let showConfirmDialog = false;
-  let newReservationMac = '';
-  let newReservationIp = '';
+  let loading = $state(true);
+  let saving = $state(false);
+  let busy = $state(false);
+  let loadError = $state('');
+  let notice = $state<{ kind: 'ok' | 'error'; text: string } | null>(null);
 
-  onMount(async () => {
-    await loadData();
-  });
+  let config = $state<DhcpServerConfig | null>(null);
+  let leases = $state<DhcpLease[]>([]);
+  let available = $state(false);
+  let running = $state(false);
 
-  async function loadData() {
+  let confirmOpen = $state(false);
+  let newReservationMac = $state('');
+  let newReservationIp = $state('');
+
+  onMount(load);
+
+  async function load() {
     loading = true;
-    error = '';
-
+    loadError = '';
     try {
       const response = await getDhcpServerConfig();
       config = response.config;
-      available = response.available;
-      running = response.state.running;
-
-      if (running) {
-        leases = await getDhcpLeases();
-      }
+      available = !!response.available;
+      running = !!response.state.running;
+      leases = running ? await getDhcpLeases() : [];
     } catch (e) {
-      error = e instanceof Error ? e.message : 'Failed to load DHCP server config';
+      loadError = e instanceof Error ? e.message : $t('settings.dhcp_load_failed');
     } finally {
       loading = false;
     }
@@ -48,668 +87,549 @@
   async function handleSave() {
     if (!config) return;
 
-    // Require confirmation for enabling
+    // Turning either server on is the destructive-ish action: it is the one
+    // that can hand out wrong addresses on a live LAN, so it is confirmed and
+    // nothing else is.
     if ((config.dhcp_enabled || config.tftp_enabled) && !config.confirmed) {
-      showConfirmDialog = true;
+      confirmOpen = true;
       return;
     }
 
     saving = true;
-    error = '';
-
+    notice = null;
     try {
       await updateDhcpServerConfig(config);
-      await loadData();
-      alert('DHCP server configuration saved successfully');
+      await load();
+      notice = { kind: 'ok', text: $t('settings.dhcp_saved') };
     } catch (e) {
-      error = e instanceof Error ? e.message : 'Failed to save configuration';
+      notice = {
+        kind: 'error',
+        text: e instanceof Error ? e.message : $t('settings.dhcp_save_failed')
+      };
     } finally {
       saving = false;
     }
   }
 
-  function confirmAndSave() {
+  async function confirmAndSave() {
     if (!config) return;
     config.confirmed = true;
-    showConfirmDialog = false;
-    handleSave();
+    confirmOpen = false;
+    await handleSave();
   }
 
   async function handleStart() {
+    busy = true;
+    notice = null;
     try {
       await startDhcpServer();
-      await loadData();
-      alert('DHCP server started successfully');
+      await load();
+      notice = { kind: 'ok', text: $t('settings.dhcp_saved') };
     } catch (e) {
-      error = e instanceof Error ? e.message : 'Failed to start DHCP server';
+      notice = {
+        kind: 'error',
+        text: e instanceof Error ? e.message : $t('settings.dhcp_start_failed')
+      };
+    } finally {
+      busy = false;
     }
   }
 
   async function handleStop() {
+    busy = true;
+    notice = null;
     try {
       await stopDhcpServer();
-      await loadData();
-      alert('DHCP server stopped successfully');
+      await load();
+      notice = { kind: 'ok', text: $t('settings.dhcp_saved') };
     } catch (e) {
-      error = e instanceof Error ? e.message : 'Failed to stop DHCP server';
+      notice = {
+        kind: 'error',
+        text: e instanceof Error ? e.message : $t('settings.dhcp_stop_failed')
+      };
+    } finally {
+      busy = false;
     }
   }
 
   function addReservation() {
-    if (!config || !newReservationMac || !newReservationIp) {
-      alert('Please enter both MAC address and IP address');
+    if (!config) return;
+    const mac = newReservationMac.trim();
+    const ip = newReservationIp.trim();
+    if (!mac || !ip) {
+      notice = { kind: 'error', text: $t('settings.dhcp_reservations_hint') };
       return;
     }
-
-    config.reservations = {
-      ...config.reservations,
-      [newReservationMac]: newReservationIp,
-    };
-
+    config.reservations = { ...config.reservations, [mac]: ip };
     newReservationMac = '';
     newReservationIp = '';
   }
 
   function removeReservation(mac: string) {
     if (!config) return;
-    const { [mac]: removed, ...rest } = config.reservations;
+    const { [mac]: _removed, ...rest } = config.reservations;
     config.reservations = rest;
   }
 
   function formatExpiry(timestamp: number): string {
-    if (timestamp === 0) return 'Expired';
-    const date = new Date(timestamp * 1000);
-    return date.toLocaleString();
+    if (!timestamp) return $t('settings.dhcp_expires');
+    return new Date(timestamp * 1000).toLocaleString();
   }
 </script>
 
-<div class="settings-card">
-  <h3>DHCP/TFTP Server</h3>
-
-  {#if !available}
-    <div class="warning">
-      <p>⚠️ dnsmasq is not available on this system.</p>
-      <p>Install dnsmasq package to enable this feature.</p>
-    </div>
-  {/if}
-
+<SettingsCard
+  title={$t('settings.dhcp_title')}
+  subtitle={$t('settings.dhcp_subtitle')}
+  class={cn('dhcp-card', klass)}
+  data-testid="dhcp-card"
+>
   {#if loading}
-    <p>Loading...</p>
-  {:else if config}
-    <div class="config-form">
-      <!-- Enable Toggles -->
-      <div class="toggle-section">
-        <label class="toggle-label">
-          <input type="checkbox" bind:checked={config.dhcp_enabled} />
-          <span>Enable DHCP Server</span>
-        </label>
+    <p class={settingsHint}>{$t('common.loading')}</p>
+  {:else}
+    {#if !available}
+      <div class="dhcp-alert dhcp-alert-warn" role="status" data-testid="dhcp-unavailable">
+        <p>{$t('settings.dhcp_unavailable')}</p>
+        <p class={settingsRowHint}>{$t('settings.dhcp_unavailable_hint')}</p>
+      </div>
+    {/if}
 
-        <label class="toggle-label">
-          <input type="checkbox" bind:checked={config.tftp_enabled} />
-          <span>Enable TFTP Server</span>
-        </label>
+    {#if loadError}
+      <div class="dhcp-alert dhcp-alert-error" role="alert">{loadError}</div>
+    {/if}
+    {#if notice}
+      <div
+        class={cn('dhcp-alert', notice.kind === 'ok' ? 'dhcp-alert-ok' : 'dhcp-alert-error')}
+        role={notice.kind === 'ok' ? 'status' : 'alert'}
+        data-testid="dhcp-notice"
+      >
+        {notice.text}
+      </div>
+    {/if}
+
+    {#if config}
+      <div class={settingsRow}>
+        <div class="min-w-0">
+          <span class={settingsRowLabel} id="dhcp-enable-label">{$t('settings.dhcp_enable_dhcp')}</span>
+          <p class={settingsRowHint}>{$t('settings.dhcp_enable_dhcp_hint')}</p>
+        </div>
+        <input
+          type="checkbox"
+          class="dhcp-check"
+          bind:checked={config.dhcp_enabled}
+          aria-labelledby="dhcp-enable-label"
+          data-testid="dhcp-enable"
+        />
+      </div>
+
+      <div class={settingsRow}>
+        <div class="min-w-0">
+          <span class={settingsRowLabel} id="dhcp-tftp-label">{$t('settings.dhcp_enable_tftp')}</span>
+          <p class={settingsRowHint}>{$t('settings.dhcp_enable_tftp_hint')}</p>
+        </div>
+        <input
+          type="checkbox"
+          class="dhcp-check"
+          bind:checked={config.tftp_enabled}
+          aria-labelledby="dhcp-tftp-label"
+          data-testid="dhcp-tftp"
+        />
       </div>
 
       {#if config.dhcp_enabled || config.tftp_enabled}
-        <div class="warning-banner">
-          ⚠️ Running a DHCP server can conflict with existing network infrastructure.
-          Only enable this on isolated networks or if you know what you're doing.
+        <div class={settingsRow}>
+          <div class="min-w-0">
+            <label class={settingsRowLabel} for="dhcp-interface">{$t('settings.dhcp_interface')}</label>
+            <p class={settingsRowHint}>{$t('settings.dhcp_interface_hint')}</p>
+          </div>
+          <input
+            id="dhcp-interface"
+            type="text"
+            class={settingsInput}
+            bind:value={config.interface}
+            placeholder="eth0"
+            data-testid="dhcp-interface"
+          />
         </div>
-
-        <!-- Network Configuration -->
-        <div class="form-section">
-          <h4>Network Configuration</h4>
-
-          <div class="form-row">
-            <div class="form-group">
-              <label>
-                Interface
-                <input
-                  type="text"
-                  bind:value={config.interface}
-                  placeholder="eth0"
-                />
-              </label>
-            </div>
-          </div>
-        </div>
-
-        <!-- DHCP Configuration -->
-        {#if config.dhcp_enabled}
-          <div class="form-section">
-            <h4>DHCP Configuration</h4>
-
-            <div class="form-row">
-              <div class="form-group">
-                <label>
-                  Range Start
-                  <input
-                    type="text"
-                    bind:value={config.dhcp_range_start}
-                    placeholder="192.168.1.100"
-                  />
-                </label>
-              </div>
-
-              <div class="form-group">
-                <label>
-                  Range End
-                  <input
-                    type="text"
-                    bind:value={config.dhcp_range_end}
-                    placeholder="192.168.1.200"
-                  />
-                </label>
-              </div>
-            </div>
-
-            <div class="form-row">
-              <div class="form-group">
-                <label>
-                  Netmask
-                  <input
-                    type="text"
-                    bind:value={config.netmask}
-                    placeholder="255.255.255.0"
-                  />
-                </label>
-              </div>
-
-              <div class="form-group">
-                <label>
-                  Gateway (optional)
-                  <input
-                    type="text"
-                    bind:value={config.gateway}
-                    placeholder="192.168.1.1"
-                  />
-                </label>
-              </div>
-            </div>
-
-            <div class="form-group">
-              <label>
-                Lease Time (seconds)
-                <input
-                  type="number"
-                  bind:value={config.lease_time_secs}
-                  min="60"
-                  max="2592000"
-                />
-              </label>
-              <p class="hint">Default: 86400 (24 hours)</p>
-            </div>
-
-            <!-- Reservations -->
-            <div class="reservations-section">
-              <h5>MAC Reservations</h5>
-
-              {#if Object.keys(config.reservations).length === 0}
-                <p class="hint">No reservations configured.</p>
-              {:else}
-                <table class="reservations-table">
-                  <thead>
-                    <tr>
-                      <th>MAC Address</th>
-                      <th>IP Address</th>
-                      <th>Actions</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {#each Object.entries(config.reservations) as [mac, ip]}
-                      <tr>
-                        <td>{mac}</td>
-                        <td>{ip}</td>
-                        <td>
-                          <button
-                            class="btn-danger btn-sm"
-                            on:click={() => removeReservation(mac)}
-                          >
-                            Remove
-                          </button>
-                        </td>
-                      </tr>
-                    {/each}
-                  </tbody>
-                </table>
-              {/if}
-
-              <div class="add-reservation">
-                <input
-                  type="text"
-                  bind:value={newReservationMac}
-                  placeholder="aa:bb:cc:dd:ee:ff"
-                  class="input-sm"
-                />
-                <input
-                  type="text"
-                  bind:value={newReservationIp}
-                  placeholder="192.168.1.50"
-                  class="input-sm"
-                />
-                <button class="btn-secondary btn-sm" on:click={addReservation}>
-                  Add
-                </button>
-              </div>
-            </div>
-          </div>
-        {/if}
-
-        <!-- TFTP Configuration -->
-        {#if config.tftp_enabled}
-          <div class="form-section">
-            <h4>TFTP Configuration</h4>
-
-            <div class="form-group">
-              <label>
-                TFTP Root Directory
-                <input
-                  type="text"
-                  bind:value={config.tftp_root}
-                  placeholder="/srv/tftp"
-                />
-              </label>
-              <p class="hint">Absolute path where TFTP files are stored</p>
-            </div>
-
-            <div class="form-group">
-              <label>
-                PXE Boot File (optional)
-                <input
-                  type="text"
-                  bind:value={config.pxe_boot_file}
-                  placeholder="pxelinux.0"
-                />
-              </label>
-              <p class="hint">Relative path within TFTP root</p>
-            </div>
-          </div>
-        {/if}
-
-        <!-- Server Status -->
-        <div class="form-section">
-          <h4>Server Status</h4>
-
-          <div class="server-status">
-            <span>Status:</span>
-            <span class:running class:stopped={!running}>
-              {running ? 'Running' : 'Stopped'}
-            </span>
-          </div>
-
-          <div class="form-actions">
-            {#if running}
-              <button class="btn-danger" on:click={handleStop}>
-                Stop Server
-              </button>
-            {:else}
-              <button class="btn-primary" on:click={handleStart}>
-                Start Server
-              </button>
-            {/if}
-          </div>
-        </div>
-
-        <!-- Active Leases -->
-        {#if running && config.dhcp_enabled && leases.length > 0}
-          <div class="form-section">
-            <h4>Active Leases</h4>
-
-            <table class="leases-table">
-              <thead>
-                <tr>
-                  <th>IP Address</th>
-                  <th>MAC Address</th>
-                  <th>Hostname</th>
-                  <th>Expires</th>
-                </tr>
-              </thead>
-              <tbody>
-                {#each leases as lease}
-                  <tr>
-                    <td>{lease.ip}</td>
-                    <td>{lease.mac}</td>
-                    <td>{lease.hostname || '-'}</td>
-                    <td>{formatExpiry(lease.expires_at)}</td>
-                  </tr>
-                {/each}
-              </tbody>
-            </table>
-          </div>
-        {/if}
       {/if}
 
-      <!-- Save Button -->
-      <div class="card-actions">
-        {#if error}
-          <p class="error">{error}</p>
+      {#if config.dhcp_enabled}
+        <h4 class="dhcp-subhead">{$t('settings.dhcp_dhcp_title')}</h4>
+
+        <div class={settingsRow}>
+          <label class={settingsRowLabel} for="dhcp-range-start">{$t('settings.dhcp_range_start')}</label>
+          <input
+            id="dhcp-range-start"
+            type="text"
+            class={settingsInput}
+            bind:value={config.dhcp_range_start}
+            placeholder="192.168.1.100"
+            data-testid="dhcp-range-start"
+          />
+        </div>
+        <div class={settingsRow}>
+          <label class={settingsRowLabel} for="dhcp-range-end">{$t('settings.dhcp_range_end')}</label>
+          <input
+            id="dhcp-range-end"
+            type="text"
+            class={settingsInput}
+            bind:value={config.dhcp_range_end}
+            placeholder="192.168.1.200"
+            data-testid="dhcp-range-end"
+          />
+        </div>
+        <div class={settingsRow}>
+          <label class={settingsRowLabel} for="dhcp-netmask">{$t('settings.dhcp_netmask')}</label>
+          <input
+            id="dhcp-netmask"
+            type="text"
+            class={settingsInput}
+            bind:value={config.netmask}
+            placeholder="255.255.255.0"
+            data-testid="dhcp-netmask"
+          />
+        </div>
+        <div class={settingsRow}>
+          <div class="min-w-0">
+            <label class={settingsRowLabel} for="dhcp-gateway">{$t('settings.dhcp_gateway')}</label>
+            <p class={settingsRowHint}>{$t('settings.dhcp_gateway_hint')}</p>
+          </div>
+          <input
+            id="dhcp-gateway"
+            type="text"
+            class={settingsInput}
+            bind:value={config.gateway}
+            placeholder="192.168.1.1"
+            data-testid="dhcp-gateway"
+          />
+        </div>
+        <div class={settingsRow}>
+          <div class="min-w-0">
+            <label class={settingsRowLabel} for="dhcp-lease">{$t('settings.dhcp_lease_time')}</label>
+            <p class={settingsRowHint}>{$t('settings.dhcp_lease_time_hint')}</p>
+          </div>
+          <input
+            id="dhcp-lease"
+            type="number"
+            class={settingsInput}
+            min="60"
+            max="2592000"
+            bind:value={config.lease_time_secs}
+            data-testid="dhcp-lease"
+          />
+        </div>
+
+        <h4 class="dhcp-subhead">{$t('settings.dhcp_reservations_title')}</h4>
+        <p class={settingsRowHint}>{$t('settings.dhcp_reservations_hint')}</p>
+
+        {#if Object.keys(config.reservations).length === 0}
+          <p class={settingsHint} data-testid="dhcp-no-reservations">
+            {$t('settings.dhcp_reservations_empty')}
+          </p>
+        {:else}
+          <table class="dhcp-table" data-testid="dhcp-reservations">
+            <thead>
+              <tr>
+                <th scope="col">{$t('settings.dhcp_mac')}</th>
+                <th scope="col">{$t('settings.dhcp_ip')}</th>
+                <th scope="col">{$t('common.actions')}</th>
+              </tr>
+            </thead>
+            <tbody>
+              {#each Object.entries(config.reservations) as [mac, ip] (mac)}
+                <tr>
+                  <td>{mac}</td>
+                  <td>{ip}</td>
+                  <td>
+                    <button
+                      type="button"
+                      class={settingsBtnDanger}
+                      onclick={() => removeReservation(mac)}
+                    >
+                      {$t('common.remove')}
+                    </button>
+                  </td>
+                </tr>
+              {/each}
+            </tbody>
+          </table>
         {/if}
 
-        <button
-          class="btn-primary"
-          on:click={handleSave}
-          disabled={saving}
+        <div class="dhcp-reservation-add">
+          <label class="sr-only" for="dhcp-new-mac">{$t('settings.dhcp_mac')}</label>
+          <input
+            id="dhcp-new-mac"
+            type="text"
+            class={settingsInput}
+            bind:value={newReservationMac}
+            placeholder="aa:bb:cc:dd:ee:ff"
+            data-testid="dhcp-new-mac"
+          />
+          <label class="sr-only" for="dhcp-new-ip">{$t('settings.dhcp_ip')}</label>
+          <input
+            id="dhcp-new-ip"
+            type="text"
+            class={settingsInput}
+            bind:value={newReservationIp}
+            placeholder="192.168.1.50"
+            data-testid="dhcp-new-ip"
+          />
+          <button type="button" class={settingsBtn} onclick={addReservation}>
+            {$t('settings.dhcp_add_reservation')}
+          </button>
+        </div>
+      {/if}
+
+      {#if config.tftp_enabled}
+        <h4 class="dhcp-subhead">{$t('settings.dhcp_tftp_title')}</h4>
+        <div class={settingsRow}>
+          <div class="min-w-0">
+            <label class={settingsRowLabel} for="dhcp-tftp-root">{$t('settings.dhcp_tftp_root')}</label>
+            <p class={settingsRowHint}>{$t('settings.dhcp_tftp_root_hint')}</p>
+          </div>
+          <input
+            id="dhcp-tftp-root"
+            type="text"
+            class={settingsInput}
+            bind:value={config.tftp_root}
+            placeholder="/srv/tftp"
+            data-testid="dhcp-tftp-root"
+          />
+        </div>
+        <div class={settingsRow}>
+          <div class="min-w-0">
+            <label class={settingsRowLabel} for="dhcp-boot-file">{$t('settings.dhcp_tftp_boot_file')}</label>
+            <p class={settingsRowHint}>{$t('settings.dhcp_tftp_boot_file_hint')}</p>
+          </div>
+          <input
+            id="dhcp-boot-file"
+            type="text"
+            class={settingsInput}
+            bind:value={config.pxe_boot_file}
+            placeholder="pxelinux.0"
+            data-testid="dhcp-boot-file"
+          />
+        </div>
+      {/if}
+
+      <h4 class="dhcp-subhead">{$t('settings.dhcp_status_title')}</h4>
+      <div class={settingsRow} data-testid="dhcp-status-row">
+        <span class={settingsRowLabel}>{$t('settings.dhcp_status_label')}</span>
+        <span
+          class={cn('dhcp-badge', running ? 'dhcp-badge-on' : 'dhcp-badge-off')}
+          data-testid="dhcp-status"
+          data-state={running ? 'running' : 'stopped'}
         >
-          {saving ? 'Saving...' : 'Save Configuration'}
-        </button>
+          {running ? $t('settings.dhcp_running') : $t('settings.dhcp_stopped')}
+        </span>
       </div>
-    </div>
+
+      {#if running && config.dhcp_enabled && leases.length > 0}
+        <h4 class="dhcp-subhead">{$t('settings.dhcp_leases_title')}</h4>
+        <table class="dhcp-table" data-testid="dhcp-leases">
+          <thead>
+            <tr>
+              <th scope="col">{$t('settings.dhcp_ip')}</th>
+              <th scope="col">{$t('settings.dhcp_mac')}</th>
+              <th scope="col">{$t('settings.dhcp_hostname')}</th>
+              <th scope="col">{$t('settings.dhcp_expires')}</th>
+            </tr>
+          </thead>
+          <tbody>
+            {#each leases as lease (lease.ip + lease.mac)}
+              <tr>
+                <td>{lease.ip}</td>
+                <td>{lease.mac}</td>
+                <td>{lease.hostname ?? '—'}</td>
+                <td>{formatExpiry(lease.expires_at)}</td>
+              </tr>
+            {/each}
+          </tbody>
+        </table>
+      {:else if running && config.dhcp_enabled}
+        <p class={settingsHint} data-testid="dhcp-no-leases">
+          {$t('settings.dhcp_leases_empty')}
+        </p>
+      {/if}
+
+      <div class="dhcp-actions">
+        <button
+          type="button"
+          class={settingsBtnPrimary}
+          onclick={handleSave}
+          disabled={saving}
+          data-testid="dhcp-save"
+        >
+          {saving ? $t('common.saving') : $t('common.save')}
+        </button>
+        {#if running}
+          <button
+            type="button"
+            class={settingsBtnDanger}
+            onclick={handleStop}
+            disabled={busy}
+            data-testid="dhcp-stop"
+          >
+            {$t('settings.dhcp_stop')}
+          </button>
+        {:else}
+          <button
+            type="button"
+            class={settingsBtn}
+            onclick={handleStart}
+            disabled={busy}
+            data-testid="dhcp-start"
+          >
+            {$t('settings.dhcp_start')}
+          </button>
+        {/if}
+      </div>
+    {/if}
   {/if}
-</div>
+</SettingsCard>
 
-<!-- Confirmation Dialog -->
-{#if showConfirmDialog}
-  <div class="modal-overlay" on:click={() => showConfirmDialog = false}>
-    <div class="modal-content" on:click|stopPropagation>
-      <div class="modal-header">
-        <h3>⚠️ Confirm DHCP Server Enable</h3>
-      </div>
-
-      <div class="modal-body">
-        <p>
-          You are about to enable a DHCP server on your network. This can cause conflicts
-          if another DHCP server is already running (such as your router).
-        </p>
-        <p>
-          <strong>Only proceed if:</strong>
-        </p>
-        <ul>
-          <li>You are on an isolated network</li>
-          <li>You are the network administrator</li>
-          <li>You have disabled other DHCP servers</li>
-        </ul>
-        <p>
-          <strong>Do you understand and want to proceed?</strong>
-        </p>
-      </div>
-
-      <div class="modal-footer">
-        <button class="btn-secondary" on:click={() => showConfirmDialog = false}>
-          Cancel
-        </button>
-        <button class="btn-danger" on:click={confirmAndSave}>
-          Yes, Enable DHCP Server
-        </button>
-      </div>
+<!-- Turning the server on is confirmed; nothing else is. The shared Modal
+     traps focus and restores it to the trigger, which the hand-rolled overlay
+     this replaced did not. -->
+<Modal open={confirmOpen} title={$t('settings.dhcp_confirm_title')} size="sm" onclose={() => (confirmOpen = false)}>
+  <div class="dhcp-confirm">
+    <p>{$t('settings.dhcp_confirm_only_if')}</p>
+    <ul>
+      <li>{$t('settings.dhcp_confirm_isolated')}</li>
+      <li>{$t('settings.dhcp_confirm_admin')}</li>
+    </ul>
+    <div class="dhcp-actions">
+      <button type="button" class={settingsBtn} onclick={() => (confirmOpen = false)}>
+        {$t('common.cancel')}
+      </button>
+      <button
+        type="button"
+        class={settingsBtnDanger}
+        onclick={confirmAndSave}
+        data-testid="dhcp-confirm-enable"
+      >
+        {$t('settings.dhcp_confirm_understand')}
+      </button>
     </div>
   </div>
-{/if}
+</Modal>
 
 <style>
-  .settings-card {
-    background: var(--card-bg);
+  .dhcp-alert {
+    border: 1px solid var(--hv-shell-border);
     border-radius: 8px;
-    padding: 24px;
-    margin-bottom: 16px;
+    padding: 10px 12px;
+    margin-bottom: 12px;
+    font-size: 0.8125rem;
+    line-height: 1.25rem;
   }
 
-  h3 {
-    margin: 0 0 16px 0;
-    font-size: 18px;
+  .dhcp-alert-error {
+    background: var(--hv-error-bg);
+    border-color: var(--hv-error);
+    color: var(--hv-error);
+  }
+
+  .dhcp-alert-ok {
+    background: var(--hv-success-bg);
+    border-color: var(--hv-success);
+    color: var(--hv-success);
+  }
+
+  .dhcp-alert-warn {
+    background: var(--hv-shell-border-soft);
+    border-color: var(--hv-warning, var(--hv-shell-border-strong));
+    color: var(--hv-shell-text);
+  }
+
+  /* A bare checkbox inherits `width: 100%` from base.css (design-system
+     pitfall 6); pin the box so it does not stretch across its label. */
+  .dhcp-check {
+    height: 1rem;
+    width: 1rem;
+    flex: none;
+    accent-color: var(--hv-primary);
+  }
+
+  .dhcp-subhead {
+    margin: 16px 0 8px;
+    font-size: 0.8125rem;
     font-weight: 600;
+    color: var(--hv-settings-title);
   }
 
-  h4 {
-    margin: 0 0 12px 0;
-    font-size: 14px;
-    font-weight: 600;
-    color: var(--text-secondary);
-  }
-
-  h5 {
-    margin: 16px 0 8px 0;
-    font-size: 13px;
-    font-weight: 600;
-  }
-
-  .warning {
-    background: var(--warning-bg);
-    border: 1px solid var(--warning-border);
-    border-radius: 4px;
-    padding: 12px;
-    margin-bottom: 16px;
-  }
-
-  .warning-banner {
-    background: var(--warning-bg);
-    border-left: 4px solid var(--warning-color);
-    padding: 12px 16px;
-    margin: 16px 0;
-    border-radius: 4px;
-  }
-
-  .toggle-section {
-    display: flex;
-    flex-direction: column;
-    gap: 12px;
-    margin-bottom: 24px;
-    padding-bottom: 24px;
-    border-bottom: 1px solid var(--border-color);
-  }
-
-  .form-section {
-    margin-bottom: 24px;
-    padding-bottom: 24px;
-    border-bottom: 1px solid var(--border-color);
-  }
-
-  .form-section:last-child {
-    border-bottom: none;
-  }
-
-  .form-row {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: 16px;
-  }
-
-  @media (max-width: 768px) {
-    .form-row {
-      grid-template-columns: 1fr;
-    }
-  }
-
-  .form-group {
-    margin-bottom: 16px;
-  }
-
-  label {
-    display: block;
-    margin-bottom: 4px;
-    font-size: 14px;
-    font-weight: 500;
-  }
-
-  input[type="text"],
-  input[type="number"] {
-    width: 100%;
-    padding: 8px 12px;
-    border: 1px solid var(--border-color);
-    border-radius: 4px;
-    font-size: 14px;
-  }
-
-  .input-sm {
-    padding: 6px 10px;
-    font-size: 13px;
-  }
-
-  .toggle-label {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    cursor: pointer;
-  }
-
-  .toggle-label input[type="checkbox"] {
-    width: auto;
-  }
-
-  .hint {
-    font-size: 12px;
-    color: var(--text-secondary);
-    margin-top: 4px;
-  }
-
-  .reservations-table,
-  .leases-table {
+  .dhcp-table {
     width: 100%;
     border-collapse: collapse;
-    margin-bottom: 16px;
-  }
-
-  .reservations-table th,
-  .reservations-table td,
-  .leases-table th,
-  .leases-table td {
-    padding: 8px 12px;
-    text-align: left;
-    border-bottom: 1px solid var(--border-color);
-  }
-
-  .reservations-table th,
-  .leases-table th {
-    font-weight: 600;
-    font-size: 13px;
-    color: var(--text-secondary);
-  }
-
-  .add-reservation {
-    display: flex;
-    gap: 8px;
-    margin-top: 12px;
-  }
-
-  .server-status {
-    display: flex;
-    align-items: center;
-    gap: 8px;
     margin-bottom: 12px;
+    font-size: 0.8125rem;
   }
 
-  .server-status .running {
-    color: var(--success-color);
+  .dhcp-table th,
+  .dhcp-table td {
+    padding: 6px 10px;
+    text-align: left;
+    border-bottom: 1px solid var(--hv-shell-border);
+  }
+
+  .dhcp-table th {
     font-weight: 600;
+    color: var(--hv-shell-text-3);
+    font-size: 0.75rem;
   }
 
-  .server-status .stopped {
-    color: var(--error-color);
-    font-weight: 600;
+  .dhcp-table td {
+    color: var(--hv-shell-text);
+    font-family: var(--hv-font-mono);
   }
 
-  .form-actions {
+  .dhcp-reservation-add {
     display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    align-items: center;
+    margin-bottom: 8px;
+  }
+
+  .dhcp-badge {
+    font-size: 0.6875rem;
+    padding: 2px 10px;
+    border-radius: 999px;
+    font-weight: 600;
+  }
+
+  .dhcp-badge-on {
+    background: var(--hv-success-bg);
+    color: var(--hv-success);
+  }
+
+  .dhcp-badge-off {
+    background: var(--hv-shell-border-soft);
+    color: var(--hv-shell-text-2);
+  }
+
+  .dhcp-actions {
+    display: flex;
+    flex-wrap: wrap;
     gap: 8px;
     margin-top: 16px;
   }
 
-  .card-actions {
-    margin-top: 24px;
-    padding-top: 24px;
-    border-top: 1px solid var(--border-color);
+  .dhcp-confirm ul {
+    margin: 8px 0 16px;
+    padding-left: 18px;
+    font-size: 0.8125rem;
+    color: var(--hv-shell-text-2);
   }
 
-  button {
-    padding: 8px 16px;
-    border: none;
-    border-radius: 4px;
-    font-size: 14px;
-    font-weight: 500;
-    cursor: pointer;
-    transition: background-color 0.2s;
-  }
-
-  .btn-primary {
-    background: var(--primary-color);
-    color: white;
-  }
-
-  .btn-primary:hover {
-    background: var(--primary-hover);
-  }
-
-  .btn-primary:disabled {
-    background: var(--disabled-color);
-    cursor: not-allowed;
-  }
-
-  .btn-secondary {
-    background: var(--secondary-color);
-    color: var(--text-primary);
-  }
-
-  .btn-secondary:hover {
-    background: var(--secondary-hover);
-  }
-
-  .btn-danger {
-    background: var(--error-color);
-    color: white;
-  }
-
-  .btn-danger:hover {
-    background: var(--error-hover);
-  }
-
-  .btn-sm {
-    padding: 4px 8px;
-    font-size: 12px;
-  }
-
-  .error {
-    color: var(--error-color);
-    font-size: 14px;
-    margin-bottom: 12px;
-  }
-
-  /* Modal */
-  .modal-overlay {
-    position: fixed;
-    top: 0;
-    left: 0;
-    right: 0;
-    bottom: 0;
-    background: rgba(0, 0, 0, 0.5);
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    z-index: 1000;
-  }
-
-  .modal-content {
-    background: var(--card-bg);
-    border-radius: 8px;
-    width: 90%;
-    max-width: 500px;
-  }
-
-  .modal-header {
-    padding: 20px 24px;
-    border-bottom: 1px solid var(--border-color);
-  }
-
-  .modal-header h3 {
-    margin: 0;
-    font-size: 16px;
-  }
-
-  .modal-body {
-    padding: 24px;
-  }
-
-  .modal-body p {
-    margin: 0 0 12px 0;
-  }
-
-  .modal-body ul {
-    margin: 8px 0 12px 20px;
-  }
-
-  .modal-footer {
-    display: flex;
-    justify-content: flex-end;
-    gap: 12px;
-    padding: 20px 24px;
-    border-top: 1px solid var(--border-color);
+  .sr-only {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
   }
 </style>

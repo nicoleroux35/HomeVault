@@ -1,50 +1,113 @@
+<!-- ========================================================================
+     File          : FanControlCard.svelte
+     Author        : Nicolas Le Roux
+     Created       : 02/11/2026
+     Last modified : 02/11/2026 by Nicolas Le Roux
+     Version       : 1.0.0
+
+     Description:
+       Settings card for thermal management: the detected hwmon fan channels,
+       the active profile (Auto/Quiet/Balanced/Performance/Manual), the manual
+       duty slider and the "hand control back to the firmware" action.
+
+       Rewritten on the shared settings vocabulary and design tokens. The
+       previous version carried hardcoded English strings, native `alert()` /
+       `confirm()` dialogs and CSS variables that do not exist in the token
+       set (`--card-bg`, `--primary-color`), so it rendered unstyled.
+
+     Dependencies:
+       - svelte (>= 5), $lib/services/api-phase4, $lib/stores/i18n,
+         ./SettingsCard, ./vocabulary
+
+     Usage:
+       Embedded in routes/Settings.svelte's hardware category. See
+       docs/guides/fan-control.md.
+     ======================================================================== -->
 <script lang="ts">
   import { onMount } from 'svelte';
+  import { t } from '$lib/stores/i18n';
   import {
     listFanChannels,
     getFanConfig,
     updateFanConfig,
-    restoreFanAuto,
+    restoreFanAuto
   } from '$lib/services/api-phase4';
   import type { FanConfig, FanChannel, FanProfile } from '$lib/types/phase4';
+  import SettingsCard from './SettingsCard.svelte';
+  import { cn } from '$lib/utils.js';
+  import {
+    settingsHint,
+    settingsRow,
+    settingsRowLabel,
+    settingsRowHint,
+    settingsBtn,
+    settingsBtnPrimary
+  } from './vocabulary';
 
-  let config: FanConfig | null = null;
-  let channels: FanChannel[] = [];
-  let isLaptop = false;
-  let loading = true;
-  let saving = false;
-  let error = '';
-  let message = '';
+  let { class: klass = '' }: { class?: string } = $props();
 
-  const profileOptions: { value: FanProfile; label: string; description: string }[] = [
-    { value: 'auto', label: 'Auto (Firmware)', description: 'Let firmware control fans' },
-    { value: 'quiet', label: 'Quiet', description: 'Prioritize silence' },
-    { value: 'balanced', label: 'Balanced', description: 'Balance noise and cooling' },
-    { value: 'performance', label: 'Performance', description: 'Prioritize cooling' },
-    { value: 'manual', label: 'Manual', description: 'Fixed speed' },
-  ];
+  let loading = $state(true);
+  let saving = $state(false);
+  let restoring = $state(false);
+  let loadError = $state('');
+  let notice = $state<{ kind: 'ok' | 'error'; text: string } | null>(null);
 
-  onMount(async () => {
-    await loadData();
-  });
+  let config = $state<FanConfig | null>(null);
+  let channels = $state<FanChannel[]>([]);
+  let isLaptop = $state(false);
+  let serverMessage = $state('');
 
-  async function loadData() {
+  /**
+   * The profile catalogue is built inside a `$derived` so every label goes
+   * through `$t` and re-renders when the language changes. A module-level
+   * `const` would freeze the labels at import time.
+   */
+  const profileOptions = $derived<
+    { value: FanProfile; label: string; description: string }[]
+  >([
+    {
+      value: 'auto',
+      label: $t('settings.fan_profile_auto'),
+      description: $t('settings.fan_profile_auto_desc')
+    },
+    {
+      value: 'quiet',
+      label: $t('settings.fan_profile_quiet'),
+      description: $t('settings.fan_profile_quiet_desc')
+    },
+    {
+      value: 'balanced',
+      label: $t('settings.fan_profile_balanced'),
+      description: $t('settings.fan_profile_balanced_desc')
+    },
+    {
+      value: 'performance',
+      label: $t('settings.fan_profile_performance'),
+      description: $t('settings.fan_profile_performance_desc')
+    },
+    {
+      value: 'manual',
+      label: $t('settings.fan_profile_manual'),
+      description: $t('settings.fan_profile_manual_desc')
+    }
+  ]);
+
+  onMount(load);
+
+  async function load() {
     loading = true;
-    error = '';
-    message = '';
-
+    loadError = '';
     try {
       const [channelsResponse, configResponse] = await Promise.all([
         listFanChannels(),
-        getFanConfig(),
+        getFanConfig()
       ]);
-
-      channels = channelsResponse.channels;
-      isLaptop = channelsResponse.is_laptop;
-      message = channelsResponse.message || '';
+      channels = channelsResponse.channels ?? [];
+      isLaptop = !!channelsResponse.is_laptop;
+      serverMessage = channelsResponse.message ?? '';
       config = configResponse;
     } catch (e) {
-      error = e instanceof Error ? e.message : 'Failed to load fan control data';
+      loadError = e instanceof Error ? e.message : $t('settings.fan_load_failed');
     } finally {
       loading = false;
     }
@@ -52,482 +115,413 @@
 
   async function handleSave() {
     if (!config) return;
-
     saving = true;
-    error = '';
-
+    notice = null;
     try {
       await updateFanConfig(config);
-      await loadData();
-      alert('Fan control configuration saved successfully');
+      await load();
+      notice = { kind: 'ok', text: $t('settings.fan_saved') };
     } catch (e) {
-      error = e instanceof Error ? e.message : 'Failed to save configuration';
+      notice = {
+        kind: 'error',
+        text: e instanceof Error ? e.message : $t('settings.fan_save_failed')
+      };
     } finally {
       saving = false;
     }
   }
 
   async function handleRestoreAuto() {
-    if (!confirm('Restore all fans to automatic (firmware) control?')) return;
-
+    restoring = true;
+    notice = null;
     try {
       await restoreFanAuto();
-      await loadData();
-      alert('Fans restored to automatic control');
+      await load();
+      notice = { kind: 'ok', text: $t('settings.fan_restored_auto') };
     } catch (e) {
-      error = e instanceof Error ? e.message : 'Failed to restore automatic control';
+      notice = {
+        kind: 'error',
+        text: e instanceof Error ? e.message : $t('settings.fan_restore_failed')
+      };
+    } finally {
+      restoring = false;
     }
   }
 
-  function formatTemp(tempMillidegrees: number | null): string {
-    if (tempMillidegrees === null) return 'N/A';
-    return `${(tempMillidegrees / 1000).toFixed(1)}°C`;
+  function formatTemp(millidegrees: number | null): string {
+    if (millidegrees === null || millidegrees === undefined) {
+      return $t('settings.fan_value_unknown');
+    }
+    return `${(millidegrees / 1000).toFixed(1)}°C`;
   }
 
   function formatDuty(pwm: number): string {
-    const percent = Math.round((pwm / 255) * 100);
-    return `${percent}%`;
+    return `${Math.round((pwm / 255) * 100)}%`;
   }
 
-  function getModeLabel(mode: number): string {
+  function modeLabel(mode: number): string {
     switch (mode) {
-      case 0: return 'Full Speed';
-      case 1: return 'Manual';
-      case 2: return 'Auto';
-      default: return 'Unknown';
+      case 0:
+        return $t('settings.fan_mode_full');
+      case 1:
+        return $t('settings.fan_mode_manual');
+      case 2:
+        return $t('settings.fan_mode_auto');
+      default:
+        return $t('settings.fan_mode_unknown');
     }
   }
 </script>
 
-<div class="settings-card">
-  <h3>Fan Control</h3>
+<SettingsCard
+  title={$t('settings.fan_title')}
+  subtitle={$t('settings.fan_subtitle')}
+  class={cn('fan-card', klass)}
+  data-testid="fan-card"
+>
+  {#if loading}
+    <p class={settingsHint}>{$t('common.loading')}</p>
+  {:else}
+    {#if loadError}
+      <div class="fan-alert fan-alert-error" role="alert">{loadError}</div>
+    {/if}
+    {#if notice}
+      <div
+        class={cn('fan-alert', notice.kind === 'ok' ? 'fan-alert-ok' : 'fan-alert-error')}
+        role={notice.kind === 'ok' ? 'status' : 'alert'}
+        data-testid="fan-notice"
+      >
+        {notice.text}
+      </div>
+    {/if}
 
-  {#if isLaptop}
-    <div class="warning">
-      <p>⚠️ {message || 'Fan control is disabled on laptop systems.'}</p>
-      <p>Laptop fans are managed by the embedded controller firmware.</p>
-    </div>
-  {:else if loading}
-    <p>Loading...</p>
-  {:else if config}
-    <div class="config-form">
+    {#if isLaptop}
+      <div class="fan-alert fan-alert-info" data-testid="fan-laptop">
+        {serverMessage || $t('settings.fan_laptop_disabled')}
+      </div>
+      <p class={settingsRowHint}>{$t('settings.fan_laptop_hint')}</p>
+    {:else if config}
       {#if channels.length === 0}
-        <div class="info">
-          <p>ℹ️ No controllable fan channels detected.</p>
-          <p>This system may not have software-controllable fans, or you may need additional permissions.</p>
+        <div class="fan-alert fan-alert-info" data-testid="fan-no-channels">
+          {$t('settings.fan_no_channels')}
         </div>
+        <p class={settingsRowHint}>{$t('settings.fan_no_channels_hint')}</p>
       {:else}
-        <!-- Profile Selection -->
-        <div class="form-section">
-          <h4>Fan Profile</h4>
-
-          <div class="profile-selector">
-            {#each profileOptions as option}
-              <label class="profile-option" class:selected={config.profile === option.value}>
+        <fieldset class="fan-fieldset">
+          <legend class={settingsRowLabel}>{$t('settings.fan_profile_legend')}</legend>
+          <div class="fan-profiles">
+            {#each profileOptions as option (option.value)}
+              <label
+                class="fan-profile"
+                class:is-selected={config.profile === option.value}
+              >
                 <input
                   type="radio"
+                  class="fan-radio"
                   bind:group={config.profile}
                   value={option.value}
                 />
-                <div class="profile-info">
-                  <span class="profile-label">{option.label}</span>
-                  <span class="profile-description">{option.description}</span>
-                </div>
+                <span class="min-w-0">
+                  <span class="fan-profile-label">{option.label}</span>
+                  <span class="fan-profile-desc">{option.description}</span>
+                </span>
               </label>
             {/each}
           </div>
+        </fieldset>
 
-          {#if config.profile === 'manual'}
-            <div class="form-group">
-              <label>
-                Manual Fan Speed: {config.manual_duty}%
-                <input
-                  type="range"
-                  bind:value={config.manual_duty}
-                  min="20"
-                  max="100"
-                  class="slider"
-                />
+        {#if config.profile === 'manual'}
+          <div class={settingsRow}>
+            <div class="min-w-0">
+              <label class={settingsRowLabel} for="fan-manual-duty">
+                {$t('settings.fan_manual_speed', { percent: String(config.manual_duty) })}
               </label>
-              <p class="hint">Minimum: 20% (safety limit)</p>
+              <p class={settingsRowHint}>{$t('settings.fan_manual_hint')}</p>
             </div>
-          {/if}
-        </div>
-
-        <!-- Fan Channels -->
-        <div class="form-section">
-          <h4>Detected Fan Channels</h4>
-
-          <div class="channels-list">
-            {#each channels as channel}
-              <div class="channel-item">
-                <div class="channel-header">
-                  <div class="channel-name">
-                    <strong>{channel.name}</strong>
-                    <span class="channel-id">{channel.id}</span>
-                  </div>
-                  <div class="channel-mode">
-                    {getModeLabel(channel.current_mode)}
-                  </div>
-                </div>
-
-                <div class="channel-stats">
-                  <div class="stat">
-                    <span class="stat-label">Speed:</span>
-                    <span class="stat-value">{formatDuty(channel.current_pwm)}</span>
-                  </div>
-                  <div class="stat">
-                    <span class="stat-label">Temperature:</span>
-                    <span class="stat-value">{formatTemp(channel.current_temp)}</span>
-                  </div>
-                  <div class="stat">
-                    <span class="stat-label">Auto Support:</span>
-                    <span class="stat-value">{channel.supports_auto ? 'Yes' : 'No'}</span>
-                  </div>
-                </div>
-
-                <!-- Per-channel override (optional feature) -->
-                <!-- Uncomment if you want per-channel control
-                <details class="channel-override">
-                  <summary>Advanced: Per-channel settings</summary>
-                  <p class="hint">Override global profile for this channel</p>
-                </details>
-                -->
-              </div>
-            {/each}
+            <input
+              id="fan-manual-duty"
+              type="range"
+              class="fan-slider"
+              min="20"
+              max="100"
+              step="1"
+              bind:value={config.manual_duty}
+              data-testid="fan-manual-duty"
+            />
           </div>
-        </div>
+        {/if}
 
-        <!-- Control Interval -->
-        <div class="form-section">
-          <h4>Control Settings</h4>
-
-          <div class="form-group">
-            <label>
-              Update Interval (seconds)
-              <input
-                type="number"
-                bind:value={config.interval_secs}
-                min="5"
-                max="60"
-              />
+        <div class={settingsRow}>
+          <div class="min-w-0">
+            <label class={settingsRowLabel} for="fan-interval">
+              {$t('settings.fan_interval')}
             </label>
-            <p class="hint">How often to check temperatures and adjust fan speeds</p>
+            <p class={settingsRowHint}>{$t('settings.fan_interval_hint')}</p>
           </div>
+          <input
+            id="fan-interval"
+            type="number"
+            class="fan-number"
+            min="5"
+            max="60"
+            bind:value={config.interval_secs}
+            data-testid="fan-interval"
+          />
         </div>
 
-        <!-- Safety Information -->
-        <div class="info-box">
-          <h5>🛡️ Safety Features</h5>
+        <h4 class="fan-subhead">{$t('settings.fan_channels_title')}</h4>
+        <ul class="fan-channels" data-testid="fan-channels">
+          {#each channels as channel (channel.id)}
+            <li class="fan-channel">
+              <div class="fan-channel-head">
+                <span class="fan-channel-name">{channel.name}</span>
+                <span class="fan-channel-mode">{modeLabel(channel.current_mode)}</span>
+              </div>
+              <dl class="fan-stats">
+                <div>
+                  <dt>{$t('settings.fan_stat_speed')}</dt>
+                  <dd>{formatDuty(channel.current_pwm)}</dd>
+                </div>
+                <div>
+                  <dt>{$t('settings.fan_stat_temp')}</dt>
+                  <dd>{formatTemp(channel.current_temp)}</dd>
+                </div>
+                <div>
+                  <dt>{$t('settings.fan_stat_auto')}</dt>
+                  <dd>{channel.supports_auto ? $t('common.yes') : $t('common.no')}</dd>
+                </div>
+              </dl>
+            </li>
+          {/each}
+        </ul>
+
+        <div class="fan-safety">
+          <h4 class="fan-subhead">{$t('settings.fan_safety_title')}</h4>
           <ul>
-            <li>Minimum fan speed: 20% (hardware safety limit)</li>
-            <li>Automatic failsafe: fans restore to auto mode on errors</li>
-            <li>Temperature monitoring: continuous monitoring</li>
-            <li>Hysteresis: prevents rapid speed changes</li>
+            <li>{$t('settings.fan_safety_floor')}</li>
+            <li>{$t('settings.fan_safety_failsafe')}</li>
+            <li>{$t('settings.fan_safety_monitoring')}</li>
+            <li>{$t('settings.fan_safety_hysteresis')}</li>
           </ul>
         </div>
       {/if}
 
-      <!-- Actions -->
-      <div class="card-actions">
-        {#if error}
-          <p class="error">{error}</p>
+      <div class="fan-actions">
+        <button
+          type="button"
+          class={settingsBtnPrimary}
+          onclick={handleSave}
+          disabled={saving || channels.length === 0}
+          data-testid="fan-save"
+        >
+          {saving ? $t('common.saving') : $t('settings.fan_apply')}
+        </button>
+        {#if channels.length > 0}
+          <button
+            type="button"
+            class={settingsBtn}
+            onclick={handleRestoreAuto}
+            disabled={restoring}
+            data-testid="fan-restore-auto"
+          >
+            {$t('settings.fan_restore_auto')}
+          </button>
         {/if}
-
-        <div class="action-buttons">
-          <button
-            class="btn-primary"
-            on:click={handleSave}
-            disabled={saving || channels.length === 0}
-          >
-            {saving ? 'Saving...' : 'Apply Configuration'}
-          </button>
-
-          {#if channels.length > 0}
-            <button
-              class="btn-secondary"
-              on:click={handleRestoreAuto}
-            >
-              Restore Auto Control
-            </button>
-          {/if}
-
-          <button
-            class="btn-secondary"
-            on:click={loadData}
-          >
-            Refresh
-          </button>
-        </div>
+        <button type="button" class={settingsBtn} onclick={load} data-testid="fan-refresh">
+          {$t('common.refresh')}
+        </button>
       </div>
-    </div>
+    {/if}
   {/if}
-</div>
+</SettingsCard>
 
 <style>
-  .settings-card {
-    background: var(--card-bg);
+  .fan-alert {
+    border: 1px solid var(--hv-shell-border);
     border-radius: 8px;
-    padding: 24px;
-    margin-bottom: 16px;
+    padding: 10px 12px;
+    margin-bottom: 12px;
+    font-size: 0.8125rem;
+    line-height: 1.25rem;
   }
 
-  h3 {
-    margin: 0 0 16px 0;
-    font-size: 18px;
-    font-weight: 600;
+  .fan-alert-error {
+    background: var(--hv-error-bg);
+    border-color: var(--hv-error);
+    color: var(--hv-error);
   }
 
-  h4 {
-    margin: 0 0 12px 0;
-    font-size: 14px;
-    font-weight: 600;
-    color: var(--text-secondary);
+  .fan-alert-ok {
+    background: var(--hv-success-bg);
+    border-color: var(--hv-success);
+    color: var(--hv-success);
   }
 
-  h5 {
-    margin: 0 0 8px 0;
-    font-size: 13px;
-    font-weight: 600;
+  .fan-alert-info {
+    background: var(--hv-shell-border-soft);
+    color: var(--hv-shell-text-2);
   }
 
-  .warning,
-  .info {
-    background: var(--warning-bg);
-    border: 1px solid var(--warning-border);
-    border-radius: 4px;
-    padding: 12px;
-    margin-bottom: 16px;
-  }
-
-  .info {
-    background: var(--info-bg);
-    border-color: var(--info-border);
-  }
-
-  .form-section {
-    margin-bottom: 24px;
-    padding-bottom: 24px;
-    border-bottom: 1px solid var(--border-color);
-  }
-
-  .form-section:last-of-type {
-    border-bottom: none;
-  }
-
-  .form-group {
-    margin-bottom: 16px;
-  }
-
-  label {
-    display: block;
-    margin-bottom: 4px;
-    font-size: 14px;
-    font-weight: 500;
-  }
-
-  input[type="number"] {
-    width: 100%;
-    padding: 8px 12px;
-    border: 1px solid var(--border-color);
-    border-radius: 4px;
-    font-size: 14px;
-  }
-
-  .slider {
-    width: 100%;
-    margin-top: 8px;
-  }
-
-  .hint {
-    font-size: 12px;
-    color: var(--text-secondary);
-    margin-top: 4px;
-  }
-
-  .profile-selector {
+  .fan-fieldset {
+    border: 0;
+    margin: 0 0 12px;
+    padding: 0;
     display: grid;
     gap: 8px;
   }
 
-  .profile-option {
+  .fan-profiles {
+    display: grid;
+    gap: 8px;
+    margin-top: 6px;
+  }
+
+  .fan-profile {
     display: flex;
-    align-items: center;
-    gap: 12px;
-    padding: 12px;
-    border: 2px solid var(--border-color);
+    align-items: flex-start;
+    gap: 10px;
+    padding: 10px 12px;
+    border: 1px solid var(--hv-shell-border);
     border-radius: 8px;
     cursor: pointer;
-    transition: all 0.2s;
   }
 
-  .profile-option:hover {
-    border-color: var(--primary-color);
-    background: var(--surface-bg);
+  /* Revealed on keyboard focus too, not only on hover (WCAG 2.2 AA). */
+  .fan-profile:hover,
+  .fan-profile:focus-within {
+    border-color: var(--hv-primary);
+    background: var(--hv-shell-border-soft);
   }
 
-  .profile-option.selected {
-    border-color: var(--primary-color);
-    background: var(--primary-bg-light);
+  .fan-profile.is-selected {
+    border-color: var(--hv-primary);
+    box-shadow: inset 0 0 0 1px var(--hv-primary);
   }
 
-  .profile-option input[type="radio"] {
-    flex-shrink: 0;
+  /* A bare `<input type=radio>` inherits `width: 100%` from base.css, which
+     stretched it across the label (design-system pitfall 6). Pin the box. */
+  .fan-radio {
+    height: 1rem;
+    width: 1rem;
+    flex: none;
+    margin-top: 2px;
+    accent-color: var(--hv-primary);
   }
 
-  .profile-info {
-    display: flex;
-    flex-direction: column;
-    gap: 2px;
-  }
-
-  .profile-label {
+  .fan-profile-label {
+    display: block;
+    font-size: 0.875rem;
     font-weight: 600;
-    font-size: 14px;
+    color: var(--hv-shell-text);
   }
 
-  .profile-description {
-    font-size: 12px;
-    color: var(--text-secondary);
+  .fan-profile-desc {
+    display: block;
+    font-size: 0.75rem;
+    color: var(--hv-shell-text-2);
   }
 
-  .channels-list {
-    display: flex;
-    flex-direction: column;
-    gap: 12px;
+  .fan-slider {
+    width: 220px;
+    accent-color: var(--hv-primary);
   }
 
-  .channel-item {
-    border: 1px solid var(--border-color);
+  .fan-number {
+    width: 84px;
+    border: 1px solid var(--hv-shell-border-strong);
+    border-radius: 6px;
+    padding: 4px 8px;
+    font-size: 0.8125rem;
+    background: var(--hv-shell-surface);
+    color: var(--hv-shell-text);
+  }
+
+  .fan-subhead {
+    margin: 16px 0 8px;
+    font-size: 0.8125rem;
+    font-weight: 600;
+    color: var(--hv-settings-title);
+  }
+
+  .fan-channels {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: grid;
+    gap: 8px;
+  }
+
+  .fan-channel {
+    border: 1px solid var(--hv-shell-border);
     border-radius: 8px;
-    padding: 16px;
+    padding: 10px 12px;
   }
 
-  .channel-header {
+  .fan-channel-head {
     display: flex;
-    justify-content: space-between;
     align-items: center;
-    margin-bottom: 12px;
+    justify-content: space-between;
+    gap: 8px;
+    margin-bottom: 6px;
   }
 
-  .channel-name {
-    display: flex;
-    flex-direction: column;
-    gap: 4px;
+  .fan-channel-name {
+    font-size: 0.8125rem;
+    font-weight: 600;
+    color: var(--hv-shell-text);
   }
 
-  .channel-name strong {
-    font-size: 14px;
+  .fan-channel-mode {
+    font-size: 0.6875rem;
+    padding: 2px 8px;
+    border-radius: 999px;
+    background: var(--hv-shell-border-soft);
+    color: var(--hv-shell-text-2);
   }
 
-  .channel-id {
-    font-size: 12px;
-    color: var(--text-secondary);
-    font-family: monospace;
-  }
-
-  .channel-mode {
-    padding: 4px 12px;
-    background: var(--secondary-bg);
-    border-radius: 12px;
-    font-size: 12px;
-    font-weight: 500;
-  }
-
-  .channel-stats {
+  .fan-stats {
     display: grid;
     grid-template-columns: repeat(3, 1fr);
-    gap: 16px;
+    gap: 8px;
+    margin: 0;
+    font-size: 0.75rem;
   }
 
-  @media (max-width: 768px) {
-    .channel-stats {
+  @media (max-width: 640px) {
+    .fan-stats {
       grid-template-columns: 1fr;
-      gap: 8px;
     }
   }
 
-  .stat {
-    display: flex;
-    justify-content: space-between;
-    font-size: 13px;
+  .fan-stats dt {
+    color: var(--hv-shell-text-3);
   }
 
-  .stat-label {
-    color: var(--text-secondary);
-  }
-
-  .stat-value {
+  .fan-stats dd {
+    margin: 0;
     font-weight: 600;
-    font-family: monospace;
+    font-family: var(--hv-font-mono);
+    color: var(--hv-shell-text);
   }
 
-  .info-box {
-    background: var(--surface-bg);
+  .fan-safety {
+    margin-top: 12px;
+    padding: 10px 12px;
     border-radius: 8px;
-    padding: 16px;
-    margin-top: 24px;
+    background: var(--hv-shell-border-soft);
   }
 
-  .info-box ul {
-    margin: 8px 0 0 20px;
-    padding: 0;
+  .fan-safety ul {
+    margin: 0;
+    padding-left: 18px;
+    font-size: 0.75rem;
+    color: var(--hv-shell-text-2);
   }
 
-  .info-box li {
-    font-size: 13px;
-    margin-bottom: 4px;
-    color: var(--text-secondary);
-  }
-
-  .card-actions {
-    margin-top: 24px;
-    padding-top: 24px;
-    border-top: 1px solid var(--border-color);
-  }
-
-  .action-buttons {
+  .fan-actions {
     display: flex;
-    gap: 8px;
     flex-wrap: wrap;
-  }
-
-  button {
-    padding: 8px 16px;
-    border: none;
-    border-radius: 4px;
-    font-size: 14px;
-    font-weight: 500;
-    cursor: pointer;
-    transition: background-color 0.2s;
-  }
-
-  .btn-primary {
-    background: var(--primary-color);
-    color: white;
-  }
-
-  .btn-primary:hover {
-    background: var(--primary-hover);
-  }
-
-  .btn-primary:disabled {
-    background: var(--disabled-color);
-    cursor: not-allowed;
-  }
-
-  .btn-secondary {
-    background: var(--secondary-color);
-    color: var(--text-primary);
-  }
-
-  .btn-secondary:hover {
-    background: var(--secondary-hover);
-  }
-
-  .error {
-    color: var(--error-color);
-    font-size: 14px;
-    margin-bottom: 12px;
+    gap: 8px;
+    margin-top: 16px;
   }
 </style>

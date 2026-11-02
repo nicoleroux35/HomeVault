@@ -97,17 +97,30 @@ export function updateQuery(query: string, searchIndex: SearchableItem[]) {
 }
 
 /**
- * Merge the cross-root file hits into whatever the local index already found.
+ * How many results the overlay shows in total.
  *
- * The local index (apps, settings, actions) always comes first: it is what the
- * user asked for 99 % of the time, and it answers instantly, so a file hit
- * that had to walk the disk must never push "Settings" off the list. File hits
- * then appear in the provider's own order (exact name → prefix → shortest),
- * deduplicated against the local results by id.
+ * Both the local index (`updateQuery`) and the file merge (`mergeFileHits`)
+ * cap at this, so a query can never produce a list longer than the overlay can
+ * navigate comfortably.
+ */
+export const MAX_RESULTS = 8;
+
+/** Types that answer "where do I go?" — what ⌘K is for. */
+const NAVIGATION_TYPES: ReadonlySet<SearchableItem['type']> = new Set([
+  'app',
+  'setting',
+  'action'
+]);
+
+/**
+ * Merges the file provider's hits into the local results.
  *
- * `onlyIfQuery` guards against a stale answer: an HTTP response that lands
- * after the user typed something else must be dropped, not merged into the
- * new query's results.
+ * **Navigation first, files after.** The local index is the reason ⌘K exists:
+ * with the query `Settings` the old order let host files (`settings.png`,
+ * `Settings.java`, a `settings.gradle.kts` from someone's source tree) fill the
+ * eight visible rows before "Open Settings" was ever reachable with the arrow
+ * keys. Files are still searchable — they simply sit after everything that
+ * navigates, and stop at `MAX_RESULTS`.
  */
 export function mergeFileHits(
   fileHits: SearchableItem[],
@@ -120,9 +133,17 @@ export function mergeFileHits(
     const seen = new Set(state.results.map(item => item.id));
     const local = state.results.filter(item => item.type !== 'file');
     const files = fileHits.filter(item => !seen.has(item.id));
+    const merged = [
+      ...local.filter(item => NAVIGATION_TYPES.has(item.type)),
+      ...files,
+      ...local.filter(item => !NAVIGATION_TYPES.has(item.type))
+    ].slice(0, MAX_RESULTS);
     return {
       ...s,
-      results: [...local, ...files],
+      results: merged,
+      // Keep the selection on a row that still exists; capping the list could
+      // otherwise leave it pointing past the end.
+      selectedIndex: Math.min(s.selectedIndex, Math.max(merged.length - 1, 0)),
       filesLoading: false,
       filesNote: state.filesNote
     };
@@ -183,7 +204,7 @@ function search(query: string, searchIndex: SearchableItem[]): SearchableItem[] 
       const scoreB = calculateScore(b, lowerQuery);
       return scoreB - scoreA;
     })
-    .slice(0, 8);
+    .slice(0, MAX_RESULTS);
 }
 
 /**

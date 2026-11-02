@@ -310,6 +310,17 @@ cards; that anatomy is gone. The stack is now:
    (`ShortcutAddDialog.svelte`), so the launcher only fires a callback and
    closes.
 
+**Settings is a launcher tile too.** It used to live only on the dock and in
+⌘K: the screen that holds every category of server configuration was the one
+app missing from the grid whose entire job is to list the apps. `Desktop.svelte`
+composes it as `settingsTile` and puts it into `allApps` before the Docker
+catalog apps, so it is searchable, has an "All apps" chip that matches
+(`System`), and opens through the same `openApp` path — including
+`focusExistingWindow`, so a second click focuses the open window instead of
+stacking a duplicate. It keeps its pinned dock icon; a pinned dock presence and
+a launcher tile are independent, as they already were for Dashboard, Terminal,
+Docker, Health and Chat.
+
 **The grid is one A→Z list, not category groups.** It used to be ordered by a
 hand-kept `CAT_ORDER`, then alphabetical inside each category, on the reasoning
 that it kept a category's tiles contiguous once a chip was selected. In

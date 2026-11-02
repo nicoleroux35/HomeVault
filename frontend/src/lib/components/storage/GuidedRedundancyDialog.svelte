@@ -1,581 +1,455 @@
+<!-- ========================================================================
+     File          : GuidedRedundancyDialog.svelte
+     Author        : Nicolas Le Roux
+     Created       : 02/11/2026
+     Last modified : 02/11/2026 by Nicolas Le Roux
+     Version       : 1.0.0
+
+     Description:
+       The RAID layout suggestion dialog opened from the Storage screen: one
+       card per layout the attached disks could become, with usable capacity,
+       efficiency, tolerated failures and the risk assessment.
+
+       Rewritten on the shared `Modal` (which traps focus and restores it) and
+       the design tokens. The previous version was a hand-rolled overlay with
+       hardcoded English strings, a native `alert()` for the "not implemented"
+       answer, CSS variables that do not exist in the token set, and a
+       click-only card selection (no keyboard path).
+
+       The Apply button is honest: creating the array from a recommendation is
+       not implemented, and `POST …/apply/{id}` answers `501`. The dialog says
+       so up front instead of letting the click fail.
+
+     Dependencies:
+       - svelte (>= 5), $lib/services/api-phase4, $lib/stores/i18n,
+         $lib/components/theme/{Modal,Button}
+
+     Usage:
+       Opened from routes/Storage.svelte. See docs/guides/guided-redundancy.md.
+     ======================================================================== -->
 <script lang="ts">
-  import { createEventDispatcher } from 'svelte';
+  import { t } from '$lib/stores/i18n';
   import { getRedundancyRecommendations } from '$lib/services/api-phase4';
   import type { LayoutRecommendation, RedundancyLevel } from '$lib/types/phase4';
+  import Modal from '$lib/components/theme/Modal.svelte';
+  import { Button } from '$lib/components/theme';
 
-  export let show = false;
-  export let minRedundancy: RedundancyLevel = 'single';
+  let {
+    open = false,
+    minRedundancy = 'single' as RedundancyLevel,
+    onclose
+  }: {
+    open?: boolean;
+    minRedundancy?: RedundancyLevel;
+    onclose?: () => void;
+  } = $props();
 
-  const dispatch = createEventDispatcher();
+  let recommendations = $state<LayoutRecommendation[]>([]);
+  let loading = $state(true);
+  let error = $state('');
+  let selectedId = $state<string | null>(null);
+  let totalDisks = $state(0);
+  let availableDisks = $state(0);
 
-  let recommendations: LayoutRecommendation[] = [];
-  let loading = true;
-  let error = '';
-  let selectedLayout: LayoutRecommendation | null = null;
-  let totalDisks = 0;
-  let availableDisks = 0;
-
-  $: if (show) {
-    loadRecommendations();
-  }
+  // Load whenever the dialog is opened, not once at mount: the disk inventory
+  // can change between two openings.
+  $effect(() => {
+    if (open) {
+      void loadRecommendations();
+    }
+  });
 
   async function loadRecommendations() {
     loading = true;
     error = '';
-
+    selectedId = null;
     try {
       const response = await getRedundancyRecommendations(minRedundancy);
-      recommendations = response.recommendations;
-      totalDisks = response.total_disks;
-      availableDisks = response.available_disks;
+      recommendations = response.recommendations ?? [];
+      totalDisks = response.total_disks ?? 0;
+      availableDisks = response.available_disks ?? 0;
     } catch (e) {
-      error = e instanceof Error ? e.message : 'Failed to load recommendations';
+      error = e instanceof Error ? e.message : $t('settings.guided_redundancy_load_failed');
     } finally {
       loading = false;
     }
   }
 
   function close() {
-    show = false;
-    dispatch('close');
-  }
-
-  function selectLayout(layout: LayoutRecommendation) {
-    selectedLayout = layout;
-  }
-
-  function applyLayout() {
-    if (!selectedLayout) return;
-
-    alert(
-      'Layout application is not yet implemented.\n\n' +
-      'This feature requires integration with the existing pool creation system.\n\n' +
-      'Use the details shown to manually create the recommended layout via the Storage screen.'
-    );
-
-    close();
+    onclose?.();
   }
 
   function formatBytes(bytes: number): string {
     const units = ['B', 'KB', 'MB', 'GB', 'TB'];
     let size = bytes;
     let unitIndex = 0;
-
     while (size >= 1024 && unitIndex < units.length - 1) {
       size /= 1024;
       unitIndex++;
     }
-
     return `${size.toFixed(1)} ${units[unitIndex]}`;
   }
 
-  function getRiskColor(risk: string): string {
+  function riskTone(risk: string): string {
     switch (risk) {
-      case 'low': return 'success';
-      case 'medium': return 'warning';
-      case 'high': return 'error';
-      default: return 'secondary';
+      case 'low':
+        return 'gr-badge-ok';
+      case 'medium':
+        return 'gr-badge-warn';
+      case 'high':
+        return 'gr-badge-error';
+      default:
+        return 'gr-badge';
     }
   }
 
-  function getRedundancyBadge(redundancy: string): string {
+  function redundancyLabel(redundancy: string): string {
     switch (redundancy) {
-      case 'none': return '⚠️ No Redundancy';
-      case 'single': return '✓ Single Fault Tolerance';
-      case 'double': return '✓✓ Double Fault Tolerance';
-      default: return redundancy;
+      case 'none':
+        return $t('settings.guided_redundancy_failures') + ' : 0';
+      case 'single':
+        return $t('settings.guided_redundancy_failures') + ' : 1';
+      case 'double':
+        return $t('settings.guided_redundancy_failures') + ' : 2';
+      default:
+        return redundancy;
     }
   }
 </script>
 
-{#if show}
-  <div class="modal-overlay" on:click={close}>
-    <div class="modal-dialog" on:click|stopPropagation>
-      <div class="modal-header">
-        <h2>RAID Layout Recommendations</h2>
-        <button class="btn-close" on:click={close}>×</button>
-      </div>
+<Modal
+  open={open}
+  title={$t('settings.guided_redundancy_title')}
+  size="lg"
+  onclose={close}
+>
+  <div class="gr-body">
+    {#if loading}
+      <p class="gr-hint">{$t('settings.guided_redundancy_analyzing')}</p>
+    {:else if error}
+      <div class="gr-alert" role="alert">{error}</div>
+    {:else if recommendations.length === 0}
+      <p class="gr-hint" data-testid="gr-empty">
+        {$t('settings.guided_redundancy_empty')}
+      </p>
+      {#if availableDisks === 0}
+        <p class="gr-hint">{$t('settings.guided_redundancy_all_in_use')}</p>
+      {/if}
+    {:else}
+      <dl class="gr-summary">
+        <div>
+          <dt>{$t('settings.guided_redundancy_total_disks')}</dt>
+          <dd>{totalDisks}</dd>
+        </div>
+        <div>
+          <dt>{$t('settings.guided_redundancy_available')}</dt>
+          <dd>{availableDisks}</dd>
+        </div>
+      </dl>
 
-      <div class="modal-body">
-        {#if loading}
-          <div class="loading">
-            <p>Analyzing disk configuration...</p>
-          </div>
-        {:else if error}
-          <div class="alert alert-error">{error}</div>
-        {:else if recommendations.length === 0}
-          <div class="empty-state">
-            <p>No recommendations available.</p>
-            {#if availableDisks === 0}
-              <p>All disks are currently in use.</p>
-            {:else}
-              <p>Not enough available disks to create a layout with {minRedundancy} redundancy.</p>
-            {/if}
-          </div>
-        {:else}
-          <div class="disk-summary">
-            <div class="summary-item">
-              <span class="summary-label">Total Disks:</span>
-              <span class="summary-value">{totalDisks}</span>
-            </div>
-            <div class="summary-item">
-              <span class="summary-label">Available:</span>
-              <span class="summary-value">{availableDisks}</span>
-            </div>
-          </div>
+      <ul class="gr-list" role="radiogroup" aria-label={$t('settings.guided_redundancy_title')}>
+        {#each recommendations as layout (layout.id)}
+          <li>
+            <!-- A real radio inside the card, so the selection is reachable
+                 by keyboard. The previous version only had an `on:click` on
+                 the container, which mouse and touch could use but a keyboard
+                 could not. -->
+            <label class="gr-card" class:is-selected={selectedId === layout.id}>
+              <input
+                type="radio"
+                class="gr-radio"
+                name="gr-layout"
+                value={layout.id}
+                bind:group={selectedId}
+                data-testid={`gr-select-${layout.id}`}
+              />
+              <span class="min-w-0">
+                <span class="gr-card-head">
+                  <span class="gr-name">{layout.name}</span>
+                  <span class="gr-level">RAID {layout.level}</span>
+                </span>
+                <span class="gr-desc">{layout.description}</span>
 
-          <div class="recommendations-list">
-            {#each recommendations as layout}
-              <div
-                class="recommendation-card"
-                class:selected={selectedLayout?.id === layout.id}
-                on:click={() => selectLayout(layout)}
-              >
-                <div class="card-header">
-                  <div class="layout-name">
-                    <h3>{layout.name}</h3>
-                    <span class="layout-level">RAID {layout.level}</span>
-                  </div>
-                  <div class="score-badge">
-                    Score: {layout.score}
-                  </div>
-                </div>
-
-                <p class="layout-description">{layout.description}</p>
-
-                <div class="layout-stats">
-                  <div class="stat">
-                    <span class="stat-label">Usable:</span>
-                    <span class="stat-value">{formatBytes(layout.usable_bytes)}</span>
-                  </div>
-                  <div class="stat">
-                    <span class="stat-label">Efficiency:</span>
-                    <span class="stat-value">{layout.efficiency_pct.toFixed(1)}%</span>
-                  </div>
-                  <div class="stat">
-                    <span class="stat-label">Failures Tolerated:</span>
-                    <span class="stat-value">{layout.risk.failure_tolerance}</span>
-                  </div>
-                </div>
-
-                <div class="badges">
-                  <span class="badge badge-redundancy">
-                    {getRedundancyBadge(layout.redundancy)}
+                <span class="gr-stats">
+                  <span>
+                    <span class="gr-stat-label">{$t('settings.guided_redundancy_usable')}</span>
+                    <span class="gr-stat-value">{formatBytes(layout.usable_bytes)}</span>
                   </span>
-                  <span class="badge badge-{getRiskColor(layout.risk.data_loss_risk)}">
-                    {layout.risk.data_loss_risk.toUpperCase()} Risk
+                  <span>
+                    <span class="gr-stat-label">{$t('settings.guided_redundancy_efficiency')}</span>
+                    <span class="gr-stat-value">{layout.efficiency_pct.toFixed(1)}%</span>
                   </span>
-                  <span class="badge badge-secondary">
-                    {layout.technology.toUpperCase()}
+                  <span>
+                    <span class="gr-stat-label">{$t('settings.guided_redundancy_failures')}</span>
+                    <span class="gr-stat-value">{layout.risk.failure_tolerance}</span>
                   </span>
-                </div>
+                </span>
+
+                <span class="gr-badges">
+                  <span class="gr-badge">{redundancyLabel(layout.redundancy)}</span>
+                  <span class={riskTone(layout.risk.data_loss_risk)}>
+                    {$t('settings.guided_redundancy_risk')} : {layout.risk.data_loss_risk}
+                  </span>
+                  <span class="gr-badge">{layout.technology}</span>
+                </span>
 
                 {#if layout.warnings.length > 0}
-                  <div class="warnings">
+                  <span class="gr-warnings">
                     {#each layout.warnings as warning}
-                      <p class="warning">⚠️ {warning}</p>
+                      <span class="gr-warning">{warning}</span>
                     {/each}
-                  </div>
+                  </span>
                 {/if}
+              </span>
+            </label>
 
-                {#if selectedLayout?.id === layout.id}
-                  <details class="layout-details">
-                    <summary>View Details</summary>
+            {#if selectedId === layout.id}
+              <div class="gr-details">
+                <h4 class="gr-detail-title">{$t('settings.guided_redundancy_risk')}</h4>
+                <p class="gr-desc">{layout.risk.explanation}</p>
+                <p class="gr-desc">
+                  {$t('settings.guided_redundancy_rebuild')}: {layout.risk.rebuild_time.replace(
+                    '_',
+                    ' '
+                  )}
+                </p>
 
-                    <div class="detail-section">
-                      <h4>Risk Assessment</h4>
-                      <p>{layout.risk.explanation}</p>
-                      <p class="detail-item">
-                        <strong>Rebuild Time:</strong>
-                        {layout.risk.rebuild_time.replace('_', ' ')}
-                      </p>
-                    </div>
-
-                    <div class="detail-section">
-                      <h4>Disk Layout</h4>
-                      {#each layout.layout.groups as group, i}
-                        <div class="disk-group">
-                          <strong>Group {i + 1} ({group.role}):</strong>
-                          <ul>
-                            {#each group.disks as disk}
-                              <li>{disk}</li>
-                            {/each}
-                          </ul>
-                        </div>
-                      {/each}
-                      {#if layout.layout.metadata_bytes > 0}
-                        <p class="detail-item">
-                          <strong>Metadata/Parity:</strong>
-                          {formatBytes(layout.layout.metadata_bytes)}
-                        </p>
-                      {/if}
-                    </div>
-                  </details>
+                <h4 class="gr-detail-title">{$t('settings.guided_redundancy_layout')}</h4>
+                {#each layout.layout.groups as group, i (group.role + i)}
+                  <p class="gr-detail-line">
+                    <strong>{group.role}</strong> — {group.disks.join(', ')}
+                  </p>
+                {/each}
+                {#if layout.layout.metadata_bytes > 0}
+                  <p class="gr-detail-line">
+                    <strong>{$t('settings.guided_redundancy_parity')}</strong>
+                    — {formatBytes(layout.layout.metadata_bytes)}
+                  </p>
                 {/if}
               </div>
-            {/each}
-          </div>
-        {/if}
-      </div>
+            {/if}
+          </li>
+        {/each}
+      </ul>
 
-      <div class="modal-footer">
-        <button class="btn-secondary" on:click={close}>Cancel</button>
-        <button
-          class="btn-primary"
-          on:click={applyLayout}
-          disabled={!selectedLayout}
-        >
-          Apply Selected Layout
-        </button>
-      </div>
+      <p class="gr-hint" data-testid="gr-apply-unavailable">
+        {$t('settings.guided_redundancy.apply_unavailable')}
+      </p>
+    {/if}
+
+    <div class="gr-actions">
+      <Button variant="ghost" onclick={close}>{$t('common.close')}</Button>
+      <Button
+        variant="primary"
+        onclick={close}
+        disabled={!selectedId || recommendations.length === 0}
+        data-testid="gr-apply"
+      >
+        {$t('settings.guided_redundancy_apply')}
+      </Button>
     </div>
   </div>
-{/if}
+</Modal>
 
 <style>
-  .modal-overlay {
-    position: fixed;
-    top: 0;
-    left: 0;
-    right: 0;
-    bottom: 0;
-    background: rgba(0, 0, 0, 0.5);
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    z-index: 1000;
-    padding: 20px;
-  }
-
-  .modal-dialog {
-    background: var(--card-bg);
-    border-radius: 12px;
-    width: 100%;
-    max-width: 900px;
-    max-height: 90vh;
+  .gr-body {
     display: flex;
     flex-direction: column;
-    box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
-  }
-
-  .modal-header {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    padding: 24px;
-    border-bottom: 1px solid var(--border-color);
-  }
-
-  .modal-header h2 {
-    margin: 0;
-    font-size: 20px;
-    font-weight: 600;
-  }
-
-  .btn-close {
-    background: none;
-    border: none;
-    font-size: 28px;
-    cursor: pointer;
-    color: var(--text-secondary);
-    padding: 0;
-    width: 32px;
-    height: 32px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-  }
-
-  .btn-close:hover {
-    color: var(--text-primary);
-  }
-
-  .modal-body {
-    padding: 24px;
-    overflow-y: auto;
-    flex: 1;
-  }
-
-  .modal-footer {
-    display: flex;
-    justify-content: flex-end;
     gap: 12px;
-    padding: 20px 24px;
-    border-top: 1px solid var(--border-color);
+    color: var(--hv-shell-text);
   }
 
-  .loading {
-    text-align: center;
-    padding: 48px 24px;
-    color: var(--text-secondary);
-  }
-
-  .alert {
-    padding: 12px 16px;
-    border-radius: 8px;
-    margin-bottom: 16px;
-  }
-
-  .alert-error {
-    background: var(--error-bg);
-    border: 1px solid var(--error-border);
-    color: var(--error-color);
-  }
-
-  .empty-state {
-    text-align: center;
-    padding: 48px 24px;
-    color: var(--text-secondary);
-  }
-
-  .disk-summary {
-    display: flex;
-    gap: 24px;
-    padding: 16px;
-    background: var(--surface-bg);
-    border-radius: 8px;
-    margin-bottom: 24px;
-  }
-
-  .summary-item {
-    display: flex;
-    flex-direction: column;
-    gap: 4px;
-  }
-
-  .summary-label {
-    font-size: 12px;
-    color: var(--text-secondary);
-  }
-
-  .summary-value {
-    font-size: 20px;
-    font-weight: 600;
-  }
-
-  .recommendations-list {
-    display: flex;
-    flex-direction: column;
-    gap: 16px;
-  }
-
-  .recommendation-card {
-    border: 2px solid var(--border-color);
-    border-radius: 12px;
-    padding: 20px;
-    cursor: pointer;
-    transition: all 0.2s;
-  }
-
-  .recommendation-card:hover {
-    border-color: var(--primary-color);
-    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
-  }
-
-  .recommendation-card.selected {
-    border-color: var(--primary-color);
-    background: var(--primary-bg-light);
-  }
-
-  .card-header {
-    display: flex;
-    justify-content: space-between;
-    align-items: flex-start;
-    margin-bottom: 12px;
-  }
-
-  .layout-name {
-    display: flex;
-    flex-direction: column;
-    gap: 4px;
-  }
-
-  .layout-name h3 {
+  .gr-hint {
     margin: 0;
-    font-size: 16px;
-    font-weight: 600;
+    font-size: 0.75rem;
+    color: var(--hv-shell-text-2);
   }
 
-  .layout-level {
-    font-size: 12px;
-    color: var(--text-secondary);
-    font-weight: 500;
+  .gr-alert {
+    border: 1px solid var(--hv-error);
+    background: var(--hv-error-bg);
+    color: var(--hv-error);
+    border-radius: 8px;
+    padding: 10px 12px;
+    font-size: 0.8125rem;
   }
 
-  .score-badge {
-    padding: 6px 12px;
-    background: var(--primary-color);
-    color: white;
-    border-radius: 12px;
-    font-size: 13px;
-    font-weight: 600;
-  }
-
-  .layout-description {
-    margin: 0 0 16px 0;
-    font-size: 14px;
-    color: var(--text-secondary);
-  }
-
-  .layout-stats {
-    display: grid;
-    grid-template-columns: repeat(3, 1fr);
-    gap: 16px;
-    margin-bottom: 16px;
-  }
-
-  @media (max-width: 640px) {
-    .layout-stats {
-      grid-template-columns: 1fr;
-      gap: 8px;
-    }
-  }
-
-  .stat {
+  .gr-summary {
     display: flex;
-    justify-content: space-between;
-    font-size: 13px;
+    gap: 20px;
+    margin: 0;
+    font-size: 0.8125rem;
   }
 
-  .stat-label {
-    color: var(--text-secondary);
+  .gr-summary dt {
+    color: var(--hv-shell-text-3);
   }
 
-  .stat-value {
+  .gr-summary dd {
+    margin: 0;
     font-weight: 600;
+    font-family: var(--hv-font-mono);
   }
 
-  .badges {
+  .gr-list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: grid;
+    gap: 10px;
+    max-height: 55vh;
+    overflow-y: auto;
+  }
+
+  .gr-card {
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+    border: 1px solid var(--hv-shell-border);
+    border-radius: 10px;
+    padding: 12px;
+    cursor: pointer;
+  }
+
+  /* Revealed on keyboard focus too, not only on hover (WCAG 2.2 AA). */
+  .gr-card:hover,
+  .gr-card:focus-within {
+    border-color: var(--hv-primary);
+    background: var(--hv-shell-border-soft);
+  }
+
+  .gr-card.is-selected {
+    border-color: var(--hv-primary);
+    box-shadow: inset 0 0 0 1px var(--hv-primary);
+  }
+
+  /* A bare radio inherits `width: 100%` from base.css (design-system
+     pitfall 6). */
+  .gr-radio {
+    height: 1rem;
+    width: 1rem;
+    flex: none;
+    margin-top: 2px;
+    accent-color: var(--hv-primary);
+  }
+
+  .gr-card-head {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 8px;
+  }
+
+  .gr-name {
+    font-size: 0.875rem;
+    font-weight: 600;
+    color: var(--hv-shell-text);
+  }
+
+  .gr-level {
+    font-size: 0.6875rem;
+    color: var(--hv-shell-text-3);
+    font-family: var(--hv-font-mono);
+  }
+
+  .gr-desc {
+    display: block;
+    margin: 4px 0 0;
+    font-size: 0.75rem;
+    color: var(--hv-shell-text-2);
+  }
+
+  .gr-stats {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 8px;
+    margin-top: 8px;
+  }
+
+  .gr-stat-label {
+    display: block;
+    font-size: 0.6875rem;
+    color: var(--hv-shell-text-3);
+  }
+
+  .gr-stat-value {
+    display: block;
+    font-size: 0.75rem;
+    font-weight: 600;
+    font-family: var(--hv-font-mono);
+    color: var(--hv-shell-text);
+  }
+
+  .gr-badges {
     display: flex;
     flex-wrap: wrap;
+    gap: 6px;
+    margin-top: 8px;
+  }
+
+  .gr-badge,
+  .gr-badge-ok,
+  .gr-badge-warn,
+  .gr-badge-error {
+    font-size: 0.6875rem;
+    padding: 2px 8px;
+    border-radius: 999px;
+    background: var(--hv-shell-border-soft);
+    color: var(--hv-shell-text-2);
+  }
+
+  .gr-badge-ok {
+    background: var(--hv-success-bg);
+    color: var(--hv-success);
+  }
+
+  .gr-badge-warn {
+    background: var(--hv-shell-border-soft);
+    color: var(--hv-shell-text);
+  }
+
+  .gr-badge-error {
+    background: var(--hv-error-bg);
+    color: var(--hv-error);
+  }
+
+  .gr-warnings {
+    display: block;
+    margin-top: 8px;
+  }
+
+  .gr-warning {
+    display: block;
+    font-size: 0.75rem;
+    color: var(--hv-error);
+  }
+
+  .gr-details {
+    border: 1px solid var(--hv-shell-border);
+    border-top: 0;
+    border-radius: 0 0 10px 10px;
+    padding: 10px 12px;
+    background: var(--hv-shell-border-soft);
+  }
+
+  .gr-detail-title {
+    margin: 8px 0 4px;
+    font-size: 0.75rem;
+    font-weight: 600;
+    color: var(--hv-settings-title);
+  }
+
+  .gr-detail-line {
+    margin: 2px 0;
+    font-size: 0.75rem;
+    color: var(--hv-shell-text-2);
+    overflow-wrap: anywhere;
+  }
+
+  .gr-actions {
+    display: flex;
+    justify-content: flex-end;
     gap: 8px;
-    margin-bottom: 12px;
-  }
-
-  .badge {
-    padding: 4px 10px;
-    border-radius: 12px;
-    font-size: 11px;
-    font-weight: 600;
-    text-transform: uppercase;
-  }
-
-  .badge-redundancy {
-    background: var(--info-bg);
-    color: var(--info-color);
-  }
-
-  .badge-success {
-    background: var(--success-bg);
-    color: var(--success-color);
-  }
-
-  .badge-warning {
-    background: var(--warning-bg);
-    color: var(--warning-color);
-  }
-
-  .badge-error {
-    background: var(--error-bg);
-    color: var(--error-color);
-  }
-
-  .badge-secondary {
-    background: var(--secondary-bg);
-    color: var(--text-secondary);
-  }
-
-  .warnings {
-    margin-top: 12px;
-  }
-
-  .warning {
-    font-size: 13px;
-    color: var(--warning-color);
-    margin: 4px 0;
-  }
-
-  .layout-details {
-    margin-top: 16px;
-    padding-top: 16px;
-    border-top: 1px solid var(--border-color);
-  }
-
-  .layout-details summary {
-    cursor: pointer;
-    font-weight: 600;
-    font-size: 14px;
-    margin-bottom: 12px;
-  }
-
-  .detail-section {
-    margin-bottom: 16px;
-  }
-
-  .detail-section h4 {
-    margin: 0 0 8px 0;
-    font-size: 13px;
-    font-weight: 600;
-    color: var(--text-secondary);
-  }
-
-  .detail-section p {
-    margin: 4px 0;
-    font-size: 13px;
-  }
-
-  .detail-item {
-    margin: 8px 0;
-  }
-
-  .disk-group {
-    margin: 12px 0;
-    padding: 12px;
-    background: var(--surface-bg);
-    border-radius: 4px;
-  }
-
-  .disk-group ul {
-    margin: 8px 0 0 20px;
-    padding: 0;
-  }
-
-  .disk-group li {
-    font-size: 12px;
-    font-family: monospace;
-    margin: 4px 0;
-  }
-
-  button {
-    padding: 10px 20px;
-    border: none;
-    border-radius: 6px;
-    font-size: 14px;
-    font-weight: 500;
-    cursor: pointer;
-    transition: background-color 0.2s;
-  }
-
-  .btn-primary {
-    background: var(--primary-color);
-    color: white;
-  }
-
-  .btn-primary:hover {
-    background: var(--primary-hover);
-  }
-
-  .btn-primary:disabled {
-    background: var(--disabled-color);
-    cursor: not-allowed;
-  }
-
-  .btn-secondary {
-    background: var(--secondary-color);
-    color: var(--text-primary);
-  }
-
-  .btn-secondary:hover {
-    background: var(--secondary-hover);
+    margin-top: 4px;
   }
 </style>

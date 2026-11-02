@@ -27,6 +27,7 @@
     children,
     footer,
     class: klass = '',
+    'data-testid': testId = 'settings-card',
   }: {
     title: string;
     subtitle?: string;
@@ -34,6 +35,10 @@
     footer?: Snippet;
     /** Extra classes merged onto the card root (e.g. `mt-3` spacing). */
     class?: string;
+    /** Root test hook. Defaults to `settings-card`; a specific card passes its
+     *  own so a spec can scope to it when several cards share the Settings
+     *  window. */
+    'data-testid'?: string;
   } = $props();
 </script>
 
@@ -53,7 +58,7 @@
   Inner content is built by the caller out of `vocabulary.ts`'s row/button
   strings, so a card here and a card in `Settings.svelte` cannot drift.
 -->
-<div class={cn(settingsCard, 'settings-card', klass)} data-testid="settings-card">
+<div class={cn(settingsCard, 'settings-card', klass)} data-testid={testId}>
   <div class="settings-card-header py-2.5 border-b-[1.45px] border-[var(--hv-settings-hairline)]">
     <!-- The `!` flags are load-bearing — `styles/theme/base.css` sets an
          unlayered `h2 { font-size: … }`, which outranks every layered

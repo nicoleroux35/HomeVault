@@ -133,10 +133,10 @@ pub enum RiskLevel {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum RebuildTime {
-    Fast,      // < 2 hours
-    Moderate,  // 2-8 hours
-    Slow,      // 8-24 hours
-    VerySlow,  // > 24 hours
+    Fast,     // < 2 hours
+    Moderate, // 2-8 hours
+    Slow,     // 8-24 hours
+    VerySlow, // > 24 hours
 }
 
 /// Disk layout specification
@@ -188,7 +188,7 @@ impl GuidedRedundancyService {
                 if min_redundancy == RedundancyLevel::None {
                     recommendations.push(Self::single_disk_layout(&sorted_disks));
                 }
-            },
+            }
             2 => {
                 // RAID 1 (mirror)
                 if min_redundancy <= RedundancyLevel::Single {
@@ -199,7 +199,7 @@ impl GuidedRedundancyService {
                 if min_redundancy == RedundancyLevel::None {
                     recommendations.push(Self::raid0_layout(&sorted_disks));
                 }
-            },
+            }
             3 => {
                 // RAID 5 (recommended)
                 if min_redundancy <= RedundancyLevel::Single {
@@ -210,7 +210,7 @@ impl GuidedRedundancyService {
                 if min_redundancy <= RedundancyLevel::Single {
                     recommendations.push(Self::raid1_with_spare_layout(&sorted_disks));
                 }
-            },
+            }
             _ => {
                 // 4+ disks
 
@@ -474,7 +474,8 @@ impl GuidedRedundancyService {
                 data_loss_risk: RiskLevel::Low,
                 rebuild_time: RebuildTime::Moderate,
                 failure_tolerance: 2,
-                explanation: "Can survive 1 failure with automatic rebuild, then 1 more".to_string(),
+                explanation: "Can survive 1 failure with automatic rebuild, then 1 more"
+                    .to_string(),
             },
             layout: DiskLayout {
                 groups: vec![
@@ -525,7 +526,8 @@ impl GuidedRedundancyService {
         // Warn about mixed sizes
         let largest = disks.iter().map(|d| d.size_bytes).max().unwrap();
         if largest > smallest_size * 11 / 10 {
-            let wasted_tb = ((largest - smallest_size) * disks.len() as u64) as f64 / 1_000_000_000_000.0;
+            let wasted_tb =
+                ((largest - smallest_size) * disks.len() as u64) as f64 / 1_000_000_000_000.0;
             warnings.push(format!(
                 "Mixed disk sizes: {:.1} TB will be unused",
                 wasted_tb

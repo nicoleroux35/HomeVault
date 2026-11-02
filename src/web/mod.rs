@@ -1510,13 +1510,25 @@ pub fn create_app(state: AppStateArc) -> Router {
         // Phase 4 — USB Copy
         .route("/api/usb-copy/profiles", get(handle_profiles_list))
         .route("/api/usb-copy/profiles", post(handle_profile_create))
-        .route("/api/usb-copy/profiles/:id", put(handle_profile_update))
-        .route("/api/usb-copy/profiles/:id", axum::routing::delete(handle_profile_delete))
+        .route(
+            "/api/usb-copy/profiles/{id}",
+            put(handle_profile_update),
+        )
+        .route(
+            "/api/usb-copy/profiles/{id}",
+            axum::routing::delete(handle_profile_delete),
+        )
         .route("/api/usb-copy/devices", get(handle_devices_list))
-        .route("/api/usb-copy/execute/:profile_id", post(handle_execute))
+        .route(
+            "/api/usb-copy/execute/{profile_id}",
+            post(handle_execute),
+        )
         // Phase 4 — DHCP Server
         .route("/api/network/dhcp-server", get(handle_dhcp_get))
-        .route("/api/network/dhcp-server", put(handle_dhcp_update))
+        .route(
+            "/api/network/dhcp-server",
+            put(handle_dhcp_update),
+        )
         .route("/api/network/dhcp-server/start", post(handle_dhcp_start))
         .route("/api/network/dhcp-server/stop", post(handle_dhcp_stop))
         .route("/api/network/dhcp-server/leases", get(handle_leases))
@@ -1527,7 +1539,7 @@ pub fn create_app(state: AppStateArc) -> Router {
         .route("/api/system/fans/restore-auto", post(handle_restore_auto))
         // Phase 4 — Guided Redundancy
         .route("/api/storage/guided-redundancy", get(handle_recommend))
-        .route("/api/storage/guided-redundancy/apply/:id", post(handle_apply))
+        .route("/api/storage/guided-redundancy/apply/{id}", post(handle_apply))
         // App-proxy auth entry (browser navigation, cookie-authenticated):
         // mints the app-scoped session and redirects to the app origin.
         .route("/app-auth", get(handle_app_auth))

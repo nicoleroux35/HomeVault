@@ -1284,7 +1284,7 @@
         {#if virtualDisks.length === 0}
           <EmptyState data-testid="storage-empty" title={$t('storage.no_virtual_disks')} description={$t('storage.no_virtual_disks_hint')}>
             {#snippet iconSnippet()}<IconStack size={32} stroke={1.8} />{/snippet}
-            {#snippet actionsSnippet()}
+            {#snippet action()}
               {#if isAdmin}
                 <Button variant="primary" onclick={() => showGuidedRedundancy = true}>
                   <IconTool size={16} /> {$t('storage.guided_redundancy')}
@@ -2005,4 +2005,7 @@
 </Modal>
 
 <!-- Phase 4: Guided Redundancy Dialog -->
-<GuidedRedundancyDialog bind:open={showGuidedRedundancy} />
+<GuidedRedundancyDialog
+  open={showGuidedRedundancy}
+  onclose={() => (showGuidedRedundancy = false)}
+/>

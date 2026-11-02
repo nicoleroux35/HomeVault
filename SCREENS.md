@@ -866,6 +866,90 @@ limits are re-checked on load and on each sign-in; a corrupt `directory.json`,
 
 ---
 
+## 35. USB one-touch copy (USB Copy)
+
+**Screen:** desktop app **USB Copy** → `frontend/src/routes/UsbCopy.svelte`
+
+**Features:**
+- **Copy rules** — name, device (chosen from the attached devices, matched by
+  UUID), source folder inside the device, destination folder on the appliance,
+  per-rule "check every copied file" and "eject when done", active flag
+- **Copy now** per rule; an inactive rule cannot be run
+- **Attached devices** — label, size, UUID, mounted/not-mounted state and which
+  rule each device matched
+- Empty states that name the next action ("No copy rule yet. Create one to get
+  started.")
+
+**Invariants:** reads need a session, every mutation is admin-only; the path id
+wins over the body id; a copy is scheduled (the response returns before it
+finishes) and the task writes `last_run`/`last_status` itself; a pool member is
+refused as a source; `lsblk`, the array probes and the mount/unmount/power-off
+all carry deadlines.
+
+**Guides:** [guides/usb-copy.md](./guides/usb-copy.md)
+
+---
+
+## 36. Guided redundancy (RAID layout suggestions)
+
+**Screen:** Storage → **Guided redundancy** dialog →
+`frontend/src/lib/components/storage/GuidedRedundancyDialog.svelte`
+
+**Features:**
+- One card per layout the attached disks allow, each with usable capacity,
+  efficiency, tolerated failures, risk level and technology
+- Expanding a card shows the risk explanation, rebuild time, disk grouping and
+  parity overhead
+- Disk/available summary at the top; filtering by minimum redundancy
+
+**Invariants:** reading needs a session, `apply` is admin-only; every layout id
+is stable (`raid0`, `raid1`, `raid5`, `raid6`, `raid10`, `raid1_spare`,
+`single`); RAID 0 and RAID 5 are never offered together; safety outweighs raw
+capacity in the ranking; in-use disks are excluded; **creating the array is not
+implemented** — `apply` answers `501` and the dialog says so before the click.
+
+**Guides:** [guides/guided-redundancy.md](./guides/guided-redundancy.md)
+
+---
+
+## Settings cards: DHCP server, fan control, UPS server mode
+
+These three live inside **Settings** (screen 27) rather than as desktop apps.
+
+### DHCP server (Settings → Network)
+
+`frontend/src/lib/components/settings/DhcpServerCard.svelte` — DHCP/TFTP
+switches, interface, address range, netmask, gateway, lease time, static
+reservations (add/remove), TFTP root and PXE boot file, live server state, the
+active lease table, and a focus-trapping confirmation before turning either
+server on. A missing `dnsmasq` is reported in place, with the package to
+install. **Guides:** [guides/dhcp.md](./guides/dhcp.md)
+
+### Fan control (Settings → Hardware)
+
+`frontend/src/lib/components/settings/FanControlCard.svelte` — the detected
+hwmon channels with speed, temperature and firmware-control support; the
+profile picker (automatic / quiet / balanced / performance / fixed speed); the
+fixed-speed slider floored at 20 %; the check interval; and the four stated
+safeguards. A laptop reports that the embedded controller owns the fan and
+offers nothing. **Guides:** [guides/fan-control.md](./guides/fan-control.md)
+
+### UPS server mode (Settings → Hardware)
+
+`frontend/src/lib/components/settings/UpsServerCard.svelte` — the enable
+switch, bind interface/port/max clients, the per-machine allowlist (name,
+address, username, "may shut this appliance down"), the five-stage shutdown
+policy with a standing note that two stages are **not available** in this build,
+and the daemon state with start/stop. **Guides:**
+[guides/ups-server.md](./guides/ups-server.md)
+
+**Shared invariants for all three:** reads need a session, every mutation is
+admin-only, and the guard runs **before** the body is deserialized so an
+unauthenticated caller always gets `401` and never a `422` that echoes the
+schema.
+
+---
+
 ## Summary by category
 
 | Category | Number of screens |
@@ -873,10 +957,10 @@ limits are re-checked on load and on each sign-in; a corrupt `directory.json`,
 | Authentication / Setup | 2 (Login, Setup Wizard) |
 | Desktop | 1 (Desktop + 11 floating widgets + search + notifications) |
 | System | 10 (Dashboard, Users, Quotas, Groups, My account, Terminal, Virtual Machines, Scheduled Tasks, Widgets, Directory sign-in) |
-| Storage | 5 (Storage, RAID, Explorer, Backup, iSCSI — Shares ∈ Storage on the desktop registry side, can be opened via Explorer) |
+| Storage | 6 (Storage, RAID, Explorer, Backup, iSCSI, USB Copy — Shares ∈ Storage on the desktop registry side, can be opened via Explorer) |
 | Network | 5 (Network, VPN, Cloud Sync, Syncthing, Traffic control) + 1 (Shares) |
 | Monitoring | 3 (Health, System journal, Metrics) |
 | Productivity | 2 (AI Assistant, Downloader) |
 | Infrastructure | 2 (Docker, Rescue) |
-| Configuration | 1 (Settings — 8 categories) |
-| **Total** | **36 main screens** (= the 31 desktop apps + Widgets editor + Login + Setup Wizard + Desktop + the public share page) |
+| Configuration | 1 (Settings — 8 categories, incl. the DHCP server, fan control and UPS server cards) |
+| **Total** | **37 main screens** (= the 32 desktop apps + Widgets editor + Login + Setup Wizard + Desktop + the public share page) |

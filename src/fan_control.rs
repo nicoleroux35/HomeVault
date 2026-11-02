@@ -29,6 +29,11 @@ const HWMON_BASE: &str = "/sys/class/hwmon";
 const MIN_SAFE_PWM: u8 = 51; // ~20% duty cycle (0-255 scale)
 const HYSTERESIS_TEMP: i32 = 2; // 2°C hysteresis
 
+/// Hard floor as a percentage duty (0-100), derived once from the raw PWM
+/// floor. Kept as `u32` so the multiply in the other direction cannot overflow
+/// `u8`: `MIN_SAFE_PWM * 100` is 5100, which does not fit in a byte.
+const MIN_SAFE_DUTY_PERCENT: u8 = (MIN_SAFE_PWM as u32 * 100 / 255) as u8;
+
 /// Fan control profile
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "lowercase")]
@@ -174,10 +179,12 @@ impl FanControlService {
                 };
 
                 // Get device name
-                let name = Self::read_device_name(&hwmon_path).await
+                let name = Self::read_device_name(&hwmon_path)
+                    .await
                     .unwrap_or_else(|| format!("Fan {}", pwm_num));
 
-                let hwmon_name = hwmon_path.file_name()
+                let hwmon_name = hwmon_path
+                    .file_name()
                     .and_then(|n| n.to_str())
                     .unwrap_or("unknown");
 
@@ -213,7 +220,8 @@ impl FanControlService {
             .await
             .map_err(|e| format!("failed to read PWM: {}", e))?;
 
-        content.trim()
+        content
+            .trim()
             .parse::<u8>()
             .map_err(|e| format!("invalid PWM value: {}", e))
     }
@@ -224,7 +232,8 @@ impl FanControlService {
             .await
             .map_err(|e| format!("failed to read temp: {}", e))?;
 
-        content.trim()
+        content
+            .trim()
             .parse::<i32>()
             .map_err(|e| format!("invalid temp value: {}", e))
     }
@@ -255,28 +264,82 @@ impl FanControlService {
         match profile {
             FanProfile::Auto => vec![], // Let firmware handle
             FanProfile::Quiet => vec![
-                CurvePoint { temp_c: 0, duty: 20 },
-                CurvePoint { temp_c: 40, duty: 30 },
-                CurvePoint { temp_c: 50, duty: 40 },
-                CurvePoint { temp_c: 60, duty: 60 },
-                CurvePoint { temp_c: 70, duty: 80 },
-                CurvePoint { temp_c: 80, duty: 100 },
+                CurvePoint {
+                    temp_c: 0,
+                    duty: 20,
+                },
+                CurvePoint {
+                    temp_c: 40,
+                    duty: 30,
+                },
+                CurvePoint {
+                    temp_c: 50,
+                    duty: 40,
+                },
+                CurvePoint {
+                    temp_c: 60,
+                    duty: 60,
+                },
+                CurvePoint {
+                    temp_c: 70,
+                    duty: 80,
+                },
+                CurvePoint {
+                    temp_c: 80,
+                    duty: 100,
+                },
             ],
             FanProfile::Balanced => vec![
-                CurvePoint { temp_c: 0, duty: 25 },
-                CurvePoint { temp_c: 40, duty: 40 },
-                CurvePoint { temp_c: 50, duty: 50 },
-                CurvePoint { temp_c: 60, duty: 70 },
-                CurvePoint { temp_c: 70, duty: 90 },
-                CurvePoint { temp_c: 80, duty: 100 },
+                CurvePoint {
+                    temp_c: 0,
+                    duty: 25,
+                },
+                CurvePoint {
+                    temp_c: 40,
+                    duty: 40,
+                },
+                CurvePoint {
+                    temp_c: 50,
+                    duty: 50,
+                },
+                CurvePoint {
+                    temp_c: 60,
+                    duty: 70,
+                },
+                CurvePoint {
+                    temp_c: 70,
+                    duty: 90,
+                },
+                CurvePoint {
+                    temp_c: 80,
+                    duty: 100,
+                },
             ],
             FanProfile::Performance => vec![
-                CurvePoint { temp_c: 0, duty: 40 },
-                CurvePoint { temp_c: 40, duty: 60 },
-                CurvePoint { temp_c: 50, duty: 75 },
-                CurvePoint { temp_c: 60, duty: 85 },
-                CurvePoint { temp_c: 70, duty: 100 },
-                CurvePoint { temp_c: 80, duty: 100 },
+                CurvePoint {
+                    temp_c: 0,
+                    duty: 40,
+                },
+                CurvePoint {
+                    temp_c: 40,
+                    duty: 60,
+                },
+                CurvePoint {
+                    temp_c: 50,
+                    duty: 75,
+                },
+                CurvePoint {
+                    temp_c: 60,
+                    duty: 85,
+                },
+                CurvePoint {
+                    temp_c: 70,
+                    duty: 100,
+                },
+                CurvePoint {
+                    temp_c: 80,
+                    duty: 100,
+                },
             ],
             FanProfile::Manual => vec![], // Fixed duty
         }
@@ -316,7 +379,7 @@ impl FanControlService {
         }
 
         // Enforce minimum safe speed
-        duty.max(MIN_SAFE_PWM * 100 / 255)
+        duty.max(MIN_SAFE_DUTY_PERCENT)
     }
 
     /// Set PWM mode (0=full, 1=manual, 2=auto)
@@ -328,7 +391,9 @@ impl FanControlService {
             return Ok(()); // No-op for manual-only channels
         }
 
-        let enable_path = channel.hwmon_path.join(format!("pwm{}_enable", channel.pwm_num));
+        let enable_path = channel
+            .hwmon_path
+            .join(format!("pwm{}_enable", channel.pwm_num));
 
         fs::write(&enable_path, mode.to_string())
             .await
@@ -360,7 +425,8 @@ impl FanControlService {
 
         for channel in &channels {
             // Determine profile for this channel
-            let profile = config.channel_overrides
+            let profile = config
+                .channel_overrides
                 .get(&channel.id)
                 .and_then(|c| c.profile)
                 .unwrap_or(config.profile);
@@ -369,19 +435,20 @@ impl FanControlService {
                 FanProfile::Auto => {
                     // Restore firmware control
                     Self::set_pwm_mode(channel, 2).await?;
-                },
+                }
                 FanProfile::Manual => {
                     // Set manual mode
                     Self::set_pwm_mode(channel, 1).await?;
 
                     // Get manual duty
-                    let duty = config.channel_overrides
+                    let duty = config
+                        .channel_overrides
                         .get(&channel.id)
                         .and_then(|c| c.manual_duty)
                         .unwrap_or(config.manual_duty);
 
                     Self::set_pwm_duty(channel, duty).await?;
-                },
+                }
                 FanProfile::Quiet | FanProfile::Balanced | FanProfile::Performance => {
                     // Set manual mode for curve control
                     Self::set_pwm_mode(channel, 1).await?;
@@ -390,11 +457,15 @@ impl FanControlService {
                     if let Some(temp_millidegrees) = channel.current_temp {
                         let temp_c = temp_millidegrees / 1000;
                         let curve = Self::get_curve(profile);
-                        let duty = Self::calculate_duty(temp_c, &curve, channel.current_pwm * 100 / 255);
+                        let duty = Self::calculate_duty(
+                            temp_c,
+                            &curve,
+                            (channel.current_pwm as u32 * 100 / 255) as u8,
+                        );
 
                         Self::set_pwm_duty(channel, duty).await?;
                     }
-                },
+                }
             }
         }
 
@@ -462,8 +533,14 @@ mod tests {
     #[test]
     fn test_calculate_duty_interpolation() {
         let curve = vec![
-            CurvePoint { temp_c: 40, duty: 30 },
-            CurvePoint { temp_c: 60, duty: 70 },
+            CurvePoint {
+                temp_c: 40,
+                duty: 30,
+            },
+            CurvePoint {
+                temp_c: 60,
+                duty: 70,
+            },
         ];
 
         // At 50°C (midpoint), should be ~50% duty
@@ -474,8 +551,14 @@ mod tests {
     #[test]
     fn test_calculate_duty_below_curve() {
         let curve = vec![
-            CurvePoint { temp_c: 40, duty: 30 },
-            CurvePoint { temp_c: 60, duty: 70 },
+            CurvePoint {
+                temp_c: 40,
+                duty: 30,
+            },
+            CurvePoint {
+                temp_c: 60,
+                duty: 70,
+            },
         ];
 
         // Below curve minimum
@@ -486,8 +569,14 @@ mod tests {
     #[test]
     fn test_calculate_duty_above_curve() {
         let curve = vec![
-            CurvePoint { temp_c: 40, duty: 30 },
-            CurvePoint { temp_c: 60, duty: 70 },
+            CurvePoint {
+                temp_c: 40,
+                duty: 30,
+            },
+            CurvePoint {
+                temp_c: 60,
+                duty: 70,
+            },
         ];
 
         // Above curve maximum
@@ -498,8 +587,14 @@ mod tests {
     #[test]
     fn test_calculate_duty_hysteresis() {
         let curve = vec![
-            CurvePoint { temp_c: 40, duty: 30 },
-            CurvePoint { temp_c: 60, duty: 70 },
+            CurvePoint {
+                temp_c: 40,
+                duty: 30,
+            },
+            CurvePoint {
+                temp_c: 60,
+                duty: 70,
+            },
         ];
 
         // Small change should keep previous
@@ -511,11 +606,14 @@ mod tests {
     fn test_calculate_duty_enforces_minimum() {
         let curve = vec![
             CurvePoint { temp_c: 0, duty: 5 },
-            CurvePoint { temp_c: 40, duty: 10 },
+            CurvePoint {
+                temp_c: 40,
+                duty: 10,
+            },
         ];
 
         let duty = FanControlService::calculate_duty(20, &curve, 0);
-        let min_duty = MIN_SAFE_PWM * 100 / 255;
+        let min_duty = MIN_SAFE_DUTY_PERCENT;
         assert!(duty >= min_duty);
     }
 

@@ -268,6 +268,24 @@ fn check_smbtree() -> bool {
 fn check_snmp_client() -> bool {
     binary_present("snmpget", "/usr/bin/snmpget")
 }
+// DHCP/TFTP/PXE (src/dhcp_server.rs). `dnsmasq` is the daemon itself; it is
+// optional because the DHCP app hides its editors and names the missing piece
+// when the package is absent.
+fn check_dnsmasq() -> bool {
+    binary_present("dnsmasq", "/usr/sbin/dnsmasq")
+}
+// USB one-touch copy (src/usb_copy.rs) mounts through `udisksctl`, which
+// ships in `udisks2` (already in install.sh's required group, because the
+// udiskie automount unit needs it too).
+fn check_udisksctl() -> bool {
+    binary_present("udisksctl", "/usr/bin/udisksctl")
+}
+// UPS *server* mode (src/ups_server.rs) runs `upsd`, which ships inside
+// `nut-server` — the same `nut` metapackage the UPS *client* card already
+// offers. `upsc` alone is not enough: it is client-only.
+fn check_upsd() -> bool {
+    binary_present("upsd", "/usr/sbin/upsd")
+}
 fn check_git() -> bool {
     binary_present("git", "/usr/bin/git")
 }
@@ -843,6 +861,34 @@ fn specs() -> Vec<DependencySpec> {
             required: false,
             used_by: "UPS monitoring (NUT)",
             check_installed: crate::ups::UpsService::is_available,
+            check_running: None,
+        },
+        DependencySpec {
+            name: "upsd",
+            package: "nut",
+            category: "Monitoring",
+            required: false,
+            used_by: "UPS server mode (NUT server for other machines)",
+            check_installed: check_upsd,
+            check_running: None,
+        },
+        // --- Network services ---
+        DependencySpec {
+            name: "dnsmasq",
+            package: "dnsmasq",
+            category: "Network",
+            required: false,
+            used_by: "DHCP/TFTP/PXE server (Settings → Network)",
+            check_installed: check_dnsmasq,
+            check_running: None,
+        },
+        DependencySpec {
+            name: "udisksctl",
+            package: "udisks2",
+            category: "Storage",
+            required: false,
+            used_by: "USB one-touch copy — mount, unmount and power off a removable device",
+            check_installed: check_udisksctl,
             check_running: None,
         },
         // --- File / system tools (install.sh provisions all of these) ---

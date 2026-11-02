@@ -2083,6 +2083,39 @@ Implementation status (2026-11-02):
 - ✅ Compilation: successful (`cargo check` passes)
 - ⏳ Release build: in progress
 
+> Planning input for the phases below lives in
+> [`docs/analysis/dsm-parity-implementation-plan.md`](./analysis/dsm-parity-implementation-plan.md)
+> — the reconciliation of `dsm_homevault_comparison.md` against the tree, with
+> the Phase A work order. This file stays the canonical record.
+
+### Phase 5 — Phase 4 hardening (shipped 2026-11-02)
+
+Status: **shipped and verified.** Full detail, including the two production
+defects the E2E pass caught, in `TESTING.md` → "Phase A — DSM-parity debt
+closed".
+
+The five modules delivered by Phase 4 shipped with **no session check on any of
+their 22 routes** and there is no global auth layer under `/api`, so
+`POST /power/ups-server/shutdown` (which runs `sudo poweroff`) and
+`POST /network/dhcp-server/start` were reachable from the LAN with no session
+at all. Phase A closed that, fixed three correctness defects in the same
+modules and brought them to the definition of done.
+
+| Item | Delivered |
+|---|---|
+| A1 | `require_auth` on every read, `require_admin` on every mutation, guard **before** the body is deserialized; `tests/phase4_auth_integration.rs` 6/6 |
+| A2 | `docker stop "$(docker ps -q)"` argv bug; `shutdown_vms`/`flush_restic` now report `skipped` instead of claiming success; `guided-redundancy/apply` documented as `501` |
+| A3 | 5 components rewritten: i18n (4 locales, ~180 keys), design tokens, focus-trapping `Modal`, real radios; `npm run check` 0 errors / 0 warnings (was 5 / 15) |
+| A4 | 5 guides, 22 endpoints in `API.md`, 5 screens in `SCREENS.md`, 5 rows in `INDEX.md`, 5 `FeatureDoc`s |
+| A5 | 5 E2E specs: **38/38 Firefox, 38/38 Chromium** |
+| A6 | 23 unbounded subprocesses routed through `utils::process::run_timed_async*` |
+
+Two defects found only by running the real server: the four Phase 4 routes used
+Axum 0.7 path syntax (`:id`) on an Axum 0.8 router, so **the binary panicked at
+startup**, and `api-phase4.ts` authenticated with a `localStorage` key nothing
+writes while returning the raw envelope — every Phase 4 screen was dead in
+production. Both are fixed.
+
 ### Deferred or deliberately limited scope
 
 The following are not implementation blockers for DSM parity and should remain

@@ -59,15 +59,31 @@ fan-out).
 - `Explorer.svelte` — `openExplorerIntent()` consumes the intent after the first
   listing and selects the entry when it is still there.
 
-The local index (apps, settings, actions) always renders **first**: it answers
-instantly, and a file hit that had to walk the disk must never push "Settings"
-off the list.
+### Ordering: navigation first, files after
+
+`mergeFileHits` (`frontend/src/lib/stores/search.ts`) puts every
+**navigation** row — `app`, `setting`, `action` — before any `file` row, then
+caps the merged list at `MAX_RESULTS` (8).
+
+This is a correctness rule, not a preference. Before it, the merge appended
+files after the local index *as it stood at the time the async answer landed*,
+which was not the same as the index for the current query: typing `Settings`
+showed `settings.png`, `Settings.java` and a `settings.gradle.kts` from the
+host's own source tree in the eight visible rows, and "Open Settings" was not
+reachable with the arrow keys at all. The overlay's job is "where do I go?";
+a disk walk is the long tail of that answer.
+
+Files remain fully searchable — they simply sit after everything that
+navigates. Capping also clamps `selectedIndex`, so a shorter merged list can
+never leave the selection pointing past the end.
 
 ## Invariants
 
 - A file outside the allowed roots is never returned, for any role.
 - A one-character query never reaches the network.
 - The path of a result never appears in the URL.
+- **A navigation row is never pushed off the list by a file hit.** Navigation
+  types sort before `file`, and the merged list stops at `MAX_RESULTS`.
 - A partial answer never looks complete: if any root did not answer, the note
   says how many.
 - The tests: `src/global_search.rs` (17 unit), `tests/global_search_integration.rs`

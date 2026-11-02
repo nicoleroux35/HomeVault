@@ -1,72 +1,171 @@
+/* =============================================================================
+ * File          : usb_copy.rs
+ * Author        : Nicolas Le Roux
+ * Created       : 02/11/2026 by Nicolas Le Roux
+ * Version       : 1.0.0
+ *
+ * Description:
+ *   USB one-touch copy endpoints: CRUD the copy profiles, list the removable
+ *   devices currently attached and start a copy for a profile.
+ *
+ *   Reads need a session; every mutation is admin-only. The copy itself writes
+ *   into a share as root and mounts/unmounts a device, so an unauthenticated
+ *   caller must never reach it.
+ *
+ * Dependencies:
+ *   - axum (>= 0.8), crate::usb_copy
+ *
+ * Usage:
+ *   Routes under /api/usb-copy in src/web/mod.rs; see docs/guides/usb-copy.md.
+ * =============================================================================
+ */
+
+//! USB one-touch copy endpoints, see docs/guides/usb-copy.md.
+//!
+//! * `GET    /api/usb-copy/profiles`              — list
+//! * `POST   /api/usb-copy/profiles`              — create
+//! * `PUT    /api/usb-copy/profiles/{id}`         — update
+//! * `DELETE /api/usb-copy/profiles/{id}`         — delete
+//! * `GET    /api/usb-copy/devices`               — attached removable devices
+//! * `POST   /api/usb-copy/execute/{profile_id}`  — start a copy
+
 use axum::{
+    body::Bytes,
     extract::{Path, State},
-    http::StatusCode,
-    Json,
+    http::{HeaderMap, StatusCode},
+    response::Response,
 };
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use std::sync::Arc;
 
 use super::AppState;
-use crate::usb_copy::{CopyStatus, RemovableDevice, UsbCopyProfile, UsbCopyService};
+use crate::handlers::admin_guard::{require_admin, require_auth};
+use crate::usb_copy::{CopyStatus, UsbCopyProfile, UsbCopyService};
+use crate::utils::ResponseHelper;
+
+/// Re-wraps a `(status, message)` pair from a helper as the JSON error
+/// envelope shared by the rest of the API.
+fn fail(err: (StatusCode, String)) -> Response {
+    ResponseHelper::json_error_with_status(err.0, err.1)
+}
 
 /// GET /api/usb-copy/profiles
 pub async fn handle_profiles_list(
-    State(_state): State<Arc<AppState>>,
-) -> Result<Json<Vec<UsbCopyProfile>>, (StatusCode, String)> {
-    let profiles = load_profiles().await?;
-    Ok(Json(profiles))
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Response {
+    if let Err(resp) = require_auth(&state, &headers).await {
+        return resp;
+    }
+
+    match load_profiles().await {
+        Ok(profiles) => ResponseHelper::json_success(profiles),
+        Err(e) => fail(e),
+    }
 }
 
 /// POST /api/usb-copy/profiles
 pub async fn handle_profile_create(
-    State(_state): State<Arc<AppState>>,
-    Json(profile): Json<UsbCopyProfile>,
-) -> Result<Json<UsbCopyProfile>, (StatusCode, String)> {
-    // Validate
-    UsbCopyService::validate_profile(&profile)
-        .map_err(|e| (StatusCode::BAD_REQUEST, e))?;
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    let admin = match require_admin(&state, &headers).await {
+        Ok(username) => username,
+        Err(resp) => return resp,
+    };
 
-    // Save
-    save_profile(&profile).await?;
+    let profile: UsbCopyProfile = match serde_json::from_slice(&body) {
+        Ok(profile) => profile,
+        Err(e) => return ResponseHelper::json_error(format!("Malformed request body: {}", e)),
+    };
 
-    Ok(Json(profile))
+    if let Err(e) = UsbCopyService::validate_profile(&profile) {
+        return ResponseHelper::json_error(e);
+    }
+
+    if let Err(e) = save_profile(&profile).await {
+        return fail(e);
+    }
+
+    crate::events::log_event(format!(
+        "Admin '{}' created USB copy profile '{}'",
+        admin, profile.name
+    ));
+    ResponseHelper::json_success(profile)
 }
 
 /// PUT /api/usb-copy/profiles/:id
 pub async fn handle_profile_update(
-    State(_state): State<Arc<AppState>>,
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
     Path(id): Path<String>,
-    Json(mut profile): Json<UsbCopyProfile>,
-) -> Result<Json<UsbCopyProfile>, (StatusCode, String)> {
-    // Ensure ID matches
+    body: Bytes,
+) -> Response {
+    let admin = match require_admin(&state, &headers).await {
+        Ok(username) => username,
+        Err(resp) => return resp,
+    };
+
+    let mut profile: UsbCopyProfile = match serde_json::from_slice(&body) {
+        Ok(profile) => profile,
+        Err(e) => return ResponseHelper::json_error(format!("Malformed request body: {}", e)),
+    };
+
+    // The id comes from the path, never from the body: a body id that
+    // disagreed with the URL used to silently move the profile.
     profile.id = id;
 
-    // Validate
-    UsbCopyService::validate_profile(&profile)
-        .map_err(|e| (StatusCode::BAD_REQUEST, e))?;
+    if let Err(e) = UsbCopyService::validate_profile(&profile) {
+        return ResponseHelper::json_error(e);
+    }
 
-    // Update
-    save_profile(&profile).await?;
+    if let Err(e) = save_profile(&profile).await {
+        return fail(e);
+    }
 
-    Ok(Json(profile))
+    crate::events::log_event(format!(
+        "Admin '{}' updated USB copy profile '{}'",
+        admin, profile.name
+    ));
+    ResponseHelper::json_success(profile)
 }
 
 /// DELETE /api/usb-copy/profiles/:id
 pub async fn handle_profile_delete(
-    State(_state): State<Arc<AppState>>,
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
     Path(id): Path<String>,
-) -> Result<StatusCode, (StatusCode, String)> {
-    delete_profile(&id).await?;
-    Ok(StatusCode::NO_CONTENT)
+) -> Response {
+    let admin = match require_admin(&state, &headers).await {
+        Ok(username) => username,
+        Err(resp) => return resp,
+    };
+
+    if let Err(e) = delete_profile(&id).await {
+        return fail(e);
+    }
+
+    crate::events::log_event(format!(
+        "Admin '{}' deleted USB copy profile '{}'",
+        admin, id
+    ));
+    ResponseHelper::json_success(serde_json::json!({ "deleted": id }))
 }
 
 /// GET /api/usb-copy/devices
 pub async fn handle_devices_list(
-    State(_state): State<Arc<AppState>>,
-) -> Result<Json<Vec<RemovableDevice>>, (StatusCode, String)> {
-    let mut devices = UsbCopyService::list_devices()
-        .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Response {
+    if let Err(resp) = require_auth(&state, &headers).await {
+        return resp;
+    }
+
+    let mut devices = match UsbCopyService::list_devices().await {
+        Ok(devices) => devices,
+        Err(e) => return ResponseHelper::json_internal_error(e),
+    };
 
     // Load profiles to check for matches
     let profiles = load_profiles().await.unwrap_or_default();
@@ -81,64 +180,94 @@ pub async fn handle_devices_list(
         }
     }
 
-    Ok(Json(devices))
+    ResponseHelper::json_success(devices)
 }
 
 /// POST /api/usb-copy/execute/:profile_id
+///
+/// The copy runs in the background; the handler answers as soon as it is
+/// scheduled. The profile's `last_run` / `last_status` are written by the task
+/// itself, so a copy that fails still leaves its outcome visible.
 pub async fn handle_execute(
-    State(_state): State<Arc<AppState>>,
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
     Path(profile_id): Path<String>,
-) -> Result<Json<ExecuteResponse>, (StatusCode, String)> {
-    // Load profile
-    let profiles = load_profiles().await?;
-    let profile = profiles
-        .iter()
-        .find(|p| p.id == profile_id)
-        .ok_or_else(|| (StatusCode::NOT_FOUND, "Profile not found".to_string()))?;
+) -> Response {
+    let admin = match require_admin(&state, &headers).await {
+        Ok(username) => username,
+        Err(resp) => return resp,
+    };
 
-    // Find matching device
-    let devices = UsbCopyService::list_devices()
-        .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
+    let profiles = match load_profiles().await {
+        Ok(profiles) => profiles,
+        Err(e) => return fail(e),
+    };
+    let profile = match profiles.iter().find(|p| p.id == profile_id) {
+        Some(profile) => profile,
+        None => {
+            return ResponseHelper::json_error_with_status(
+                StatusCode::NOT_FOUND,
+                "Profile not found".to_string(),
+            )
+        }
+    };
 
-    let device = devices
-        .iter()
-        .find(|d| d.uuid.as_ref() == Some(&profile.device_uuid))
-        .ok_or_else(|| (StatusCode::NOT_FOUND, "Device not found".to_string()))?;
-
-    // Check if device is a pool member
-    let is_pool = UsbCopyService::is_pool_member(&device.device)
-        .await
-        .unwrap_or(false);
-
-    if is_pool {
-        return Err((
-            StatusCode::BAD_REQUEST,
-            "Cannot copy from pool member device".to_string(),
-        ));
+    if !profile.enabled {
+        return ResponseHelper::json_error(format!("Profile '{}' is disabled", profile.name));
     }
 
-    // Execute copy in background
+    let devices = match UsbCopyService::list_devices().await {
+        Ok(devices) => devices,
+        Err(e) => return ResponseHelper::json_internal_error(e),
+    };
+
+    let device = match devices
+        .iter()
+        .find(|d| d.uuid.as_ref() == Some(&profile.device_uuid))
+    {
+        Some(device) => device,
+        None => {
+            return ResponseHelper::json_error_with_status(
+                StatusCode::NOT_FOUND,
+                "Device not found".to_string(),
+            )
+        }
+    };
+
+    // Refuse to read from a disk that belongs to an array: copying the raw
+    // members out would look like a backup and be useless as one.
+    if UsbCopyService::is_pool_member(&device.device)
+        .await
+        .unwrap_or(false)
+    {
+        return ResponseHelper::json_error("Cannot copy from pool member device".to_string());
+    }
+
     let profile_clone = profile.clone();
     let device_clone = device.clone();
+
+    crate::events::log_event(format!(
+        "Admin '{}' started USB copy profile '{}' from {}",
+        admin, profile.name, device.device
+    ));
 
     tokio::spawn(async move {
         let result = UsbCopyService::execute_copy(&profile_clone, &device_clone).await;
 
-        // Update profile with last run status
         let mut updated_profile = profile_clone.clone();
         updated_profile.last_run = Some(std::time::SystemTime::now());
-        updated_profile.last_status = Some(result.unwrap_or(CopyStatus::Failed {
-            error: "Unknown error".to_string(),
-        }));
+        updated_profile.last_status =
+            Some(result.unwrap_or_else(|error| CopyStatus::Failed { error }));
 
-        let _ = save_profile(&updated_profile).await;
+        if let Err(e) = save_profile(&updated_profile).await {
+            tracing::warn!("USB copy: could not persist the run outcome: {:?}", e);
+        }
     });
 
-    Ok(Json(ExecuteResponse {
+    ResponseHelper::json_success(ExecuteResponse {
         status: "started".to_string(),
         message: "Copy operation started in background".to_string(),
-    }))
+    })
 }
 
 // Helper functions
@@ -175,6 +304,18 @@ async fn save_profile(profile: &UsbCopyProfile) -> Result<(), (StatusCode, Strin
         profiles.push(profile.clone());
     }
 
+    write_profiles(&profiles).await
+}
+
+async fn delete_profile(id: &str) -> Result<(), (StatusCode, String)> {
+    let mut profiles = load_profiles().await.unwrap_or_default();
+
+    profiles.retain(|p| p.id != id);
+
+    write_profiles(&profiles).await
+}
+
+async fn write_profiles(profiles: &[UsbCopyProfile]) -> Result<(), (StatusCode, String)> {
     let path = profiles_path();
 
     // Ensure parent directory exists
@@ -187,30 +328,7 @@ async fn save_profile(profile: &UsbCopyProfile) -> Result<(), (StatusCode, Strin
         })?;
     }
 
-    let content = serde_json::to_string_pretty(&profiles).map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("Failed to serialize profiles: {}", e),
-        )
-    })?;
-
-    tokio::fs::write(&path, content).await.map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("Failed to write profiles: {}", e),
-        )
-    })?;
-
-    Ok(())
-}
-
-async fn delete_profile(id: &str) -> Result<(), (StatusCode, String)> {
-    let mut profiles = load_profiles().await.unwrap_or_default();
-
-    profiles.retain(|p| p.id != id);
-
-    let path = profiles_path();
-    let content = serde_json::to_string_pretty(&profiles).map_err(|e| {
+    let content = serde_json::to_string_pretty(profiles).map_err(|e| {
         (
             StatusCode::INTERNAL_SERVER_ERROR,
             format!("Failed to serialize profiles: {}", e),

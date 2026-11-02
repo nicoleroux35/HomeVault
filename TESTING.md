@@ -51,7 +51,83 @@ email payloads, launcher fallback, Syslog observation invalidation, and quota
 interpolation. The two skipped tests are conditional environment-state skips,
 not failures. Phase 0 is verified for the QW-05 through QW-11 acceptance scope.
 
-Cross-references the 29 screens listed in `SCREENS.md` with three distinct
+## Phase A — DSM-parity debt closed, 2026-11-02 (verified)
+
+The five Phase 4 handler modules (`dhcp_server`, `usb_copy`, `fan_control`,
+`ups_server`, `guided_redundancy`) shipped with **no session check at all** and
+there is no global auth layer under `/api`, so all 22 of their routes were
+reachable from the LAN without a session — including
+`POST /power/ups-server/shutdown` (which runs `sudo poweroff`) and
+`POST /network/dhcp-server/start` (which runs `sudo systemctl start dnsmasq`).
+Phase A closes that, fixes three correctness defects in the same modules, and
+brings them to the project's definition of done.
+
+| Item | What changed | Verification |
+|---|---|---|
+| **A1** Auth on 22 routes | `require_auth` on every read, `require_admin` on every mutation; the guard runs **before** the body is deserialized, so an unauthenticated caller gets `401` with the standard envelope instead of a `422` that echoes the schema | `tests/phase4_auth_integration.rs` **6/6** |
+| **A2** Correctness fixes | `docker stop "$(docker ps -q)"` passed as argv (stopped nothing, exited 0) → two-step `docker ps -q` + `docker stop`; `shutdown_vms`/`flush_restic` were `Ok(())` stubs → `StageOutcome::Skipped(reason)` with a new `skipped` field on the HTTP payload; `guided-redundancy/apply` documented as `501` and admin-only | `src/ups_server.rs` +5 unit; `src/handlers/ups_server.rs` +1 unit |
+| **A3** i18n + design tokens | 5 components rewritten: 0 hardcoded literals, ~100 keys added to `en`/`fr`/`de`/`es`, `alert()`/`confirm()` replaced, hand-rolled overlays replaced by the focus-trapping `Modal`, CSS variables that did not exist (`--card-bg`, `--primary-color`) replaced by real tokens, click-only cards replaced by real radios | `npm run check` **0 errors, 0 warnings** (was 5 errors / 15 warnings); `npm run build` green |
+| **A4** Documentation | 5 guides (`dhcp.md`, `usb-copy.md`, `fan-control.md`, `ups-server.md`, `guided-redundancy.md`), 22 endpoints in `API.md`, 5 screens in `SCREENS.md`, 5 rows in `INDEX.md`, 5 `FeatureDoc`s + the `rag.md` row | `rag_indexers` **5/5** — the guide set and the `FEATURE_GUIDES` map are asserted in both directions |
+| **A5** E2E | 5 new specs under `tests/e2e/settings/` | **38/38 executed green on Firefox and 38/38 on Chromium** (2026-11-02, live server on port 8099) |
+| **A6** Deadline discipline | 23 unbounded `Command::new` replaced by `utils::process::run_timed_async*` with named constants (`PROBE_TIMEOUT`, `CONFIG_WRITE_TIMEOUT`, `POOL_PROBE_TIMEOUT`, `DEVICE_OP_TIMEOUT`) | `utils::process::tests::every_subprocess_of_the_tree_is_bounded` green |
+
+### Guards that were red on `main` and are green now
+
+These were **pre-existing** failures, not introduced by Phase A. Three of them
+proved that `main` could not even compile its lib test profile.
+
+| Guard | Why it was red | Fix |
+|---|---|---|
+| `utils::process::tests::every_subprocess_of_the_tree_is_bounded` | 23 Phase 4 call sites had no deadline | A6 |
+| `dependencies::tests::test_every_commanded_binary_has_an_install_source` | `dnsmasq`, `udisksctl`, `upsd` were executed but installable by nothing | three `DependencySpec`s + `install_optional dnsmasq` in `install.sh` |
+| `fan_control.rs` compile | `MIN_SAFE_PWM * 100 / 255` overflows a `u8` at compile time (constant eval) | `MIN_SAFE_DUTY_PERCENT` computed in `u32`; same fix in `tests/fan_control_integration.rs` |
+| `handlers::ups_server::tests` (2) | two tests raced on the process-global `DATA_DIRECTORY` | `ENV_LOCK` guard, matching `src/health.rs` |
+| `ups_server_integration::test_validate_config_rejects_reserved_ports` | the code refused 22/80/443 but not 8443, which is HomeVault's own HTTPS listener | `matches!` covering all five |
+| `guided_redundancy_integration::test_raid5_scores_higher_than_raid0` | compared two layouts that are never offered together (RAID 0 below 3 disks, RAID 5 from 3 up) | compares the two layouts three disks actually produce |
+
+### Suites
+
+| Suite | Result |
+|---|---|
+| `cargo test --lib` | **2,375 passed**; 5 pre-existing failures outside Phase A scope remain (see below) |
+| `tests/phase4_auth_integration.rs` | **6/6** |
+| `tests/dhcp_server_integration.rs` | **21/21** |
+| `tests/usb_copy_integration.rs` | **18/18** |
+| `tests/fan_control_integration.rs` | **17/17** (did not compile on `main`) |
+| `tests/ups_server_integration.rs` | **13/13** |
+| `tests/guided_redundancy_integration.rs` | **19/19** |
+| `tests/e2e/settings/{dhcp,fan-control,ups-server,usb-copy,guided-redundancy}.spec.ts` | **38 passed on Firefox, 38 passed on Chromium** (live server, `--workers=1`) |
+
+### Two defects the E2E pass caught that no Rust test could
+
+Both were invisible to `cargo test`, `npm run check` and `npm run build`, and
+both made the five screens **dead in production**.
+
+| Defect | Symptom | Cause | Fix |
+|---|---|---|---|
+| The server refused to boot | `thread 'main' panicked at src/web/mod.rs:1513: Path segments must not start with ':'` — the process exited before listening | the four Phase 4 routes were registered with Axum 0.7 path syntax (`:id`) on an Axum 0.8 router | `{id}` / `{profile_id}`, matching every other route in the file |
+| Every Phase 4 screen was empty | the card rendered, the list/table stayed blank, no error | `api-phase4.ts` fetched with `Authorization: Bearer <localStorage.auth_token>` (a key nothing writes — the app stores `session-token`) **and** returned the raw `{ success, data }` envelope while callers read `response.config` / `response.channels` | rewritten on the shared `api` client, with an `unwrap()` that throws the server's own sentence instead of returning `undefined` fields |
+
+The first one is the reason this section exists: **`cargo test --lib` and
+`cargo check` were both green while the binary could not serve a single
+request.** Only starting the real server surfaced it.
+
+Also fixed while verifying live: `UsbCopy.svelte` rendered a second `<h1>`
+inside the window chrome's own `<h1>` (now an `<h2>`), and
+`storage.guided_redundancy` — the label of the "Suggest a RAID layout"
+button — was missing from all four locales.
+
+### Deliberately out of Phase A scope
+
+Five lib tests remain red and none of them belong to the five Phase 4 modules:
+`checksum::tests::test_outcome_store_evicts_the_oldest_at_the_cap`,
+`handlers::settings::tests::test_appearance_no_longer_carries_theme_or_density`,
+`i18n::tests::test_appearance_keys_are_at_parity_and_the_removed_one_is_gone`
+(both part of an in-flight, untracked density feature) and two
+`sse::progress` transfer-speed tests. They are tracked separately rather than
+folded into a parity change.
+
+Cross-references the 37 screens listed in `SCREENS.md` with three distinct
 levels of testing, to answer "what is really tested, what remains to be
 tested":
 

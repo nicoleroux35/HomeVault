@@ -1171,7 +1171,22 @@
       };
     });
 
-  $: allApps = [...apps, ...installedDockerApps];
+  // The launcher lists Settings too. It has a pinned dock icon but was missing
+  // from the "All apps" grid, so the one screen that holds every category of
+  // server configuration was absent from the screen whose whole job is to list
+  // the apps. Helpers/`launchpadIcons` carry its glyph like every other tile.
+  $: settingsTile = {
+    id: 'settings',
+    name: appField('settings', 'name', 'Settings', $t),
+    icon: 'settings',
+    color: 'var(--hv-primary)',
+    category: 'System',
+    desc: $t('desktop.search_settings_desc'),
+    component: Settings,
+    customIcon: launchpadIcons.settings,
+  };
+
+  $: allApps = [...apps, settingsTile, ...installedDockerApps];
 
   // Dashboard app (always visible in dock)
   $: dashboardApp = { id: 'dashboard', name: appField('dashboard', 'name', 'Dashboard', $t), icon: 'dashboard', color: 'var(--hv-primary)', component: Dashboard };

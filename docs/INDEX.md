@@ -104,6 +104,11 @@ methods, and notable invariants.
 | Scheduled Tasks (generic cron engine: commands, snapshots, SMART, power) | [guides/scheduled-tasks.md](./guides/scheduled-tasks.md) |
 | Metrics (historical CPU/memory/load/network/temperature charts) | [guides/metrics.md](./guides/metrics.md) |
 | Power (host power management, CPU governor, disk spindown, Wake-on-LAN) | [guides/power.md](./guides/power.md) |
+| DHCP / TFTP / PXE server (address range, static reservations, boot files, live leases) | [guides/dhcp.md](./guides/dhcp.md) |
+| USB one-touch copy (copy rules, device matching, checksum verification, safe eject) | [guides/usb-copy.md](./guides/usb-copy.md) |
+| Fan and thermal control (hwmon channels, profiles, 20 % safety floor, failsafe) | [guides/fan-control.md](./guides/fan-control.md) |
+| UPS server mode (NUT server, client allowlist, orderly shutdown, skipped stages) | [guides/ups-server.md](./guides/ups-server.md) |
+| Guided redundancy (RAID layout suggestions, capacity/efficiency/risk) | [guides/guided-redundancy.md](./guides/guided-redundancy.md) |
 | Design system (single UI identity — tokens, components, page anatomy) | [guides/design-system.md](./guides/design-system.md) |
 | Development workflow (multi-instance `.local`, real-VM tests, client contract) | [guides/development.md](./guides/development.md) |
 
@@ -119,6 +124,17 @@ Not authoritative (see [CLAUDE.md](../CLAUDE.md)): `docs/FRONTEND.md` +
   full-app design-audit backlog (17 open tasks, worked top to bottom, one
   commit-sized change each); referenced by the
   [design-system guide](./guides/design-system.md).
+
+## Planning material (`docs/analysis/`)
+
+Not authoritative — `ROADMAP-DSM.md` is the canonical roadmap. These files
+record how a roadmap item was derived, so the reasoning is not lost:
+
+- [dsm-parity-implementation-plan.md](./analysis/dsm-parity-implementation-plan.md)
+  — reconciles `dsm_homevault_comparison.md` (a DSM 7 capability comparison)
+  against the actual tree: which "missing" features already shipped, which gaps
+  are real, and the Phase A–E work order. Feeds
+  [ROADMAP-DSM.md](../ROADMAP-DSM.md) → Phase 5.
 
 ## Doc conventions
 

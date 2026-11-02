@@ -1,6 +1,40 @@
-// Phase 4 API Client Functions
-// Add these to frontend/src/lib/services/api.ts
+/* =============================================================================
+ * File          : api-phase4.ts
+ * Author        : Nicolas Le Roux
+ * Created       : 02/11/2026 by Nicolas Le Roux
+ * Version       : 2.0.0
+ *
+ * Description:
+ *   API client for the Phase 4 appliance features: UPS server mode, USB
+ *   one-touch copy, the DHCP/TFTP/PXE server, fan control and guided
+ *   redundancy.
+ *
+ *   **Every call goes through the shared `api` client**, like the rest of the
+ *   application. The previous version was a parallel implementation that had
+ *   two defects which made all five screens dead in production:
+ *
+ *   1. it read the session from `localStorage.getItem('auth_token')`, a key
+ *      nothing ever writes (the app stores `session-token`), so every request
+ *      carried `Authorization: Bearer ` with an empty token;
+ *   2. it returned the **raw response body** (`{ success, data }`) while every
+ *      caller destructured the payload directly (`response.config`,
+ *      `response.channels`, …), so even an authorised call produced
+ *      `undefined` fields.
+ *
+ *   Going through `api` fixes both at once and adds the CSRF header, the
+ *   contract header, the response cache and the mutation cache invalidation
+ *   that every other screen already gets.
+ *
+ * Dependencies:
+ *   - $lib/services/api (the shared ApiClient), $lib/types/api
+ *
+ * Usage:
+ *   Imported by `routes/UsbCopy.svelte`, `Settings.svelte` (via the three
+ *   cards) and `storage/GuidedRedundancyDialog.svelte`. See
+ *   docs/guides/{usb-copy,dhcp,fan-control,ups-server,guided-redundancy}.md.
+ * ============================================================================= */
 
+import { api } from '$lib/services/api';
 import type {
   UpsServerConfig,
   UpsServerGetResponse,
@@ -13,60 +47,45 @@ import type {
   FanChannelsResponse,
   LayoutRecommendation,
   RecommendationsResponse,
-  RedundancyLevel,
+  RedundancyLevel
 } from '$lib/types/phase4';
+
+/**
+ * Unwraps a successful `{ success, data }` envelope, or throws the server's own
+ * sentence. Callers get the payload or an exception — never an `undefined`
+ * field with no explanation.
+ */
+function unwrap<T>(res: { success: boolean; data?: T; message?: string; error?: string }): T {
+  if (!res.success) {
+    throw new Error(res.message || res.error || 'The request failed');
+  }
+  return res.data as T;
+}
 
 // ============================================================================
 // UPS Server API
 // ============================================================================
 
 export async function getUpsServerConfig(): Promise<UpsServerGetResponse> {
-  const response = await fetch('/api/power/ups-server', {
-    headers: { Authorization: `Bearer ${getToken()}` },
-  });
-  if (!response.ok) throw new Error('Failed to get UPS server config');
-  return response.json();
+  return unwrap(await api.get<UpsServerGetResponse>('/power/ups-server', { cache: false }));
 }
 
 export async function updateUpsServerConfig(config: UpsServerConfig): Promise<void> {
-  const response = await fetch('/api/power/ups-server', {
-    method: 'PUT',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${getToken()}`,
-    },
-    body: JSON.stringify({ config }),
-  });
-  if (!response.ok) throw new Error('Failed to update UPS server config');
+  unwrap(await api.put('/power/ups-server', { config }));
 }
 
 export async function startUpsServer(): Promise<void> {
-  const response = await fetch('/api/power/ups-server/start', {
-    method: 'POST',
-    headers: { Authorization: `Bearer ${getToken()}` },
-  });
-  if (!response.ok) throw new Error('Failed to start UPS server');
+  unwrap(await api.post('/power/ups-server/start'));
 }
 
 export async function stopUpsServer(): Promise<void> {
-  const response = await fetch('/api/power/ups-server/stop', {
-    method: 'POST',
-    headers: { Authorization: `Bearer ${getToken()}` },
-  });
-  if (!response.ok) throw new Error('Failed to stop UPS server');
+  unwrap(await api.post('/power/ups-server/stop'));
 }
 
-export async function shutdownUpsServer(confirm: boolean = false): Promise<{ success: boolean; stages: any[] }> {
-  const response = await fetch('/api/power/ups-server/shutdown', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${getToken()}`,
-    },
-    body: JSON.stringify({ confirm }),
-  });
-  if (!response.ok) throw new Error('Failed to shutdown via UPS server');
-  return response.json();
+export async function shutdownUpsServer(
+  confirm = false
+): Promise<{ success: boolean; stages: any[] }> {
+  return unwrap(await api.post('/power/ups-server/shutdown', { confirm }));
 }
 
 // ============================================================================
@@ -74,194 +93,107 @@ export async function shutdownUpsServer(confirm: boolean = false): Promise<{ suc
 // ============================================================================
 
 export async function listUsbCopyProfiles(): Promise<UsbCopyProfile[]> {
-  const response = await fetch('/api/usb-copy/profiles', {
-    headers: { Authorization: `Bearer ${getToken()}` },
-  });
-  if (!response.ok) throw new Error('Failed to list USB copy profiles');
-  return response.json();
+  return unwrap(await api.get<UsbCopyProfile[]>('/usb-copy/profiles', { cache: false }));
 }
 
 export async function createUsbCopyProfile(profile: UsbCopyProfile): Promise<UsbCopyProfile> {
-  const response = await fetch('/api/usb-copy/profiles', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${getToken()}`,
-    },
-    body: JSON.stringify(profile),
-  });
-  if (!response.ok) throw new Error('Failed to create USB copy profile');
-  return response.json();
+  return unwrap(await api.post<UsbCopyProfile>('/usb-copy/profiles', profile));
 }
 
-export async function updateUsbCopyProfile(id: string, profile: UsbCopyProfile): Promise<UsbCopyProfile> {
-  const response = await fetch(`/api/usb-copy/profiles/${id}`, {
-    method: 'PUT',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${getToken()}`,
-    },
-    body: JSON.stringify(profile),
-  });
-  if (!response.ok) throw new Error('Failed to update USB copy profile');
-  return response.json();
+export async function updateUsbCopyProfile(
+  id: string,
+  profile: UsbCopyProfile
+): Promise<UsbCopyProfile> {
+  return unwrap(
+    await api.put<UsbCopyProfile>(`/usb-copy/profiles/${encodeURIComponent(id)}`, profile)
+  );
 }
 
 export async function deleteUsbCopyProfile(id: string): Promise<void> {
-  const response = await fetch(`/api/usb-copy/profiles/${id}`, {
-    method: 'DELETE',
-    headers: { Authorization: `Bearer ${getToken()}` },
-  });
-  if (!response.ok) throw new Error('Failed to delete USB copy profile');
+  unwrap(await api.delete(`/usb-copy/profiles/${encodeURIComponent(id)}`));
 }
 
 export async function listUsbDevices(): Promise<RemovableDevice[]> {
-  const response = await fetch('/api/usb-copy/devices', {
-    headers: { Authorization: `Bearer ${getToken()}` },
-  });
-  if (!response.ok) throw new Error('Failed to list USB devices');
-  return response.json();
+  return unwrap(await api.get<RemovableDevice[]>('/usb-copy/devices', { cache: false }));
 }
 
-export async function executeUsbCopy(profileId: string): Promise<{ status: string; message: string }> {
-  const response = await fetch(`/api/usb-copy/execute/${profileId}`, {
-    method: 'POST',
-    headers: { Authorization: `Bearer ${getToken()}` },
-  });
-  if (!response.ok) throw new Error('Failed to execute USB copy');
-  return response.json();
+export async function executeUsbCopy(
+  profileId: string
+): Promise<{ status: string; message: string }> {
+  return unwrap(
+    await api.post(`/usb-copy/execute/${encodeURIComponent(profileId)}`)
+  );
 }
 
 // ============================================================================
-// DHCP Server API
+// DHCP / TFTP server API
 // ============================================================================
 
 export async function getDhcpServerConfig(): Promise<DhcpServerGetResponse> {
-  const response = await fetch('/api/network/dhcp-server', {
-    headers: { Authorization: `Bearer ${getToken()}` },
-  });
-  if (!response.ok) throw new Error('Failed to get DHCP server config');
-  return response.json();
+  return unwrap(await api.get<DhcpServerGetResponse>('/network/dhcp-server', { cache: false }));
 }
 
 export async function updateDhcpServerConfig(config: DhcpServerConfig): Promise<void> {
-  const response = await fetch('/api/network/dhcp-server', {
-    method: 'PUT',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${getToken()}`,
-    },
-    body: JSON.stringify({ config }),
-  });
-  if (!response.ok) {
-    const error = await response.text();
-    throw new Error(error || 'Failed to update DHCP server config');
-  }
+  unwrap(await api.put('/network/dhcp-server', { config }));
 }
 
 export async function startDhcpServer(): Promise<void> {
-  const response = await fetch('/api/network/dhcp-server/start', {
-    method: 'POST',
-    headers: { Authorization: `Bearer ${getToken()}` },
-  });
-  if (!response.ok) throw new Error('Failed to start DHCP server');
+  unwrap(await api.post('/network/dhcp-server/start'));
 }
 
 export async function stopDhcpServer(): Promise<void> {
-  const response = await fetch('/api/network/dhcp-server/stop', {
-    method: 'POST',
-    headers: { Authorization: `Bearer ${getToken()}` },
-  });
-  if (!response.ok) throw new Error('Failed to stop DHCP server');
+  unwrap(await api.post('/network/dhcp-server/stop'));
 }
 
 export async function getDhcpLeases(): Promise<DhcpLease[]> {
-  const response = await fetch('/api/network/dhcp-server/leases', {
-    headers: { Authorization: `Bearer ${getToken()}` },
-  });
-  if (!response.ok) throw new Error('Failed to get DHCP leases');
-  return response.json();
+  return unwrap(await api.get<DhcpLease[]>('/network/dhcp-server/leases', { cache: false }));
 }
 
 // ============================================================================
-// Fan Control API
+// Fan control API
 // ============================================================================
 
 export async function listFanChannels(): Promise<FanChannelsResponse> {
-  const response = await fetch('/api/system/fans', {
-    headers: { Authorization: `Bearer ${getToken()}` },
-  });
-  if (!response.ok) throw new Error('Failed to list fan channels');
-  return response.json();
+  return unwrap(await api.get<FanChannelsResponse>('/system/fans', { cache: false }));
 }
 
 export async function getFanConfig(): Promise<FanConfig> {
-  const response = await fetch('/api/system/fans/config', {
-    headers: { Authorization: `Bearer ${getToken()}` },
-  });
-  if (!response.ok) throw new Error('Failed to get fan config');
-  return response.json();
+  return unwrap(await api.get<FanConfig>('/system/fans/config', { cache: false }));
 }
 
 export async function updateFanConfig(config: FanConfig): Promise<void> {
-  const response = await fetch('/api/system/fans/config', {
-    method: 'PUT',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${getToken()}`,
-    },
-    body: JSON.stringify(config),
-  });
-  if (!response.ok) {
-    const error = await response.text();
-    throw new Error(error || 'Failed to update fan config');
-  }
+  unwrap(await api.put('/system/fans/config', config));
 }
 
 export async function restoreFanAuto(): Promise<void> {
-  const response = await fetch('/api/system/fans/restore-auto', {
-    method: 'POST',
-    headers: { Authorization: `Bearer ${getToken()}` },
-  });
-  if (!response.ok) throw new Error('Failed to restore automatic fan control');
+  unwrap(await api.post('/system/fans/restore-auto'));
 }
 
 // ============================================================================
-// Guided Redundancy API
+// Guided redundancy API
 // ============================================================================
 
 export async function getRedundancyRecommendations(
   minRedundancy?: RedundancyLevel
 ): Promise<RecommendationsResponse> {
-  const params = minRedundancy ? `?min_redundancy=${minRedundancy}` : '';
-  const response = await fetch(`/api/storage/guided-redundancy${params}`, {
-    headers: { Authorization: `Bearer ${getToken()}` },
-  });
-  if (!response.ok) throw new Error('Failed to get redundancy recommendations');
-  return response.json();
+  const params = minRedundancy ? `?min_redundancy=${encodeURIComponent(minRedundancy)}` : '';
+  return unwrap(
+    await api.get<RecommendationsResponse>(`/storage/guided-redundancy${params}`, { cache: false })
+  );
 }
 
+/**
+ * Asks the server to create an array from a recommendation.
+ *
+ * The route answers `501` on this build — creating the array from a
+ * recommendation is not implemented. The dialog states that limitation before
+ * the click; this function exists so a future implementation has its client
+ * half already written and typed.
+ */
 export async function applyRedundancyLayout(id: string, confirmed: boolean): Promise<any> {
-  const response = await fetch(`/api/storage/guided-redundancy/apply/${id}`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${getToken()}`,
-    },
-    body: JSON.stringify({ confirmed }),
-  });
-  if (!response.ok) {
-    const error = await response.text();
-    throw new Error(error || 'Failed to apply redundancy layout');
-  }
-  return response.json();
+  return unwrap(
+    await api.post(`/storage/guided-redundancy/apply/${encodeURIComponent(id)}`, { confirmed })
+  );
 }
 
-// ============================================================================
-// Helper Function
-// ============================================================================
-
-function getToken(): string {
-  // This should match your existing auth token retrieval
-  return localStorage.getItem('auth_token') || '';
-}
+export type { LayoutRecommendation, RecommendationsResponse };

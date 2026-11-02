@@ -1,39 +1,68 @@
+<!-- ========================================================================
+     File          : UsbCopy.svelte
+     Author        : Nicolas Le Roux
+     Created       : 02/11/2026
+     Last modified : 02/11/2026 by Nicolas Le Roux
+     Version       : 1.0.0
+
+     Description:
+       The USB one-touch copy app: the copy rules, the removable devices that
+       are currently attached, and the rule editor.
+
+       Rewritten on the shared design tokens, the shared `Modal` (which traps
+       focus) and the i18n bundle. The previous version carried hardcoded
+       English strings, native `alert()` / `confirm()`, a hand-rolled overlay
+       with no focus trap, and CSS variables that do not exist in the token
+       set, so it rendered unstyled.
+
+     Dependencies:
+       - svelte (>= 5), $lib/services/api-phase4, $lib/stores/i18n,
+         $lib/components/theme/Modal, $lib/components/theme/Button
+
+     Usage:
+       Launched from the desktop's USB Copy window. See
+       docs/guides/usb-copy.md.
+     ======================================================================== -->
 <script lang="ts">
   import { onMount } from 'svelte';
+  import { t } from '$lib/stores/i18n';
   import {
     listUsbCopyProfiles,
     createUsbCopyProfile,
     updateUsbCopyProfile,
     deleteUsbCopyProfile,
     listUsbDevices,
-    executeUsbCopy,
+    executeUsbCopy
   } from '$lib/services/api-phase4';
   import type { UsbCopyProfile, RemovableDevice } from '$lib/types/phase4';
+  import Modal from '$lib/components/theme/Modal.svelte';
+  import { Button } from '$lib/components/theme';
 
-  let profiles: UsbCopyProfile[] = [];
-  let devices: RemovableDevice[] = [];
-  let loading = true;
-  let error = '';
+  let profiles = $state<UsbCopyProfile[]>([]);
+  let devices = $state<RemovableDevice[]>([]);
+  let loading = $state(true);
+  let busy = $state(false);
+  let error = $state('');
+  let notice = $state<{ kind: 'ok' | 'error'; text: string } | null>(null);
 
-  let showProfileDialog = false;
-  let editingProfile: Partial<UsbCopyProfile> | null = null;
-  let isEditing = false;
+  let showProfileDialog = $state(false);
+  let editingProfile = $state<Partial<UsbCopyProfile> | null>(null);
+  let isEditing = $state(false);
 
-  onMount(async () => {
-    await loadData();
-  });
+  onMount(loadData);
 
   async function loadData() {
     loading = true;
     error = '';
-
     try {
-      [profiles, devices] = await Promise.all([
+      const [nextProfiles, nextDevices] = await Promise.all([
         listUsbCopyProfiles(),
-        listUsbDevices(),
+        listUsbDevices()
       ]);
+      profiles = nextProfiles;
+      devices = nextDevices;
     } catch (e) {
-      error = e instanceof Error ? e.message : 'Failed to load data';
+      error = e instanceof Error ? e.message : $t('settings.usb_copy_load_failed');
     } finally {
       loading = false;
     }
@@ -51,58 +80,77 @@
       auto_eject: true,
       enabled: true,
       last_run: null,
-      last_status: null,
+      last_status: null
     };
     isEditing = false;
+    notice = null;
     showProfileDialog = true;
   }
 
   function openEditProfile(profile: UsbCopyProfile) {
     editingProfile = { ...profile };
     isEditing = true;
+    notice = null;
     showProfileDialog = true;
   }
 
   async function saveProfile() {
     if (!editingProfile || !editingProfile.name || !editingProfile.device_uuid) {
-      alert('Please fill all required fields');
+      notice = { kind: 'error', text: $t('settings.usb_copy_save_failed') };
       return;
     }
 
+    busy = true;
     try {
       const profile = editingProfile as UsbCopyProfile;
-
       if (isEditing) {
         await updateUsbCopyProfile(profile.id, profile);
       } else {
         await createUsbCopyProfile(profile);
       }
-
       await loadData();
       closeDialog();
+      notice = { kind: 'ok', text: $t('settings.usb_copy_saved') };
     } catch (e) {
-      error = e instanceof Error ? e.message : 'Failed to save profile';
+      notice = {
+        kind: 'error',
+        text: e instanceof Error ? e.message : $t('settings.usb_copy_save_failed')
+      };
+    } finally {
+      busy = false;
     }
   }
 
   async function deleteProfile(id: string) {
-    if (!confirm('Are you sure you want to delete this profile?')) return;
-
+    busy = true;
     try {
       await deleteUsbCopyProfile(id);
       await loadData();
+      notice = { kind: 'ok', text: $t('settings.usb_copy_saved') };
     } catch (e) {
-      error = e instanceof Error ? e.message : 'Failed to delete profile';
+      notice = {
+        kind: 'error',
+        text: e instanceof Error ? e.message : $t('settings.usb_copy_save_failed')
+      };
+    } finally {
+      busy = false;
     }
   }
 
   async function executeCopy(profileId: string) {
+    busy = true;
+    notice = null;
     try {
       const result = await executeUsbCopy(profileId);
-      alert(result.message);
+      notice = { kind: 'ok', text: result?.message || $t('settings.usb_copy_started') };
       await loadData();
     } catch (e) {
-      error = e instanceof Error ? e.message : 'Failed to execute copy';
+      notice = {
+        kind: 'error',
+        text: e instanceof Error ? e.message : $t('settings.usb_copy_failed')
+      };
+    } finally {
+      busy = false;
     }
   }
 
@@ -116,573 +164,491 @@
     const units = ['B', 'KB', 'MB', 'GB', 'TB'];
     let size = bytes;
     let unitIndex = 0;
-
     while (size >= 1024 && unitIndex < units.length - 1) {
       size /= 1024;
       unitIndex++;
     }
-
     return `${size.toFixed(1)} ${units[unitIndex]}`;
   }
 
   function formatDate(dateStr: string | null): string {
-    if (!dateStr) return 'Never';
+    if (!dateStr) return $t('settings.usb_copy_never');
     return new Date(dateStr).toLocaleString();
+  }
+
+  function profileName(id: string | null): string {
+    return profiles.find((p) => p.id === id)?.name ?? id ?? '';
   }
 </script>
 
-<div class="page-container">
-  <header class="page-header">
-    <h1>USB One-Touch Copy</h1>
-    <button class="btn-primary" on:click={openNewProfile}>
-      Create Profile
-    </button>
+<div class="usb-page">
+  <header class="usb-header">
+    <div class="min-w-0">
+      <h2 class="usb-title">{$t('settings.usb_copy_title')}</h2>
+      <p class="usb-subtitle">{$t('settings.usb_copy_subtitle')}</p>
+    </div>
+    <Button variant="primary" onclick={openNewProfile} data-testid="usb-new-profile">
+      {$t('settings.usb_copy_new_profile')}
+    </Button>
   </header>
 
   {#if error}
-    <div class="alert alert-error">{error}</div>
+    <div class="usb-alert usb-alert-error" role="alert">{error}</div>
+  {/if}
+  {#if notice}
+    <div
+      class={notice.kind === 'ok' ? 'usb-alert usb-alert-ok' : 'usb-alert usb-alert-error'}
+      role={notice.kind === 'ok' ? 'status' : 'alert'}
+      data-testid="usb-notice"
+    >
+      {notice.text}
+    </div>
   {/if}
 
   {#if loading}
-    <div class="loading">Loading...</div>
+    <p class="usb-hint">{$t('common.loading')}</p>
   {:else}
-    <div class="content-grid">
-      <!-- Profiles Section -->
-      <section class="card">
-        <h2>Copy Profiles</h2>
+    <div class="usb-grid">
+      <section class="usb-card" aria-labelledby="usb-profiles-heading">
+        <h2 id="usb-profiles-heading" class="usb-card-title">
+          {$t('settings.usb_copy_profiles_title')}
+        </h2>
 
         {#if profiles.length === 0}
-          <p class="empty-state">No profiles configured yet. Create one to get started.</p>
+          <p class="usb-hint" data-testid="usb-no-profiles">
+            {$t('settings.usb_copy_profiles_empty')}
+          </p>
         {:else}
-          <div class="profiles-list">
-            {#each profiles as profile}
-              <div class="profile-item" class:disabled={!profile.enabled}>
-                <div class="profile-header">
-                  <h3>{profile.name}</h3>
-                  <span class="badge" class:enabled={profile.enabled} class:disabled={!profile.enabled}>
-                    {profile.enabled ? 'Enabled' : 'Disabled'}
+          <ul class="usb-profiles" data-testid="usb-profiles">
+            {#each profiles as profile (profile.id)}
+              <li class="usb-profile" class:is-disabled={!profile.enabled}>
+                <div class="usb-profile-head">
+                  <h3 class="usb-profile-name">{profile.name}</h3>
+                  <span class={profile.enabled ? 'usb-badge usb-badge-on' : 'usb-badge'}>
+                    {profile.enabled ? $t('settings.usb_copy_enabled') : $t('common.no')}
                   </span>
                 </div>
 
-                <div class="profile-details">
-                  <div class="detail-row">
-                    <span class="label">Device UUID:</span>
-                    <span class="value">{profile.device_uuid}</span>
+                <dl class="usb-details">
+                  <div>
+                    <dt>{$t('settings.usb_copy_device_uuid')}</dt>
+                    <dd>{profile.device_uuid}</dd>
                   </div>
-                  <div class="detail-row">
-                    <span class="label">Source:</span>
-                    <span class="value">{profile.source_path}</span>
+                  <div>
+                    <dt>{$t('settings.usb_copy_source')}</dt>
+                    <dd>{profile.source_path}</dd>
                   </div>
-                  <div class="detail-row">
-                    <span class="label">Destination:</span>
-                    <span class="value">{profile.destination_path}</span>
+                  <div>
+                    <dt>{$t('settings.usb_copy_destination')}</dt>
+                    <dd>{profile.destination_path}</dd>
                   </div>
-                  <div class="detail-row">
-                    <span class="label">Last Run:</span>
-                    <span class="value">{formatDate(profile.last_run)}</span>
+                  <div>
+                    <dt>{$t('settings.usb_copy_last_run')}</dt>
+                    <dd>{formatDate(profile.last_run)}</dd>
                   </div>
-                </div>
+                </dl>
 
-                <div class="profile-actions">
-                  <button
-                    class="btn-secondary btn-sm"
-                    on:click={() => executeCopy(profile.id)}
-                    disabled={!profile.enabled}
+                <div class="usb-actions">
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    onclick={() => executeCopy(profile.id)}
+                    disabled={busy || !profile.enabled}
+                    data-testid={`usb-run-${profile.id}`}
                   >
-                    Execute Now
-                  </button>
-                  <button
-                    class="btn-secondary btn-sm"
-                    on:click={() => openEditProfile(profile)}
+                    {$t('settings.usb_copy_run_now')}
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onclick={() => openEditProfile(profile)}
+                    data-testid={`usb-edit-${profile.id}`}
                   >
-                    Edit
-                  </button>
-                  <button
-                    class="btn-danger btn-sm"
-                    on:click={() => deleteProfile(profile.id)}
+                    {$t('settings.usb_copy_edit_profile')}
+                  </Button>
+                  <Button
+                    variant="danger"
+                    size="sm"
+                    onclick={() => deleteProfile(profile.id)}
+                    disabled={busy}
+                    data-testid={`usb-delete-${profile.id}`}
                   >
-                    Delete
-                  </button>
+                    {$t('settings.usb_copy_delete_profile')}
+                  </Button>
                 </div>
-              </div>
+              </li>
             {/each}
-          </div>
+          </ul>
         {/if}
       </section>
 
-      <!-- Devices Section -->
-      <section class="card">
-        <h2>Detected Devices</h2>
-
-        <button class="btn-secondary btn-sm" on:click={loadData}>
-          Refresh
-        </button>
+      <section class="usb-card" aria-labelledby="usb-devices-heading">
+        <div class="usb-card-head">
+          <h2 id="usb-devices-heading" class="usb-card-title">
+            {$t('settings.usb_copy_devices_title')}
+          </h2>
+          <Button variant="ghost" size="sm" onclick={loadData} data-testid="usb-refresh">
+            {$t('common.refresh')}
+          </Button>
+        </div>
 
         {#if devices.length === 0}
-          <p class="empty-state">No removable devices detected.</p>
+          <p class="usb-hint" data-testid="usb-no-devices">
+            {$t('settings.usb_copy_devices_empty')}
+          </p>
         {:else}
-          <div class="devices-list">
-            {#each devices as device}
-              <div class="device-item" class:matched={device.matching_profile}>
-                <div class="device-icon">💾</div>
-                <div class="device-info">
-                  <h3>{device.label || device.device}</h3>
-                  <p class="device-details">
-                    {device.uuid || 'No UUID'} • {formatBytes(device.size)}
-                  </p>
-                  {#if device.mounted}
-                    <p class="device-status mounted">
-                      📌 Mounted at {device.mount_point}
-                    </p>
-                  {:else}
-                    <p class="device-status unmounted">Not mounted</p>
-                  {/if}
-
-                  {#if device.matching_profile}
-                    <p class="matching-profile">
-                      ✓ Matches profile: {profiles.find(p => p.id === device.matching_profile)?.name}
-                    </p>
-                  {/if}
+          <ul class="usb-devices" data-testid="usb-devices">
+            {#each devices as device (device.device)}
+              <li class="usb-device" class:is-matched={device.matching_profile}>
+                <div class="usb-device-head">
+                  <span class="usb-device-name">{device.label ?? device.device}</span>
+                  <span class="usb-device-size">{formatBytes(device.size)}</span>
                 </div>
-              </div>
+                <p class="usb-hint">{device.uuid ?? '—'}</p>
+                <p class="usb-device-state">
+                  {device.mounted
+                    ? `${device.mount_point ?? ''}`
+                    : $t('settings.usb_copy_not_mounted')}
+                </p>
+                {#if device.matching_profile}
+                  <p class="usb-device-match">
+                    {$t('settings.usb_copy_matching_profile')}: {profileName(device.matching_profile)}
+                  </p>
+                {/if}
+              </li>
             {/each}
-          </div>
+          </ul>
         {/if}
       </section>
     </div>
   {/if}
 </div>
 
-<!-- Profile Dialog -->
-{#if showProfileDialog && editingProfile}
-  <div class="modal-overlay" on:click={closeDialog}>
-    <div class="modal-content" on:click|stopPropagation>
-      <div class="modal-header">
-        <h2>{isEditing ? 'Edit Profile' : 'New Profile'}</h2>
-        <button class="btn-close" on:click={closeDialog}>×</button>
+<Modal
+  open={showProfileDialog}
+  title={isEditing ? $t('settings.usb_copy_edit_profile') : $t('settings.usb_copy_new_profile')}
+  size="md"
+  onclose={closeDialog}
+>
+  {#if editingProfile}
+    <div class="usb-form">
+      <div class="usb-field">
+        <label for="usb-name">{$t('settings.usb_copy_profile_name')}</label>
+        <input id="usb-name" type="text" bind:value={editingProfile.name} data-testid="usb-name" />
       </div>
 
-      <div class="modal-body">
-        <div class="form-group">
-          <label>
-            Profile Name *
-            <input
-              type="text"
-              bind:value={editingProfile.name}
-              placeholder="My Camera Photos"
-            />
-          </label>
-        </div>
+      <div class="usb-field">
+        <label for="usb-uuid">{$t('settings.usb_copy_device_uuid')}</label>
+        <select id="usb-uuid" bind:value={editingProfile.device_uuid} data-testid="usb-uuid">
+          <option value="">—</option>
+          {#each devices as device (device.device)}
+            <option value={device.uuid ?? ''}>
+              {device.label ?? device.device} ({device.uuid ?? '—'})
+            </option>
+          {/each}
+        </select>
+        <p class="usb-hint">{$t('settings.usb_copy_device_uuid_hint')}</p>
+      </div>
 
-        <div class="form-group">
-          <label>
-            Device UUID *
-            <input
-              type="text"
-              bind:value={editingProfile.device_uuid}
-              placeholder="1234-5678"
-            />
-          </label>
-          <p class="hint">Find the UUID in the detected devices list above</p>
-        </div>
+      <div class="usb-field">
+        <label for="usb-source">{$t('settings.usb_copy_source')}</label>
+        <input
+          id="usb-source"
+          type="text"
+          bind:value={editingProfile.source_path}
+          placeholder="/DCIM"
+          data-testid="usb-source"
+        />
+        <p class="usb-hint">{$t('settings.usb_copy_source_hint')}</p>
+      </div>
 
-        <div class="form-group">
-          <label>
-            Source Path
-            <input
-              type="text"
-              bind:value={editingProfile.source_path}
-              placeholder="/DCIM"
-            />
-          </label>
-          <p class="hint">Path within the USB device to copy from</p>
-        </div>
+      <div class="usb-field">
+        <label for="usb-destination">{$t('settings.usb_copy_destination')}</label>
+        <input
+          id="usb-destination"
+          type="text"
+          bind:value={editingProfile.destination_path}
+          placeholder="/mnt/photos"
+          data-testid="usb-destination"
+        />
+        <p class="usb-hint">{$t('settings.usb_copy_destination_hint')}</p>
+      </div>
 
-        <div class="form-group">
-          <label>
-            Destination Path *
-            <input
-              type="text"
-              bind:value={editingProfile.destination_path}
-              placeholder="/mnt/photos"
-            />
-          </label>
-          <p class="hint">Absolute path on HomeVault to copy to</p>
-        </div>
-
-        <div class="form-group">
-          <label class="checkbox-label">
-            <input type="checkbox" bind:checked={editingProfile.verify_checksums} />
-            Verify checksums after copy
-          </label>
-        </div>
-
-        <div class="form-group">
-          <label class="checkbox-label">
-            <input type="checkbox" bind:checked={editingProfile.auto_eject} />
-            Auto-eject device after successful copy
-          </label>
-        </div>
-
-        <div class="form-group">
-          <label class="checkbox-label">
-            <input type="checkbox" bind:checked={editingProfile.enabled} />
-            Enable this profile
-          </label>
+      <div class="usb-field usb-field-check">
+        <input
+          id="usb-verify"
+          type="checkbox"
+          class="usb-check"
+          bind:checked={editingProfile.verify_checksums}
+          data-testid="usb-verify"
+        />
+        <div>
+          <label for="usb-verify">{$t('settings.usb_copy_verify_checksums')}</label>
+          <p class="usb-hint">{$t('settings.usb_copy_verify_checksums_hint')}</p>
         </div>
       </div>
 
-      <div class="modal-footer">
-        <button class="btn-secondary" on:click={closeDialog}>Cancel</button>
-        <button class="btn-primary" on:click={saveProfile}>
-          {isEditing ? 'Save Changes' : 'Create Profile'}
-        </button>
+      <div class="usb-field usb-field-check">
+        <input
+          id="usb-eject"
+          type="checkbox"
+          class="usb-check"
+          bind:checked={editingProfile.auto_eject}
+          data-testid="usb-eject"
+        />
+        <div>
+          <label for="usb-eject">{$t('settings.usb_copy_auto_eject')}</label>
+          <p class="usb-hint">{$t('settings.usb_copy_auto_eject_hint')}</p>
+        </div>
+      </div>
+
+      <div class="usb-field usb-field-check">
+        <input
+          id="usb-enabled"
+          type="checkbox"
+          class="usb-check"
+          bind:checked={editingProfile.enabled}
+          data-testid="usb-enabled"
+        />
+        <label for="usb-enabled">{$t('settings.usb_copy_enabled')}</label>
+      </div>
+
+      <div class="usb-actions">
+        <Button variant="primary" onclick={saveProfile} disabled={busy} data-testid="usb-save">
+          {$t('common.save')}
+        </Button>
+        <Button variant="ghost" onclick={closeDialog}>{$t('common.cancel')}</Button>
       </div>
     </div>
-  </div>
-{/if}
+  {/if}
+</Modal>
 
 <style>
-  .page-container {
-    padding: 24px;
-    max-width: 1400px;
-    margin: 0 auto;
-  }
-
-  .page-header {
+  .usb-page {
     display: flex;
+    flex-direction: column;
+    gap: 16px;
+    padding: 16px;
+    color: var(--hv-shell-text);
+  }
+
+  .usb-header {
+    display: flex;
+    align-items: flex-start;
     justify-content: space-between;
-    align-items: center;
-    margin-bottom: 24px;
+    gap: 16px;
+    flex-wrap: wrap;
   }
 
-  h1 {
-    font-size: 24px;
-    font-weight: 600;
+  /* Rendered as an `h2`: the desktop window chrome already carries the
+     screen's single `h1`, and a second one breaks the one-h1 invariant. */
+  .usb-title {
     margin: 0;
-  }
-
-  h2 {
-    font-size: 18px;
+    font-size: 1.125rem;
     font-weight: 600;
-    margin: 0 0 16px 0;
+    color: var(--hv-shell-text);
   }
 
-  .content-grid {
+  .usb-subtitle {
+    margin: 2px 0 0;
+    font-size: 0.8125rem;
+    color: var(--hv-shell-text-2);
+  }
+
+  .usb-alert {
+    border: 1px solid var(--hv-shell-border);
+    border-radius: 8px;
+    padding: 10px 12px;
+    font-size: 0.8125rem;
+  }
+
+  .usb-alert-error {
+    background: var(--hv-error-bg);
+    border-color: var(--hv-error);
+    color: var(--hv-error);
+  }
+
+  .usb-alert-ok {
+    background: var(--hv-success-bg);
+    border-color: var(--hv-success);
+    color: var(--hv-success);
+  }
+
+  .usb-hint {
+    margin: 4px 0 0;
+    font-size: 0.75rem;
+    color: var(--hv-shell-text-2);
+  }
+
+  .usb-grid {
     display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: 24px;
+    grid-template-columns: 1fr;
+    gap: 16px;
   }
 
-  @media (max-width: 1024px) {
-    .content-grid {
-      grid-template-columns: 1fr;
+  @media (min-width: 900px) {
+    .usb-grid {
+      grid-template-columns: 3fr 2fr;
     }
   }
 
-  .card {
-    background: var(--card-bg);
-    border-radius: 8px;
-    padding: 24px;
+  .usb-card {
+    border: 1px solid var(--hv-shell-border);
+    border-radius: 10px;
+    padding: 14px;
+    background: var(--hv-shell-surface);
   }
 
-  .alert {
-    padding: 12px 16px;
-    border-radius: 4px;
-    margin-bottom: 16px;
-  }
-
-  .alert-error {
-    background: var(--error-bg);
-    border: 1px solid var(--error-border);
-    color: var(--error-color);
-  }
-
-  .loading {
-    text-align: center;
-    padding: 48px;
-    color: var(--text-secondary);
-  }
-
-  .empty-state {
-    text-align: center;
-    padding: 48px 24px;
-    color: var(--text-secondary);
-    font-style: italic;
-  }
-
-  .profiles-list,
-  .devices-list {
+  .usb-card-head {
     display: flex;
-    flex-direction: column;
-    gap: 16px;
-  }
-
-  .profile-item {
-    border: 1px solid var(--border-color);
-    border-radius: 8px;
-    padding: 16px;
-    transition: border-color 0.2s;
-  }
-
-  .profile-item:hover {
-    border-color: var(--primary-color);
-  }
-
-  .profile-item.disabled {
-    opacity: 0.6;
-  }
-
-  .profile-header {
-    display: flex;
-    justify-content: space-between;
     align-items: center;
-    margin-bottom: 12px;
+    justify-content: space-between;
+    gap: 8px;
   }
 
-  .profile-header h3 {
-    font-size: 16px;
+  .usb-card-title {
+    margin: 0 0 10px;
+    font-size: 0.875rem;
     font-weight: 600;
+    color: var(--hv-settings-title);
+  }
+
+  .usb-profiles,
+  .usb-devices {
+    list-style: none;
     margin: 0;
+    padding: 0;
+    display: grid;
+    gap: 10px;
   }
 
-  .badge {
-    padding: 4px 12px;
-    border-radius: 12px;
-    font-size: 12px;
-    font-weight: 500;
-  }
-
-  .badge.enabled {
-    background: var(--success-bg);
-    color: var(--success-color);
-  }
-
-  .badge.disabled {
-    background: var(--secondary-bg);
-    color: var(--text-secondary);
-  }
-
-  .profile-details {
-    margin-bottom: 12px;
-  }
-
-  .detail-row {
-    display: flex;
-    gap: 8px;
-    margin-bottom: 4px;
-    font-size: 14px;
-  }
-
-  .detail-row .label {
-    color: var(--text-secondary);
-    min-width: 100px;
-  }
-
-  .detail-row .value {
-    color: var(--text-primary);
-    font-family: monospace;
-  }
-
-  .profile-actions {
-    display: flex;
-    gap: 8px;
-  }
-
-  .device-item {
-    display: flex;
-    gap: 16px;
-    border: 1px solid var(--border-color);
+  .usb-profile,
+  .usb-device {
+    border: 1px solid var(--hv-shell-border);
     border-radius: 8px;
-    padding: 16px;
-    transition: border-color 0.2s;
+    padding: 10px 12px;
   }
 
-  .device-item:hover {
-    border-color: var(--primary-color);
+  .usb-profile.is-disabled {
+    opacity: 0.65;
   }
 
-  .device-item.matched {
-    border-color: var(--success-color);
-    background: var(--success-bg-light);
-  }
-
-  .device-icon {
-    font-size: 32px;
-  }
-
-  .device-info {
-    flex: 1;
-  }
-
-  .device-info h3 {
-    font-size: 16px;
-    font-weight: 600;
-    margin: 0 0 4px 0;
-  }
-
-  .device-details {
-    font-size: 14px;
-    color: var(--text-secondary);
-    margin: 0 0 8px 0;
-  }
-
-  .device-status {
-    font-size: 13px;
-    margin: 4px 0;
-  }
-
-  .device-status.mounted {
-    color: var(--success-color);
-  }
-
-  .device-status.unmounted {
-    color: var(--text-secondary);
-  }
-
-  .matching-profile {
-    color: var(--success-color);
-    font-size: 13px;
-    font-weight: 500;
-    margin: 4px 0 0 0;
-  }
-
-  /* Modal Styles */
-  .modal-overlay {
-    position: fixed;
-    top: 0;
-    left: 0;
-    right: 0;
-    bottom: 0;
-    background: rgba(0, 0, 0, 0.5);
+  .usb-profile-head,
+  .usb-device-head {
     display: flex;
     align-items: center;
-    justify-content: center;
-    z-index: 1000;
-  }
-
-  .modal-content {
-    background: var(--card-bg);
-    border-radius: 8px;
-    width: 90%;
-    max-width: 600px;
-    max-height: 90vh;
-    overflow: hidden;
-    display: flex;
-    flex-direction: column;
-  }
-
-  .modal-header {
-    display: flex;
     justify-content: space-between;
-    align-items: center;
-    padding: 24px;
-    border-bottom: 1px solid var(--border-color);
-  }
-
-  .btn-close {
-    background: none;
-    border: none;
-    font-size: 24px;
-    cursor: pointer;
-    color: var(--text-secondary);
-  }
-
-  .modal-body {
-    padding: 24px;
-    overflow-y: auto;
-  }
-
-  .modal-footer {
-    display: flex;
-    justify-content: flex-end;
-    gap: 12px;
-    padding: 24px;
-    border-top: 1px solid var(--border-color);
-  }
-
-  .form-group {
-    margin-bottom: 20px;
-  }
-
-  label {
-    display: block;
-    font-size: 14px;
-    font-weight: 500;
+    gap: 8px;
     margin-bottom: 6px;
   }
 
-  input[type="text"],
-  input[type="number"] {
-    width: 100%;
-    padding: 10px 12px;
-    border: 1px solid var(--border-color);
-    border-radius: 4px;
-    font-size: 14px;
+  .usb-profile-name,
+  .usb-device-name {
+    margin: 0;
+    font-size: 0.8125rem;
+    font-weight: 600;
+    color: var(--hv-shell-text);
   }
 
-  .checkbox-label {
+  .usb-badge {
+    font-size: 0.6875rem;
+    padding: 2px 8px;
+    border-radius: 999px;
+    background: var(--hv-shell-border-soft);
+    color: var(--hv-shell-text-2);
+  }
+
+  .usb-badge-on {
+    background: var(--hv-success-bg);
+    color: var(--hv-success);
+  }
+
+  .usb-details {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 4px 12px;
+    margin: 0 0 8px;
+    font-size: 0.75rem;
+  }
+
+  .usb-details dt {
+    color: var(--hv-shell-text-3);
+  }
+
+  .usb-details dd {
+    margin: 0;
+    font-family: var(--hv-font-mono);
+    color: var(--hv-shell-text);
+    overflow-wrap: anywhere;
+  }
+
+  .usb-actions {
     display: flex;
-    align-items: center;
+    flex-wrap: wrap;
     gap: 8px;
-    cursor: pointer;
+    margin-top: 8px;
   }
 
-  .checkbox-label input[type="checkbox"] {
-    width: auto;
+  .usb-device.is-matched {
+    border-color: var(--hv-primary);
   }
 
-  .hint {
-    font-size: 12px;
-    color: var(--text-secondary);
-    margin-top: 4px;
+  .usb-device-size {
+    font-size: 0.75rem;
+    color: var(--hv-shell-text-2);
+    font-family: var(--hv-font-mono);
   }
 
-  /* Button Styles */
-  button {
-    padding: 8px 16px;
-    border: none;
-    border-radius: 4px;
-    font-size: 14px;
+  .usb-device-state {
+    margin: 4px 0 0;
+    font-size: 0.75rem;
+    color: var(--hv-shell-text-2);
+  }
+
+  .usb-device-match {
+    margin: 4px 0 0;
+    font-size: 0.75rem;
+    color: var(--hv-success);
+  }
+
+  .usb-form {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+  }
+
+  .usb-field label {
+    display: block;
+    font-size: 0.8125rem;
     font-weight: 500;
-    cursor: pointer;
-    transition: background-color 0.2s;
+    color: var(--hv-settings-title);
   }
 
-  .btn-primary {
-    background: var(--primary-color);
-    color: white;
+  .usb-field input[type='text'],
+  .usb-field select {
+    width: 100%;
+    margin-top: 4px;
+    border: 1px solid var(--hv-shell-border-strong);
+    border-radius: 6px;
+    padding: 6px 10px;
+    font-size: 0.8125rem;
+    background: var(--hv-shell-surface);
+    color: var(--hv-shell-text);
   }
 
-  .btn-primary:hover {
-    background: var(--primary-hover);
+  .usb-field-check {
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
   }
 
-  .btn-secondary {
-    background: var(--secondary-color);
-    color: var(--text-primary);
-  }
-
-  .btn-secondary:hover {
-    background: var(--secondary-hover);
-  }
-
-  .btn-danger {
-    background: var(--error-color);
-    color: white;
-  }
-
-  .btn-danger:hover {
-    background: var(--error-hover);
-  }
-
-  .btn-sm {
-    padding: 6px 12px;
-    font-size: 13px;
-  }
-
-  button:disabled {
-    opacity: 0.5;
-    cursor: not-allowed;
+  /* A bare checkbox inherits `width: 100%` from base.css (design-system
+     pitfall 6). */
+  .usb-check {
+    height: 1rem;
+    width: 1rem;
+    flex: none;
+    margin-top: 2px;
+    accent-color: var(--hv-primary);
   }
 </style>

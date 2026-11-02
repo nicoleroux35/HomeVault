@@ -24,9 +24,20 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 use tokio::process::Command;
-use tokio::time::{timeout, Duration};
+use tokio::time::Duration;
+
+use crate::utils::process::run_timed_async;
 
 const LSBLK_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Deadline for the "is this disk already in an array?" probes. `mdadm
+/// --examine` and `btrfs filesystem show` touch every member device and can
+/// block on a failing disk, so neither may run unbounded from a request.
+const POOL_PROBE_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Deadline for a mount / unmount / power-off. udisks2 talks to the kernel and
+/// to the device itself; a wedged USB bridge must not hold the copy job.
+const DEVICE_OP_TIMEOUT: Duration = Duration::from_secs(30);
 const COPY_BUFFER_SIZE: usize = 8 * 1024 * 1024; // 8MB buffer
 
 /// USB copy profile
@@ -69,8 +80,13 @@ pub struct UsbCopyProfile {
 /// Copy operation status
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum CopyStatus {
-    Success { files_copied: u64, bytes_copied: u64 },
-    Failed { error: String },
+    Success {
+        files_copied: u64,
+        bytes_copied: u64,
+    },
+    Failed {
+        error: String,
+    },
     Cancelled,
 }
 
@@ -119,19 +135,11 @@ pub struct UsbCopyService;
 impl UsbCopyService {
     /// List all removable devices
     pub async fn list_devices() -> Result<Vec<RemovableDevice>, String> {
-        let output = timeout(
-            LSBLK_TIMEOUT,
-            Command::new("lsblk")
-                .args(&[
-                    "-nbo",
-                    "NAME,UUID,LABEL,SIZE,MOUNTPOINT,RM,TYPE",
-                    "-J",
-                ])
-                .output(),
-        )
-        .await
-        .map_err(|_| "lsblk timed out".to_string())?
-        .map_err(|e| format!("failed to run lsblk: {}", e))?;
+        let mut cmd = Command::new("lsblk");
+        cmd.args(["-nbo", "NAME,UUID,LABEL,SIZE,MOUNTPOINT,RM,TYPE", "-J"]);
+        let output = run_timed_async(&mut cmd, LSBLK_TIMEOUT)
+            .await
+            .ok_or_else(|| "lsblk timed out".to_string())?;
 
         if !output.status.success() {
             return Err("lsblk failed".to_string());
@@ -167,9 +175,7 @@ impl UsbCopyService {
                 let device = format!("/dev/{}", block["name"].as_str().unwrap_or(""));
                 let uuid = block["uuid"].as_str().map(|s| s.to_string());
                 let label = block["label"].as_str().map(|s| s.to_string());
-                let mount_point = block["mountpoint"]
-                    .as_str()
-                    .map(|s| PathBuf::from(s));
+                let mount_point = block["mountpoint"].as_str().map(|s| PathBuf::from(s));
                 let size = block["size"]
                     .as_str()
                     .and_then(|s| s.parse::<u64>().ok())
@@ -217,7 +223,10 @@ impl UsbCopyService {
 
         // Validate source path (must be relative or absolute within device)
         let source = PathBuf::from(&profile.source_path);
-        if source.components().any(|c| c == std::path::Component::ParentDir) {
+        if source
+            .components()
+            .any(|c| c == std::path::Component::ParentDir)
+        {
             return Err("source path cannot contain '..'".to_string());
         }
 
@@ -245,10 +254,16 @@ impl UsbCopyService {
         }
 
         // Must not be a system path
-        let forbidden = ["/", "/bin", "/boot", "/dev", "/etc", "/lib", "/proc", "/root", "/run", "/sbin", "/sys", "/usr"];
+        let forbidden = [
+            "/", "/bin", "/boot", "/dev", "/etc", "/lib", "/proc", "/root", "/run", "/sbin",
+            "/sys", "/usr",
+        ];
 
         for forbidden_path in &forbidden {
-            if path.starts_with(forbidden_path) && (path.len() == forbidden_path.len() || path.as_bytes().get(forbidden_path.len()) == Some(&b'/')) {
+            if path.starts_with(forbidden_path)
+                && (path.len() == forbidden_path.len()
+                    || path.as_bytes().get(forbidden_path.len()) == Some(&b'/'))
+            {
                 return Err(format!("destination cannot be in {}", forbidden_path));
             }
         }
@@ -261,11 +276,9 @@ impl UsbCopyService {
         // Check if device is used by any pool (mdadm, ZFS, Btrfs)
 
         // Check mdadm
-        let mdadm_output = Command::new("sudo")
-            .args(&["mdadm", "--examine", device])
-            .output()
-            .await
-            .ok();
+        let mut mdadm_cmd = Command::new("sudo");
+        mdadm_cmd.args(["mdadm", "--examine", device]);
+        let mdadm_output = run_timed_async(&mut mdadm_cmd, POOL_PROBE_TIMEOUT).await;
 
         if let Some(output) = mdadm_output {
             if output.status.success() {
@@ -274,11 +287,9 @@ impl UsbCopyService {
         }
 
         // Check ZFS
-        let zpool_output = Command::new("sudo")
-            .args(&["zpool", "status"])
-            .output()
-            .await
-            .ok();
+        let mut zpool_cmd = Command::new("sudo");
+        zpool_cmd.args(["zpool", "status"]);
+        let zpool_output = run_timed_async(&mut zpool_cmd, POOL_PROBE_TIMEOUT).await;
 
         if let Some(output) = zpool_output {
             let stdout = String::from_utf8_lossy(&output.stdout);
@@ -288,11 +299,9 @@ impl UsbCopyService {
         }
 
         // Check Btrfs
-        let btrfs_output = Command::new("sudo")
-            .args(&["btrfs", "filesystem", "show"])
-            .output()
-            .await
-            .ok();
+        let mut btrfs_cmd = Command::new("sudo");
+        btrfs_cmd.args(["btrfs", "filesystem", "show"]);
+        let btrfs_output = run_timed_async(&mut btrfs_cmd, POOL_PROBE_TIMEOUT).await;
 
         if let Some(output) = btrfs_output {
             let stdout = String::from_utf8_lossy(&output.stdout);
@@ -316,15 +325,11 @@ impl UsbCopyService {
         }
 
         // Need to mount - use udisksctl for user-space mounting
-        let output = timeout(
-            Duration::from_secs(30),
-            Command::new("udisksctl")
-                .args(&["mount", "-b", device])
-                .output(),
-        )
-        .await
-        .map_err(|_| "mount timed out".to_string())?
-        .map_err(|e| format!("failed to mount: {}", e))?;
+        let mut mount_cmd = Command::new("udisksctl");
+        mount_cmd.args(["mount", "-b", device]);
+        let output = run_timed_async(&mut mount_cmd, DEVICE_OP_TIMEOUT)
+            .await
+            .ok_or_else(|| "mount timed out".to_string())?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
@@ -345,15 +350,11 @@ impl UsbCopyService {
     /// Unmount and eject a device
     pub async fn eject_device(device: &str) -> Result<(), String> {
         // Unmount first
-        let output = timeout(
-            Duration::from_secs(30),
-            Command::new("udisksctl")
-                .args(&["unmount", "-b", device])
-                .output(),
-        )
-        .await
-        .map_err(|_| "unmount timed out".to_string())?
-        .map_err(|e| format!("failed to unmount: {}", e))?;
+        let mut unmount_cmd = Command::new("udisksctl");
+        unmount_cmd.args(["unmount", "-b", device]);
+        let output = run_timed_async(&mut unmount_cmd, DEVICE_OP_TIMEOUT)
+            .await
+            .ok_or_else(|| "unmount timed out".to_string())?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
@@ -364,15 +365,11 @@ impl UsbCopyService {
         }
 
         // Power off the device
-        let output = timeout(
-            Duration::from_secs(30),
-            Command::new("udisksctl")
-                .args(&["power-off", "-b", device])
-                .output(),
-        )
-        .await
-        .map_err(|_| "power-off timed out".to_string())?
-        .map_err(|e| format!("failed to power off: {}", e))?;
+        let mut poweroff_cmd = Command::new("udisksctl");
+        poweroff_cmd.args(["power-off", "-b", device]);
+        let output = run_timed_async(&mut poweroff_cmd, DEVICE_OP_TIMEOUT)
+            .await
+            .ok_or_else(|| "power-off timed out".to_string())?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
@@ -407,7 +404,8 @@ impl UsbCopyService {
         let total_files = Self::count_files(&source).await?;
 
         // Copy files with progress
-        let (files_copied, bytes_copied) = Self::copy_recursive(&source, &destination, total_files).await?;
+        let (files_copied, bytes_copied) =
+            Self::copy_recursive(&source, &destination, total_files).await?;
 
         // Verify if requested
         if profile.verify_checksums {

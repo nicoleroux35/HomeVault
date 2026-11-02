@@ -1,6 +1,6 @@
 //! Integration tests for UPS server mode
 
-use homevault::ups_server::{UpsServerConfig, UpsServerService, ShutdownPolicy};
+use homevault::ups_server::{ShutdownPolicy, UpsServerConfig, UpsServerService};
 use std::collections::HashMap;
 
 #[tokio::test]
@@ -19,15 +19,13 @@ fn test_validate_config_accepts_valid() {
         bind_interface: "eth0".to_string(),
         bind_address: Some("192.168.1.1".parse().unwrap()),
         port: 3493,
-        allowed_clients: vec![
-            homevault::ups_server::UpsClient {
-                name: "client1".to_string(),
-                address: "192.168.1.100".to_string(),
-                username: "monitor".to_string(),
-                password_hash: "hashed".to_string(),
-                master: false,
-            },
-        ],
+        allowed_clients: vec![homevault::ups_server::UpsClient {
+            name: "client1".to_string(),
+            address: "192.168.1.100".to_string(),
+            username: "monitor".to_string(),
+            password_hash: "hashed".to_string(),
+            master: false,
+        }],
         shutdown_policy: ShutdownPolicy::default(),
         max_clients: 10,
     };

@@ -879,6 +879,12 @@ install_optional netplan.io "Netplan (persist interface configuration)"
 # do not ship it, so the action used to fail with nothing to install.
 install_optional isc-dhcp-client "DHCP client (dhclient)"
 
+# `dnsmasq` backs the DHCP/TFTP/PXE server (`src/dhcp_server.rs`). Serving
+# addresses on a home LAN is a choice, not a baseline: `install_optional`
+# keeps a declined answer non-fatal, and the DHCP card hides its editors and
+# names the missing package when it is absent.
+install_optional dnsmasq "DHCP/TFTP/PXE server (dnsmasq)"
+
 # Security tools (antivirus scanning, firewall). Non-fatal like the rest of
 # install_optional: HomeVault must still run fine if these are declined, and
 # detects their absence at runtime to degrade the UI instead of crashing.

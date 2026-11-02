@@ -80,7 +80,9 @@ fn test_calculate_duty_enforces_minimum() {
     ];
 
     let duty = FanControlService::calculate_duty(20, &curve, 0);
-    let min_duty = 51 * 100 / 255; // MIN_SAFE_PWM
+    // `MIN_SAFE_PWM` is 51 on the 0-255 scale; converting it to a duty
+    // percentage needs u32 arithmetic (51 * 100 = 5100 overflows a u8).
+    let min_duty = (51u32 * 100 / 255) as u8;
     assert!(duty >= min_duty, "Duty should be at least {}, got {}", min_duty, duty);
 }
 
