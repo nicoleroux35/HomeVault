@@ -427,7 +427,17 @@
           smtp_enabled: data.notifications?.smtp_enabled ?? false,
           webhook_url: data.notifications?.webhook_url || '',
           webhook_enabled: data.notifications?.webhook_enabled ?? false,
-          webhook_format: data.notifications?.webhook_format || 'generic'
+          webhook_format: data.notifications?.webhook_format || 'generic',
+          sms: {
+            enabled: data.notifications?.sms?.enabled ?? false,
+            endpoint: data.notifications?.sms?.endpoint || '',
+            body_template:
+              data.notifications?.sms?.body_template || '{"to":"%to%","text":"%text%"}',
+            recipient: data.notifications?.sms?.recipient || '',
+            // The token itself never leaves the server; only its presence does.
+            token: '',
+            token_set: data.notifications?.sms?.token_set ?? false
+          }
         };
         draft.appearance = {
           wallpaper: '',
@@ -1276,6 +1286,77 @@
               <option value="discord">{$t('notifications.events.format_discord')}</option>
             </select>
             <p class={settingsRowHint}>{$t('notifications.events.webhook_format_help')}</p>
+          </div>
+
+          <!-- SMS channel (phase B3). Provider-agnostic: the admin pastes a
+               URL and a body template rather than picking a vendor, so no SDK
+               is added and no vendor can break the appliance. -->
+          <div class={settingsRow}>
+            <div class="min-w-0">
+              <span class={settingsRowLabel} id="sms-enabled-label">{$t('settings.sms_enable')}</span>
+              <p class={settingsRowHint}>{$t('settings.sms_enable_hint')}</p>
+            </div>
+            <Switch
+              bind:checked={draft.notifications.sms.enabled}
+              accent={activeCat.accent}
+              ariaLabelledby="sms-enabled-label"
+            />
+          </div>
+          <div class={settingsRowStacked}>
+            <label class={settingsRowLabel} for="smsRecipient">{$t('settings.sms_recipient')}</label>
+            <input
+              id="smsRecipient"
+              class={settingsInput}
+              type="tel"
+              inputmode="tel"
+              bind:value={draft.notifications.sms.recipient}
+              placeholder="+33612345678"
+              aria-describedby="smsRecipientHint"
+              data-testid="sms-recipient"
+            />
+            <p class={settingsRowHint} id="smsRecipientHint">{$t('settings.sms_recipient_hint')}</p>
+          </div>
+          <div class={settingsRowStacked}>
+            <label class={settingsRowLabel} for="smsEndpoint">{$t('settings.sms_endpoint')}</label>
+            <input
+              id="smsEndpoint"
+              class={settingsInput}
+              type="url"
+              bind:value={draft.notifications.sms.endpoint}
+              placeholder="https://sms.example.com/send"
+              aria-describedby="smsEndpointHint"
+              data-testid="sms-endpoint"
+            />
+            <p class={settingsRowHint} id="smsEndpointHint">{$t('settings.sms_endpoint_hint')}</p>
+          </div>
+          <div class={settingsRowStacked}>
+            <label class={settingsRowLabel} for="smsBody">{$t('settings.sms_body')}</label>
+            <textarea
+              id="smsBody"
+              class={cn(settingsInput, 'min-h-[72px] font-[family-name:var(--hv-font-mono)] text-xs')}
+              bind:value={draft.notifications.sms.body_template}
+              aria-describedby="smsBodyHint"
+              data-testid="sms-body"
+            ></textarea>
+            <p class={settingsRowHint} id="smsBodyHint">{$t('settings.sms_body_hint')}</p>
+          </div>
+          <div class={settingsRowStacked}>
+            <label class={settingsRowLabel} for="smsToken">{$t('settings.sms_token')}</label>
+            <input
+              id="smsToken"
+              class={settingsInput}
+              type="password"
+              autocomplete="off"
+              bind:value={draft.notifications.sms.token}
+              placeholder={draft.notifications.sms.token_set
+                ? $t('settings.sms_token_keep')
+                : $t('settings.sms_token_placeholder')}
+              aria-describedby="smsTokenHint"
+              data-testid="sms-token"
+            />
+            <p class={settingsRowHint} id="smsTokenHint">
+              {$t('settings.sms_token_hint')}
+            </p>
           </div>
         </div>
         <!-- Per-event toggles: a separate endpoint (notification_events),

@@ -350,6 +350,13 @@ pub(crate) async fn notify(
         }
     }
 
+    // SMS sits beside email and the webhook, under the same threshold gate: a
+    // muted event returned earlier, and a severity below the threshold never
+    // reaches any channel.
+    if let Some(sms) = &settings.sms {
+        dispatch_sms(sms, severity, title, message).await;
+    }
+
     if settings.webhook_enabled.unwrap_or(false) {
         if let Some(url) = &settings.webhook_url {
             // ROADMAP 13.5: re-validate at dispatch. A URL persisted before
@@ -384,6 +391,67 @@ pub(crate) async fn notify(
                 Err(e) => tracing::warn!("Notification engine: failed to post webhook: {}", e),
             }
         }
+    }
+}
+
+/// Sends one alert over the SMS channel, when it is configured and enabled.
+///
+/// The recipient, the body template and the truncation are decided by
+/// `crate::sms` — pure and unit-tested there — so this only resolves the sealed
+/// token and performs the POST. A failure is logged and never propagated: an
+/// unreachable SMS gateway must not stop the email or webhook channels, and it
+/// must certainly not stop the health/backup scheduler tick.
+pub(crate) async fn dispatch_sms(
+    settings: &crate::sms::SmsSettings,
+    severity: &str,
+    title: &str,
+    message: &str,
+) {
+    if !settings.enabled {
+        return;
+    }
+
+    // An unseal that fails means the appliance key changed (a restored data
+    // directory on another machine). Sending without the credential would
+    // produce a 401 the admin cannot explain, so it is refused here with a
+    // sentence that names the cause.
+    let token = if settings.token_sealed.trim().is_empty() {
+        None
+    } else {
+        match crate::storage::secret_box::open(crate::sms::SMS_TOKEN_SCOPE, &settings.token_sealed)
+        {
+            Ok(token) => Some(token),
+            Err(e) => {
+                tracing::warn!(
+                    "Notification engine: the stored SMS token cannot be opened ({}). \
+                     Re-enter it in Settings → Notifications.",
+                    e
+                );
+                return;
+            }
+        }
+    };
+
+    let request =
+        match crate::sms::build_request(settings, token.as_deref(), severity, title, message) {
+            Ok(request) => request,
+            Err(e) => {
+                tracing::warn!("Notification engine: SMS not sent: {}", e.message());
+                return;
+            }
+        };
+
+    let mut builder = webhook_client().post(&request.endpoint).body(request.body);
+    for (name, value) in &request.headers {
+        builder = builder.header(name, value);
+    }
+    match builder.send().await {
+        Ok(resp) if resp.status().is_success() => {}
+        Ok(resp) => tracing::warn!(
+            "Notification engine: SMS gateway answered {}",
+            resp.status()
+        ),
+        Err(e) => tracing::warn!("Notification engine: failed to send SMS: {}", e),
     }
 }
 

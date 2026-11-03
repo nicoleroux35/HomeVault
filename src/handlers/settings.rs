@@ -517,6 +517,11 @@ pub struct NotificationSettings {
     /// Outgoing webhook payload shape (generic | slack | discord).
     #[serde(default)]
     pub webhook_format: Option<String>,
+    /// SMS alert channel (phase B3). Absent = never configured, which reads
+    /// as disabled; the field is spelled out here rather than flattened so a
+    /// settings file written before SMS existed still loads.
+    #[serde(default)]
+    pub sms: Option<crate::sms::SmsSettings>,
 }
 
 impl Default for NotificationSettings {
@@ -530,6 +535,7 @@ impl Default for NotificationSettings {
             smtp_enabled: Some(false),
             event_toggles: None,
             webhook_format: None,
+            sms: None,
         }
     }
 }
@@ -1636,6 +1642,39 @@ pub async fn handle_notification_settings_update(
         }
         next.webhook_format = Some(format.clone());
     }
+    if let Some(sms) = &req.sms {
+        if let Err(e) = crate::sms::validate(sms) {
+            return ResponseHelper::json_error(e.message());
+        }
+        // The token arrives in clear on the wire and is sealed before it is
+        // stored. An empty value means "keep what is already stored", so the
+        // admin can edit the number without re-typing the credential — the
+        // read path never returns it, so it could not be echoed back anyway.
+        let mut incoming = sms.clone();
+        incoming.endpoint = incoming.endpoint.trim().to_string();
+        incoming.recipient = incoming.recipient.trim().to_string();
+        if incoming.token_sealed.trim().is_empty() {
+            incoming.token_sealed = next
+                .sms
+                .as_ref()
+                .map(|s| s.token_sealed.clone())
+                .unwrap_or_default();
+        } else {
+            match crate::storage::secret_box::seal(
+                crate::sms::SMS_TOKEN_SCOPE,
+                &incoming.token_sealed,
+            ) {
+                Ok(sealed) => incoming.token_sealed = sealed,
+                Err(e) => {
+                    return ResponseHelper::json_error(format!(
+                        "Could not store the SMS token: {}",
+                        e
+                    ))
+                }
+            }
+        }
+        next.sms = Some(incoming);
+    }
     *NOTIFICATION_SETTINGS.write() = next;
 
     // Persist settings
@@ -1672,6 +1711,9 @@ pub async fn handle_notification_settings_get(
         "webhook_enabled": settings.webhook_enabled,
         "event_toggles": settings.event_toggles,
         "webhook_format": settings.webhook_format,
+        // Redacted: `token_set` says whether a credential is stored; the
+        // sealed blob itself never leaves the process (docs/API.md → Secrets).
+        "sms": settings.sms.as_ref().map(crate::sms::redacted),
     }))
 }
 

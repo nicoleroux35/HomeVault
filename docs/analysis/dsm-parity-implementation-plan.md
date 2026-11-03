@@ -162,7 +162,7 @@ suites green, `docs/INDEX.md`/`API.md`/`SCREENS.md`/`TESTING.md` updated, and a
 |---|---|---|---|
 | **B1** | **File tags** (source #9) | M | Migration `075_file_tags.sql` (`path`, `tag`, `owner`), `GET/POST/DELETE /api/explorer/tags`, tag filter in the Explorer sidebar next to Favorites, tag chips in the ⌘K overlay. Favorites already prove the pattern. |
 | **B2** | **ISO mount** (source #20) — **shipped 2026-11-02** ✅ | S | Delivered as `src/iso_mount.rs` + `src/handlers/iso_mount.rs` + `IsoMountPanel.svelte`; `docs/guides/iso-mount.md`. Route is `/api/explorer/iso`, not `mount-iso`. Mounts are `ro,nosuid,nodev`; the mount point is **derived** from a deterministic slug under `{DATA_DIRECTORY}/iso`, never taken from the request; the image must sit inside the caller's Explorer roots; a `..` is refused before `canonicalize`; `/proc/mounts` is the authority, not a JSON index; a failed mount detaches its loop device. Tests: 20 unit (module), 5 unit (handlers), `iso_mount_integration` **11/11**. Deviation: no automated successful-mount round trip (no passwordless sudo here, and a real mount would leave a device attached) — argv and containment are asserted directly, as `iscsi.md` already records for its hardware suite. |
-| **B3** | **SMS notification channel** (source #13) | S | Add a `sms` variant to `src/notification_engine.rs` beside email/webhook; provider-agnostic HTTP POST with a URL template, so no vendor SDK is added. Secrets sealed like `webhook_url`. |
+| **B3** | **SMS notification channel** (source #13) — **shipped 2026-11-02** ✅ | S | Delivered as `src/sms.rs` (pure: E.164 validation, one-segment composition, truncation, body templating, request building) + `notification_engine::dispatch_sms` + the Settings form; `docs/guides/sms.md`. Provider-agnostic HTTP POST with a `%to%`/`%text%` template — no vendor SDK. Tests: 19 unit, `sms_integration` **10/10**. Deviation: no automated delivery (it would depend on an external gateway); the exact request is asserted by `build_request`. |
 | **B4** | **SNMP agent** (source #14) | M | The inverse of `src/snmp.rs`: generate `/etc/snmp/snmpd.conf` (community, bind address, sysLocation), start/stop `snmpd`, expose `GET/PUT /api/snmp/agent`. Off by default, LAN-bound, never `public` by default. |
 | **B5** | **Link aggregation** (source #15) | M | `InterfaceType::Bond` + `POST /api/network/bonds` (mode 802.3ad/active-backup, member NICs), persisted through the existing `persist_interface_config` + `apply_persisted_config` rollback path in `src/network.rs`. |
 | **B6** | **VLAN configuration** (source #16) | M | Extend the existing `InterfaceType::Vlan` detection into creation: parent interface + VID → `ip link add link … type vlan`, same persist/apply/rollback path. |
@@ -294,6 +294,33 @@ Detail in `TESTING.md` → "P0.1 — Quick-win E2E verification pass closed";
 **Remaining in Phase 0: P0.2** — cross-cutting capability/API contracts
 (uniform unsupported-capability responses, admin-mutation/secrets/audit/
 `requires_restart` conventions) before any Phase B item starts.
+
+## 13. B3 — SMS alerts — shipped 2026-11-02
+
+Second Phase B item. Decisions worth keeping:
+
+- **Provider-agnostic, not vendor-specific.** The admin supplies a URL, a body
+  template (`%to%`/`%text%`) and an optional bearer token. Twilio, OVH, a
+  self-hosted gateway all work; no SDK is added, and a vendor changing its API
+  cannot break the appliance.
+- **E.164 or nothing.** `+` then 8–15 digits. `0612345678`, `+33 6 12…` and
+  `+33-6-12…` are all refused, and the refusal shows the expected shape rather
+  than only rejecting.
+- **Disabled is never validated**, so a half-filled form can always be cleared.
+- **The token is sealed and never returned.** `GET` answers `token_set: bool`
+  and has no field that could carry the credential; a blank value on `PUT`
+  means "keep the stored one", which is the only way to change the number
+  without re-typing a secret the API never shows.
+- **An unopenable token is a refusal, not a silent 401** (a data directory
+  restored on another machine changes the key).
+- **One segment.** `[severity] Title: message`, whitespace collapsed, truncated
+  to 160 **characters** with a visible `…` — a byte-index cut would split an
+  accented character, and a silent cut leaves the reader guessing.
+- **A failed send never propagates**: the other channels still run and the
+  scheduler tick is never blocked (same 10 s-timeout client as the webhook).
+
+Verified live: `settings.json` holds `hv1:…`, the plaintext appears nowhere, and
+a number without a country code is a `400` naming the shape.
 
 ## 12. B2 — read-only ISO mounting — shipped 2026-11-02
 

@@ -1392,6 +1392,18 @@ guided_redundancy_apply_unavailable = "Das Erstellen des Verbunds von hier ist n
 guided_redundancy_apply_failed = "Das Layout konnte nicht übernommen werden."
 guided_redundancy_load_failed = "Die Laufwerksvorschläge konnten nicht gelesen werden."
 
+sms_enable = "SMS senden"
+sms_enable_hint = "Eine kurze Nachricht pro Alarm, zu denselben Ereignissen wie die E-Mail."
+sms_recipient = "Telefonnummer"
+sms_recipient_hint = "Im internationalen Format mit führendem „+“, zum Beispiel +33612345678. Eine Nummer ohne Ländervorwahl wird abgelehnt."
+sms_endpoint = "Adresse des Gateways"
+sms_endpoint_hint = "Die URL, an die HomeVault sendet. Jeder Anbieter ist möglich: Twilio, OVH, ein selbst gehostetes Gateway."
+sms_body = "Anfragetext"
+sms_body_hint = "Was gesendet wird, mit ersetztem %to% und %text%. Verwenden Sie das JSON- oder Formularformat Ihres Gateways."
+sms_token = "Zugriffstoken"
+sms_token_hint = "Wird als Bearer-Token gesendet. Verschlüsselt gespeichert und nie erneut angezeigt."
+sms_token_keep = "Gespeichert — leer lassen, um es zu behalten"
+sms_token_placeholder = "Anbieter-Token einfügen"
 [snmp]
 info = "SNMP-Informationen"
 interfaces = "Netzwerkschnittstellen"

@@ -123,6 +123,16 @@ export interface DraftValues {
     webhook_url: string;
     webhook_enabled: boolean;
     webhook_format: string;
+    sms: {
+      enabled: boolean;
+      endpoint: string;
+      body_template: string;
+      recipient: string;
+      /** The token as typed. Never hydrated from the server, which only says
+       *  `token_set`; blank therefore means "keep the stored one". */
+      token: string;
+      token_set: boolean;
+    };
   };
   update: { check_frequency: string };
   // ROADMAP 26.2: `theme` was removed. Appearance now includes wallpaper,
@@ -174,6 +184,14 @@ export const draft = $state<DraftValues>({
     webhook_url: '',
     webhook_enabled: false,
     webhook_format: 'generic',
+    sms: {
+      enabled: false,
+      endpoint: '',
+      body_template: '{"to":"%to%","text":"%text%"}',
+      recipient: '',
+      token: '',
+      token_set: false,
+    },
   },
   update: { check_frequency: 'weekly' },
   appearance: { wallpaper: '', accent_color: '#1E62AE', density: 'comfortable' },
@@ -428,6 +446,17 @@ async function saveGroup(group: SettingsGroup): Promise<void> {
         webhook_url: draft.notifications.webhook_url,
         webhook_enabled: draft.notifications.webhook_enabled,
         webhook_format: draft.notifications.webhook_format,
+        sms: {
+          enabled: draft.notifications.sms.enabled,
+          endpoint: draft.notifications.sms.endpoint,
+          body_template: draft.notifications.sms.body_template,
+          recipient: draft.notifications.sms.recipient,
+          extra_headers: [],
+          // Blank keeps the stored token: the server treats an empty value as
+          // "unchanged", which is the only way an admin can edit the number
+          // without re-typing a credential the API never shows them.
+          token_sealed: draft.notifications.sms.token,
+        },
       });
       if (!res.success) throw new Error(group);
       break;

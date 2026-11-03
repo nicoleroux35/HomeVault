@@ -104,6 +104,7 @@ pub mod saml;
 pub mod scheduled_tasks_scheduler;
 pub mod security_advisor;
 pub mod smart;
+pub mod sms;
 pub mod snapshot_lock_scheduler;
 pub mod snapshot_locks;
 pub mod snapshot_scheduler;

@@ -1430,6 +1430,19 @@ class ApiClient {
     webhook_url?: string;
     webhook_enabled?: boolean;
     webhook_format?: string;
+    /**
+     * SMS channel (phase B3). `token` is the credential in clear on the wire
+     * and is sealed server-side; the read path only ever answers `token_set`,
+     * so an empty value means "keep the stored one" rather than "erase it".
+     */
+    sms?: {
+      enabled: boolean;
+      endpoint: string;
+      body_template: string;
+      recipient: string;
+      extra_headers: Array<[string, string]>;
+      token_sealed: string;
+    };
   }) {
     return this.put('/settings/notifications', data);
   }

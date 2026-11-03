@@ -1272,6 +1272,27 @@ on the Users home-folder calls (`POST /users`, `PUT /users/{u}/full`,
 upload/download caps, `transfer-quotas/*`). See
 [Disk Quotas](./guides/quotas.md).
 
+## SMS alerts — inside `settings/notifications` (admin)
+
+The SMS channel has no dedicated route: it rides the notifications settings as
+an `sms` object (phase B3). See [SMS](./guides/sms.md).
+
+| Field | Meaning |
+|---|---|
+| `enabled` | dispatch on the same events/threshold as email and webhook |
+| `endpoint` | URL to POST to |
+| `body_template` | body with `%to%` and `%text%` placeholders |
+| `recipient` | E.164 (`+33612345678`) — `400` when it is not |
+| `extra_headers` | optional `[[name, value], …]` |
+| token | sealed under the `sms-token` scope before it is stored |
+
+**`GET` answers a redacted view**: `{ enabled, endpoint, body_template,
+recipient, extra_headers, token_set }` — there is no field that could carry the
+credential. On `PUT`, a **blank** token means "keep the stored one", which is
+the only way to change the number without re-typing a secret the API never
+returns. A configuration that is disabled is never validated, so a half-filled
+form can always be cleared.
+
 ## Notifications — `notifications/*` (`auth`)
 
 Broadcast-style system notifications (health alerts, backup results), populated

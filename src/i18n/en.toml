@@ -1393,6 +1393,18 @@ guided_redundancy_apply_unavailable = "Creating the array from here is not avail
 guided_redundancy_apply_failed = "The layout could not be applied."
 guided_redundancy_load_failed = "Could not read the disk suggestions."
 
+sms_enable = "Send an SMS"
+sms_enable_hint = "One short message per alert, on the same events as the email."
+sms_recipient = "Phone number"
+sms_recipient_hint = "In international form with a leading '+', for example +33612345678. A number without a country code is refused."
+sms_endpoint = "Gateway address"
+sms_endpoint_hint = "The URL HomeVault posts to. Any provider works: Twilio, OVH, a self-hosted gateway."
+sms_body = "Request body"
+sms_body_hint = "What is sent, with %to% and %text% replaced. Use the JSON or form shape your gateway expects."
+sms_token = "Access token"
+sms_token_hint = "Sent as a bearer token. Stored encrypted and never shown again."
+sms_token_keep = "Stored — leave blank to keep it"
+sms_token_placeholder = "Paste the provider token"
 [snmp]
 info = "SNMP Information"
 interfaces = "Network Interfaces"

@@ -935,6 +935,25 @@ implemented** — `apply` answers `501` and the dialog says so before the click.
 
 ---
 
+## Settings card: Notifications — SMS channel
+
+Settings → Notifications → the **Send an SMS** block
+(`frontend/src/routes/Settings.svelte`)
+
+**Features:** the enable switch, the phone number (international form), the
+gateway URL, the request body with `%to%`/`%text%`, and the access token (a
+password field whose placeholder says "Stored — leave blank to keep it" once one
+is saved).
+
+**Invariants:** admin-only; the number is refused unless it starts with `+` and
+carries 8–15 digits, with a message showing the expected shape; a disabled
+configuration is never refused; the token is sealed server-side and never
+returned, so the field starts empty and blank means "unchanged".
+
+**Guides:** [guides/sms.md](./guides/sms.md)
+
+---
+
 ## Settings cards: DHCP server, fan control, UPS server mode
 
 These three live inside **Settings** (screen 27) rather than as desktop apps.

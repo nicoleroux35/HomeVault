@@ -1392,6 +1392,18 @@ guided_redundancy_apply_unavailable = "La création du volume depuis ici n'est p
 guided_redundancy_apply_failed = "La disposition n'a pas pu être appliquée."
 guided_redundancy_load_failed = "Impossible de lire les suggestions de disques."
 
+sms_enable = "Envoyer un SMS"
+sms_enable_hint = "Un message court par alerte, sur les mêmes événements que l'e-mail."
+sms_recipient = "Numéro de téléphone"
+sms_recipient_hint = "Au format international avec un « + » initial, par exemple +33612345678. Un numéro sans indicatif pays est refusé."
+sms_endpoint = "Adresse de la passerelle"
+sms_endpoint_hint = "L'URL à laquelle HomeVault envoie. Tout fournisseur convient : Twilio, OVH, une passerelle auto-hébergée."
+sms_body = "Corps de la requête"
+sms_body_hint = "Ce qui est envoyé, avec %to% et %text% remplacés. Utilisez le format JSON ou formulaire attendu par votre passerelle."
+sms_token = "Jeton d'accès"
+sms_token_hint = "Envoyé comme jeton porteur. Stocké chiffré et jamais réaffiché."
+sms_token_keep = "Enregistré — laissez vide pour le conserver"
+sms_token_placeholder = "Collez le jeton du fournisseur"
 [snmp]
 info = "Informations SNMP"
 interfaces = "Interfaces réseau"

@@ -57,6 +57,61 @@ email payloads, launcher fallback, Syslog observation invalidation, and quota
 interpolation. The two skipped tests are conditional environment-state skips,
 not failures. Phase 0 is verified for the QW-05 through QW-11 acceptance scope.
 
+## B3 — SMS alerts, 2026-11-02 (verified)
+
+Second Phase B item. One short message per alert, on the same events and
+severity threshold as email and the webhook, through a **provider-agnostic**
+HTTP POST — no vendor SDK, so a vendor changing its API cannot break the
+appliance.
+
+| Piece | Where |
+|---|---|
+| E.164 validation, one-segment composition, truncation, templating, request building (pure) | `src/sms.rs` |
+| The only code that performs a POST | `notification_engine::dispatch_sms` |
+| Persistence | `notifications.sms` in `data/settings.json` — no migration, an older file simply has no key |
+| Settings form | `frontend/src/routes/Settings.svelte` (notifications category), 4 locales |
+| Guide | `docs/guides/sms.md` (+ `INDEX.md`, `API.md`, `SCREENS.md`, one `FeatureDoc`) |
+
+### Decisions pinned by tests
+
+| Rule | Test |
+|---|---|
+| `+` then 8–15 digits; `0612345678`, spaced and punctuated forms refused | `international_numbers_are_accepted`, `plausible_but_undeliverable_numbers_are_refused` |
+| The refusal teaches the expected shape | `the_refusal_names_the_expected_shape` |
+| A disabled configuration is never refused | `a_disabled_configuration_is_never_refused` |
+| Enabled needs a recipient, an endpoint and both placeholders | `enabling_without_*`, `a_template_without_the_placeholders_is_refused` |
+| The token is never in any response | `the_token_is_never_returned_only_its_presence` (asserts on the serialized view) |
+| `Authorization` comes only from the token, never from the admin's headers | `the_authorization_header_is_built_from_the_token_only`, `a_blank_token_produces_no_header` |
+| One segment, marker on truncation, never split mid-character | `a_long_message_is_truncated_with_a_visible_marker`, `truncation_never_splits_a_multibyte_character`, `compose_text_uses_characters_not_bytes` |
+| Refusal happens before any network call | `build_request_refuses_before_any_network_call` |
+| A blank token keeps the stored one (HTTP round trip) | `test_saving_without_a_token_keeps_the_stored_one` |
+
+### Verification
+
+| Suite | Result |
+|---|---|
+| `cargo test --lib sms` | **19/19** |
+| `tests/sms_integration.rs` | **10/10** |
+| `cargo test --lib notification_engine` | **2/2** |
+| `cargo test --lib settings_persistence` | **15/15** (the new field round-trips) |
+| `cargo test --lib rag_indexers` | **5/5** (guide ↔ `FeatureDoc` both ways) |
+| `npm run check` / `npm run build` | 0 errors, 0 warnings / green |
+
+### Verified live, on a fresh instance
+
+| Check | Observed |
+|---|---|
+| Save with a token | `200` |
+| Read back | `{ …, token_set: true }` — no field that could carry the credential |
+| On disk | `settings.json` holds `hv1:…`; the plaintext appears nowhere |
+| A number without a country code | `400` — `'0612345678' is not a phone number in international form (expected a leading '+' and 8–15 digits, e.g. +33612345678)` |
+
+### Deviation
+
+**No automated delivery.** Sending for real would make the suite depend on an
+external gateway, so the exact request (endpoint, body, headers) is asserted by
+`build_request` instead. The guide says so rather than implying coverage.
+
 ## B2 — Read-only ISO/IMG mounting, 2026-11-02 (verified)
 
 First Phase B item. An image is attached to a loop device read-only and appears

@@ -122,6 +122,10 @@ pub struct PersistedNotifications {
     pub event_toggles: Option<std::collections::HashMap<String, bool>>,
     #[serde(default)]
     pub webhook_format: Option<String>,
+    /// SMS alert channel. Absent from a file written before SMS existed, which
+    /// serde reads as `None` — no migration needed.
+    #[serde(default)]
+    pub sms: Option<crate::sms::SmsSettings>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -189,6 +193,7 @@ impl PersistedSettings {
                 .notifications
                 .as_ref()
                 .and_then(|n| n.webhook_format.clone()),
+            sms: self.notifications.as_ref().and_then(|n| n.sms.clone()),
         }
     }
 
@@ -199,10 +204,7 @@ impl PersistedSettings {
                 .appearance
                 .as_ref()
                 .and_then(|a| a.accent_color.clone()),
-            density: self
-                .appearance
-                .as_ref()
-                .and_then(|a| a.density.clone()),
+            density: self.appearance.as_ref().and_then(|a| a.density.clone()),
         }
     }
 }
@@ -256,6 +258,7 @@ impl SettingsPersistence {
                 webhook_enabled: notifications.webhook_enabled,
                 event_toggles: notifications.event_toggles.clone(),
                 webhook_format: notifications.webhook_format.clone(),
+                sms: notifications.sms.clone(),
             }),
             appearance: Some(PersistedAppearance {
                 // Never written again (ROADMAP 26.2); the reader keeps the
@@ -717,6 +720,7 @@ pub fn save_all_settings() {
                 webhook_enabled: notifications.webhook_enabled,
                 event_toggles: notifications.event_toggles.clone(),
                 webhook_format: notifications.webhook_format.clone(),
+                sms: notifications.sms.clone(),
             }),
             appearance: Some(PersistedAppearance {
                 // Never written again (ROADMAP 26.2); the reader keeps the
@@ -1150,6 +1154,7 @@ mod tests {
             webhook_enabled: Some(true),
             event_toggles: None,
             webhook_format: None,
+            sms: None,
         });
         let err = validate_import(&bad_url).unwrap_err();
         assert!(err.contains("webhook_url"), "{err}");
@@ -1164,6 +1169,7 @@ mod tests {
             webhook_enabled: None,
             event_toggles: None,
             webhook_format: None,
+            sms: None,
         });
         assert!(validate_import(&bad_threshold)
             .unwrap_err()

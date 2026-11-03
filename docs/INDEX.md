@@ -104,6 +104,7 @@ methods, and notable invariants.
 | Scheduled Tasks (generic cron engine: commands, snapshots, SMART, power) | [guides/scheduled-tasks.md](./guides/scheduled-tasks.md) |
 | Metrics (historical CPU/memory/load/network/temperature charts) | [guides/metrics.md](./guides/metrics.md) |
 | Power (host power management, CPU governor, disk spindown, Wake-on-LAN) | [guides/power.md](./guides/power.md) |
+| SMS alerts (provider-agnostic gateway, E.164 numbers, one-segment composition) | [guides/sms.md](./guides/sms.md) |
 | ISO / IMG mounting (read-only loop mounts, browsable as a folder) | [guides/iso-mount.md](./guides/iso-mount.md) |
 | DHCP / TFTP / PXE server (address range, static reservations, boot files, live leases) | [guides/dhcp.md](./guides/dhcp.md) |
 | USB one-touch copy (copy rules, device matching, checksum verification, safe eject) | [guides/usb-copy.md](./guides/usb-copy.md) |
