@@ -1767,24 +1767,40 @@ following plan has been started by adding this section.
 
 **P0.1 — Finish the quick-win verification pass (S)**
 
-Status: backend verification complete; first E2E pass classified defects and environment failures; privileged rerun pending.
-The static audit recorded in `TESTING.md` confirms that QW-05, QW-06, QW-07,
-QW-08, QW-09 and QW-11 have their implementation surfaces and test suites.
-The focused unknown-client error regression test is included in the verified
-lib suite. On 2026-10-31, `cargo test --lib` passed **1,984/1,984**;
-the six dedicated integration suites passed **49/49** in total, and
-`frontend/npm run check` passed with 0 errors and 0 warnings.
+Status: **CLOSED 2026-11-02** — the rerun is done and the breakdown now
+separates *implemented*, *integration verified* and *E2E verified*. Full detail
+in `TESTING.md` → "P0.1 — Quick-win E2E verification pass closed".
 
-Remaining scope: rerun the six dedicated E2E suites against a privileged
-scratch server, resolve only test-proven defects, then update
-`ROADMAP-DSM.md` and `TESTING.md` with exact browser counts. The first pass
-recorded 39 passed, 32 failed and 1 skipped; its failures are classified in
-`TESTING.md`, including the confirmed i18n and launcher defects already fixed.
-Keep live filesystem, firewall, UDP/TCP, backup and browser checks separated
-from unit-only results.
+The six dedicated suites (`autoblock`, `connected-clients`, `syslog`, `wol`,
+`config-backup`, `shares/quota`) ran on a rebuilt binary with an isolated
+`DATA_DIRECTORY`, one worker and a freshly seeded admin:
 
-Exit criteria: every claimed status distinguishes implemented, integration
-verified and E2E verified; no feature is marked green from compilation alone.
+| Browser | Result |
+|---|---|
+| Firefox | **70 passed, 2 skipped, 0 failed** (4.6 min) |
+| Chromium | **70 passed, 2 skipped, 0 failed** (3.5 min) |
+
+The **32 failures of the first pass are all gone**. Both skips are
+`test.skip(condition, reason)` state guards (no blocked address to pardon;
+forwarding already enabled), not defects, and every other skip in the six files
+is the same shape.
+
+Backend re-confirmed unchanged at `auto_block_integration` 14/14,
+`connected_clients_integration` 6/6, `share_quota_integration` 5/5,
+`syslog_forward_integration` 11/11, `wol_integration` 7/7,
+`config_backup_integration` 6/6 — **49/49** total.
+
+**On the "environment limitation".** The 2026-10-31 note attributed part of the
+first pass to a missing passwordless sudo. That is real on this host
+(`sudo -n true` still demands a password) but it is **out of scope for these six
+suites**, which was measured rather than assumed: none of them references
+`/api/groups`, `home_enabled`, `delete_home`, `getent`, `uid` or `/etc/passwd`.
+`POST /api/groups` does fail here with `sudo: il est nécessaire de saisir un mot
+de passe` — explicitly, to the caller — and `ensure_linux_user` is only reached
+when a group is added, never when a user is created.
+
+Exit criteria met: every QW-05…QW-11 feature is E2E verified on Firefox **and**
+Chromium, and no feature rests on compilation alone.
 
 **P0.2 — Cross-cutting API and capability contracts (S)**
 

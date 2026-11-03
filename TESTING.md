@@ -28,6 +28,12 @@ acceptance checks are verified. `cargo test --lib`: **1,984 passed,
 `config_backup_integration` **6/6**, totaling **49/49**. `cd frontend && npm run
 check`: **0 errors, 0 warnings**.
 
+> Both figures are the 2026-10-31 snapshot. Since then `cargo test --lib` grew
+> to **2,375 passed** (5 pre-existing failures outside this scope — see the
+> Phase A section), the six integration suites are still **49/49**, and
+> `npm run check` is still 0/0. The E2E figures below are superseded by the
+> P0.1 rerun section, which is the current one.
+
 The six dedicated E2E specs were executed together on a rebuilt scratch Firefox
 server with isolated `DATA_DIRECTORY` and one worker. Final result: **70 passed,
 2 skipped, 0 failed** across 72 runtime tests. The failures were
@@ -50,6 +56,89 @@ and specs: i18n interpolation, card-scoped switch selectors, required member
 email payloads, launcher fallback, Syslog observation invalidation, and quota
 interpolation. The two skipped tests are conditional environment-state skips,
 not failures. Phase 0 is verified for the QW-05 through QW-11 acceptance scope.
+
+## P0.1 — Quick-win E2E verification pass closed, 2026-11-02 (verified)
+
+`ROADMAP-DSM.md` P0.1 was open since 2026-10-31: "privileged rerun pending",
+with a first pass of **39 passed / 32 failed / 1 skipped** and a set of failures
+classified as an *environment limitation* because the scratch host had no
+passwordless sudo. The exit criterion was that every claimed status
+distinguishes **implemented**, **integration verified** and **E2E verified**, and
+that no feature is green from compilation alone.
+
+**The rerun is done, on both browsers.** The six dedicated suites are
+`autoblock`, `connected-clients`, `syslog`, `wol`, `config-backup` and
+`shares/quota`.
+
+| Scope | Firefox | Chromium |
+|---|---|---|
+| 6 dedicated E2E suites | **70 passed, 2 skipped, 0 failed** | **70 passed, 2 skipped, 0 failed** |
+| Runtime | 4.6 min | 3.5 min |
+
+Run against a rebuilt debug binary, isolated `DATA_DIRECTORY`, `--workers=1`,
+one freshly seeded admin. The **32 failures of the first pass are all gone**;
+the count now matches the "after correction" figure recorded on 2026-10-31
+(70/2/0), and this time it is reproduced on a second browser rather than taken
+from a single run.
+
+### The two skips are state guards, not failures
+
+Both are `test.skip(condition, reason)` on a property of the instance, so they
+pass or skip depending on what the server already contains — never on a defect:
+
+| Test | Guard |
+|---|---|
+| `autoblock.spec.ts` 3.3 — a failed pardon is shown as an alert | `state.bans.length === 0` → "no blocked address to pardon" |
+| `syslog.spec.ts` 5.3 — the test button is disabled while forwarding is off | `settings.enabled` → "forwarding is enabled on this instance" |
+
+Every other `test.skip` in the six files is the same shape (no share to quota,
+no saved WoL host, no missing collector, forwarding already on, live bans
+present). None of them hides an assertion behind an environment failure.
+
+### The "environment limitation" no longer applies to these suites
+
+The 2026-10-31 note said secondary-user creation and host service setup failed
+because the scratch server had no passwordless sudo, and those failures were not
+treated as product regressions pending a privileged environment.
+
+Confirmed on this host: `sudo` **does** require a password here
+(`sudo -n true` → "a terminal is required"). What that breaks, and what it does
+not, was measured directly instead of assumed:
+
+- `POST /api/groups` fails cleanly with `sudo: il est nécessaire de saisir un
+  mot de passe` — a real limitation, reported to the caller, not swallowed.
+- `GroupService::ensure_linux_user` is only reached when a **group is added**;
+  creating a user is a SQLite row and needs no privilege at all.
+- **None of the six suites touches a privileged path**: grepping them for
+  `/api/groups`, `home_enabled`, `delete_home`, `getent`, `uid` and
+  `/etc/passwd` returns nothing.
+
+So the sudo limitation is real but **out of scope for these six suites**. Where
+it still bites — group creation, Linux account provisioning, host service setup
+— the failure is explicit and carries the command's own stderr; it is recorded
+here rather than left as an unclassified "environment" bucket.
+
+### Backend half, re-confirmed
+
+| Suite | Result |
+|---|---|
+| `auto_block_integration` | **14/14** |
+| `connected_clients_integration` | **6/6** |
+| `share_quota_integration` | **5/5** |
+| `syslog_forward_integration` | **11/11** |
+| `wol_integration` | **7/7** |
+| `config_backup_integration` | **6/6** |
+| **Total** | **49/49** |
+
+Identical to the 2026-10-31 measurement — the QW-05…QW-11 backend surface did
+not regress while Phase A and Phase 4 were added.
+
+### Status
+
+P0.1 is **closed**. Every QW-05…QW-11 feature can now be claimed as
+*E2E verified* on Firefox **and** Chromium, which is what the exit criterion
+required. P0.2 (cross-cutting capability/API contracts) remains open and is the
+only item left in Phase 0.
 
 ## Phase A — DSM-parity debt closed, 2026-11-02 (verified)
 

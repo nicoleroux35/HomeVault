@@ -263,6 +263,38 @@ a documented hardware-independent fallback proves the unsupported path. Update
   files in the tree, and a document whose claims are 13-for-20 stale would
   mislead the next reader far more than its absence would.
 
+## 10. P0.1 — quick-win E2E verification — closed 2026-11-02
+
+The roadmap's Phase 0 carried two items that predate this plan. **P0.1 is now
+closed**; P0.2 is the only one left.
+
+The first pass (2026-10-31) recorded **39 passed / 32 failed / 1 skipped** and
+classified part of the failures as an *environment limitation*, because the
+scratch host had no passwordless sudo. The rerun on a rebuilt binary, isolated
+`DATA_DIRECTORY` and one worker:
+
+| Browser | Result |
+|---|---|
+| Firefox | **70 passed, 2 skipped, 0 failed** |
+| Chromium | **70 passed, 2 skipped, 0 failed** |
+
+The 32 failures are gone; both skips are state guards (`test.skip(condition,
+reason)`), not defects.
+
+**The sudo limitation was measured, not assumed.** It is real on this host
+(`sudo -n true` demands a password, `POST /api/groups` fails with the command's
+own stderr) but **none of the six suites touches a privileged path** — no
+`/api/groups`, `home_enabled`, `delete_home`, `getent`, `uid` or `/etc/passwd`
+reference exists in them. `ensure_linux_user` is reached only when a group is
+added, never when a user is created, so the limitation is out of scope here.
+
+Detail in `TESTING.md` → "P0.1 — Quick-win E2E verification pass closed";
+`ROADMAP-DSM.md` carries the status.
+
+**Remaining in Phase 0: P0.2** — cross-cutting capability/API contracts
+(uniform unsupported-capability responses, admin-mutation/secrets/audit/
+`requires_restart` conventions) before any Phase B item starts.
+
 ## 9. Two follow-ups raised in review — closed 2026-11-02
 
 Both were found while verifying Phase A end to end.
