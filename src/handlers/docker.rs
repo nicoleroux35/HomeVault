@@ -73,7 +73,7 @@ pub async fn handle_docker_info(
     }
 
     if !DockerService::is_available() {
-        return ResponseHelper::json_error("Docker is not available".to_string());
+        return ResponseHelper::json_unavailable("Docker is not available");
     }
 
     match tokio::task::spawn_blocking(DockerService::get_docker_info).await {
@@ -109,7 +109,7 @@ pub async fn handle_docker_containers_list(
     }
 
     if !DockerService::is_available() {
-        return ResponseHelper::json_error("Docker is not available".to_string());
+        return ResponseHelper::json_unavailable("Docker is not available");
     }
 
     let include_stats = q.stats;
@@ -133,7 +133,7 @@ pub async fn handle_docker_containers_running(
     }
 
     if !DockerService::is_available() {
-        return ResponseHelper::json_error("Docker is not available".to_string());
+        return ResponseHelper::json_unavailable("Docker is not available");
     }
 
     match blocking(DockerService::get_running_containers).await {
@@ -155,7 +155,7 @@ pub async fn handle_docker_images_list(
     }
 
     if !DockerService::is_available() {
-        return ResponseHelper::json_error("Docker is not available".to_string());
+        return ResponseHelper::json_unavailable("Docker is not available");
     }
 
     match tokio::task::spawn_blocking(DockerService::get_images).await {
@@ -180,7 +180,7 @@ pub async fn handle_docker_container_start(
     };
 
     if !DockerService::is_available() {
-        return ResponseHelper::json_error("Docker is not available".to_string());
+        return ResponseHelper::json_unavailable("Docker is not available");
     }
 
     let target = name.clone();
@@ -211,7 +211,7 @@ pub async fn handle_docker_container_stop(
     };
 
     if !DockerService::is_available() {
-        return ResponseHelper::json_error("Docker is not available".to_string());
+        return ResponseHelper::json_unavailable("Docker is not available");
     }
 
     let target = name.clone();
@@ -241,7 +241,7 @@ pub async fn handle_docker_container_restart(
     };
 
     if !DockerService::is_available() {
-        return ResponseHelper::json_error("Docker is not available".to_string());
+        return ResponseHelper::json_unavailable("Docker is not available");
     }
 
     let target = name.clone();
@@ -286,7 +286,7 @@ pub async fn handle_docker_container_logs(
     }
 
     if !DockerService::is_available() {
-        return ResponseHelper::json_error("Docker is not available".to_string());
+        return ResponseHelper::json_unavailable("Docker is not available");
     }
 
     let tail = q.tail.clamp(1, 5000);
@@ -486,7 +486,7 @@ pub async fn handle_docker_container_create(
     };
 
     if !DockerService::is_available() {
-        return ResponseHelper::json_error("Docker is not available".to_string());
+        return ResponseHelper::json_unavailable("Docker is not available");
     }
 
     // Validate required fields
@@ -576,7 +576,7 @@ pub async fn handle_docker_container_remove(
     };
 
     if !DockerService::is_available() {
-        return ResponseHelper::json_error("Docker is not available".to_string());
+        return ResponseHelper::json_unavailable("Docker is not available");
     }
 
     let force = query.force.unwrap_or(false);
@@ -608,7 +608,7 @@ pub async fn handle_docker_image_pull(
     };
 
     if !DockerService::is_available() {
-        return ResponseHelper::json_error("Docker is not available".to_string());
+        return ResponseHelper::json_unavailable("Docker is not available");
     }
 
     let (image, tag) = (req.image.clone(), req.tag.clone());
@@ -644,7 +644,7 @@ pub async fn handle_docker_image_remove(
     };
 
     if !DockerService::is_available() {
-        return ResponseHelper::json_error("Docker is not available".to_string());
+        return ResponseHelper::json_unavailable("Docker is not available");
     }
 
     let force = req.force.unwrap_or(false);
@@ -678,7 +678,7 @@ pub async fn handle_docker_networks_list(
     }
 
     if !DockerService::is_available() {
-        return ResponseHelper::json_error("Docker is not available".to_string());
+        return ResponseHelper::json_unavailable("Docker is not available");
     }
 
     match tokio::task::spawn_blocking(docker_lib::get_networks).await {
@@ -701,7 +701,7 @@ pub async fn handle_docker_network_get(
     }
 
     if !DockerService::is_available() {
-        return ResponseHelper::json_error("Docker is not available".to_string());
+        return ResponseHelper::json_unavailable("Docker is not available");
     }
 
     match blocking(move || docker_lib::get_network(&name)).await {
@@ -733,7 +733,7 @@ pub async fn handle_docker_network_create(
     };
 
     if !DockerService::is_available() {
-        return ResponseHelper::json_error("Docker is not available".to_string());
+        return ResponseHelper::json_unavailable("Docker is not available");
     }
 
     if req.name.trim().is_empty() {
@@ -791,7 +791,7 @@ pub async fn handle_docker_network_connect(
     }
 
     if !DockerService::is_available() {
-        return ResponseHelper::json_error("Docker is not available".to_string());
+        return ResponseHelper::json_unavailable("Docker is not available");
     }
 
     let (container, network) = (req.container.clone(), req.network.clone());
@@ -814,7 +814,7 @@ pub async fn handle_docker_network_disconnect(
     }
 
     if !DockerService::is_available() {
-        return ResponseHelper::json_error("Docker is not available".to_string());
+        return ResponseHelper::json_unavailable("Docker is not available");
     }
 
     let (container, network) = (req.container.clone(), req.network.clone());
@@ -840,7 +840,7 @@ pub async fn handle_docker_network_remove(
     };
 
     if !DockerService::is_available() {
-        return ResponseHelper::json_error("Docker is not available".to_string());
+        return ResponseHelper::json_unavailable("Docker is not available");
     }
 
     let target = name.clone();
@@ -960,7 +960,7 @@ pub async fn handle_docker_network_prune(
     }
 
     if !DockerService::is_available() {
-        return ResponseHelper::json_error("Docker is not available".to_string());
+        return ResponseHelper::json_unavailable("Docker is not available");
     }
 
     match blocking(|| DockerService::prune(docker_lib::PruneTarget::Networks, false)).await {
@@ -989,7 +989,7 @@ pub async fn handle_docker_container_inspect(
         return response;
     }
     if !DockerService::is_available() {
-        return ResponseHelper::json_error("Docker is not available".to_string());
+        return ResponseHelper::json_unavailable("Docker is not available");
     }
 
     match blocking(move || DockerService::get_container_detail(&name)).await {
@@ -1219,7 +1219,7 @@ pub async fn handle_docker_container_recreate(
         Err(response) => return response,
     };
     if !DockerService::is_available() {
-        return ResponseHelper::json_error("Docker is not available".to_string());
+        return ResponseHelper::json_unavailable("Docker is not available");
     }
 
     let target = name.clone();
@@ -1259,7 +1259,7 @@ pub async fn handle_docker_container_exec(
         Err(response) => return response,
     };
     if !DockerService::is_available() {
-        return ResponseHelper::json_error("Docker is not available".to_string());
+        return ResponseHelper::json_unavailable("Docker is not available");
     }
 
     let command: Vec<String> = req
@@ -1443,7 +1443,7 @@ pub async fn handle_docker_volumes_list(
         return response;
     }
     if !DockerService::is_available() {
-        return ResponseHelper::json_error("Docker is not available".to_string());
+        return ResponseHelper::json_unavailable("Docker is not available");
     }
 
     match blocking(DockerService::list_volumes).await {
@@ -1563,7 +1563,7 @@ pub async fn handle_docker_system_df(
         return response;
     }
     if !DockerService::is_available() {
-        return ResponseHelper::json_error("Docker is not available".to_string());
+        return ResponseHelper::json_unavailable("Docker is not available");
     }
 
     match blocking(DockerService::disk_usage).await {
@@ -1607,7 +1607,7 @@ pub async fn handle_docker_prune(
         ));
     };
     if !DockerService::is_available() {
-        return ResponseHelper::json_error("Docker is not available".to_string());
+        return ResponseHelper::json_unavailable("Docker is not available");
     }
     let all = req.all;
     let target_log = target.as_str().to_string();
@@ -1670,7 +1670,7 @@ pub async fn handle_docker_image_build(
         return ResponseHelper::json_error("Build context is not a directory".to_string());
     }
     if !DockerService::is_available() {
-        return ResponseHelper::json_error("Docker is not available".to_string());
+        return ResponseHelper::json_unavailable("Docker is not available");
     }
 
     let build_req = crate::docker::BuildImageRequest {

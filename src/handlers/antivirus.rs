@@ -162,7 +162,7 @@ pub async fn handle_antivirus_scan_start(
         return ResponseHelper::json_error("Scan path does not exist".to_string());
     }
     if !antivirus::clamscan_available_async().await {
-        return ResponseHelper::json_error("ClamAV (clamscan) is not installed".to_string());
+        return ResponseHelper::json_unavailable("ClamAV (clamscan) is not installed");
     }
     if av_scan_is_running() {
         return ResponseHelper::json_error("An antivirus scan is already running".to_string());

@@ -272,8 +272,8 @@ pub async fn handle_restic_repo_create(
     }
 
     if !ResticService::is_available() {
-        return ResponseHelper::json_error(
-            "restic CLI is not installed or not found in PATH".to_string(),
+        return ResponseHelper::json_unavailable(
+            "restic CLI is not installed or not found in PATH",
         );
     }
 
@@ -551,8 +551,8 @@ pub async fn handle_restic_backup_create(
     };
 
     if !ResticService::is_available() {
-        return ResponseHelper::json_error(
-            "restic CLI is not installed or not found in PATH".to_string(),
+        return ResponseHelper::json_unavailable(
+            "restic CLI is not installed or not found in PATH",
         );
     }
 
@@ -772,8 +772,8 @@ pub async fn handle_restic_restore(
     };
 
     if !ResticService::is_available() {
-        return ResponseHelper::json_error(
-            "restic CLI is not installed or not found in PATH".to_string(),
+        return ResponseHelper::json_unavailable(
+            "restic CLI is not installed or not found in PATH",
         );
     }
 

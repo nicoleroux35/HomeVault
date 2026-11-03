@@ -1804,15 +1804,31 @@ Chromium, and no feature rests on compilation alone.
 
 **P0.2 — Cross-cutting API and capability contracts (S)**
 
-Status: contract inventory documented; implementation remains pending.
+Status: **CLOSED 2026-11-02** — documented in `docs/API.md` (Conventions →
+"Capability and unsupported-capability contract", "Admin mutations, audit and
+`requires_restart`", "Secrets") and enforced by two helpers.
 
-Scope: document capability discovery and unsupported responses consistently for
-filesystem, network, hardware and optional external tools. Add a common pattern
-for admin mutations, secrets redaction, audit events and `requires_restart`.
+The gap was status drift, not missing thinking: a missing external tool was
+answered `400` (`json_error`) at **38 call sites** across `docker.rs` (26),
+`restic.rs` (3), `firewall.rs`, `antivirus.rs` and `backup_target.rs`. `400` is
+reserved for a request the server could not understand, so a caller could not
+tell "fix your input" from "install a package".
 
-Exit criteria: every future feature below has a stable endpoint shape, an
-unsupported-capability response and an explicit privilege boundary before code
-starts.
+| Contract | Rule | Enforcement |
+|---|---|---|
+| Missing capability | **`503`**, message names the missing piece | `ResponseHelper::json_unavailable(missing)` — 38 sites converted, 0 remain |
+| Unimplemented feature | **`501`**, message says what to do instead | `ResponseHelper::json_not_implemented(message)` |
+| Malformed request | `400` (unchanged) | the existing validator path |
+| Auth / privilege | `401` / `403` (unchanged) | `admin_guard`, stated once |
+| Capability discovery | `available: bool`, `capabilities: {…}`, `supports_<thing>: bool`; the UI hides the editor and names the missing piece | documented field inventory |
+| Admin mutations | `require_admin` on every mutation; **guard before body parsing**; journaled through `log_event` naming the account and the target, never a secret; a refused save keeps the previous state | Phase A fixed the guard order; this pins the rule |
+| `requires_restart` | present when a change needs a process/listener rebind; `false` when it already took effect; absent only when the action can never need one | documented; TLS is the reference |
+| Secrets | never returned, sealed at rest with their scope as AAD, carried in a header never a URL, "shown once" stated before dismissal | documented; DDNS/backup-target/iSCSI are the references |
+
+Exit criteria met: every Phase B item below has a documented endpoint shape, a
+named unsupported-capability status and an explicit privilege boundary before
+code starts. `cargo test --lib utils::response` pins the three statuses apart
+(**4/4**), and no `json_error("… is not available|not installed")` remains.
 
 ### Phase 1 — high-value, low-to-medium risk user features
 

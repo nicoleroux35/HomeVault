@@ -63,8 +63,11 @@ use axum::{
 use serde::Deserialize;
 use std::sync::Arc;
 
+/// `ufw` absent from this host — `503`, per the capability contract
+/// (`docs/API.md` → "Capability and unsupported-capability contract"). The
+/// message names the missing package so the screen can say what to install.
 fn unavailable() -> Response {
-    ResponseHelper::json_error("ufw is not installed".to_string())
+    ResponseHelper::json_unavailable("ufw is not installed")
 }
 
 /// Turn a service error into a response.

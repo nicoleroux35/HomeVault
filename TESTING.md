@@ -57,6 +57,82 @@ email payloads, launcher fallback, Syslog observation invalidation, and quota
 interpolation. The two skipped tests are conditional environment-state skips,
 not failures. Phase 0 is verified for the QW-05 through QW-11 acceptance scope.
 
+## P0.2 — Capability and API contracts closed, 2026-11-02 (verified)
+
+The API had a documented auth contract (`admin_guard`, stated once) but no
+equivalent for the other cross-cutting answers. The gap was **status drift**:
+a missing external tool was answered `400` (`json_error`) — the status reserved
+for a request the server could not understand — at 38 call sites.
+
+Measured before changing anything:
+
+| Module | `400` sites for a missing tool |
+|---|---|
+| `handlers/docker.rs` | 26 (`Docker is not available`) |
+| `handlers/restic.rs` | 3 (`restic CLI is not installed`) |
+| `handlers/firewall.rs` | 1 (`ufw is not installed`) |
+| `handlers/antivirus.rs` | 1 (`ClamAV (clamscan) is not installed`) |
+| `handlers/backup_target.rs` | 1 (`restic is not installed on this host`) |
+| **Total** | **32 call sites** (38 `json_unavailable` occurrences after expansion) |
+
+### What was added
+
+| Piece | Where |
+|---|---|
+| The contract itself | `docs/API.md` → Conventions: capability/unsupported, admin mutations + audit + `requires_restart`, secrets |
+| `ResponseHelper::json_unavailable(missing)` → **`503`** | `src/utils/response.rs` |
+| `ResponseHelper::json_not_implemented(message)` → **`501`** | `src/utils/response.rs` |
+| The 32 sites converted | `docker`, `restic`, `firewall`, `antivirus`, `backup_target` |
+| A guard that keeps the three statuses apart | `src/utils/response.rs` (`#[cfg(test)]`) |
+
+The helpers take `impl Display`, so a formatted sentence works the same as a
+literal — the `'7z' is not installed on this server` shape is covered by a test.
+
+### Rules now pinned in writing
+
+- **`503` = this host cannot; `501` = this build cannot; `400` = your request is
+  wrong; `401`/`403` = identity.** Four different questions, four different
+  statuses; no caller has to parse English to tell them apart.
+- **Capability discovery is a `GET`.** The established field names are
+  `available: bool`, `capabilities: {…}`, `supports_<thing>: bool` and
+  `<thing>_available: bool`, and a screen that shows a `supports_*: false` must
+  not offer the action either (traffic control's `supports_download_limit` is
+  the reference).
+- **A failure must name the missing piece**, so the UI can say what to install
+  instead of a generic toast.
+- **The guard runs before the body is parsed** (Phase A made it true; this pins
+  it as the rule, because `Json<T>` first leaks the schema with a `422`).
+- **A privileged action is journaled** naming the account and the target, never
+  a secret; a refused save keeps the previous state.
+- **A secret is never returned**, sealed at rest with its scope as AAD,
+  travelled in a header never a URL, and "shown once" is announced before the
+  user dismisses it.
+
+### Verification
+
+| Check | Result |
+|---|---|
+| `cargo test --lib utils::response` | **4/4** — `503` + message, formatted sentence, `501`, statuses distinct |
+| `cargo test --lib docker` | **23/23** |
+| `tests/docker_integration.rs` | **10/10** |
+| `tests/restic_integration.rs` | **24/24** |
+| `tests/backup_target_integration.rs` | **8/8** |
+| `cargo clippy --lib` on the six touched files | clean |
+| `cargo fmt --check` on the six touched files | clean |
+| `grep 'json_error("… not available\|not installed")'` | **0 remaining** |
+
+No test asserted the old `400` for these messages, so the conversion changed no
+expectation — only the status a real client sees.
+
+### Not converted, and why
+
+A tool name carried inside an internal `Err(String)` — the archive extractor
+naming a missing `7z`, `vm.rs` naming `ovmf` — keeps the status of the operation
+that failed. The contract governs the **capability gate**, where a handler
+decides up front that it cannot proceed; converting an internal error string
+into a status would mean re-deriving a status from a message, which is the
+antipattern `admin_guard`'s `Denial` enum exists to avoid.
+
 ## P0.1 — Quick-win E2E verification pass closed, 2026-11-02 (verified)
 
 `ROADMAP-DSM.md` P0.1 was open since 2026-10-31: "privileged rerun pending",

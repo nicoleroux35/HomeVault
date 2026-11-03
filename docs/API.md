@@ -41,6 +41,103 @@ SPA's `ApiClient` (`frontend/src/lib/services/api.ts`) prefixes every call with
 - **Caching**: `ApiClient` caches successful `GET`s for a per-call TTL (default
   5 s) and invalidates cache keys on mutations.
 
+### Capability and unsupported-capability contract (P0.2)
+
+HomeVault runs on hardware and against external tools it does not control:
+`clamscan`, `docker`, `ufw`, `restic`, `targetcli`, `dnsmasq`, `upsd`, hwmon
+PWM files, `zfs`/`btrfs`, `tc`, `miniupnpc`. A missing one is **not** a client
+error: the request was well formed, the server simply cannot carry it out.
+Reusing `400` for that made "fix your input" and "install a package"
+indistinguishable to every caller.
+
+**The rule: a missing capability is `503`; an unimplemented feature is `501`;
+a malformed request stays `400`.**
+
+| Situation | Status | `message` must say |
+|---|---|---|
+| A capability probe reports the tool/module/hardware absent | **`503`** | the **name of the missing piece**, so the screen can tell the user what to install |
+| The route exists but this build cannot perform it at all | **`501`** | that it is not implemented, and what to do instead |
+| Valid session, malformed or refused body | `400` | the field and the rule it broke |
+| Missing/unknown session | `401` | see the auth contract above |
+| Valid session, not an admin (an `admin` route) | `403` | `Admin privileges required for this operation` |
+
+**Capability discovery is a `GET`, never a guess.** Every feature that depends
+on something optional exposes what the host can do in its own read payload, and
+the UI **hides the editor and names the missing piece** rather than letting
+every save fail. The established field names:
+
+| Field | Meaning |
+|---|---|
+| `available: bool` | the primary tool/daemon for this screen is present (`snmp`, `docker`, `ups-server`, `dhcp`, `syncthing`, `rclone`, `vm`) |
+| `capabilities: { … }` | a per-feature object when several things can be missing at once — e.g. VPN's `wireguard`/`openvpn`, iSCSI's module + `targetcli` + configfs probes, traffic control's `tc_available`/`ifb_available` |
+| `supports_<thing>: bool` | one narrow capability inside such an object (`supports_download_limit`, `supports_auto`) |
+| `<thing>_available: bool` | one of several options is usable (traffic control's `ifb_available`) |
+
+A `supports_*: false` is a statement about **what will work**, so a screen that
+shows it must not offer the action either. The traffic-control card is the
+reference: `supports_download_limit: false` because ingress shaping needs
+`ifb`, and the screen says so instead of implying a download cap.
+
+**The divergence is closed.** 38 call sites answered `400` for a missing tool
+across `docker.rs` (26), `restic.rs` (3), `firewall.rs`, `antivirus.rs` and
+`backup_target.rs`; all of them now go through
+`ResponseHelper::json_unavailable` and answer **`503`**. A missing capability is
+never `400` anywhere in the tree — `grep` for
+`json_error("… is not available|not installed")` returns nothing.
+
+`ResponseHelper::json_unavailable(missing)` and
+`ResponseHelper::json_not_implemented(message)` are the two helpers a handler
+uses; **new code must call one of them**, never `json_error`, when the reason is
+"this host cannot" rather than "this request is wrong".
+
+A tool name that lives inside an internal `Err(String)` (an archive extractor
+naming the missing binary, for instance) still surfaces as the status of the
+operation that failed — the rule applies to the *capability gate*, which is the
+place a handler decides up front that it cannot proceed.
+
+### Admin mutations, audit and `requires_restart`
+
+- **Every mutation is `require_admin`; every read is `require_auth`.** A
+  mutation that only *looks* harmless is still admin-only (e.g.
+  `guided-redundancy/apply` is admin-only although it answers `501` today),
+  because the privilege boundary must not have to be renegotiated when the
+  implementation lands.
+- **The guard runs before the body is parsed.** Handlers take a raw `Bytes`
+  body and deserialize **after** `require_admin` succeeds, so an unauthenticated
+  caller always gets `401` with the standard envelope and learns nothing about
+  the payload shape. Extracting `Json<T>` first answers `422` and echoes the
+  deserializer's message — that is a schema leak, and it was the Phase 4 defect.
+- **A privileged action is journaled** through `crate::events::log_event`, and
+  the line names the **account** and the **thing acted on**, never a secret:
+  `"Admin 'x' deleted USB copy profile 'y'"`. Reads are not journaled.
+- **A refused operation keeps the previous state.** Validation runs before
+  persistence, so a save the host refuses never becomes the configuration a
+  restart would re-apply. Where a write can still partially fail, the response
+  names what did and did not happen (see `ups-server/shutdown`'s per-stage
+  `skipped` flag).
+- **`requires_restart: bool`** appears in the response of a mutation whose
+  effect needs the process (or a listener) to rebind — today TLS. `true` means
+  "saved, and it will not be live until the appliance restarts"; `false` means
+  the change already took effect. A mutation that restarts the affected daemon
+  itself reports `false` and says so in its own payload rather than implying a
+  reboot. Absent **only** when the action can never need one.
+
+### Secrets
+
+- **A secret is never returned, in any response, in any form.** List and detail
+  views answer a redacted projection: `redacted()` for DDNS, a per-tenant view
+  that omits the token and the sealed password for backup targets, a boolean or
+  a last-four hint elsewhere.
+- **A secret at rest is sealed with the appliance key** and its scope as
+  associated data (`directory-bind`, `oidc-client-secret`, `backup_target`'s
+  repository password, iSCSI CHAP keyed on target IQN + initiator), never stored
+  in clear and never logged.
+- **A secret travels in a header, never a URL** — URLs land in logs, history and
+  `Referer`. The configuration-backup passphrase is `x-backup-passphrase`.
+- **"Shown once" is a real category**: an SSH key, a restic password or a
+  rsync password is returned exactly once at creation and is unrecoverable
+  afterwards; the screen says so before the user dismisses it.
+
 ## Auth — `auth/*`
 
 | Method | Path | Auth | Handler |

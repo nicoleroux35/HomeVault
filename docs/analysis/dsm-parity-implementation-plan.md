@@ -295,6 +295,31 @@ Detail in `TESTING.md` → "P0.1 — Quick-win E2E verification pass closed";
 (uniform unsupported-capability responses, admin-mutation/secrets/audit/
 `requires_restart` conventions) before any Phase B item starts.
 
+## 11. P0.2 — capability and API contracts — closed 2026-11-02
+
+The gap was **status drift**, not missing thinking: a missing external tool was
+answered `400` — the status reserved for a request the server could not
+understand — at 32 call sites (`docker` 26, `restic` 3, `firewall`, `antivirus`,
+`backup_target`). A client could not tell "fix your input" from "install a
+package".
+
+| Contract | Status | Helper |
+|---|---|---|
+| Missing capability (tool/module/hardware absent) | **`503`** | `ResponseHelper::json_unavailable(missing)` |
+| Feature this build cannot perform | **`501`** | `ResponseHelper::json_not_implemented(message)` |
+| Malformed request | `400` | unchanged |
+| Missing/unknown session · non-admin | `401` · `403` | `admin_guard` |
+
+All 32 sites converted; `grep 'json_error("… not available\|not installed")'`
+returns nothing. The contract — capability discovery field names, admin
+mutations, audit, `requires_restart`, secrets — is written in `docs/API.md` →
+Conventions, and `cargo test --lib utils::response` (4/4) keeps the three
+statuses distinct.
+
+**Phase 0 is now complete.** Every Phase B item starts from a documented
+endpoint shape, a named unsupported-capability status and an explicit privilege
+boundary.
+
 ## 9. Two follow-ups raised in review — closed 2026-11-02
 
 Both were found while verifying Phase A end to end.

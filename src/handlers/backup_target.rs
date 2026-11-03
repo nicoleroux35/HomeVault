@@ -494,7 +494,7 @@ pub async fn handle_backup_tenant_verify(
         Err(e) => return ResponseHelper::json_error(format!("Failed to read the tenant: {e}")),
     };
     if !crate::restic::ResticService::is_available() {
-        return ResponseHelper::json_error("restic is not installed on this host".to_string());
+        return ResponseHelper::json_unavailable("restic is not installed on this host");
     }
     let password = match secret_box::open(&tenant.secret_scope(), &tenant.repo_password_sealed) {
         Ok(password) => password,
