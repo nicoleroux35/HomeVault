@@ -113,3 +113,10 @@ ses_*
 /explorer-example.html
 /settings-example.html
 /homevault-linux-x86_64
+
+# The DSM comparison is a local, dated input record: it was written from a
+# partial reading of the tree and its reconciliation lives in
+# `docs/analysis/dsm-parity-implementation-plan.md` §2 and in
+# `ROADMAP-DSM.md`. Kept on disk for reference, deliberately not published —
+# a maintained document in the tree must not be a stale one.
+/dsm_homevault_comparison.md
