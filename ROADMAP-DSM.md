@@ -1,7 +1,7 @@
 # HomeVault — DSM parity roadmap
 
-Last updated: 2026-11-01 · Baseline: HomeVault 1.0.0 vs Synology DSM 7.4.1 (build
-90080, DS925+)
+Last updated: 2026-11-03 · Baseline: HomeVault `main` @ `adf0132` vs Synology
+DSM 7.4.1 (build 90080, DS925+)
 
 One-line purpose: the capability gaps between HomeVault and DSM that are worth
 closing, phased, with the evidence, the implementation sketch and the
@@ -17,9 +17,9 @@ acceptance criteria needed to pick any item up cold.
 
 | Field | Value |
 |---|---|
-| Status | Proposal with every quick win delivered (QW-01…QW-12); **Phases 1 and 2 complete** — P1.1 (Security Advisor), P1.2 (global file search) and P1.3 (passkeys) shipped 2026-10-31; P2.1 (Time Machine over SMB), P2.2 (Rsync server), P2.3 (Backup destination), P2.4 (snapshot replication) and P2.5 (immutable snapshots) shipped 2026-10-31; **the 43 Phase 2 Playwright tests are E2E-verified** (43/43 on Firefox and Chromium, 2026-11-01) |
+| Status | **Phases 0–4 complete; Phase B in progress (2 of 6).** Every quick win QW-01…QW-13 delivered. Phase 0 closed 2026-11-02 (P0.1: six E2E suites green on Firefox **and** Chromium; P0.2: capability contract, 32 `400`s converted to `503`). Phase 4 hardened by Phase A the same day (22 unauthenticated routes fixed). Phase B: **B2 ISO mounting** (`58fe84b`) and **B3 SMS alerts** (`8e33dd4`) shipped 2026-11-02; B1 (file tags), B4 (SNMP agent), B5 (link aggregation) and B6 (VLAN) open. Phases C — C1 (local DNS), C2 (generic reverse proxy), C3 (UPnP-IGD) — and D — D1 (content index), D2 (Web Push) — untouched. **9 items left in total; see `TASKLIST NICOLAS.md` for the order** |
 | Reference product | DSM 7.4.1-90080 (Synology DS925+ pat file, extracted) |
-| HomeVault baseline | 1.0.0 (`Cargo.toml`); baseline counts are a dated snapshot and must be refreshed before triage |
+| HomeVault baseline | `main` @ `adf0132` — 74 migrations, 71 guides, 37 screens, 91 integration suites, 2,423 lib tests passing (5 pre-existing failures unrelated to this roadmap, listed in `TESTING.md`) |
 | Method | Static comparison: DSM UI modules, `SYNO.*` API libraries and bundled packages vs HomeVault source, installer package groups and screens |
 | Owner | unassigned |
 | Quick wins delivered | **QW-01 through QW-04** have documented green verification. **QW-05, QW-06, QW-07, QW-08, QW-09 and QW-11** are implemented and Phase 0 verified by unit, integration and dedicated E2E coverage. The final Firefox scratch pass ran **70 passed / 2 skipped / 0 failed** across the six dedicated suites. Delivered capabilities include SMB recycle bin unified with Explorer Trash, automatic retention/size-cap purge, reflink/instant copy, share-link password + download cap + one-time links, remote syslog forwarding, Wake-on-LAN (plus the scheduled-task "wake first" pre-step), persistent login auto-block with its request-rate row, connected-clients visibility and disconnect action, per-share size quotas, and full configuration backup/restore. Static extraction follow-up adds verified gaps and candidates below. **+2026-10-30: three reliability fixes shipped while verifying QW-03 live — see "Reliability fixes delivered" at the end.** |
@@ -705,6 +705,23 @@ Dependency notes:
 - **DSM-07** (iSCSI) is the only XL item and the only one that can be dropped
   without affecting the rest.
 
+> ## Where the current work is tracked
+>
+> This file is the capability ledger: it records, per DSM capability, what
+> HomeVault has, what it lacks and why. It is **not** the working checklist —
+> that is [`TASKLIST NICOLAS.md`](./TASKLIST%20NICOLAS.md), which lists the 9 open
+> items with their phase, effort and order.
+>
+> Where each kind of information lives:
+>
+> | Question | File |
+> |---|---|
+> | What does HomeVault have vs DSM, and why is each gap closed or kept? | this file |
+> | What may I pick up right now, in what order? | `TASKLIST NICOLAS.md` |
+> | How was the gap list derived, and what did the source document get wrong? | `docs/analysis/dsm-parity-implementation-plan.md` |
+> | Is feature X verified, and at which level? | `TESTING.md` |
+> | How does feature X work? | `docs/guides/<area>.md` |
+
 ## Non-goals and deliberate divergences
 
 These are DSM features HomeVault should **not** copy, with the reason:
@@ -720,6 +737,10 @@ These are DSM features HomeVault should **not** copy, with the reason:
 | HA cluster / CMS / S2S | Multi-appliance enterprise features, outside the home target | Replication (DSM-11) + backup target (DSM-13) |
 | Active Backup for Business agents | Windows/macOS agent development | restic on the client, HomeVault as destination (DSM-13) |
 | DSM's `SYNO.*` API shape | Proprietary, versioned by the vendor | The documented REST contract in `docs/API.md` + MCP |
+| Synology C2 / Hybrid Share / Active Insight | Vendor cloud, vendor account, telemetry egress | rclone to a user-chosen provider; the local notifications centre |
+| Fibre Channel (SAN Manager) | Datacentre hardware, no home appliance exposes it | iSCSI over Ethernet (DSM-07) |
+| L2TP/IPSec VPN | Obsolescent, weak compared with WireGuard | WireGuard + OpenVPN |
+| Mail server, Chat, Kubernetes | Outside a NAS's job; each is a full product | Mattermost / Mailcow / k3s in the Docker catalog |
 
 ## Definition of done (applies to every item)
 
@@ -1533,11 +1554,11 @@ refusal, cross-user refusal, keyboard/Escape, 360/768/1920 px).
 | Batch | Items | Theme | Why together | Status |
 |---|---|---|---|---|
 | **A — Recovery & trust** (≤ 1 week) | QW-01, QW-02, QW-03 | Make deletion recoverable and copies instant | Same files touched (`src/shares.rs`, `src/browser.rs`, `src/handlers/explorer.rs`); QW-02 is the safety valve QW-01 needs | ✅ shipped (2026-10-29) |
-| **B — Sharing & access** (≤ 1 week) | QW-04, QW-08, QW-09 | Finish shipped features cheaply | All `S`/`S–M`, independent, no new subsystem | ✅ implemented 2026-10-31 — QW-04 **tests green** (unit 11, integration 21, E2E 5/5 live); QW-08/QW-09 implemented with backend coverage present, dedicated E2E verification pending |
-| **C — Deterrence & visibility** (1–2 weeks) | QW-05, QW-06 | Survive a restart, see who is connected | Same Security screen and middleware | ✅ implemented 2026-10-31 — QW-05 (unit 16+2, integration 14, E2E 14) and QW-06 (unit 16, integration 6, E2E 9); QW-06 integration passes, dedicated E2E verification pending |
-| **D — Capacity & rebuild** (1–2 weeks) | QW-07, QW-11 | Never fill the pool; rebuild the box | Both extend `src/quota.rs` / `settings_persistence` | ✅ implemented 2026-10-31 — QW-07 (unit 22, integration 5, E2E 9) and QW-11 (unit 13, integration 6, E2E 11); backend coverage present, dedicated E2E verification pending |
+| **B — Sharing & access** (≤ 1 week) | QW-04, QW-08, QW-09 | Finish shipped features cheaply | All `S`/`S–M`, independent, no new subsystem | ✅ implemented 2026-10-31 — QW-04 **tests green** (unit 11, integration 21, E2E 5/5 live); QW-08/QW-09 **E2E-verified** 2026-11-02 (six-suite pass, 70/70 on Firefox and Chromium — see P0.1) |
+| **C — Deterrence & visibility** (1–2 weeks) | QW-05, QW-06 | Survive a restart, see who is connected | Same Security screen and middleware | ✅ implemented 2026-10-31 — QW-05 (unit 16+2, integration 14, E2E 14) and QW-06 (unit 16, integration 6, E2E 9); QW-06 **E2E-verified** 2026-11-02 (six-suite pass, 70/70 on Firefox and Chromium — see P0.1) |
+| **D — Capacity & rebuild** (1–2 weeks) | QW-07, QW-11 | Never fill the pool; rebuild the box | Both extend `src/quota.rs` / `settings_persistence` | ✅ implemented 2026-10-31 — QW-07 (unit 22, integration 5, E2E 9) and QW-11 (unit 13, integration 6, E2E 11); **E2E-verified** 2026-11-02 (six-suite pass — see P0.1) |
 | **E — Guidance & discovery** (1–2 weeks) | QW-10, QW-12 | Tell the user what to fix and where things are | Both are aggregation over existing signals | ✅ both shipped 2026-10-31 — QW-10 (unit 27, integration 10, E2E 10/10 + 47/47 on the whole Health file, Firefox live) and QW-12 (unit 17, integration 13, E2E 6) |
-| **F — Transfer visibility** (1–2 weeks) | QW-13 | Show, verify and remember what moved | All five parts hang off the same two files (`src/handlers/explorer.rs`, `src/sse/progress.rs`) and the same tray | ✅ implemented 2026-10-31 — unit 47 across the five modules, `explorer_integration` +15, E2E section 18 (7 tests) written; dedicated E2E verification pending |
+| **F — Transfer visibility** (1–2 weeks) | QW-13 | Show, verify and remember what moved | All five parts hang off the same two files (`src/handlers/explorer.rs`, `src/sse/progress.rs`) and the same tray | ✅ implemented 2026-10-31 — unit 47 across the five modules, `explorer_integration` +15, E2E **section 18 (4 tests, 18.1–18.4)** written — **not yet executed** against a live server, so this row stays the one QW without an E2E count (the seven-test figure was an estimate; the file carries four) |
 
 Dependency notes:
 
