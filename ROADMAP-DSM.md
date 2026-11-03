@@ -66,31 +66,37 @@ that improve already-shipped capabilities.
 
 ## Gap summary
 
+Refreshed 2026-11-02 against the working tree: 21 of the 23 rows below were
+listed as unbuilt long after the code shipped, which made this table contradict
+the detail sections further down. Only rows 16 and 17 remain open (both
+deliberate), and the genuine remaining scope lives in the per-phase sections and
+in `docs/analysis/dsm-parity-implementation-plan.md`.
+
 | # | DSM capability | HomeVault today | Item |
 |---|---|---|---|
 | 1 | Let's Encrypt / ACME certificates | ACME issuance and renewal are implemented (`src/acme.rs`, `docs/guides/acme.md`) | Shipped |
 | 2 | DDNS | DuckDNS, dynv6, Cloudflare and custom providers implemented (`src/ddns.rs`, `docs/guides/ddns.md`) | Shipped |
 | 3 | Reachability advisor | Ordered reachability checks and fixes implemented (`src/reachability.rs`, `docs/guides/reachability.md`) | Shipped |
 | 4 | Trusted devices, rescue email and passkeys | Trusted devices, rescue e-mail and WebAuthn/passkeys all implemented (`src/identity.rs`, `src/passkey.rs`, `docs/guides/identity.md`) | Shipped |
-| 5 | Rsync server (`rsyncd`, per-share modules) | rsync only as an internal cache-mover tool (`src/cache.rs`) | DSM-05 |
-| 6 | Time Machine backups (SMB + Bonjour) | SMB is present; dedicated `vfs_fruit` Time Machine profile and Bonjour advertisement not confirmed | DSM-06 |
-| 7 | iSCSI target (ScsiTarget package) | none | DSM-07 |
+| 5 | Rsync server (`rsyncd`, per-share modules) | `src/rsync_server.rs` behind `homevault-rsync.service`, per-share modules, per-account passwords (`docs/guides/rsync.md`) | Shipped |
+| 6 | Time Machine backups (SMB + Bonjour) | managed `vfs_fruit` block per share + `_adisk._tcp` advertisement (`docs/guides/shares.md`) | Shipped |
+| 7 | iSCSI target (ScsiTarget package) | `src/iscsi.rs` — backstores, IQNs, portals, LUNs, ACLs, CHAP (`docs/guides/iscsi.md`) | Shipped |
 | 8 | Wake-on-LAN | Saved machines, magic packet on UDP 9/7 over the interface that owns the target subnet, and a "wake first" pre-step on scheduled tasks (`src/wol.rs`, `docs/guides/power.md`) | Shipped (QW-09) |
 | 9 | Remote syslog client | RFC 5424/3164 over UDP/TCP/TLS with a pinned CA, bounded drop-oldest queue (`src/syslog_forward.rs`, `docs/guides/journal.md`) | Shipped (QW-08) |
-| 10 | Per-share / per-user bandwidth limits | transfer quotas (bytes) but no shaping | DSM-10 |
-| 11 | Snapshot replication to another NAS | local scheduled snapshots and Restic are present; native ZFS/Btrfs snapshot replication is not documented | DSM-11 |
-| 12 | Immutable / WriteOnce snapshots | none | DSM-12 |
-| 13 | Backup target mode + disaster recovery runbook | restic repositories only | DSM-13 |
-| 14 | Configuration backup & restore | settings export/import and database snapshots exist; full appliance migration archive is not documented | DSM-14 |
-| 15 | AD / LDAP + SSO (OIDC, SAML) | local accounts only | DSM-15 |
-| 16 | Photos / Video / Audio stations | Docker catalog (Immich, Jellyfin, Navidrome) | DSM-16 |
-| 17 | Mobile apps, push notifications | responsive web, in-app notifications | DSM-17 |
-| 18 | Security Advisor (hardening audit) | Existing security signals span Health, Firewall, Antivirus, ransomware monitoring and TLS; unified checklist not documented | DSM-18 |
-| 19 | Fan control / thermal curves | sensor read-out only | DSM-19 |
-| 20 | UPS server mode (network UPS) + orderly shutdown | NUT *client* only (`src/ups.rs`) | DSM-20 |
-| 21 | DHCP / TFTP / PXE server | none | DSM-21 |
-| 22 | USB one-touch copy | removable disks visible in Storage | DSM-22 |
-| 23 | SHR-style guided redundancy | RAID wizard with explicit layouts (`docs/guides/raid.md`) | DSM-23 |
+| 10 | Per-share / per-user bandwidth limits | per-service shaping with a weekly schedule and pause-all (`src/traffic_control.rs`, egress only) | Shipped (P3.2) |
+| 11 | Snapshot replication to another NAS | `src/replication.rs` — incremental, resumable, local or SSH, destination-only retention (`docs/guides/replication.md`) | Shipped |
+| 12 | Immutable / WriteOnce snapshots | `src/snapshot_locks.rs` — row **and** filesystem hold, break-glass release (`docs/guides/snapshots.md`) | Shipped |
+| 13 | Backup target mode + disaster recovery runbook | `src/backup_target.rs` (append-only tenants) + `docs/guides/disaster-recovery.md` | Shipped |
+| 14 | Configuration backup & restore | full appliance archive with optional secrets and passphrase (`src/config_backup.rs`, QW-11) | Shipped |
+| 15 | AD / LDAP + SSO (OIDC, SAML) | `src/directory.rs` + `src/oidc.rs` + `src/saml.rs` (`docs/guides/directory-sso.md`) | Shipped (P3.1) |
+| 16 | Photos / Video / Audio stations | Docker catalog (Immich, Jellyfin, Navidrome) — deliberate: integrate, do not rebuild | **Open (deliberate)** |
+| 17 | Mobile apps, push notifications | installable PWA (`manifest.json` + `sw.js`, which already handles `push`); **no VAPID keys, no subscription, no sender** | **Open** |
+| 18 | Security Advisor (hardening audit) | `src/security_advisor.rs` — unified read-only checklist with severity, evidence and score (`docs/guides/health.md`) | Shipped (QW-10) |
+| 19 | Fan control / thermal curves | `src/fan_control.rs` — hwmon PWM, profiles, 20 % floor, failsafe (`docs/guides/fan-control.md`) | Shipped (P4.4) |
+| 20 | UPS server mode (network UPS) + orderly shutdown | `src/ups_server.rs` — client allowlist, five-stage policy, `skipped` reported (`docs/guides/ups-server.md`) | Shipped (P4.1) |
+| 21 | DHCP / TFTP / PXE server | `src/dhcp_server.rs` — dnsmasq, ranges, reservations, leases (`docs/guides/dhcp.md`) | Shipped (P4.3) |
+| 22 | USB one-touch copy | `src/usb_copy.rs` — UUID-matched profiles, checksums, safe eject (`docs/guides/usb-copy.md`) | Shipped (P4.2) |
+| 23 | SHR-style guided redundancy | `src/guided_redundancy.rs` — layout suggestions with capacity/efficiency/risk (`docs/guides/guided-redundancy.md`) | Shipped (P4.5) |
 
 ---
 
