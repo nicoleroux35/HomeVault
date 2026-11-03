@@ -101,6 +101,10 @@ pub struct SearchReport {
     pub truncated: bool,
     /// How long the whole fan-out took, in milliseconds.
     pub elapsed_ms: u64,
+    /// The tag the answer was filtered by, when the caller asked for one. Echoed
+    /// so a late answer cannot be mistaken for the unfiltered list.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tag: Option<String>,
 }
 
 /// Why a query was refused, or `Ok` with the normalised query.

@@ -2276,8 +2276,8 @@ class ApiClient {
    * server-side to the roots this session's Explorer would list; `files_only`
    * drops directories from the answer.
    */
-  async searchAllFiles(query: string, limit = 8, filesOnly = false) {
-    const qs = `q=${encodeURIComponent(query)}&limit=${limit}${filesOnly ? '&files_only=true' : ''}`;
+  async searchAllFiles(query: string, limit = 8, filesOnly = false, tag?: string) {
+    const qs = `q=${encodeURIComponent(query)}&limit=${limit}${filesOnly ? '&files_only=true' : ''}${tag ? `&tag=${encodeURIComponent(tag)}` : ''}`;
     return this.get(`/search/files?${qs}`, { cache: false });
   }
 
@@ -2387,6 +2387,18 @@ class ApiClient {
 
   async removeExplorerFavorite(path: string) {
     return this.delete('/explorer/favorites', { path });
+  }
+
+  async getExplorerTags(path?: string) {
+    return this.get(`/explorer/tags${path ? `?path=${encodeURIComponent(path)}` : ''}`, { cache: false });
+  }
+
+  async addExplorerTag(path: string, tag: string) {
+    return this.post('/explorer/tags', { path, tag });
+  }
+
+  async removeExplorerTag(path: string, tag: string) {
+    return this.delete('/explorer/tags', { path, tag });
   }
 
   /** Recently opened locations (server-side, per user, newest first). */

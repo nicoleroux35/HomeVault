@@ -342,11 +342,21 @@ treated as a miss, never as a path.
 
 The relying party (`rp_id` / origin) is derived from `HOMEVAULT_HOSTNAME`, then the ACME domain, then the machine's host name — **never** from the request's `Host`/`Origin` header. The origin carries the port when it is not the scheme default (HomeVault's HTTPS listener is 8443).
 
+## Explorer tags — `explorer/tags` (session)
+
+| Method | Path | Auth | Handler |
+|--------|------|------|---------|
+| GET | `/explorer/tags` | session | own tags; optional `?path=` is canonicalized and checked against the session's Explorer roots |
+| POST | `/explorer/tags` | session | `{ path, tag }`; canonical accessible existing path, 1–32 visible tag characters, up to 20 tags per path; duplicate tag is idempotent |
+| DELETE | `/explorer/tags` | session | `{ path, tag }`; removes only the caller's tag at the accessible path |
+
+Tags are private metadata, not grants. Deleting a user purges their rows. The global search's optional `tag` parameter filters already-confined hits against the caller's own tags.
+
 ## Global search — `search/*` (session)
 
 | Method | Path | Auth | Handler |
 |--------|------|------|---------|
-| GET | `/search/files` | session | `handle_search_files` — cross-root **file name** search for the ⌘K overlay (QW-12). Query: `q` (required, 2–128 characters, trimmed and lowercased, no `/`, `\` or NUL), `limit` (clamped to `1..=100`, default 30), `files_only` (drops directories). Answers `{ query, hits[], roots[], timed_out[], unreadable[], truncated, elapsed_ms }`; each hit is a `FileInfo` plus `root` and `root_kind`. Fanned out over the same roots the caller's Explorer sidebar lists (`explorer_roots_for_session`), so an unauthorised folder can never produce a hit; **admins are bounded to those roots too**. Bounded end to end: 16 roots max, 1.5 s per root, 4 s total — a root that does not answer is named in `timed_out` rather than dropped. A refused query is a `400` naming the rule, never a `200` with an empty list. **Name search only** (no content index) |
+| GET | `/search/files` | session | `handle_search_files` — cross-root **file name** search for the ⌘K overlay (QW-12). Query: `q` (required, 2–128 characters, trimmed and lowercased, no `/`, `\` or NUL), `limit` (clamped to `1..=100`, default 30), `files_only` (drops directories), optional `tag` (matches the caller's own tags). Answers `{ query, hits[], roots[], timed_out[], unreadable[], truncated, elapsed_ms }` (and echoes `tag` only when supplied); each hit is a `FileInfo` plus `root` and `root_kind`. Fanned out over the same roots the caller's Explorer sidebar lists (`explorer_roots_for_session`), so an unauthorised folder can never produce a hit; **admins are bounded to those roots too**. Tag filtering is applied only after those confined hits are found. Bounded end to end: 16 roots max, 1.5 s per root, 4 s total — a root that does not answer is named in `timed_out` rather than dropped. A refused query is a `400` naming the rule, never a `200` with an empty list. **Name search only** (no content index) |
 
 ## Security — `security/*` (auth)
 

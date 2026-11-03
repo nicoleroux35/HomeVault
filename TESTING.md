@@ -57,6 +57,40 @@ email payloads, launcher fallback, Syslog observation invalidation, and quota
 interpolation. The two skipped tests are conditional environment-state skips,
 not failures. Phase 0 is verified for the QW-05 through QW-11 acceptance scope.
 
+## B1 — Explorer file tags, 2026-11-03 (verified)
+
+Per-user tags for Explorer paths, with a tag filter on the existing ACL-scoped
+`GET /api/search/files` endpoint. Adding a tag never expands the roots the caller
+can search, and deleting an account purges its tag rows.
+
+| Coverage | Count / state |
+|---|---|
+| Pure validation | `src/storage/file_tag_repo.rs` **3/3** — trimming and case, invalid characters and path-shaped input, character (not byte) length bounds |
+| Integration | `tests/explorer_integration.rs` **99/99** (1 tag test) — per-user isolation, scoped listing, invalid path/tag, idempotent duplicate, delete, **deleting a tag whose path is gone**, foreign-tag `NotFound`, missing-session guard |
+| Search integration | `tests/global_search_integration.rs` **14/14** (1 tag test) — tag owner isolation, accessible-root confinement, malformed tag refusal, and `tag` echoed only when supplied |
+| E2E | `tests/e2e/explorer/explorer.spec.ts` 15.5 — **1/1 green on Chromium and 1/1 on Firefox** (live server, scratch `DATA_DIRECTORY`, `e2eadmin` seeded through `POST /api/auth/setup`) |
+| Frontend | `npm run check` **0 errors / 0 warnings**, `npm run build` green |
+
+Verified 2026-11-03 on a live server: sidebar add/click-through/remove through
+the UI, the API's ACL refusal for an admin-invisible path, an outsider's tags
+and writes being invisible, the tag filter through the ⌘K overlay, and the
+tag-filtered global search.
+
+
+
+### Two defects the verification found and fixed
+
+1. **A tag on a deleted path could never be removed.** `DELETE /explorer/tags`
+   required the path to still exist, so the sidebar × was a dead control the
+   moment the file was deleted — the one case where a user most needs to clear
+   a label. Removal is now ownership-scoped (a foreign tag is `NotFound`,
+   disclosing nothing) and no longer touches the filesystem.
+2. **The file-coverage note was invisible when it mattered.** In
+   `SearchResults.svelte` the "2 locations did not answer" line was rendered
+   inside the `results.length > 0` branch, so a partial answer with zero hits
+   read as a clean "no results" — the exact failure E2E `desktop 6b.3` was
+   written to catch (it was red on `main` before this change, now green).
+
 ## B3 — SMS alerts, 2026-11-02 (verified)
 
 Second Phase B item. One short message per alert, on the same events and

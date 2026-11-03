@@ -262,17 +262,18 @@ async function apiPut(page: Page, t: Tokens, uri: string, body?: unknown): Promi
   );
 }
 
-async function apiDelete(page: Page, t: Tokens, uri: string): Promise<Api> {
+async function apiDelete(page: Page, t: Tokens, uri: string, body?: unknown): Promise<Api> {
   return page.evaluate(
-    async ({ token, csrf, uri }) => {
+    async ({ token, csrf, uri, body }) => {
       const r = await fetch(uri, {
         method: 'DELETE',
-        headers: { 'x-session-token': token, 'x-csrf-token': csrf },
+        headers: { 'x-session-token': token, 'x-csrf-token': csrf, ...(body ? { 'Content-Type': 'application/json' } : {}) },
+        body: body ? JSON.stringify(body) : undefined,
       });
       const b = await r.json().catch(() => ({}));
       return { http: r.status, success: b?.success, data: b?.data, message: b?.message };
     },
-    { token: t.token, csrf: t.csrf, uri },
+    { token: t.token, csrf: t.csrf, uri, body },
   );
 }
 
@@ -1005,7 +1006,11 @@ test.describe('12 — Console & network', () => {
       if (r.url().includes('/api/explorer/')) calls.push(r.url());
     });
     await gotoExplorer(page, adminTokens);
-    expect(calls.length).toBeLessThan(15);
+    // The budget is "one bounded batch per open", not "as few as possible":
+    // 16 leaves exactly the historic one-request margin over the measured
+    // baseline. The batch grew by one when the sidebar gained its File tags
+    // list (`GET /api/explorer/tags`, one request, no per-directory refetch).
+    expect(calls.length).toBeLessThan(16);
   });
 });
 
@@ -1210,6 +1215,11 @@ async function favList(page: Page, t: Tokens): Promise<any[]> {
   return Array.isArray(r.data) ? (r.data as any[]) : [];
 }
 
+async function fileTags(page: Page, t: Tokens): Promise<any[]> {
+  const r = await apiGet(page, t, '/api/explorer/tags');
+  return Array.isArray(r.data) ? (r.data as any[]) : [];
+}
+
 /** Every favorite that points into an `hv-fx-e2e-_` work dir, wherever it
  *  points. `DELETE /api/explorer/favorites` is per-path, so a run that only
  *  removes *its own* favorite leaves the ones an earlier run (or a filtered
@@ -1270,6 +1280,20 @@ test.describe('15 — Explorer extras', () => {
             .delete('/api/explorer/favorites', { headers: adminHeaders, data: { path: f.path } })
             .catch(() => {});
         }
+      }
+    } catch {
+      /* best effort */
+    }
+    // File tags are per-user + server-side too, and a filtered `-g "15.5"`
+    // run skips the in-test cleanup of earlier attempts: sweep every tag this
+    // suite may have left, so `15.5` starts from a known-empty list.
+    try {
+      const tr = await sharedCtx.get('/api/explorer/tags', { headers: adminHeaders });
+      const body = await tr.json().catch(() => ({}));
+      for (const row of (body?.data as any[]) || []) {
+        await sharedCtx
+          .delete('/api/explorer/tags', { headers: adminHeaders, data: { path: row.path, tag: row.tag } })
+          .catch(() => {});
       }
     } catch {
       /* best effort */
@@ -1388,7 +1412,133 @@ test.describe('15 — Explorer extras', () => {
     }
   });
 
-  test('15.5 — copy collision strategy: skip / keep_both / overwrite', async ({ page }) => {
+  // File tags have two independent requirements that pull in opposite
+  // directions: the tag endpoints accept any path the caller can browse (so the
+  // fixture can live in the throwaway `/tmp` workdir), while the **tag-filtered
+  // global search** only fans out over the sidebar roots — `/tmp` is not one of
+  // them by default (`src/config/explorer_config.rs`), so a file there can never
+  // come back from `/api/search/files`. The search half therefore runs in a
+  // dedicated folder inside a root the sidebar actually offers, discovered from
+  // `GET /api/explorer/roots` (`HV_E2E_TAG_ROOT` overrides it) — the same idea
+  // as `security.spec.ts`'s `HV_E2E_WORKROOT`.
+  const TAG_SEARCH_SUBDIR = 'hv-e2e-tags';
+
+  test('15.5 — file tags are private, visible in the sidebar and searchable', async ({ page }) => {
+    await openWork(page);
+    const folder = `${WORK}/${uniq('tag_')}`;
+    const file = `${folder}/tagged-manual.txt`;
+    await apiPost(page, adminTokens, `/api/explorer/mkdir?path=${q(folder)}`);
+    await apiUpload(page, adminTokens, folder, 'tagged-manual.txt', 'tag search fixture');
+    // Declared before `try` so `finally` can clean it up even on an early throw.
+    let tagRoot = '';
+    try {
+      // --- the sidebar half: add, click through, remove — all through the UI.
+      // `openWork` left the Explorer on WORK, so the current folder is a real
+      // tag target for the form (a submit at `/` is refused by design).
+      const sidebar = win(page).locator('[data-testid="explorer-sidebar"]');
+      await sidebar.locator('#explorer-tag-input').fill('Family');
+      await sidebar.getByRole('button', { name: /add tag|ajouter une étiquette/i }).click();
+      await expect(sidebar).toContainText('Family', { timeout: 10_000 });
+      // Polled, not read once: the row is optimistically rendered, the server
+      // row lands a moment later.
+      await expect
+        .poll(
+          async () => (await fileTags(page, adminTokens)).map((tag) => `${tag.path}\u0000${tag.tag}`),
+          { timeout: 10_000 },
+        )
+        .toContain(`${WORK}\u0000Family`);
+      // A tag left on a deleted file is exactly what the sidebar × must clear,
+      // so removal never requires the path to still exist.
+      const goneTagPath = `${WORK}/${uniq('gone_')}.txt`;
+      expect((await apiPost(page, adminTokens, '/api/explorer/tags', { path: goneTagPath, tag: 'Stale' })).success).toBe(false);
+      await apiUpload(page, adminTokens, WORK, goneTagPath.split('/').pop()!, 'transient');
+      expect((await apiPost(page, adminTokens, '/api/explorer/tags', { path: goneTagPath, tag: 'Stale' })).success).toBe(true);
+      await apiPost(page, adminTokens, `/api/explorer/delete?path=${q(goneTagPath)}`);
+      expect((await apiDelete(page, adminTokens, '/api/explorer/tags', { path: goneTagPath, tag: 'Stale' })).success).toBe(true);
+
+      // The account's tags are listed by default; "Only this folder" narrows
+      // them to the folder being browsed (and its own entries).
+      const tagRow = sidebar.locator('.disk-btn').filter({ hasText: 'Family' }).first();
+      await expect(tagRow).toBeVisible();
+      const onlyThisFolder = sidebar.getByRole('checkbox', { name: /only this folder|ce dossier uniquement/i });
+      await onlyThisFolder.check();
+      await expect(tagRow).toBeVisible();
+      await onlyThisFolder.uncheck();
+      // The × is a sibling of the row button (WindowSidebarItem never nests
+      // buttons), so it is addressed by its own hook.
+      await sidebar.locator('[data-testid="explorer-tag-remove"]').first().click();
+      // Scoped to this suite's own row: an earlier failed run (or a filtered
+      // `-g` run that skipped the cleanup) may have left unrelated tags.
+      await expect
+        .poll(
+          async () => (await fileTags(page, adminTokens)).filter((tag) => tag.path === WORK).length,
+          { timeout: 10_000 },
+        )
+        .toBe(0);
+
+      // --- the searchable half, inside a real sidebar root ------------------
+      const rootsRes = await apiGet(page, adminTokens, '/api/explorer/roots');
+      const sidebarRoots: string[] = (Array.isArray(rootsRes.data) ? rootsRes.data : [])
+        .map((root: any) => String(root.path || ''))
+        .filter(Boolean);
+      expect(sidebarRoots.length).toBeGreaterThan(0);
+      // The first root is not necessarily writable by the service account
+      // (`/home` and `/media` are root-owned on a stock host), so the fixture
+      // goes into the first one that accepts a directory — and if none does,
+      // `HV_E2E_TAG_ROOT` is the operator's way to point it somewhere usable.
+      if (process.env.HV_E2E_TAG_ROOT) {
+        tagRoot = process.env.HV_E2E_TAG_ROOT;
+        await apiPost(page, adminTokens, `/api/explorer/mkdir?path=${q(tagRoot)}`);
+      } else {
+        for (const root of sidebarRoots) {
+          const candidate = `${root}/${TAG_SEARCH_SUBDIR}`;
+          const made = await apiPost(page, adminTokens, `/api/explorer/mkdir?path=${q(candidate)}`);
+          if (made.success) {
+            tagRoot = candidate;
+            break;
+          }
+        }
+        expect(tagRoot, `no writable sidebar root among ${sidebarRoots.join(', ')}`).not.toBe('');
+      }
+      const searchName = `tagged-search-${Date.now().toString(36)}.txt`;
+      const searchPath = `${tagRoot}/${searchName}`;
+      expect((await apiUpload(page, adminTokens, tagRoot, searchName, 'tag search fixture')).success).toBe(true);
+      expect((await apiPost(page, adminTokens, '/api/explorer/tags', { path: searchPath, tag: 'Family' })).success).toBe(true);
+      const search = await apiGet(page, adminTokens, `/api/search/files?q=${searchName.slice(0, -4)}&tag=Family`);
+      expect(search.data.tag).toBe('Family');
+      expect(search.data.hits.some((hit: any) => hit.path === searchPath)).toBe(true);
+      // Unfiltered, the same query still finds it: the tag narrows, never widens.
+      const unfiltered = await apiGet(page, adminTokens, `/api/search/files?q=${searchName.slice(0, -4)}`);
+      expect(unfiltered.data.hits.some((hit: any) => hit.path === searchPath)).toBe(true);
+      // A tag the caller has on nothing answers no hits, and never an error.
+      expect((await apiGet(page, adminTokens, `/api/search/files?q=${searchName.slice(0, -4)}&tag=NobodyUsesThis`)).data.hits.length).toBe(0);
+
+      await page.keyboard.press('Control+k');
+      const overlay = page.locator('.search-overlay');
+      const filter = overlay.locator('select[aria-label]');
+      await expect(filter).toBeVisible();
+      await filter.selectOption('Family');
+      await overlay.locator('.search-input').fill(searchName.slice(0, -4));
+      await expect(overlay.locator('.search-item', { hasText: searchName })).toBeVisible({ timeout: 10_000 });
+      await page.keyboard.press('Escape');
+
+      // An admin resolves any existing path, so the refusal that matters is a
+      // path that does not exist: a tag must never create a phantom entry.
+      expect((await apiPost(page, adminTokens, '/api/explorer/tags', { path: `${WORK}/does-not-exist.txt`, tag: 'Secret' })).success).toBe(false);
+      const outsiderTags = await apiGet(page, plainUser, '/api/explorer/tags');
+      expect(outsiderTags.data.some((tag: any) => tag.path === file)).toBe(false);
+      expect((await apiPost(page, plainUser, '/api/explorer/tags', { path: file, tag: 'Private' })).success).toBe(false);
+      // A tag with no visibly invalid character is still refused when empty.
+      expect((await apiPost(page, adminTokens, '/api/explorer/tags', { path: file, tag: '   ' })).success).toBe(false);
+      await apiDelete(page, adminTokens, '/api/explorer/tags', { path: searchPath, tag: 'Family' }).catch(() => {});
+    } finally {
+      await apiDelete(page, adminTokens, '/api/explorer/tags', { path: file, tag: 'Family' }).catch(() => {});
+      await apiPost(page, adminTokens, `/api/explorer/delete?path=${q(folder)}`).catch(() => {});
+      if (tagRoot) await apiPost(page, adminTokens, `/api/explorer/delete?path=${q(tagRoot)}`).catch(() => {});
+    }
+  });
+
+  test('15.7 — copy collision strategy: skip / keep_both / overwrite', async ({ page }) => {
     await gotoExplorer(page, adminTokens);
     const dir = `${WORK}/${uniq('col_')}`;
     await apiPost(page, adminTokens, `/api/explorer/mkdir?path=${q(dir)}`);
@@ -1420,7 +1570,7 @@ test.describe('15 — Explorer extras', () => {
     expect((await apiDownloadLen(page, adminTokens, `${dir}/b.txt`)).len).toBe(4);
   });
 
-  test('15.6 — move collision strategy: keep_both renames instead of clobbering', async ({ page }) => {
+  test('15.8 — move collision strategy: keep_both renames instead of clobbering', async ({ page }) => {
     await gotoExplorer(page, adminTokens);
     const dir = `${WORK}/${uniq('colm_')}`;
     await apiPost(page, adminTokens, `/api/explorer/mkdir?path=${q(dir)}`);

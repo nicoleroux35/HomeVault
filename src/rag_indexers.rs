@@ -240,6 +240,7 @@ Widgets can be rearranged by drag-and-drop. Monitor panels (Resource, RAID, Secu
             id: "explorer".to_string(),
             title: "File Explorer".to_string(),
             content: r#"The File Explorer provides a web-based file manager with:
+- Private per-user tags for files and folders, with tag-filtered global search
 - Browse directories, view files with preview (text, images, code)
 - Upload files (drag-and-drop or click), download files
 - Create directories, rename, copy, move, delete
@@ -374,6 +375,11 @@ Test before saving: the panel tries the form as typed, saving nothing, and for a
             id: "disaster-recovery".to_string(),
             title: "Disaster recovery".to_string(),
             content: r#"Disaster recovery is the plan for getting your data back, and each kind of copy answers a different question. Snapshots undo a mistake — a deleted folder, an overwritten file — but they live on the same disk, so they disappear with the pool. Replication keeps a second copy on another disk or another machine, and a backup received from another computer is a copy of that computer's data. Configuration backup covers accounts, groups, shares, permissions, quotas and settings, not data: restoring it makes the appliance behave as before, then you restore the data on top. A real rebuild is: install HomeVault, restore the configuration archive, then re-attach the data from the pool itself, from a replica, or with a restic restore — and finally re-issue what was tied to the old machine, such as the certificate, share links, tokens and passkeys. Restores are worth rehearsing: restore one folder to a scratch location and compare a checksum, and run the integrity check on each backup destination, so you know the backups are good before you need them."#.to_string(),
+        },
+        FeatureDoc {
+            id: "file-tags".to_string(),
+            title: "File tags".to_string(),
+            content: r#"File tags let each account add short private labels to files and folders in the Explorer. A path can have up to twenty tags, and a tag can filter the file-name results in the desktop search. Tags never grant access: adding or listing them is limited to paths the account can already browse, and search only filters results from the account's currently visible roots. Tags are stored on the appliance and removed when the account is deleted."#.to_string(),
         },
         FeatureDoc {
             id: "storage".to_string(),
@@ -1346,6 +1352,7 @@ mod tests {
     const FEATURE_GUIDES: &[(&str, &str)] = &[
         ("dashboard", "dashboard.md"),
         ("explorer", "explorer.md"),
+        ("file-tags", "file-tags.md"),
         ("storage", "storage.md"),
         ("docker", "docker.md"),
         ("virtual-machines", "vm.md"),

@@ -86,6 +86,7 @@ use homevault::handlers::explorer::{
     handle_explorer_permissions, handle_explorer_preview, handle_explorer_recents_clear,
     handle_explorer_recents_list, handle_explorer_recents_touch, handle_explorer_rename,
     handle_explorer_roots, handle_explorer_save, handle_explorer_search, handle_explorer_snapshots,
+    handle_explorer_tags_add, handle_explorer_tags_list, handle_explorer_tags_remove,
     handle_explorer_thumbnail, handle_explorer_thumbnail_ticket, handle_explorer_trash,
     handle_explorer_trash_empty, handle_explorer_trash_list, handle_explorer_trash_policy_get,
     handle_explorer_trash_policy_update, handle_explorer_trash_purge,
@@ -259,6 +260,12 @@ fn explorer_router(state: Arc<AppState>) -> Router {
         .route(
             "/api/explorer/favorites",
             delete(handle_explorer_favorites_remove),
+        )
+        .route(
+            "/api/explorer/tags",
+            get(handle_explorer_tags_list)
+                .post(handle_explorer_tags_add)
+                .delete(handle_explorer_tags_remove),
         )
         .route("/api/explorer/recents", get(handle_explorer_recents_list))
         .route("/api/explorer/recents", post(handle_explorer_recents_touch))
@@ -2385,6 +2392,126 @@ async fn test_favorites_add_rejects_an_empty_or_root_path() {
         .await;
         assert_clean_rejection(status, &body);
     }
+}
+
+/// Tags are scoped to the signed-in user, confined to browsable paths and idempotent.
+#[tokio::test]
+async fn test_file_tags_are_private_validated_and_removable() {
+    let h = setup().await;
+    create_test_user(&h.state, "bob", "Password123!", 1).await;
+    create_test_user(&h.state, "alice", "Password123!", 1).await;
+    let mut router = explorer_router(h.state.clone());
+    let bob = login(&mut router, "bob", "Password123!").await;
+    let alice = login(&mut router, "alice", "Password123!").await;
+    let file = h.root.join("tagged-notes.txt");
+    std::fs::write(&file, b"tagged content").unwrap();
+    let file_path = file.to_string_lossy().to_string();
+
+    let (status, body) = send(
+        &mut router,
+        Method::POST,
+        "/api/explorer/tags",
+        Some(&bob),
+        Some(json!({"path": file_path, "tag": "  Family  "})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let (_, body) = send(
+        &mut router,
+        Method::GET,
+        &format!("/api/explorer/tags?path={}", urlencode(&file_path)),
+        Some(&bob),
+        None,
+    )
+    .await;
+    assert_eq!(body["data"].as_array().unwrap().len(), 1);
+    let (_, body) = send(
+        &mut router,
+        Method::GET,
+        "/api/explorer/tags",
+        Some(&alice),
+        None,
+    )
+    .await;
+    assert_eq!(body["data"].as_array().unwrap().len(), 0);
+
+    let (status, body) = send(
+        &mut router,
+        Method::POST,
+        "/api/explorer/tags",
+        Some(&bob),
+        Some(json!({"path": "/etc/passwd", "tag": "private"})),
+    )
+    .await;
+    assert_clean_rejection(status, &body);
+    let (status, body) = send(
+        &mut router,
+        Method::POST,
+        "/api/explorer/tags",
+        Some(&bob),
+        Some(json!({"path": file_path, "tag": "../secret"})),
+    )
+    .await;
+    assert_clean_rejection(status, &body);
+
+    // A tag on a path that is gone must still be removable: the sidebar × is
+    // how a user clears the label a deleted file left behind, and requiring
+    // the file to still exist turned that button into a dead control.
+    let gone = h.root.join("deleted-later.txt");
+    std::fs::write(&gone, b"gone soon").unwrap();
+    let gone_path = gone.to_string_lossy().to_string();
+    let (status, body) = send(
+        &mut router,
+        Method::POST,
+        "/api/explorer/tags",
+        Some(&bob),
+        Some(json!({"path": gone_path, "tag": "Stale"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    std::fs::remove_file(&gone).unwrap();
+    let (status, body) = send(
+        &mut router,
+        Method::DELETE,
+        "/api/explorer/tags",
+        Some(&bob),
+        Some(json!({"path": gone_path, "tag": "Stale"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let (_, body) = send(
+        &mut router,
+        Method::GET,
+        "/api/explorer/tags",
+        Some(&bob),
+        None,
+    )
+    .await;
+    assert_eq!(body["data"].as_array().unwrap().len(), 1, "{body}");
+
+    // A tag that is not the caller's own is `NotFound` for everyone else, and
+    // removing one does not require the path to be reachable.
+    let (status, body) = send(
+        &mut router,
+        Method::DELETE,
+        "/api/explorer/tags",
+        Some(&alice),
+        Some(json!({"path": gone_path, "tag": "Stale"})),
+    )
+    .await;
+    assert_clean_rejection(status, &body);
+
+    let (status, _) = send(
+        &mut router,
+        Method::DELETE,
+        "/api/explorer/tags",
+        Some(&bob),
+        Some(json!({"path": file_path, "tag": "Family"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, _) = send(&mut router, Method::GET, "/api/explorer/tags", None, None).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
 }
 
 /// `?strategy=keep_both` must not clobber an existing destination — it

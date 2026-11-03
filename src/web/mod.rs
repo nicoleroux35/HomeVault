@@ -138,7 +138,8 @@ use crate::handlers::{
         handle_explorer_network_discovery, handle_explorer_permissions, handle_explorer_preview,
         handle_explorer_recents_clear, handle_explorer_recents_list, handle_explorer_recents_touch,
         handle_explorer_rename, handle_explorer_roots, handle_explorer_save,
-        handle_explorer_search, handle_explorer_snapshots, handle_explorer_thumbnail,
+        handle_explorer_search, handle_explorer_snapshots, handle_explorer_tags_add,
+        handle_explorer_tags_list, handle_explorer_tags_remove, handle_explorer_thumbnail,
         handle_explorer_thumbnail_ticket, handle_explorer_trash, handle_explorer_trash_empty,
         handle_explorer_trash_list, handle_explorer_trash_policy_get,
         handle_explorer_trash_policy_update, handle_explorer_trash_purge,
@@ -1651,6 +1652,12 @@ pub fn create_app(state: AppStateArc) -> Router {
         .route(
             "/api/explorer/favorites",
             delete(handle_explorer_favorites_remove),
+        )
+        .route(
+            "/api/explorer/tags",
+            get(handle_explorer_tags_list)
+                .post(handle_explorer_tags_add)
+                .delete(handle_explorer_tags_remove),
         )
         .route("/api/explorer/shares", get(handle_share_links_list))
         .route("/api/explorer/shares", post(handle_share_link_create))

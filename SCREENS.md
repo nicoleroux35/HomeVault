@@ -372,7 +372,7 @@ and in the Groups screen.
 **Features:**
 - Dual view: list and grid
 - Folder navigation: breadcrumb, parent folder, entries with size, permissions, owner
-- Sidebar: physical disks, removable disks, favorite locations
+- Sidebar: physical disks, removable disks, favorite locations and private file tags (with an all-folders filter)
 - File operations:
   - Create a folder
   - Rename
@@ -382,7 +382,7 @@ and in the Groups screen.
   - Download (quota-aware)
 - Text file preview
 - Permission management (chmod)
-- File search
+- File search, including an optional private-tag filter in the desktop search overlay
 - Sorting: by name, size, modification date
 - Trash system: view, restore, purge, empty
 - Trash retention (admin): keep deleted files for a number of days, cap the trash size, and a "Clean up now" button that runs the pass immediately; past a limit the oldest items are removed automatically

@@ -1149,6 +1149,12 @@ pub async fn handle_user_delete(
             // account must not inherit the deleted user's locations.
             let recent_repo = crate::storage::RecentRepository::new(state.db.pool());
             let _ = recent_repo.purge_user(&username).await;
+            let tag_repo = crate::storage::FileTagRepository::new(state.db.pool());
+            let _ = tag_repo.purge_user(&username).await;
+            let _ = sqlx::query("DELETE FROM explorer_favorites WHERE username = ?")
+                .bind(&username)
+                .execute(&*state.db.pool())
+                .await;
 
             crate::events::log_event_warn(format!(
                 "Admin '{}' deleted user '{}'{}",

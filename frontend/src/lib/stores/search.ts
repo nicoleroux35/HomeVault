@@ -32,6 +32,7 @@ export interface SearchableItem {
   color: string;
   keywords: string[];
   action: () => void;
+  tag?: () => void;
 }
 
 interface SearchState {

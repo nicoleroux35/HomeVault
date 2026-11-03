@@ -24,6 +24,7 @@
   import { Icon, Button, Modal } from '$lib/components/theme';
   import { PageLayout, ConfirmDialog } from '$lib/components/app';
   import { createConfirmState } from '$lib/utils/confirmDialog.svelte';
+  import { notifyError, notifySuccess } from '$lib/utils/notify';
   import { activateOnEnterOrSpace } from '$lib/utils/activateOnEnterOrSpace';
   import WindowSidebarItem from '$lib/components/desktop/WindowSidebarItem.svelte';
   import WindowSidebarSection from '$lib/components/desktop/WindowSidebarSection.svelte';
@@ -36,7 +37,7 @@
   import { explorerIntent } from '$lib/stores/explorerIntent';
   import { get } from 'svelte/store';
   import FolderPicker from '$lib/components/theme/FolderPicker.svelte';
-  import { IconAlertCircle, IconArchive, IconArrowBackUp, IconArrowUp, IconBolt, IconClock, IconCloud, IconCloudCheck, IconCloudUpload, IconCopy, IconDatabase, IconDownload, IconHistory, IconPlayerEject, IconPencil, IconEye, IconFileZip, IconFolderMinus, IconFolderOpen, IconFolderPlus, IconServer, IconHome, IconLayoutGrid, IconList, IconLoader, IconLock, IconRefresh, IconSearch, IconShare, IconShield, IconShieldCheckered, IconStar, IconStarFilled, IconTrash, IconUpload, IconUsb, IconX, IconArrowsExchange } from '@tabler/icons-svelte';
+  import { IconAlertCircle, IconArchive, IconArrowBackUp, IconArrowUp, IconBolt, IconClock, IconCloud, IconCloudCheck, IconCloudUpload, IconCopy, IconDatabase, IconDownload, IconHistory, IconPlayerEject, IconPencil, IconEye, IconFileZip, IconFolderMinus, IconFolderOpen, IconFolderPlus, IconServer, IconHome, IconLayoutGrid, IconList, IconLoader, IconLock, IconPlus, IconRefresh, IconSearch, IconShare, IconShield, IconShieldCheckered, IconStar, IconStarFilled, IconTag, IconTrash, IconUpload, IconUsb, IconX, IconArrowsExchange } from '@tabler/icons-svelte';
   import ShareLinkModal from '$lib/components/explorer/ShareLinkModal.svelte';
   import TransferTray from '$lib/components/explorer/TransferTray.svelte';
   import ExplorerWidget from '$lib/components/explorer/ExplorerWidget.svelte';
@@ -147,6 +148,12 @@
 
   // Pinned folders (sidebar "Favorites"), synced server-side.
   let favorites = $state<{ path: string; label: string }[]>([]);
+  let tags = $state<{ path: string; tag: string }[]>([]);
+  let tagInput = $state('');
+  // The account's tags are listed by default — tagging a file and seeing
+  // nothing in the sidebar reads as "the tag did not take". Narrowing to the
+  // folder you are standing in is the opt-in, not the other way round.
+  let onlyThisFolder = $state(false);
 
   // Recently opened locations (sidebar "Recents"), synced server-side.
   let recents = $state<{ path: string; label: string }[]>([]);
@@ -417,6 +424,7 @@
     await loadRecents();
     await loadDisks();
     await loadRoots();
+    await loadTags();
     try {
       const me = await api.getCurrentUser();
       isAdmin = (me as any)?.data?.is_admin === true || (me as any)?.is_admin === true;
@@ -465,6 +473,7 @@
     if (document.visibilityState === 'visible') {
       loadDisks();
       loadRoots();
+      loadTags();
       // Re-list the current directory (replaces the toolbar refresh button —
       // the live watcher normally keeps it fresh, this covers a stale reconnect).
       if (!snapshotMode && !showTrash) loadDirectory(currentPath);
@@ -481,6 +490,65 @@
       if (r.success && Array.isArray(r.data)) roots = r.data;
     } catch (e) {
       console.error('Failed to load explorer roots:', e);
+    }
+  }
+
+  // --- File tags (server-side) ---------------------------------------------
+
+  /**
+   * Load the caller's tags. Called once on mount and after every mutation —
+   * never per directory change: the sidebar lists the account's tags and the
+   * "this folder only" view narrows them client-side, so navigating must not
+   * cost a request (the Explorer's opening request budget is asserted by E2E
+   * `12.2`).
+   */
+  async function loadTags() {
+    try {
+      const r = await api.getExplorerTags();
+      if (r.success && Array.isArray(r.data)) {
+        tags = r.data.map((item: any) => ({ path: item.path, tag: item.tag }));
+      }
+    } catch {
+      tags = [];
+    }
+  }
+
+  async function addCurrentTag() {
+    const tag = tagInput.trim();
+    if (!tag || !currentPath || currentPath === '/') return;
+    const previous = [...tags];
+    if (tags.some((item) => item.path === currentPath && item.tag.toLowerCase() === tag.toLowerCase())) {
+      tagInput = '';
+      return;
+    }
+    tags = [...tags, { path: currentPath, tag }];
+    const r = await api.addExplorerTag(currentPath, tag);
+    if (r.success) {
+      tagInput = '';
+      await loadTags();
+      // A toast, not `dlg.notify`: adding several tags in a row must not
+      // require dismissing a modal between each one.
+      notifySuccess('explorer.tag_added');
+    } else {
+      tags = previous;
+      notifyError(r, 'explorer.tag_add_failed');
+    }
+  }
+
+  /** `true` when a tag labels the current folder or one of its entries. */
+  function tagIsInCurrentFolder(path: string): boolean {
+    if (path === currentPath) return true;
+    const parent = path.replace(/\/+$/, '').split('/').slice(0, -1).join('/') || '/';
+    return parent === currentPath;
+  }
+
+  async function removeTag(path: string, tag: string) {
+    const previous = [...tags];
+    tags = tags.filter((item) => item.path !== path || item.tag !== tag);
+    const r = await api.removeExplorerTag(path, tag);
+    if (!r.success) {
+      tags = previous;
+      notifyError(r, 'explorer.tag_remove_failed');
     }
   }
 
@@ -1707,6 +1775,38 @@
           </WindowSidebarItem>
         {/each}
       </WindowSidebarSection>
+    {/if}
+
+    <!-- Private per-user file tags (B1). The section lists the account's own
+         tags — never another account's — and is shown whenever the current
+         location can be tagged or the account already has tags. -->
+    {#if tags.length > 0 || (currentPath && currentPath !== '/')}
+    <WindowSidebarSection label={$t('explorer.tags')}>
+      <form class="mx-3 flex gap-2" onsubmit={(event) => { event.preventDefault(); void addCurrentTag(); }}>
+        <label class="sr-only" for="explorer-tag-input">{$t('explorer.tag_name')}</label>
+        <input id="explorer-tag-input" class="min-w-0 flex-1" bind:value={tagInput} maxlength="32" placeholder={$t('explorer.tag_name')} />
+        <button class="hv-ic" type="submit" aria-label={$t('explorer.add_tag')} disabled={!tagInput.trim() || currentPath === '/'}><IconPlus size={15} /></button>
+      </form>
+      {#if tags.length > 0}
+        <label class="mx-3 flex items-center gap-2 text-t-body">
+          <input type="checkbox" bind:checked={onlyThisFolder} />
+          {$t('explorer.tags_this_folder_only')}
+        </label>
+      {/if}
+      {#each tags.filter((item) => !onlyThisFolder || tagIsInCurrentFolder(item.path)) as item (`${item.path}:${item.tag}`)}
+        <WindowSidebarItem
+          label={`${item.tag} · ${item.path.split('/').filter(Boolean).pop() || item.path}`}
+          class="disk-btn"
+          active={!showTrash && currentPath === item.path}
+          onclick={() => loadDirectory(item.path)}
+        >
+          {#snippet icon()}<IconTag size={15} class="text-[var(--hv-shell-text-2)]" />{/snippet}
+          {#snippet action()}
+            <button class="is-danger hv-ic" data-testid="explorer-tag-remove" aria-label={$t('explorer.remove_tag')} onclick={(event) => { event.stopPropagation(); void removeTag(item.path, item.tag); }}><IconX size={13} /></button>
+          {/snippet}
+        </WindowSidebarItem>
+      {/each}
+    </WindowSidebarSection>
     {/if}
 
     <!-- Read-only ISO/IMG mounting (phase B2). The panel is bounded to the

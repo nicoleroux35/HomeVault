@@ -150,7 +150,19 @@ fn router(state: Arc<AppState>) -> Router {
 }
 
 async fn search(router: &mut Router, token: &str, query: &str) -> (StatusCode, Value) {
-    let uri = format!("/api/search/files?q={}", urlencode(query));
+    search_with_tag(router, token, query, None).await
+}
+
+async fn search_with_tag(
+    router: &mut Router,
+    token: &str,
+    query: &str,
+    tag: Option<&str>,
+) -> (StatusCode, Value) {
+    let tag_query = tag
+        .map(|tag| format!("&tag={}", urlencode(tag)))
+        .unwrap_or_default();
+    let uri = format!("/api/search/files?q={}{}", urlencode(query), tag_query);
     let req = Request::builder()
         .method(Method::GET)
         .uri(uri)
@@ -244,6 +256,43 @@ fn test_global_search_rejects_an_unknown_token() {
 // ---------------------------------------------------------------------------
 // Cross-root fan-out
 // ---------------------------------------------------------------------------
+
+#[test]
+fn test_global_search_tag_filter_is_private_and_acl_confined() {
+    run(async {
+        let f = fixture().await;
+        let token = session(&f.state, "tag-owner", false).await;
+        let other = session(&f.state, "tag-other", false).await;
+        let tagged = f
+            .root_a
+            .join("shared-report.txt")
+            .to_string_lossy()
+            .to_string();
+        let repo = homevault::storage::FileTagRepository::new(f.state.db.pool());
+        repo.add("tag-owner", &tagged, "Family").await.unwrap();
+        repo.add(
+            "tag-other",
+            &f.root_b.join("shared-report.txt").to_string_lossy(),
+            "Family",
+        )
+        .await
+        .unwrap();
+        let mut r = router(f.state.clone());
+
+        let (status, body) = search_with_tag(&mut r, &token, "shared-report", Some("Family")).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(hit_paths(&body), vec![tagged]);
+        assert_eq!(body["data"]["tag"], json!("Family"));
+
+        let (_, body) = search_with_tag(&mut r, &other, "shared-report", Some("Family")).await;
+        assert!(hit_paths(&body)
+            .iter()
+            .all(|path| path.starts_with(f.root_b.to_str().unwrap())));
+
+        let (status, _) = search_with_tag(&mut r, &token, "shared-report", Some("../etc")).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+    });
+}
 
 #[test]
 fn test_global_search_finds_a_file_in_the_second_root() {
@@ -480,6 +529,7 @@ fn test_global_search_admin_is_confined_to_the_same_roots() {
         let mut r = router(f.state.clone());
 
         let (_, body) = search(&mut r, &token, "only-in-alpha").await;
+        assert!(body["data"].get("tag").is_none());
         let hits = hit_paths(&body);
         assert_eq!(hits.len(), 1, "{body}");
         for path in &hits {

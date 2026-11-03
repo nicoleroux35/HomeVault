@@ -33,16 +33,17 @@
 {#if $searchStore.results.length > 0}
   <div class="results-list" role="listbox" aria-label={$t('search.title')}>
     {#each $searchStore.results as item, index (item.id)}
-      <SearchItem
-        {item}
-        selected={index === $searchStore.selectedIndex}
-        onclick={() => { item.action(); closeSearch(); }}
-      />
+      <div class="result-row">
+        <SearchItem
+          {item}
+          selected={index === $searchStore.selectedIndex}
+          onclick={() => { item.action(); closeSearch(); }}
+          onTag={item.type === 'file' ? item.tag : undefined}
+          tagLabel={item.type === 'file' ? item.title : undefined}
+        />
+      </div>
     {/each}
   </div>
-  {#if fileNote}
-    <p class="files-note" data-testid="search-files-note">{fileNote}</p>
-  {/if}
 {:else if $searchStore.query}
   <div class="no-results" data-testid="search-no-results">
     <IconSearchOff size={48} stroke={2} />
@@ -66,6 +67,15 @@
       </div>
     </div>
   </div>
+{/if}
+
+<!-- The coverage note is *outside* the results list on purpose: a partial
+     answer that produced zero hits is exactly when the user needs to read it,
+     and keeping it inside the `results.length > 0` branch hid it there
+     (E2E `6b.3`). It is only rendered for a file query, so an empty overlay
+     never shows a stray line. -->
+{#if fileNote && $searchStore.query}
+  <p class="files-note" role="status" data-testid="search-files-note">{fileNote}</p>
 {/if}
 
 <style>

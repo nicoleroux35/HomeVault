@@ -53,6 +53,7 @@ to the configured `allowed_roots`.
 | `/explorer/snapshots` | GET | `?path=` | ZFS snapshots covering that path, each with a read-only `browse_path` under `.zfs/snapshot/` |
 | `/explorer/eject` | POST (admin) | `?path=<mount>` | safe-eject a removable drive — guarded by `is_removable_block_device` (can never `umount` an internal disk) |
 | `/explorer/recents` | GET / POST / DELETE | `?path=<key>` (POST) | the session user's recently-visited folders: list (newest first), touch (record/refresh one), clear (all). Stored server-side, per user, in `recent_repo` (`explorer_recents`, migration 039) — not `localStorage` |
+| `/explorer/tags` | GET / POST / DELETE | `?path=` / `{ path, tag }` / `{ path, tag }` | private file/folder tags per user; list can be scoped to one path |
 | `/explorer/history` | GET | `?path=` | **Rewind** — the ZFS snapshot timeline covering that file/folder, oldest→newest, each with a read-only `snapshot_path` under `.zfs/snapshot/`. Empty outside ZFS |
 | `/explorer/network-discovery` | GET (admin) | — | **SMB/network discovery** — nearby shares found via `smbtree` (SMB workgroups/hosts/shares) and Avahi/mDNS (`_smb._tcp` etc.), returned as a flat `NetworkResource[]` (`kind`, `name`, `host`, `address`, `share?`). Best-effort: missing tools yield an empty list, never an error |
 | `/explorer/format` | POST (admin) | `{ device, fstype, label? }` | format a block device as `ext4` or `exfat` (`mkfs.*` under `sudo`). `fstype` is validated against the two-value allow-list and the device against the available-disk list **before** any `mkfs` runs |
@@ -558,6 +559,7 @@ a misleading half-populated tree.
   server-side changes in real time instead of by polling.
 - **Collision handling** — a 4-button prompt on a clash whose choice applies to
   the whole batch (`?strategy=` above).
+- **File tags** — add up to 20 short labels to an accessible file or folder. Tags are private to the account, are removed when that account is deleted, and can filter ⌘K file-name results without widening the Explorer roots. Every search starts from the caller's currently visible roots; stale inaccessible tags never disclose a file. See [`file-tags.md`](file-tags.md).
 - **Favorites / pinned folders** — a toolbar star, stored **per user in the
   database** (`explorer_favorites` via `src/storage/favorite_repo.rs`,
   `GET|POST|DELETE /explorer/favorites`), not in `localStorage`, so they follow

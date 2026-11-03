@@ -5015,6 +5015,140 @@ pub async fn handle_explorer_favorites_remove(
 }
 
 // ---------------------------------------------------------------------------
+// Explorer file tags (server-side, per-user)
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Deserialize)]
+pub struct FileTagRequest {
+    pub path: String,
+    pub tag: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct FileTagQuery {
+    pub path: Option<String>,
+}
+
+/// GET /api/explorer/tags — the caller's tags, optionally scoped to one accessible path.
+pub async fn handle_explorer_tags_list(
+    State(state): State<Arc<AppState>>,
+    Query(params): Query<FileTagQuery>,
+    headers: HeaderMap,
+) -> Response {
+    let session_token =
+        match crate::handlers::admin_guard::require_session_token(&state, &headers).await {
+            Ok(token) => token,
+            Err(resp) => return resp,
+        };
+    let session = match state.auth.get_session(&session_token).await {
+        Ok(session) => session,
+        Err(_) => return ResponseHelper::json_unauthorized("Session invalid".to_string()),
+    };
+    let path = match params.path.as_deref() {
+        Some(path) => match validate_path_access(&state, path, &session) {
+            Some(path) => Some(path.to_string_lossy().into_owned()),
+            None => {
+                return ResponseHelper::json_error(
+                    "Access denied: path outside allowed directory".to_string(),
+                )
+            }
+        },
+        None => None,
+    };
+    let repo = crate::storage::FileTagRepository::new(state.db.pool());
+    match repo.list(&session.username, path.as_deref()).await {
+        Ok(tags) => ResponseHelper::json_success(tags),
+        Err(e) => ResponseHelper::json_error(format!("Failed to list file tags: {e}")),
+    }
+}
+
+/// POST /api/explorer/tags — add a label to a file or folder the caller can browse.
+pub async fn handle_explorer_tags_add(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    axum::extract::Json(req): axum::extract::Json<FileTagRequest>,
+) -> Response {
+    let session_token =
+        match crate::handlers::admin_guard::require_session_token(&state, &headers).await {
+            Ok(token) => token,
+            Err(resp) => return resp,
+        };
+    let session = match state.auth.get_session(&session_token).await {
+        Ok(session) => session,
+        Err(_) => return ResponseHelper::json_unauthorized("Session invalid".to_string()),
+    };
+    let validated = match validate_path_access(&state, &req.path, &session) {
+        Some(path) => path,
+        None => return ResponseHelper::json_error("Access denied or file not found".to_string()),
+    };
+    if !path_exists(&validated).await {
+        return ResponseHelper::json_error("Access denied or file not found".to_string());
+    }
+    let path = validated.to_string_lossy().into_owned();
+    let repo = crate::storage::FileTagRepository::new(state.db.pool());
+    match repo.add(&session.username, &path, &req.tag).await {
+        Ok(tag) => ResponseHelper::json_success(tag),
+        Err(crate::storage::database::DbError::InvalidInput(message)) => {
+            ResponseHelper::json_error(message)
+        }
+        Err(e) => ResponseHelper::json_error(format!("Failed to add file tag: {e}")),
+    }
+}
+
+/// DELETE /api/explorer/tags — remove a tag from a caller-accessible path.
+pub async fn handle_explorer_tags_remove(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    axum::extract::Json(req): axum::extract::Json<FileTagRequest>,
+) -> Response {
+    let session_token =
+        match crate::handlers::admin_guard::require_session_token(&state, &headers).await {
+            Ok(token) => token,
+            Err(resp) => return resp,
+        };
+    let session = match state.auth.get_session(&session_token).await {
+        Ok(session) => session,
+        Err(_) => return ResponseHelper::json_unauthorized("Session invalid".to_string()),
+    };
+    // Removing a label is not a filesystem operation, so it must work on a path
+    // that no longer exists: a tag left on a deleted file is exactly what the
+    // sidebar's × is there to clear, and requiring the file to still be there
+    // turned that button into a dead control the moment the file was deleted.
+    // The ownership check the repository enforces is the whole authorization
+    // here — a row only exists because this account tagged a path it could
+    // reach at the time, and a row that is not the caller's is `NotFound`,
+    // which discloses nothing about the other account's paths.
+    let repo = crate::storage::FileTagRepository::new(state.db.pool());
+    let candidates = match validate_path_access(&state, &req.path, &session) {
+        Some(validated) if path_exists(&validated).await => {
+            vec![validated.to_string_lossy().into_owned()]
+        }
+        _ => {
+            // The path is gone, or is not resolvable any more: fall back to the
+            // exact stored spelling, and to the trimmed request for a row an
+            // older build may have written without a trailing slash.
+            let trimmed = req.path.trim_end_matches('/');
+            vec![req.path.clone(), trimmed.to_string()]
+        }
+    };
+    let mut removed = false;
+    for path in &candidates {
+        match repo.remove(&session.username, path, &req.tag).await {
+            Ok(()) => {
+                removed = true;
+                break;
+            }
+            Err(crate::storage::database::DbError::NotFound) => continue,
+            Err(e) => return ResponseHelper::json_error(format!("Failed to remove file tag: {e}")),
+        }
+    }
+    match removed {
+        true => ResponseHelper::json_success(serde_json::json!({"removed": true})),
+        false => ResponseHelper::json_error("File tag not found".to_string()),
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Explorer filesystem watcher (real-time SSE)
 // ---------------------------------------------------------------------------
 

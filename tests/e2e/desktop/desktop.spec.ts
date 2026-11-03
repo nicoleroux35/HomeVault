@@ -972,12 +972,26 @@ test.describe('6 — Global search', () => {
     await expect(windows(page)).toHaveCount(1);
   });
 
-  test('6.4 — Escape closes search', async ({ page }) => {
+  test('6.4 — Escape closes search and restores trigger focus', async ({ page }) => {
     await gotoDesktop(page, adminTokens);
+    await page.locator('.hv-dock-item').first().focus();
+    const trigger = page.locator('.hv-dock-item').first();
     await page.keyboard.press('Control+k');
     await expect(page.locator('.search-overlay')).toBeVisible();
+    await expect(page.locator('.search-overlay .search-input')).toBeFocused();
     await page.keyboard.press('Escape');
     await expect(page.locator('.search-overlay')).toHaveCount(0);
+    await expect(trigger).toBeFocused();
+  });
+
+  test('6.5 — Tab stays inside the search dialog', async ({ page }) => {
+    await gotoDesktop(page, adminTokens);
+    await page.keyboard.press('Control+k');
+    const overlay = page.locator('.search-overlay');
+    const input = overlay.locator('.search-input');
+    await expect(input).toBeFocused();
+    await page.keyboard.press('Shift+Tab');
+    await expect(input).toBeFocused();
   });
 
   // The Settings categories are fed into this index from the single shared

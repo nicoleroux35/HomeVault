@@ -18,15 +18,16 @@ Legend: **S** ≤ 2 days · **M** 3–5 days · **L** 2–3 weeks · **XL** ≥ 
 
 ## 1. One open debt item, unrelated to any feature
 
-- [ ] **Dependabot: 1 low-severity advisory on `main`**
-      (`github.com/nicoleroux35/HomeVault/security/dependabot/1`).
-      Open since before the Phase A work, reported on every push.
-      Not triaged: needs a `cargo audit` run to see whether the vulnerable
-      crate is reachable, then either a bump or a documented dismissal. **S**
+- [x] **Dependabot: webpki root certificate advisory**
+      `cargo audit --json` identified `RUSTSEC-2026-0383` in the resolved
+      `webpki-root-certs 1.0.9`. The dependency is part of rustls' root store;
+      `cargo update -p webpki-root-certs` moved the lockfile to **1.0.11**,
+      which removes the distrusted emSign root. No advisory dismissal was used.
+      Tests were not run by request; verify in CI before release.
 
 ---
 
-## 2. Phase B — six items, two done
+## 2. Phase B — six items, three done
 
 - [x] **B2 — ISO/IMG mounting (read-only)** · shipped `58fe84b`
       `src/iso_mount.rs` + `IsoMountPanel.svelte` · guide `iso-mount.md`
@@ -35,16 +36,19 @@ Legend: **S** ≤ 2 days · **M** 3–5 days · **L** 2–3 weeks · **XL** ≥ 
       `src/sms.rs` + Settings form · guide `sms.md`
       19 unit + 10 integration.
 
-- [ ] **B1 — File tags** · **M**
-      Migration `075_file_tags.sql` (`path`, `tag`, `owner`),
-      `GET/POST/DELETE /api/explorer/tags`, tag filter in the Explorer sidebar
-      next to Favorites, tag chips in the ⌘K overlay.
-      *Why it is last of the three:* it is the only one needing a migration.
-      *Pattern to copy:* Favorites already has the API + sidebar shape
-      (`handle_explorer_favorites_*`, `Explorer.svelte:1690`).
-      *Watch:* `resource_shares` and the ACL model — a tag must not become a way
-      to learn that a file exists outside the caller's roots.
-      Verified absent: no `file_tags` in `sqlx/migrations/`.
+- [x] **B1 — File tags** · shipped 2026-11-03 (verified)
+      Migration `075_file_tags.sql`, owner-scoped `GET/POST/DELETE
+      /api/explorer/tags`, Explorer sidebar and a tag filter/action in ⌘K.
+      Paths are validated against the caller's current Explorer roots, tags
+      never grant access, each path is limited to 20 tags, and account deletion
+      purges the rows. See `docs/guides/file-tags.md`.
+      **Verified:** `file_tag_repo.rs` 3/3, `explorer_integration.rs` 99/99,
+      `global_search_integration.rs` 14/14, E2E `explorer 15.5` green on
+      Chromium **and** Firefox, `npm run check` 0/0, build green.
+      **Two defects fixed during verification:** a tag on a deleted path could
+      never be removed (the sidebar × died with the file), and the file-coverage
+      note in ⌘K was hidden whenever the answer had zero hits — which made
+      `desktop 6b.3` red on `main`, now green.
 
 - [ ] **B4 — SNMP agent** · **M**
       The inverse of `src/snmp.rs`, which is a **client** (`snmpget`/`snmpwalk`
@@ -163,13 +167,10 @@ Kept here so the question does not come back every six months.
 
 ## 7. Suggested order
 
-1. **Dependabot** (§1) — one command to triage, and it is the only thing
-   flagged by GitHub.
-2. **B5 + B6 together** — one file, one risk model, one test pass.
-3. **B1** — visible to the user, and Favorites proves the shape.
-4. **B4** — the installer already ships half of it.
-5. **C1 → C2 → C3**.
-6. **D2 → D1**.
+1. **B5 + B6 together** — one file, one risk model, one host-network rollback path. ← **next**
+2. **B4** — the installer already ships half of it.
+3. **C1 → C2 → C3**.
+4. **D2 → D1**.
 
 Phases B–D have no blocker between them. Each item ships with its guide,
 `API.md` entry, `FeatureDoc`, unit + integration + E2E tests, and `TESTING.md`

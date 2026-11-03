@@ -52,6 +52,9 @@ pub struct GlobalSearchQuery {
     /// Return file names only (no directories). Defaults to `false`.
     #[serde(default)]
     pub files_only: bool,
+    /// Optional exact tag filter. Results without this user's tag are omitted.
+    #[serde(default)]
+    pub tag: Option<String>,
 }
 
 /// `GET /api/search/files`
@@ -80,6 +83,13 @@ pub async fn handle_search_files(
         Err(e) => return ResponseHelper::json_error(e.message()),
     };
     let limit = clamp_limit(params.limit);
+    let tag = match params.tag.as_deref() {
+        Some(tag) => match crate::storage::FileTagRepository::normalize_query_tag(tag) {
+            Ok(tag) => Some(tag),
+            Err(message) => return ResponseHelper::json_error(message),
+        },
+        None => None,
+    };
 
     let started = Instant::now();
 
@@ -158,6 +168,16 @@ pub async fn handle_search_files(
         }
     }
 
+    if let Some(tag) = tag.as_deref() {
+        let repo = crate::storage::FileTagRepository::new(state.db.pool());
+        let tagged_paths = match repo.paths_for_tag(&session.username, tag).await {
+            Ok(paths) => paths,
+            Err(e) => {
+                return ResponseHelper::json_error(format!("Could not filter file tags: {e}"))
+            }
+        };
+        hits.retain(|hit| tagged_paths.contains(&hit.info.path));
+    }
     let (hits, truncated) = merge_hits(hits, &query, limit);
 
     ResponseHelper::json_success(SearchReport {
@@ -168,5 +188,6 @@ pub async fn handle_search_files(
         unreadable,
         truncated,
         elapsed_ms: started.elapsed().as_millis() as u64,
+        tag,
     })
 }

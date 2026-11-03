@@ -18,16 +18,21 @@
 <script lang="ts">
   import type { SearchableItem } from '$lib/stores/search';
   import Icon from '$lib/components/theme/Icon.svelte';
+  import { IconTag } from '@tabler/icons-svelte';
   import { t } from '$lib/stores/i18n';
 
   let {
     item,
     selected = false,
-    ...rest
+    onTag,
+    tagLabel,
+    onclick
   }: {
     item: SearchableItem;
     selected?: boolean;
     onclick?: (e: MouseEvent) => void;
+    onTag?: () => void;
+    tagLabel?: string;
   } = $props();
 
   function getTypeColor(type: string): string {
@@ -45,7 +50,19 @@
   const accentTint = $derived(`color-mix(in srgb, ${accent} 12%, transparent)`);
 </script>
 
-<button class="search-item" class:selected {...rest} role="option" aria-selected={selected}>
+<!-- `role="option"` sits on the row, which is *not* the button: the row hosts
+     the open action and (for an active tag filter) a per-row tag action, and a
+     control inside a control is invalid. The row keeps the listbox semantics,
+     the button keeps the activation. -->
+<div
+  class="search-item"
+  class:selected
+  role="option"
+  aria-selected={selected}
+  tabindex="-1"
+  onclick={onclick}
+  onkeydown={(event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); onclick?.(event as unknown as MouseEvent); } }}
+>
   <div class="item-icon" style="background: {accentTint};">
     <Icon name={item.icon} size={24} style="color: {accent};" />
   </div>
@@ -53,10 +70,15 @@
     <div class="item-title">{item.title}</div>
     <div class="item-description">{item.description}</div>
   </div>
+  {#if onTag}
+    <button type="button" class="item-action-button" aria-label={$t('explorer.add_tag_for_file', { filename: tagLabel || '' })} onclick={(event) => { event.stopPropagation(); onTag(); }}>
+      <IconTag size={16} aria-hidden="true" />
+    </button>
+  {/if}
   <div class="item-type" style="background: {accentTint}; color: {getTypeColor(item.type)};">
     {$t(`search.type_${item.type}`)}
   </div>
-</button>
+</div>
 
 <style>
   .search-item {
@@ -68,9 +90,7 @@
     border: none;
     border-left: 3px solid transparent;
     background: transparent;
-    cursor: pointer;
     transition: background 150ms, border-color 150ms;
-    text-align: left;
   }
 
   .search-item:hover {
@@ -92,7 +112,16 @@
     flex-shrink: 0;
   }
 
+  .search-item {
+    cursor: pointer;
+  }
+
   .item-content {
+    min-height: var(--hv-touch-target-min);
+    /* Centred so the 44px target is symmetric around the two text lines. */
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
     flex: 1;
     min-width: 0;
   }
@@ -112,6 +141,25 @@
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
+  }
+
+  .item-action-button {
+    width: var(--hv-touch-target-min);
+    height: var(--hv-touch-target-min);
+    flex: 0 0 var(--hv-touch-target-min);
+    display: grid;
+    place-items: center;
+    border: 0;
+    border-radius: var(--hv-radius-control);
+    background: transparent;
+    color: var(--hv-shell-text-2);
+    cursor: pointer;
+  }
+
+  .search-item:focus-visible,
+  .item-action-button:focus-visible {
+    outline: none;
+    box-shadow: var(--hv-focus-ring);
   }
 
   .item-type {

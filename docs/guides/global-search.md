@@ -12,7 +12,7 @@ over every root your Explorer sidebar lists.
 
 | Route | Auth | Answers |
 |---|---|---|
-| `GET /api/search/files?q=<name>&limit=<n>&files_only=<bool>` | session | `{ query, hits[], roots[], timed_out[], unreadable[], truncated, elapsed_ms }` |
+| `GET /api/search/files?q=<name>&limit=<n>&files_only=<bool>&tag=<tag>` | session | `{ query, hits[], roots[], timed_out[], unreadable[], truncated, elapsed_ms }` (plus `tag` when the filter is supplied) |
 
 `hits[]` is the Explorer's `FileInfo` plus `root` (the root that produced the
 hit) and `root_kind` (`home`, `users`, `shares`, `media`, `storage`,
@@ -41,6 +41,7 @@ fan-out).
   roots that did not answer; `truncated` says the list was cut. The overlay
   renders that under the results (`search.files_partial` /
   `search.files_truncated` / `search.files_unavailable`).
+- **Tag filter is additive, not a second search surface.** `tag` only filters the already ACL-confined name-search hits against tags owned by the current user. A stale tag outside current roots cannot produce a hit or disclose its path.
 - **Name search only.** No content index is built, and the docs say so rather
   than implying otherwise.
 

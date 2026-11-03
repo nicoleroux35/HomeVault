@@ -58,6 +58,7 @@ export interface FileSearchReport {
   unreadable: string[];
   truncated: boolean;
   elapsed_ms: number;
+  tag?: string | null;
 }
 
 let timer: ReturnType<typeof setTimeout> | null = null;
@@ -75,7 +76,7 @@ export function coverageNote(report: FileSearchReport): string {
 
 /** One file hit → the overlay's item shape. `path` travels in the item id and
  *  in the closure only: never in the URL. */
-export function toSearchItem(hit: FileHit, onOpen: (hit: FileHit) => void): SearchableItem {
+export function toSearchItem(hit: FileHit, onOpen: (hit: FileHit) => void, onTag?: (hit: FileHit) => void): SearchableItem {
   const folder = hit.path.replace(/\/+$/, '').split('/').slice(0, -1).join('/') || '/';
   return {
     id: `file-${hit.path}`,
@@ -88,7 +89,8 @@ export function toSearchItem(hit: FileHit, onOpen: (hit: FileHit) => void): Sear
     icon: hit.is_directory ? 'folder' : 'file',
     color: 'var(--hv-text-secondary)',
     keywords: [hit.name.toLowerCase(), hit.root.toLowerCase()],
-    action: () => onOpen(hit)
+    action: () => onOpen(hit),
+    ...(onTag ? { tag: () => onTag(hit) } : {})
   };
 }
 
@@ -103,7 +105,9 @@ export function queryFiles(
   onResults: (query: string, items: SearchableItem[]) => void,
   onNote: (query: string, note: string) => void,
   onLoading: (loading: boolean, query: string) => void,
-  onOpen: (hit: FileHit) => void
+  onOpen: (hit: FileHit) => void,
+  tag?: string,
+  onTag?: (hit: FileHit) => void
 ): void {
   if (timer) clearTimeout(timer);
   const trimmed = query.trim();
@@ -117,7 +121,7 @@ export function queryFiles(
   onLoading(true, query);
   const mine = ++generation;
   timer = setTimeout(async () => {
-    const response = await api.searchAllFiles(trimmed, FILE_HITS);
+    const response = await api.searchAllFiles(trimmed, FILE_HITS, false, tag);
     if (mine !== generation) return; // superseded
     if (!response.success || !response.data) {
       // A failed provider is not "no files": say so, and keep the local
@@ -127,7 +131,7 @@ export function queryFiles(
       return;
     }
     const report = response.data as unknown as FileSearchReport;
-    onResults(query, (report.hits || []).map((hit) => toSearchItem(hit, onOpen)));
+    onResults(query, (report.hits || []).map((hit) => toSearchItem(hit, onOpen, onTag)));
     onNote(query, coverageNote(report));
   }, DEBOUNCE_MS);
 }

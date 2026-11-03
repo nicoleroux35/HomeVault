@@ -50,7 +50,8 @@ methods, and notable invariants.
 | Disk Cache Tier (cache pool, mover, shares) | [guides/cache.md](./guides/cache.md) |
 | Disk Encryption (LUKS2) | [guides/encryption.md](./guides/encryption.md) |
 | RAID — **creation-only** wizard (physical disks → one tracked async job → one virtual disk; spares, degraded slots) | [guides/raid.md](./guides/raid.md) |
-| File Explorer (incl. reflink/instant copy, trash retention, transfer tray/progress detail/history, resumable-upload durability, on-demand SHA-256/SHA-512/BLAKE3 checksums) | [guides/explorer.md](./guides/explorer.md) |
+| File Explorer (incl. private file tags, reflink/instant copy, trash retention, transfer tray/progress detail/history, resumable-upload durability, on-demand SHA-256/SHA-512/BLAKE3 checksums) | [guides/explorer.md](./guides/explorer.md) |
+| File tags (private per-user labels, tag-filtered search) | [guides/file-tags.md](./guides/file-tags.md) |
 | Shares (SMB/NFS/FTP/WebDAV + ACLs) | [guides/shares.md](./guides/shares.md) |
 | Network (interfaces, WiFi, diagnostics) | [guides/network.md](./guides/network.md) |
 | mDNS / Zeroconf (`homevault.local`, share discovery) | [guides/mdns.md](./guides/mdns.md) |

@@ -195,7 +195,7 @@ Notable handlers (see `API.md` for the full map):
 ## Storage / repository layer
 
 `src/storage/` holds SQLx repositories. Each repo wraps a pool and provides typed
-async CRUD. Migrations are in `sqlx/migrations/` (**001–051**), embedded in the
+async CRUD. Migrations are in `sqlx/migrations/` (**001–075**), embedded in the
 binary via `include_dir!` and applied at startup. `storage/database.rs::Database::run_migrations`
 runs each pending file once (tracked in `_hv_migrations`); the hand-rolled SQL
 statement splitter tracks `--` line comments explicitly, so a semicolon inside a
@@ -228,7 +228,8 @@ acknowledgement), `043_scheduled_tasks.sql` (generic scheduled-task engine),
 `045_disk_power.sql` (per-disk hdparm APM/spindown timers),
 `046_snapshot_schedules.sql` (pool snapshots with GFS retention),
 `047_user_lockout_expiry.sql` (temporary vs. permanent account locks),
-`048_app_meta.sql` (schema/bookkeeping metadata).
+`048_app_meta.sql` (schema/bookkeeping metadata),
+`075_file_tags.sql` (per-user private Explorer file/folder labels).
 
 All repositories share a common `Repository` trait (`src/storage/repository.rs`)
 exposing standard CRUD (`find_by_id`, `find_all`, `create`, `update`, `delete`,
