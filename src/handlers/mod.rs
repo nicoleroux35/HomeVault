@@ -75,6 +75,7 @@ pub mod groups;
 pub mod health_probe;
 pub mod identity;
 pub mod iscsi;
+pub mod iso_mount;
 pub mod journal;
 pub mod mcp;
 pub mod mdns;

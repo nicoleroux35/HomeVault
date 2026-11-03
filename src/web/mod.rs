@@ -81,6 +81,10 @@ use crate::handlers::{
         handle_server_details, handle_storage_data, handle_storage_volumes,
         handle_update_widget_preference, handle_widget_data,
     },
+    dhcp_server::{
+        handle_get as handle_dhcp_get, handle_leases, handle_start as handle_dhcp_start,
+        handle_stop as handle_dhcp_stop, handle_update as handle_dhcp_update,
+    },
     directory::{
         handle_directory_get, handle_directory_settings_put, handle_directory_test,
         handle_identity_delete, handle_identity_disabled,
@@ -125,25 +129,27 @@ use crate::handlers::{
     },
     explorer::{
         handle_explorer_checksum, handle_explorer_checksum_result, handle_explorer_compress,
-        handle_explorer_copy, handle_explorer_delete,
-        handle_explorer_disks, handle_explorer_download, handle_explorer_download_ticket,
-        handle_explorer_eject, handle_explorer_extract, handle_explorer_favorites_add,
-        handle_explorer_favorites_list, handle_explorer_favorites_remove, handle_explorer_format,
-        handle_explorer_history, handle_explorer_instant_copy_get,
-        handle_explorer_instant_copy_update, handle_explorer_list, handle_explorer_mkdir,
-        handle_explorer_move, handle_explorer_network_discovery, handle_explorer_permissions,
-        handle_explorer_preview, handle_explorer_recents_clear, handle_explorer_recents_list,
-        handle_explorer_recents_touch, handle_explorer_rename, handle_explorer_roots,
-        handle_explorer_save, handle_explorer_search, handle_explorer_snapshots,
-        handle_explorer_thumbnail, handle_explorer_thumbnail_ticket, handle_explorer_trash,
-        handle_explorer_trash_empty, handle_explorer_trash_list, handle_explorer_trash_policy_get,
+        handle_explorer_copy, handle_explorer_delete, handle_explorer_disks,
+        handle_explorer_download, handle_explorer_download_ticket, handle_explorer_eject,
+        handle_explorer_extract, handle_explorer_favorites_add, handle_explorer_favorites_list,
+        handle_explorer_favorites_remove, handle_explorer_format, handle_explorer_history,
+        handle_explorer_instant_copy_get, handle_explorer_instant_copy_update,
+        handle_explorer_list, handle_explorer_mkdir, handle_explorer_move,
+        handle_explorer_network_discovery, handle_explorer_permissions, handle_explorer_preview,
+        handle_explorer_recents_clear, handle_explorer_recents_list, handle_explorer_recents_touch,
+        handle_explorer_rename, handle_explorer_roots, handle_explorer_save,
+        handle_explorer_search, handle_explorer_snapshots, handle_explorer_thumbnail,
+        handle_explorer_thumbnail_ticket, handle_explorer_trash, handle_explorer_trash_empty,
+        handle_explorer_trash_list, handle_explorer_trash_policy_get,
         handle_explorer_trash_policy_update, handle_explorer_trash_purge,
         handle_explorer_trash_purge_now, handle_explorer_trash_restore, handle_explorer_upload,
         handle_explorer_upload_chunk, handle_explorer_upload_complete,
         handle_explorer_upload_session_abort, handle_explorer_upload_session_start,
         handle_explorer_watch, handle_explorer_watch_ticket,
     },
-    transfers::{handle_active_transfers, handle_transfer_history},
+    fan_control::{
+        handle_channels_list, handle_config_get, handle_config_update, handle_restore_auto,
+    },
     firewall::{
         handle_firewall_default_policy, handle_firewall_disable, handle_firewall_enable,
         handle_firewall_enable_preview, handle_firewall_history, handle_firewall_rule_add,
@@ -154,6 +160,7 @@ use crate::handlers::{
         handle_group_remove_member, handle_group_update, handle_groups_list,
         handle_groups_list_users, handle_user_groups,
     },
+    guided_redundancy::{handle_apply, handle_recommend},
     iscsi::{
         handle_iscsi_apply, handle_iscsi_backstore_create, handle_iscsi_backstore_delete,
         handle_iscsi_backstore_update, handle_iscsi_get, handle_iscsi_settings_put,
@@ -308,9 +315,19 @@ use crate::handlers::{
         handle_transfer_quota_delete, handle_transfer_quota_get, handle_transfer_quota_set,
         handle_transfer_quotas_list,
     },
+    transfers::{handle_active_transfers, handle_transfer_history},
     ups::{
         handle_ups_availability, handle_ups_config_delete, handle_ups_config_list,
         handle_ups_config_save, handle_ups_list, handle_ups_status, handle_ups_variables,
+    },
+    // Phase 4 handlers
+    ups_server::{
+        handle_ups_server_get, handle_ups_server_shutdown, handle_ups_server_start,
+        handle_ups_server_stop, handle_ups_server_update,
+    },
+    usb_copy::{
+        handle_devices_list, handle_execute, handle_profile_create, handle_profile_delete,
+        handle_profile_update, handle_profiles_list,
     },
     user_homes::{
         handle_available_home_disks, handle_user_home_delete, handle_user_home_get,
@@ -329,24 +346,8 @@ use crate::handlers::{
         handle_widget_cpu_temp, handle_widget_cpu_usage, handle_widget_network_traffic,
         handle_widget_ram_usage, handle_widget_update_info,
     },
-    // Phase 4 handlers
-    ups_server::{
-        handle_ups_server_get, handle_ups_server_shutdown, handle_ups_server_start,
-        handle_ups_server_stop, handle_ups_server_update,
-    },
-    usb_copy::{
-        handle_devices_list, handle_execute, handle_profile_create, handle_profile_delete,
-        handle_profile_update, handle_profiles_list,
-    },
-    dhcp_server::{
-        handle_get as handle_dhcp_get, handle_leases, handle_start as handle_dhcp_start,
-        handle_stop as handle_dhcp_stop, handle_update as handle_dhcp_update,
-    },
-    fan_control::{
-        handle_channels_list, handle_config_get, handle_config_update, handle_restore_auto,
-    },
-    guided_redundancy::{handle_apply, handle_recommend},
-    AppState, AppStateArc,
+    AppState,
+    AppStateArc,
 };
 
 use crate::handlers::rescue::create_rescue_router;
@@ -1506,29 +1507,23 @@ pub fn create_app(state: AppStateArc) -> Router {
         .route("/api/power/ups-server", put(handle_ups_server_update))
         .route("/api/power/ups-server/start", post(handle_ups_server_start))
         .route("/api/power/ups-server/stop", post(handle_ups_server_stop))
-        .route("/api/power/ups-server/shutdown", post(handle_ups_server_shutdown))
+        .route(
+            "/api/power/ups-server/shutdown",
+            post(handle_ups_server_shutdown),
+        )
         // Phase 4 — USB Copy
         .route("/api/usb-copy/profiles", get(handle_profiles_list))
         .route("/api/usb-copy/profiles", post(handle_profile_create))
-        .route(
-            "/api/usb-copy/profiles/{id}",
-            put(handle_profile_update),
-        )
+        .route("/api/usb-copy/profiles/{id}", put(handle_profile_update))
         .route(
             "/api/usb-copy/profiles/{id}",
             axum::routing::delete(handle_profile_delete),
         )
         .route("/api/usb-copy/devices", get(handle_devices_list))
-        .route(
-            "/api/usb-copy/execute/{profile_id}",
-            post(handle_execute),
-        )
+        .route("/api/usb-copy/execute/{profile_id}", post(handle_execute))
         // Phase 4 — DHCP Server
         .route("/api/network/dhcp-server", get(handle_dhcp_get))
-        .route(
-            "/api/network/dhcp-server",
-            put(handle_dhcp_update),
-        )
+        .route("/api/network/dhcp-server", put(handle_dhcp_update))
         .route("/api/network/dhcp-server/start", post(handle_dhcp_start))
         .route("/api/network/dhcp-server/stop", post(handle_dhcp_stop))
         .route("/api/network/dhcp-server/leases", get(handle_leases))
@@ -1539,7 +1534,10 @@ pub fn create_app(state: AppStateArc) -> Router {
         .route("/api/system/fans/restore-auto", post(handle_restore_auto))
         // Phase 4 — Guided Redundancy
         .route("/api/storage/guided-redundancy", get(handle_recommend))
-        .route("/api/storage/guided-redundancy/apply/{id}", post(handle_apply))
+        .route(
+            "/api/storage/guided-redundancy/apply/{id}",
+            post(handle_apply),
+        )
         // App-proxy auth entry (browser navigation, cookie-authenticated):
         // mints the app-scoped session and redirects to the app origin.
         .route("/app-auth", get(handle_app_auth))
@@ -1677,6 +1675,16 @@ pub fn create_app(state: AppStateArc) -> Router {
             get(handle_explorer_network_discovery),
         )
         .route("/api/explorer/format", post(handle_explorer_format))
+        // Phase B2 — read-only ISO/IMG mounting
+        .route(
+            "/api/explorer/iso",
+            get(crate::handlers::iso_mount::handle_iso_list)
+                .post(crate::handlers::iso_mount::handle_iso_mount),
+        )
+        .route(
+            "/api/explorer/iso/{id}",
+            axum::routing::delete(crate::handlers::iso_mount::handle_iso_unmount),
+        )
         // Shares
         .route("/api/shares", get(handle_shares_list))
         .route("/api/shares", post(handle_share_create))

@@ -2711,6 +2711,16 @@ transfer_history_desc = "Finished uploads, downloads, copies, moves and checksum
 transfer_history_verified = "Verified"
 transfer_history_empty = "No transfer recorded yet."
 
+iso_mount_title = "Disc images"
+iso_mount_mount = "Mount this image"
+iso_mount_none = "No image is mounted."
+iso_mount_unavailable = "Mounting needs 'losetup' and 'mount', which are not installed on this server."
+iso_mount_mounted = "Image mounted. It opens as a folder."
+iso_mount_mount_failed = "The image could not be mounted."
+iso_mount_unmounted = "Image unmounted."
+iso_mount_unmount_failed = "The image could not be unmounted."
+iso_mount_unmount_named = "Unmount %name%"
+iso_mount_load_failed = "Could not read the mounted images."
 [folder_picker]
 title = "Choose a folder"
 title_file = "Choose a file"

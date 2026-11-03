@@ -57,6 +57,56 @@ email payloads, launcher fallback, Syslog observation invalidation, and quota
 interpolation. The two skipped tests are conditional environment-state skips,
 not failures. Phase 0 is verified for the QW-05 through QW-11 acceptance scope.
 
+## B2 — Read-only ISO/IMG mounting, 2026-11-02 (verified)
+
+First Phase B item. An image is attached to a loop device read-only and appears
+in the Explorer as one more folder, so a 6 GB ISO opens instantly instead of
+becoming 6 GB of files on the array.
+
+| Piece | Where |
+|---|---|
+| Validation, slug, containment, argv, `/proc/mounts` parsing (pure) | `src/iso_mount.rs` |
+| HTTP surface + the only code that shells out | `src/handlers/iso_mount.rs` |
+| Routes | `GET` + `POST /api/explorer/iso`, `DELETE /api/explorer/iso/{id}` in `src/web/mod.rs` |
+| Sidebar panel | `frontend/src/lib/components/explorer/IsoMountPanel.svelte` |
+| Guide | `docs/guides/iso-mount.md` (+ `INDEX.md`, `API.md`, `SCREENS.md`, one `FeatureDoc`) |
+
+### Decisions pinned by tests
+
+| Rule | Test |
+|---|---|
+| `.iso`/`.img` only, refusal names the accepted set | `supported_extensions_are_iso_and_img_only`, `unsupported_type_names_the_allowed_set` |
+| The mount point is derived and deterministic | `slug_is_deterministic_and_readable`, `the_mount_point_is_derived_from_the_slug_not_the_request` |
+| Two same-named images do not collide | `same_file_name_in_two_folders_gets_two_slugs` |
+| Containment, including against `..` and prefix siblings | `mount_point_must_stay_under_the_iso_root` |
+| `ro,nosuid,nodev` on every mount; no `--detach-all` | `mount_is_read_only_nosuid_and_nodev`, `detach_names_one_device_only` |
+| `/proc/mounts` is the authority | `only_mount_points_the_host_confirms_are_reported`, `a_mount_outside_the_isolated_root_is_ignored` |
+| Nothing is mounted twice | `the_same_image_is_not_mounted_twice` |
+| The guard runs before the body | `test_a_malformed_body_without_a_session_is_still_401` |
+| A crafted id cannot name a path | `test_a_traversal_in_the_id_cannot_name_a_path` |
+
+### Verification
+
+| Suite | Result |
+|---|---|
+| `cargo test --lib iso_mount` | **25/25** (20 module + 5 handlers) |
+| `tests/iso_mount_integration.rs` | **11/11** |
+| `cargo test --lib rag_indexers` | **5/5** (the guide ↔ `FeatureDoc` mapping holds both ways) |
+| `cargo test --lib utils::process::…::every_subprocess_of_the_tree_is_bounded` | green — the new `sudo losetup`/`mount`/`umount` all carry a named deadline |
+| `cargo test --lib dependencies::…::test_every_commanded_binary_has_an_install_source` | green — `losetup`/`mount`/`umount` ship in `util-linux`, already in `install.sh`'s required group |
+| `cargo test --lib` | **2,404 passed** (+25); the same 5 pre-existing unrelated failures |
+| `npm run check` / `npm run build` | 0 errors, 0 warnings / green |
+| `cargo clippy --lib`, `cargo fmt --check` on the new files | clean |
+
+### Deviation
+
+**No automated successful-mount round trip.** The build host has no
+passwordless sudo and a real `losetup`+`mount` would leave a device attached to
+the machine running the tests, so the argv, the containment and every
+pre-syscall refusal are asserted directly instead. This is the same class of
+deviation `docs/guides/iscsi.md` records for its hardware acceptance suite, and
+the guide says so rather than implying coverage.
+
 ## P0.2 — Capability and API contracts closed, 2026-11-02 (verified)
 
 The API had a documented auth contract (`admin_guard`, stated once) but no

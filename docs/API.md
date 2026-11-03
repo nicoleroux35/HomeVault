@@ -41,7 +41,24 @@ SPA's `ApiClient` (`frontend/src/lib/services/api.ts`) prefixes every call with
 - **Caching**: `ApiClient` caches successful `GET`s for a per-call TTL (default
   5 s) and invalidates cache keys on mutations.
 
-### Capability and unsupported-capability contract (P0.2)
+#### ISO / IMG mounting — `explorer/iso` (phase B2)
+
+Read-only loop mounts of a disc image, browsable as a folder.
+
+| Method | Path | Auth |
+|--------|------|------|
+| GET | `/explorer/iso` | auth — `{ available, iso_root, mounts[] }`; `available: false` means `losetup`/`mount` are absent |
+| POST | `/explorer/iso` | admin — `{ path }` → the mounted row `{ id, image_path, label, mount_point, loop_device, size_bytes }` |
+| DELETE | `/explorer/iso/{id}` | admin |
+
+Refusals are `400` when they are about the request (outside the caller's roots,
+wrong extension, missing file, `..` in the path, unknown id) and `503` when the
+host lacks `losetup`/`mount` — the capability contract below applies. The mount
+point is **derived** (`<DATA_DIRECTORY>/iso/<slug>`), never taken from the
+request, and the mount carries `ro,nosuid,nodev`. A failed mount detaches the
+loop device it attached.
+
+## Capability and unsupported-capability contract (P0.2)
 
 HomeVault runs on hardware and against external tools it does not control:
 `clamscan`, `docker`, `ufw`, `restic`, `targetcli`, `dnsmasq`, `upsd`, hwmon

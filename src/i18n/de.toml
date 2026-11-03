@@ -2710,6 +2710,16 @@ transfer_history_desc = "Abgeschlossene Uploads, Downloads, Kopien, Verschiebung
 transfer_history_verified = "Geprüft"
 transfer_history_empty = "Noch keine Übertragung aufgezeichnet."
 
+iso_mount_title = "Datenträgerabbilder"
+iso_mount_mount = "Dieses Abbild einbinden"
+iso_mount_none = "Es ist kein Abbild eingebunden."
+iso_mount_unavailable = "Zum Einbinden werden „losetup“ und „mount“ benötigt, die auf diesem Server nicht installiert sind."
+iso_mount_mounted = "Abbild eingebunden. Es öffnet sich als Ordner."
+iso_mount_mount_failed = "Das Abbild konnte nicht eingebunden werden."
+iso_mount_unmounted = "Abbild ausgehängt."
+iso_mount_unmount_failed = "Das Abbild konnte nicht ausgehängt werden."
+iso_mount_unmount_named = "%name% aushängen"
+iso_mount_load_failed = "Die eingebundenen Abbilder konnten nicht gelesen werden."
 [folder_picker]
 title = "Ordner auswählen"
 title_file = "Datei auswählen"

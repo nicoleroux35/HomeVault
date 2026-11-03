@@ -409,6 +409,29 @@ link that needs nothing downloads straight away and never shows a page.
 
 ---
 
+## 16b. Explorer sidebar — Disc images (ISO mounting)
+
+**Screen:** the **Disc images** panel in the Explorer sidebar →
+`frontend/src/lib/components/explorer/IsoMountPanel.svelte`
+
+**Features:**
+- The mounted images with their label, size and mount point
+- **Mount this image**, offered only when the selected entry is a `.iso`/`.img`
+  file
+- A per-row unmount action, named after the image
+- A missing `losetup`/`mount` is stated in place, with no action offered
+
+**Invariants:** reads need a session, mount/unmount are admin-only; the mount
+point is derived from a deterministic slug under `{DATA_DIRECTORY}/iso`, never
+from the request; the mount carries `ro,nosuid,nodev`; the image must be inside
+the caller's Explorer roots; a `..` is refused before `canonicalize`; the
+filesystem (`/proc/mounts`) is the authority on what is mounted, not the index;
+a failed mount detaches its loop device.
+
+**Guides:** [guides/iso-mount.md](./guides/iso-mount.md)
+
+---
+
 ## 17. Shares/Protocols (Shares)
 
 **Features:**

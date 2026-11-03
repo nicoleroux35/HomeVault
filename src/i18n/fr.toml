@@ -2710,6 +2710,16 @@ transfer_history_desc = "Envois, téléchargements, copies, déplacements et emp
 transfer_history_verified = "Vérifié"
 transfer_history_empty = "Aucun transfert enregistré pour l'instant."
 
+iso_mount_title = "Images disque"
+iso_mount_mount = "Monter cette image"
+iso_mount_none = "Aucune image n'est montée."
+iso_mount_unavailable = "Le montage nécessite « losetup » et « mount », qui ne sont pas installés sur ce serveur."
+iso_mount_mounted = "Image montée. Elle s'ouvre comme un dossier."
+iso_mount_mount_failed = "L'image n'a pas pu être montée."
+iso_mount_unmounted = "Image démontée."
+iso_mount_unmount_failed = "L'image n'a pas pu être démontée."
+iso_mount_unmount_named = "Démonter %name%"
+iso_mount_load_failed = "Impossible de lire les images montées."
 [folder_picker]
 title = "Choisir un dossier"
 title_file = "Choisir un fichier"

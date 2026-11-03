@@ -2326,6 +2326,39 @@ class ApiClient {
     return this.explorerAction('/explorer/eject', { path: mountPoint });
   }
 
+  // --- Read-only ISO/IMG mounting (phase B2) -------------------------------
+
+  /**
+   * What is mounted, and whether this host can mount at all. `available:
+   * false` means `losetup`/`mount` are missing — the screen says so rather
+   * than offering a button that always fails (docs/API.md, capability
+   * contract).
+   */
+  async listIsoMounts() {
+    return this.get<{
+      available: boolean;
+      iso_root: string;
+      mounts: Array<{
+        id: string;
+        image_path: string;
+        label: string;
+        mount_point: string;
+        loop_device: string | null;
+        size_bytes: number;
+      }>;
+    }>('/explorer/iso', { cache: false });
+  }
+
+  /** Mounts an image read-only under the appliance-managed `iso/` folder. */
+  async mountIso(path: string) {
+    return this.post('/explorer/iso', { path });
+  }
+
+  /** Unmounts one image by its id (never by a path). */
+  async unmountIso(id: string) {
+    return this.delete(`/explorer/iso/${encodeURIComponent(id)}`);
+  }
+
   /** ZFS snapshots that cover a directory, with read-only browse paths. */
   async getExplorerSnapshots(path: string) {
     return this.explorerGet('/explorer/snapshots', { path });

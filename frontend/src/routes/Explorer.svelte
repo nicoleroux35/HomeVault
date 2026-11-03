@@ -40,6 +40,7 @@
   import ShareLinkModal from '$lib/components/explorer/ShareLinkModal.svelte';
   import TransferTray from '$lib/components/explorer/TransferTray.svelte';
   import ExplorerWidget from '$lib/components/explorer/ExplorerWidget.svelte';
+  import IsoMountPanel from '$lib/components/explorer/IsoMountPanel.svelte';
 
   interface FileEntry {
     name: string;
@@ -814,6 +815,27 @@
     if (typeof window !== 'undefined') {
       window.dispatchEvent(new CustomEvent('hv-open-app', { detail: { id: 'shares' } }));
     }
+  }
+
+
+  /** The single selected entry as an absolute path, or `null` when the
+   *  selection is empty or holds more than one item. The ISO panel uses it so
+   *  "mount this image" acts on what the user actually selected rather than on
+   *  the current folder. */
+  function selectionPath(): string | null {
+    if (selected.size !== 1 || !listing) return null;
+    const name = [...selected][0];
+    const entry = listing.entries.find((e) => e.name === name);
+    return entry ? `${currentPath.replace(/\/$/, '')}/${entry.name}` : null;
+  }
+
+  /** `file` / `directory` for the single selected entry, or `null`. */
+  function selectionKind(): string | null {
+    if (selected.size !== 1 || !listing) return null;
+    const name = [...selected][0];
+    const entry = listing.entries.find((e) => e.name === name);
+    if (!entry) return null;
+    return entry.is_directory ? 'directory' : 'file';
   }
 
   // --- Safe-eject a USB / external drive --------------------------------
@@ -1686,6 +1708,20 @@
         {/each}
       </WindowSidebarSection>
     {/if}
+
+    <!-- Read-only ISO/IMG mounting (phase B2). The panel is bounded to the
+         same roots as everything else, and a mount only ever lands under the
+         appliance-managed iso/ folder, so it appears as one more location. -->
+    <IsoMountPanel
+      selectedPath={selectionPath()}
+      selectedKind={selectionKind()}
+      onmounted={(point) => { void loadRoots(); void loadDirectory(point); }}
+      onunmounted={(point) => {
+        if (currentPath === point || currentPath.startsWith(point + '/')) {
+          void loadDirectory('/');
+        }
+      }}
+    />
 
     {#if favorites.length > 0}
       <WindowSidebarSection label={$t('explorer.favorites')}>

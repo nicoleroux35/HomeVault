@@ -161,7 +161,7 @@ suites green, `docs/INDEX.md`/`API.md`/`SCREENS.md`/`TESTING.md` updated, and a
 | ID | Work item | Effort | Notes |
 |---|---|---|---|
 | **B1** | **File tags** (source #9) | M | Migration `075_file_tags.sql` (`path`, `tag`, `owner`), `GET/POST/DELETE /api/explorer/tags`, tag filter in the Explorer sidebar next to Favorites, tag chips in the ⌘K overlay. Favorites already prove the pattern. |
-| **B2** | **ISO mount** (source #20) | S | `POST /api/explorer/mount-iso` → `losetup` + read-only mount under a scratch root; unmount on demand and on shutdown. Must reuse `path_guard` and refuse anything outside the roots. |
+| **B2** | **ISO mount** (source #20) — **shipped 2026-11-02** ✅ | S | Delivered as `src/iso_mount.rs` + `src/handlers/iso_mount.rs` + `IsoMountPanel.svelte`; `docs/guides/iso-mount.md`. Route is `/api/explorer/iso`, not `mount-iso`. Mounts are `ro,nosuid,nodev`; the mount point is **derived** from a deterministic slug under `{DATA_DIRECTORY}/iso`, never taken from the request; the image must sit inside the caller's Explorer roots; a `..` is refused before `canonicalize`; `/proc/mounts` is the authority, not a JSON index; a failed mount detaches its loop device. Tests: 20 unit (module), 5 unit (handlers), `iso_mount_integration` **11/11**. Deviation: no automated successful-mount round trip (no passwordless sudo here, and a real mount would leave a device attached) — argv and containment are asserted directly, as `iscsi.md` already records for its hardware suite. |
 | **B3** | **SMS notification channel** (source #13) | S | Add a `sms` variant to `src/notification_engine.rs` beside email/webhook; provider-agnostic HTTP POST with a URL template, so no vendor SDK is added. Secrets sealed like `webhook_url`. |
 | **B4** | **SNMP agent** (source #14) | M | The inverse of `src/snmp.rs`: generate `/etc/snmp/snmpd.conf` (community, bind address, sysLocation), start/stop `snmpd`, expose `GET/PUT /api/snmp/agent`. Off by default, LAN-bound, never `public` by default. |
 | **B5** | **Link aggregation** (source #15) | M | `InterfaceType::Bond` + `POST /api/network/bonds` (mode 802.3ad/active-backup, member NICs), persisted through the existing `persist_interface_config` + `apply_persisted_config` rollback path in `src/network.rs`. |
@@ -294,6 +294,31 @@ Detail in `TESTING.md` → "P0.1 — Quick-win E2E verification pass closed";
 **Remaining in Phase 0: P0.2** — cross-cutting capability/API contracts
 (uniform unsupported-capability responses, admin-mutation/secrets/audit/
 `requires_restart` conventions) before any Phase B item starts.
+
+## 12. B2 — read-only ISO mounting — shipped 2026-11-02
+
+First item of Phase B. Design decisions worth keeping:
+
+- **The mount point is derived, never requested.** `<DATA_DIRECTORY>/iso/<slug>`
+  with `slug = <readable-name>-<16 hex of the full path>`. A client cannot name
+  a directory; the hash makes `ubuntu.iso` in two folders mount side by side
+  and re-mounting reuse the same directory instead of leaking one per attempt.
+- **The image must already be readable by the caller.** The roots come from
+  `explorer::explorer_roots_for_session`, the exact function the sidebar uses —
+  so the feature inherits the existing confinement rather than re-deriving it.
+- **`ro,nosuid,nodev`, always.** A writable mount would let a browse mutate the
+  source image; `nosuid`/`nodev` stop a crafted image introducing a setuid
+  binary or a device node into the appliance's namespace.
+- **`/proc/mounts` is the authority.** `mounts.json` only carries the label and
+  loop device of a mount the filesystem already confirms; a directory with no
+  mount on it is never reported as mounted.
+- **A failed mount detaches its loop device**, so an image that is not a
+  filesystem cannot leak a device on the host.
+- **Statuses follow P0.2**: `400` when the refusal is about the request,
+  `503` when `losetup`/`mount` is absent.
+
+`cargo test --lib` went from 2,379 to **2,404**; `iso_mount_integration` is
+**11/11**. The five pre-existing lib failures are untouched and unrelated.
 
 ## 11. P0.2 — capability and API contracts — closed 2026-11-02
 

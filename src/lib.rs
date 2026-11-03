@@ -71,6 +71,7 @@ pub mod i18n;
 pub mod identity;
 pub mod incus;
 pub mod iscsi;
+pub mod iso_mount;
 pub mod journal_cleanup_scheduler;
 pub mod logging;
 pub mod mcp;
