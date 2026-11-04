@@ -614,7 +614,10 @@ test.describe('10 — Security', () => {
       const r = await fetch('/api/network/interfaces');
       return r.status;
     });
-    expect(status).toBe(400);
+    // The shared guard answers 401 ("not signed in") for an absent token,
+    // and 403 only for a valid non-admin session; 400 is reserved for a
+    // request the server could not understand.
+    expect(status).toBe(401);
   });
 
   test('10.2 — the Network API rejects a tampered session token', async ({ page }) => {

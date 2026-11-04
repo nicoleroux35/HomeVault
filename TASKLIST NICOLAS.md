@@ -6,8 +6,8 @@ checked against `src/`, `sqlx/migrations/`, `docs/guides/` or `frontend/src/`.
 Updated **2026-11-06**: Phase B is complete (B1 and B4–B6 shipped on
 2026-11-04; `ffdd7f1`, `3df8a7d`, `82b7c1e`), **C1 shipped on 2026-11-05**, and
 **C2 + C3 shipped on 2026-11-06** — Phase C is complete — **D2 shipped on
-2026-11-06**, and **D1 shipped on 2026-11-06**. **Every item on this list is
-now shipped.**
+2026-11-06**, **D1 shipped on 2026-11-06**, and the **test suite was greened on
+2026-11-06**. **Every item on this list is shipped and the suite is green.**
 
 Sources, in authority order:
 1. `CLAUDE.md` — the rules.
@@ -219,9 +219,9 @@ Legend: **S** ≤ 2 days · **M** 3–5 days · **L** 2–3 weeks · **XL** ≥ 
       Verified: `content_index/mod.rs` 14/14, migration-parser +1,
       `content_index_integration.rs` 9/9 (FTS triggers, retention, admin gate,
       refusals, delete, ACL), E2E `settings/content-index` 7/7 on Chromium
-      **and** Firefox, `cargo test --lib` 2,553 passed / the same 5
-      pre-existing failures, `npm run check` 0/0, build green. Live probe on a
-      scratch share: 2 text files indexed (a NUL-byte `.txt` skipped),
+      **and** Firefox, `cargo test --lib` 2,553 passed at the time (the five
+      long-standing failures were fixed in §9; now 2,558/0), `npm run check`
+      0/0, build green. Live probe on a scratch share: 2 text files indexed (a NUL-byte `.txt` skipped),
       `watermelon` and `banana` both found with snippets, delete removed 2 and
       disabled the feature. See `docs/guides/content-index.md`.
 
@@ -297,10 +297,8 @@ next one starts from facts rather than from a document.
 
 **Verified on this session's machine**
 
-- `cargo test --lib` — **2,553 passed, 5 failed** after D1 (the same five
-  unrelated failures `TESTING.md` has tracked since Phase A:
-  `checksum::…evicts…`, `settings`/`i18n` density ×2, `sse::progress` ×2 — all
-  in files no session touched).
+- `cargo test --lib` — **2,558 passed, 0 failed** after the suite-hygiene
+  tranche (the five long-standing failures are fixed, see §9).
 - `tests/local_dns_integration.rs` 14/14, `tests/dhcp_server_integration.rs`
   21/21, `tests/phase4_auth_integration.rs` 6/6,
   `tests/explorer_integration.rs` 99/99,
@@ -339,16 +337,12 @@ next one starts from facts rather than from a document.
   (`--test` accepts a rendered-shape file and rejects a deliberately broken
   one); no daemon was restarted.
 
-**Known-failing, pre-existing — verified by rebuilding the pre-change tree and
-re-running the same tests**
-
-- `network.spec.ts` 2.2, 4.3, 8.2, 10.1, 10.5, 13.1, 13.2 — they need a
-  configurable interface and expect an unauthenticated `400` where the build
-  answers `401`. Untouched by the network commits.
-- The five lib failures above.
-- On a developer box whose `/tmp` holds thousands of entries, the Explorer
-  suite's `navigateTo`/`openWork` helpers time out; that is the harness, not the
-  product (CI's `/tmp` is clean).
+**Known-failing: none.** The five lib failures and the seven
+`network.spec.ts` cases were fixed on 2026-11-06 (§9); the full network suite is
+46 passed / 4 hardware-conditioned skips / 0 failed on both browsers. The only
+caveat left is the developer-box harness one: on a `/tmp` holding thousands of
+entries, the Explorer suite's `navigateTo`/`openWork` helpers time out — that is
+the harness, not the product (CI's `/tmp` is clean).
 
 **Never exercised live (deliberately), still owed**
 
@@ -364,8 +358,9 @@ re-running the same tests**
   single gate in `reconcile_daemon` is covered by unit tests, but a race was
   never produced on a real host.
 
-**No roadmap item is left.** The next work is §9 (test-suite hygiene), then
-maintenance or a new roadmap. Live debt still owed, unchanged: a browser on a
+**No roadmap item is left and the suite is green.** The next work is a new
+roadmap or the live-hardware verification below. Live debt still owed,
+unchanged: a browser on a
 second device resolving a reverse-proxy rule name through the C1 DNS server, a
 TLS upstream with a publicly trusted certificate, a real UPnP-IGD router, a
 real push delivery through FCM/Mozilla/Apple, a multi-terabyte content-index
@@ -374,61 +369,38 @@ VM/LAN or a real device).
 
 ---
 
-## 9. Next implementation — green the suite (no feature left)
+## 9. Suite hygiene — shipped 2026-11-06 (suite green)
 
-Every roadmap item is shipped, so the highest-value next change is not a new
-feature: it is removing the **12 red tests** the project has carried since
-Phase A. They currently hide real regressions (the appearance drift below is
-one) and make "known-failing" the normal state. Effort **S–M** (1–2 days).
+No feature item was left, so the last work was removing the **12 red tests**
+carried since Phase A. Two were real product drift, one a return-contract bug,
+one a UI race, the rest stale test data.
 
-### 9.1 `AppearanceSettings.density` is still shipped (real drift)
+- **Appearance (`handlers/settings.rs`, `settings_persistence.rs`, i18n)** —
+  `AppearanceSettings.density` removed from the live struct, its default and
+  the PUT validation; the eight dead `settings.density*` keys deleted from all
+  four locales. The on-disk reader keeps the field only so an older
+  `settings.json` still loads, and never writes it again. Both failing tests
+  were right.
+- **SSE (`sse/progress.rs`)** — `emit_progress` / `emit_message_only` /
+  `emit_transfer_progress` now return "the job was updated", not "a subscriber
+  received the broadcast" (a closed dashboard is normal). The speed test's
+  datum moved to `t+12` so its `5 MB/s` expectation matches the arithmetic.
+- **Checksum (`checksum.rs`)** — the cap test mixed one fixed `now` with
+  increasing `recorded_at`, so the TTL pruned 101 rows before the cap; one
+  timestamp now isolates the cap, and the expiry test still covers the
+  boundary.
+- **Network (real UI race, `Network.svelte`)** — the interface modal showed
+  itself before its config GET resolved, so a late answer reset a radio the
+  user had already changed. It now awaits the load before opening. The
+  Diagnostics button also gained the `network-btn` test id the suite targets.
+- **Network E2E** — the seven cases now expect the shared guard's `401` for an
+  absent token (instead of a stale `400`).
+- **Docs** — gap-summary row 17 no longer claims push is missing, and the
+  Universal Search sections/guide no longer say content indexing is out of
+  scope.
 
-`src/handlers/settings.rs:559` still declares `density` in the struct and sets
-`"comfortable"` in `Default`, so the API echoes a field ROADMAP 26.2 removed;
-`settings.density` and the `density_*` labels remain in all four
-`src/i18n/*.toml`. The two failing tests
-(`handlers::settings::…appearance…`, `i18n::…appearance_keys…`) are right.
-Fix: drop the field and default, delete the dead i18n keys, keep the
-"old payload still deserializes" guarantee (serde ignores unknown fields), and
-confirm no frontend reader exists (`grep -rn density frontend/src` is clean).
-
-### 9.2 SSE progress: one return contract, one wrong expectation
-
-`src/sse/progress.rs:1328` — `emit_transfer_progress` returns
-`job.sender.send(event).is_ok()`, which is `false` when no subscriber is
-attached even though the job's last event was updated. No production caller
-uses the return value; make every `emit_*` return **"the job exists and its
-last event was recorded"** (ignore the broadcast result), which is what the
-test asserts. `test_speed_tracker_prunes…` expects `5 MB/s` for
-`10 MB` over `1 s`; either move the sample to `t+12 s` (keeping 5 MB/s) or
-assert `10 MB/s`. Fix the **test datum**, not the tracker.
-
-### 9.3 Checksum test mixing the cap and the TTL
-
-`src/checksum.rs:562` inserts outcomes with `recorded_at = 1000 + i` but a
-fixed `now = 1000`, then advances `now` to `2000`: the 15-minute TTL prunes 101
-rows before the cap is exercised (156 ≠ 256). Use one timestamp for the bulk
-insert, then a second insert still inside the TTL; the existing expiry test
-already covers the boundary. No production change.
-
-### 9.4 `network.spec.ts` §2.2, 4.3, 8.2, 10.1, 10.5, 13.1, 13.2
-
-These are stale expectations, verified on the pre-change tree: they expect an
-unauthenticated `400` where the shared guard answers `401`, and assume a fixed
-interface name. Update them to assert `401`, and resolve the interface from the
-API instead of hard-coding one (or use the card's own "no configurable
-interface" state). Run on Chromium **and** Firefox.
-
-### 9.5 Documentation cleanup in the same change
-
-- `ROADMAP-DSM.md` gap summary: row 17 still claims push is missing (D2 fixed
-  it); the intro still says "rows 16 and 17".
-- The Universal Search sections still say content indexing is out of scope (D1
-  shipped it as a separate opt-in).
-- `docs/guides/explorer.md` §"Name search only" still says no index is built.
-- `TESTING.md` and this file: delete the "known-failing, pre-existing" list once
-  green, so it can never silently absorb a new failure.
-
-**Acceptance:** `cargo test --lib` **0 failed** (not 5), `network.spec.ts`
-green on both browsers, `npm run check` 0/0, `npm run build` green, and the
-five `TESTING.md` "pre-existing" entries replaced by "none".
+**Verified:** `cargo test --lib` **2,558 passed / 0 failed**; full
+`network.spec.ts` **46 passed, 4 hardware-conditioned skips, 0 failed** on
+Firefox **and** Chromium; `npm run check` 0/0; `npm run build` green. The four
+skips (no WiFi hardware, no bond/bridge to delete) are honest environment
+conditions, not red tests.

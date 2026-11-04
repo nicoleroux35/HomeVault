@@ -410,9 +410,12 @@
     }
   }
 
-  function openConfigModal(iface: NetworkInterface) {
+  async function openConfigModal(iface: NetworkInterface) {
     selectedInterface = iface;
-    loadInterfaceConfig(iface.name);
+    // Load first, then show: opening the modal before the GET resolves let a
+    // late answer overwrite the radio the user had already changed (the
+    // modal flashed DHCP back over a just-selected Static).
+    await loadInterfaceConfig(iface.name);
     showConfigModal = true;
   }
 
@@ -585,7 +588,7 @@
   <!-- Page-level actions: a WindowToolbar row under the header, never inside
        it (the header bar is icon + title + window controls only). -->
   {#snippet toolbarRight()}
-    <Button variant="ghost" onclick={runDiagnostics} disabled={runningDiagnostics}>
+    <Button variant="ghost" data-testid="network-btn" onclick={runDiagnostics} disabled={runningDiagnostics}>
       {#if runningDiagnostics}
         <IconLoader size={16} class="spin" />
       {:else}
