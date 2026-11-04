@@ -583,6 +583,20 @@ impl Database {
                 buf.push(ch);
             } else if ch == ';' && !in_string {
                 let stmt = buf.trim();
+                // A `CREATE TRIGGER … BEGIN … ; … END;` body contains
+                // semicolons that belong to the trigger, not to the migration.
+                // The statement is complete only when the last word is END.
+                let is_trigger = stmt.to_ascii_uppercase().starts_with("CREATE TRIGGER");
+                let trigger_ends = stmt
+                    .split_whitespace()
+                    .last()
+                    .is_some_and(|last| last.eq_ignore_ascii_case("END"));
+                if is_trigger && !trigger_ends {
+                    buf.push(ch);
+                    prev_was_semicolon = false;
+                    prev_char = Some(ch);
+                    continue;
+                }
                 // Only keep statements that have at least one non-comment line.
                 if !stmt.lines().all(|line| {
                     let trimmed = line.trim();
@@ -827,6 +841,24 @@ impl Database {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A `CREATE TRIGGER … BEGIN … ; … END;` body is one statement: the
+    /// semicolons inside it must not be mistaken for migration separators
+    /// (migration 078's FTS triggers depend on this).
+    #[test]
+    fn test_parse_sql_statements_keeps_trigger_bodies_together() {
+        let sql = "CREATE TABLE t (a TEXT);\n\
+                   CREATE TRIGGER tr AFTER INSERT ON t BEGIN\n\
+                     INSERT INTO t VALUES (new.a);\n\
+                     INSERT INTO t VALUES (new.a);\n\
+                   END;\n\
+                   INSERT INTO t VALUES ('x');\n";
+        let statements = Database::parse_sql_statements(sql);
+        assert_eq!(statements.len(), 3, "{statements:?}");
+        assert!(statements[1].contains("INSERT INTO t VALUES (new.a);"));
+        assert!(statements[1].trim_end().ends_with("END"));
+        assert_eq!(statements[2], "INSERT INTO t VALUES ('x')");
+    }
 
     /// A fresh in-memory database with every migration applied.
     async fn migrated_db() -> Database {

@@ -61,6 +61,7 @@ pub mod chat;
 pub mod compose;
 pub mod config_backup;
 pub mod connected_clients;
+pub mod content_index;
 pub mod dashboard;
 pub mod db_backup;
 pub mod ddns;

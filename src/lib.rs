@@ -53,6 +53,7 @@ pub mod checksum;
 pub mod compose;
 pub mod config_backup;
 pub mod connected_clients;
+pub mod content_index;
 pub mod db_backup;
 pub mod ddns;
 pub mod dependencies;

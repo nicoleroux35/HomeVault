@@ -74,6 +74,11 @@ use crate::handlers::{
         handle_compose_restart, handle_compose_services, handle_compose_start, handle_compose_stop,
         handle_compose_update, handle_compose_validate,
     },
+    content_index::{
+        handle_delete as handle_content_index_delete, handle_get as handle_content_index_get,
+        handle_run as handle_content_index_run, handle_search as handle_content_search,
+        handle_update as handle_content_index_update,
+    },
     dashboard::{
         handle_add_widget, handle_cpu_temperature, handle_dashboard_data, handle_disk_io_data,
         handle_get_all_widgets, handle_get_widget_preferences, handle_health_data,
@@ -837,6 +842,19 @@ pub fn create_app(state: AppStateArc) -> Router {
         .route(
             "/api/search/files",
             get(crate::handlers::search::handle_search_files),
+        )
+        // Content search (phase D1): FTS5 over opted-in roots, filtered by the
+        // caller's Explorer roots. Configuration is admin-only.
+        .route("/api/search/content", get(handle_content_search))
+        .route("/api/search/index", get(handle_content_index_get))
+        .route(
+            "/api/search/index",
+            axum::routing::put(handle_content_index_update),
+        )
+        .route("/api/search/index/run", post(handle_content_index_run))
+        .route(
+            "/api/search/index",
+            axum::routing::delete(handle_content_index_delete),
         )
         // Security - read-only hardening audit (QW-10). One answer to "is this
         // box safely configured?", aggregated from the signals each of the
@@ -2754,6 +2772,10 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     tokio::spawn(crate::notification_engine::run_notification_loop(
         state.clone(),
     ));
+
+    // Content index (phase D1): refresh an enabled index every 30 minutes.
+    // Off by default, so a fresh appliance does no filesystem walk.
+    tokio::spawn(crate::content_index::run_periodic_loop(state.clone()));
 
     // Cloud Sync (rclone) scheduler: runs a persisted job on its interval or
     // cron, outside any HTTP request (ROADMAP 16.4). A job with no cadence is
