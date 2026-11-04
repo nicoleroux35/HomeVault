@@ -102,6 +102,7 @@
   // Phase 4 cards
   import UpsServerCard from '$lib/components/settings/UpsServerCard.svelte';
   import DhcpServerCard from '$lib/components/settings/DhcpServerCard.svelte';
+  import LocalDnsCard from '$lib/components/settings/LocalDnsCard.svelte';
   import FanControlCard from '$lib/components/settings/FanControlCard.svelte';
   import { IconAlertTriangle, IconCookie, IconShield, IconCheck, IconSettings, IconWifiOff, IconRefresh, IconMapPin, IconPencil, IconLock } from '@tabler/icons-svelte';
 
@@ -1128,6 +1129,9 @@
         <DdnsCard class="mt-3" />
         <ReachabilityCard class="mt-3" />
         <DhcpServerCard class="mt-3" />
+        <!-- Phase C1: the appliance's own DNS server. It is the *same*
+             dnsmasq as the DHCP card above, so it sits next to it. -->
+        <LocalDnsCard class="mt-3" />
         <AutoBlockCard class="mt-3" />
         <ConnectedClientsCard class="mt-3" />
         <AntivirusCard class="mt-3" />

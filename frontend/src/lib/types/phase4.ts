@@ -118,6 +118,58 @@ export interface DhcpServerGetResponse {
 }
 
 // ============================================================================
+// Local DNS Server Types (phase C1 — the same dnsmasq instance as DHCP)
+// ============================================================================
+
+/** What kind of answer a local name record produces. */
+export type DnsRecordKind = 'a' | 'cname';
+
+export interface DnsRecord {
+  name: string;
+  kind: DnsRecordKind;
+  /** An IPv4 address for `a`, the alias target for `cname`. */
+  value: string;
+}
+
+export interface DnsDomainOverride {
+  /** The domain, optionally prefixed with `.` to match subdomains only. */
+  domain: string;
+  address: string;
+}
+
+export interface LocalDnsConfig {
+  enabled: boolean;
+  interface: string;
+  serve_dhcp_clients: boolean;
+  forwarders: string[];
+  records: DnsRecord[];
+  overrides: DnsDomainOverride[];
+  confirmed: boolean;
+}
+
+export interface LocalDnsState {
+  /** `dnsmasq` is running (it also serves DHCP/TFTP). */
+  running: boolean;
+  /** Running *and* this feature is enabled: queries are being answered. */
+  serving: boolean;
+}
+
+export interface LocalDnsGetResponse {
+  config: LocalDnsConfig;
+  state: LocalDnsState;
+  available: boolean;
+  interfaces: string[];
+  system_forwarders: string[];
+  dhcp_enabled: boolean;
+}
+
+export interface LocalDnsUpdateResponse {
+  config: LocalDnsConfig;
+  state: LocalDnsState;
+  message: string;
+}
+
+// ============================================================================
 // Fan Control Types
 // ============================================================================
 

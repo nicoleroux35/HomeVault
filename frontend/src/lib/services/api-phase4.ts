@@ -6,8 +6,8 @@
  *
  * Description:
  *   API client for the Phase 4 appliance features: UPS server mode, USB
- *   one-touch copy, the DHCP/TFTP/PXE server, fan control and guided
- *   redundancy.
+ *   one-touch copy, the DHCP/TFTP/PXE server, the local DNS server (phase C1,
+ *   the same dnsmasq instance), fan control and guided redundancy.
  *
  *   **Every call goes through the shared `api` client**, like the rest of the
  *   application. The previous version was a parallel implementation that had
@@ -43,6 +43,9 @@ import type {
   DhcpServerConfig,
   DhcpServerGetResponse,
   DhcpLease,
+  LocalDnsConfig,
+  LocalDnsGetResponse,
+  LocalDnsUpdateResponse,
   FanConfig,
   FanChannelsResponse,
   LayoutRecommendation,
@@ -147,6 +150,20 @@ export async function stopDhcpServer(): Promise<void> {
 
 export async function getDhcpLeases(): Promise<DhcpLease[]> {
   return unwrap(await api.get<DhcpLease[]>('/network/dhcp-server/leases', { cache: false }));
+}
+
+// ============================================================================
+// Local DNS server API (phase C1 — the same dnsmasq instance as DHCP)
+// ============================================================================
+
+export async function getLocalDnsConfig(): Promise<LocalDnsGetResponse> {
+  return unwrap(await api.get<LocalDnsGetResponse>('/network/dns-server', { cache: false }));
+}
+
+export async function updateLocalDnsConfig(
+  config: LocalDnsConfig
+): Promise<LocalDnsUpdateResponse> {
+  return unwrap(await api.put<LocalDnsUpdateResponse>('/network/dns-server', { config }));
 }
 
 // ============================================================================
