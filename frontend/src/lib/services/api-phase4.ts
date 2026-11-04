@@ -56,6 +56,8 @@ import type {
   PushGetResponse,
   PushSubscribeRequest,
   PushSubscribeResponse,
+  ContentIndexConfig,
+  ContentIndexGetResponse,
   FanConfig,
   FanChannelsResponse,
   LayoutRecommendation,
@@ -252,6 +254,32 @@ export async function subscribePush(
 
 export async function unsubscribePush(id: string): Promise<void> {
   await api.delete(`/notifications/push/subscribe/${encodeURIComponent(id)}`);
+}
+
+// ============================================================================
+// Content index API (phase D1)
+// ============================================================================
+
+export async function getContentIndex(): Promise<ContentIndexGetResponse> {
+  return unwrap(await api.get<ContentIndexGetResponse>('/search/index', { cache: false }));
+}
+
+export async function updateContentIndex(
+  config: ContentIndexConfig
+): Promise<{ config: ContentIndexConfig }> {
+  return unwrap(await api.put<{ config: ContentIndexConfig }>('/search/index', { config }));
+}
+
+export async function runContentIndex(): Promise<{ started: boolean }> {
+  return unwrap(await api.post<{ started: boolean }>('/search/index/run', {}));
+}
+
+export async function deleteContentIndex(): Promise<{ deleted: number; config: ContentIndexConfig }> {
+  return unwrap(
+    await api.delete<{ deleted: number; config: ContentIndexConfig }>(
+      '/search/index?confirm=true'
+    )
+  );
 }
 
 // ============================================================================

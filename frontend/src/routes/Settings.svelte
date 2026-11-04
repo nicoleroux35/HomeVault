@@ -106,6 +106,7 @@
   import ReverseProxyCard from '$lib/components/settings/ReverseProxyCard.svelte';
   import UpnpCard from '$lib/components/settings/UpnpCard.svelte';
   import PushCard from '$lib/components/settings/PushCard.svelte';
+  import ContentIndexCard from '$lib/components/settings/ContentIndexCard.svelte';
   import FanControlCard from '$lib/components/settings/FanControlCard.svelte';
   import { IconAlertTriangle, IconCookie, IconShield, IconCheck, IconSettings, IconWifiOff, IconRefresh, IconMapPin, IconPencil, IconLock } from '@tabler/icons-svelte';
 
@@ -1425,6 +1426,8 @@
             <button class={cn(settingsBtn, settingsBtnGhost)} onclick={handleCheckUpdate} disabled={checkingUpdate}>{checkingUpdate ? $t('settings.checking') : $t('settings.check_for_updates')}</button>
           </div>
         </div>
+        <!-- Phase D1: full-text content index, off by default. -->
+        <ContentIndexCard class="mt-3" />
       {/if}
       {#if activeCategory === 'ai'}
         <div data-testid="settings-card-title" class={secLabelFirst}></div>

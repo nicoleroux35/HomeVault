@@ -23,6 +23,7 @@ import { api } from '$lib/services/api';
 import { translate } from '$lib/stores/i18n';
 import type { SearchableItem } from '$lib/stores/search';
 import { explorerIntent } from '$lib/stores/explorerIntent';
+import type { ContentHit, ContentSearchResponse } from '$lib/types/phase4';
 
 /** Shortest query that starts a disk walk — mirrors `MIN_QUERY_LEN`. */
 export const MIN_FILE_QUERY = 2;
@@ -30,6 +31,9 @@ export const MIN_FILE_QUERY = 2;
 /** How many file hits the overlay shows. Eight is the overlay's own cap for
  *  the local index; files get the same room, no more. */
 const FILE_HITS = 8;
+
+/** Content matches are a supplement, not a second list: four at most. */
+const CONTENT_HITS = 4;
 
 /** Keystroke debounce. A walk per keypress would fan out sixteen roots on
  *  every character; 220 ms is below the threshold where a fast typist waits. */
@@ -105,7 +109,7 @@ export function queryFiles(
   onResults: (query: string, items: SearchableItem[]) => void,
   onNote: (query: string, note: string) => void,
   onLoading: (loading: boolean, query: string) => void,
-  onOpen: (hit: FileHit) => void,
+  onOpen: (hit: { path: string }) => void,
   tag?: string,
   onTag?: (hit: FileHit) => void
 ): void {
@@ -121,19 +125,71 @@ export function queryFiles(
   onLoading(true, query);
   const mine = ++generation;
   timer = setTimeout(async () => {
-    const response = await api.searchAllFiles(trimmed, FILE_HITS, false, tag);
+    // The name walk and the content index are independent: a slow content
+    // answer must not delay the files, and a disabled index must not turn
+    // into an error note.
+    const [filesResponse, contentResponse] = await Promise.all([
+      api.searchAllFiles(trimmed, FILE_HITS, false, tag),
+      api.searchContent(trimmed, CONTENT_HITS).catch(() => null)
+    ]);
     if (mine !== generation) return; // superseded
-    if (!response.success || !response.data) {
+
+    const items: SearchableItem[] = [];
+    const seen = new Set<string>();
+    let note = '';
+
+    if (filesResponse.success && filesResponse.data) {
+      const report = filesResponse.data as unknown as FileSearchReport;
+      for (const hit of report.hits || []) {
+        items.push(toSearchItem(hit, onOpen, onTag));
+        seen.add(hit.path);
+      }
+      note = coverageNote(report);
+    } else {
       // A failed provider is not "no files": say so, and keep the local
       // results the overlay already has.
-      onLoading(false, query);
-      onNote(query, translate('search.files_unavailable'));
-      return;
+      note = translate('search.files_unavailable');
     }
-    const report = response.data as unknown as FileSearchReport;
-    onResults(query, (report.hits || []).map((hit) => toSearchItem(hit, onOpen, onTag)));
-    onNote(query, coverageNote(report));
+
+    const contentReport =
+      contentResponse && contentResponse.success
+        ? (contentResponse.data as unknown as ContentSearchResponse)
+        : null;
+    if (contentReport?.available) {
+      for (const hit of contentReport.hits || []) {
+        if (seen.has(hit.path)) continue;
+        items.push(toContentItem(hit, onOpen));
+        seen.add(hit.path);
+        if (items.length >= FILE_HITS + CONTENT_HITS) break;
+      }
+    }
+
+    onResults(query, items);
+    onNote(query, note);
   }, DEBOUNCE_MS);
+}
+
+/**
+ * A content match → the overlay's item shape. The snippet is the point: two
+ * files with the same name are told apart by the sentence that matched.
+ */
+export function toContentItem(
+  hit: ContentHit,
+  onOpen: (hit: { path: string }) => void
+): SearchableItem {
+  const folder = hit.path.replace(/\/+$/, '').split('/').slice(0, -1).join('/') || '/';
+  const rootLabel = translate(`explorer.root_${hit.root_kind}`) || hit.root_name || hit.root;
+  const snippet = (hit.snippet || '').replace(/\s+/g, ' ').trim();
+  return {
+    id: `content-${hit.path}`,
+    type: 'file',
+    title: hit.name,
+    description: snippet ? `${rootLabel} · ${snippet}` : `${rootLabel} · ${folder}`,
+    icon: 'file',
+    color: 'var(--hv-text-secondary)',
+    keywords: [hit.name.toLowerCase(), hit.root.toLowerCase(), snippet.toLowerCase()],
+    action: () => onOpen({ path: hit.path })
+  };
 }
 
 /**
@@ -143,7 +199,7 @@ export function queryFiles(
  * the one-shot store the Explorer's own "share this folder" handoff uses — the
  * same convention, one more consumer.
  */
-export function openHitInExplorer(hit: FileHit): void {
+export function openHitInExplorer(hit: { path: string }): void {
   const folder =
     hit.path.replace(/\/+$/, '').split('/').slice(0, -1).join('/') || '/';
   explorerIntent.set({ path: folder, select: hit.path });

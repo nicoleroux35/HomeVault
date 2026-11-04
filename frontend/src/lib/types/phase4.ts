@@ -390,3 +390,58 @@ export interface PushSubscribeRequest {
 export interface PushSubscribeResponse {
   subscription: PushDevice;
 }
+
+// ============================================================================
+// Content index (phase D1)
+// ============================================================================
+
+export interface ContentIndexConfig {
+  enabled: boolean;
+  roots: string[];
+  exclude_names: string[];
+  exclude_extensions: string[];
+  retention_days: number;
+  confirmed: boolean;
+}
+
+export interface ContentIndexRunState {
+  running: boolean;
+  last_run: string | null;
+  last_error: string | null;
+  truncated: boolean;
+}
+
+export interface ContentIndexLimits {
+  max_roots: number;
+  max_docs: number;
+  max_total_bytes: number;
+  max_file_bytes: number;
+}
+
+export interface ContentIndexGetResponse {
+  config: ContentIndexConfig;
+  candidates: string[];
+  state: ContentIndexRunState;
+  docs: number;
+  bytes: number;
+  limits: ContentIndexLimits;
+}
+
+export interface ContentHit {
+  path: string;
+  name: string;
+  size_bytes: number;
+  modified: number;
+  snippet: string;
+  root: string;
+  root_kind: string;
+  root_name: string;
+}
+
+export interface ContentSearchResponse {
+  available: boolean;
+  query: string;
+  hits: ContentHit[];
+  truncated: boolean;
+  elapsed_ms: number;
+}

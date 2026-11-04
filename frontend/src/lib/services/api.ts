@@ -2327,6 +2327,16 @@ class ApiClient {
     return this.get(`/search/files?${qs}`, { cache: false });
   }
 
+  /**
+   * Full-text content search (phase D1). The answer is already filtered to
+   * the roots this session's Explorer would list; `available: false` means
+   * the administrator has not enabled the index.
+   */
+  async searchContent(query: string, limit = 6) {
+    const qs = `q=${encodeURIComponent(query)}&limit=${limit}`;
+    return this.get(`/search/content?${qs}`, { cache: false });
+  }
+
   async searchFiles(path: string, query: string, maxResults: number = 100, fuzzy = false) {
     const qs = `path=${encodeURIComponent(path)}&query=${encodeURIComponent(query)}&max_results=${maxResults}${fuzzy ? '&fuzzy=true' : ''}`;
     return this.get(`/explorer/search?${qs}`, { cache: false });
