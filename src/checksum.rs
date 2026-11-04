@@ -559,14 +559,16 @@ mod tests {
     #[test]
     fn test_outcome_store_evicts_the_oldest_at_the_cap() {
         let mut store = JobOutcomeStore::default();
+        // One timestamp for the bulk: the cap test must not also exercise the
+        // TTL, or the prune would remove most of the store first.
         for i in 0..MAX_REMEMBERED_OUTCOMES {
-            store.insert(outcome(&format!("job-{i}"), 1_000 + i as i64), 1_000);
+            store.insert(outcome(&format!("job-{i}"), 1_000), 1_000);
         }
         assert_eq!(store.len(), MAX_REMEMBERED_OUTCOMES);
-        store.insert(outcome("job-new", 2_000), 2_000);
+        store.insert(outcome("job-new", 1_000), 1_000);
         assert_eq!(store.len(), MAX_REMEMBERED_OUTCOMES, "bounded");
-        assert!(store.get("job-0", 2_000).is_none(), "oldest evicted");
-        assert!(store.get("job-new", 2_000).is_some());
+        assert!(store.get("job-0", 1_000).is_none(), "oldest evicted");
+        assert!(store.get("job-new", 1_000).is_some());
     }
 
     #[test]

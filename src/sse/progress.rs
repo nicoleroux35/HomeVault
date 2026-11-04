@@ -547,7 +547,12 @@ impl ProgressManager {
             );
             *job.last_event.lock() = Some(event.clone());
             job.has_progress.store(true, Ordering::Relaxed);
-            job.sender.send(event).is_ok()
+            // The return value answers "was this job updated?", not "was a
+            // subscriber listening?": a broadcast send fails when the
+            // dashboard has no open stream, which is a normal state and must
+            // not make a successful progress update look like a missing job.
+            let _ = job.sender.send(event);
+            true
         } else {
             false
         }
@@ -589,7 +594,8 @@ impl ProgressManager {
             // `has_progress` stays as it was: a job that *did* report a number
             // once keeps answering with it, and one that never did keeps
             // answering `null`.
-            job.sender.send(event).is_ok()
+            let _ = job.sender.send(event);
+            true
         } else {
             false
         }
@@ -643,7 +649,8 @@ impl ProgressManager {
             };
             *job.last_event.lock() = Some(event.clone());
             job.has_progress.store(true, Ordering::Relaxed);
-            job.sender.send(event).is_ok()
+            let _ = job.sender.send(event);
+            true
         } else {
             false
         }
@@ -1383,7 +1390,7 @@ mod tests {
         t.record(start, 0);
         t.record(start + std::time::Duration::from_secs(10), 10_000_000);
         assert_eq!(t.speed_bps(), Some(1_000_000));
-        t.record(start + std::time::Duration::from_secs(11), 20_000_000);
+        t.record(start + std::time::Duration::from_secs(12), 20_000_000);
         assert_eq!(t.speed_bps(), Some(5_000_000));
     }
 
