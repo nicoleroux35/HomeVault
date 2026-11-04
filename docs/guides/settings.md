@@ -42,6 +42,7 @@ Handlers in `src/handlers/settings.rs`. Persistence via
 | `POST /settings/backup/db/now` | admin | take a `VACUUM INTO` snapshot now |
 | `GET/PUT /snmp/settings` | admin | SNMP community/version (`v1`/`v2c` only) |
 | `GET /snmp/availability\|info\|interfaces\|storage` | admin | SNMP-discoverable device data; `interfaces` accepts `iface` to narrow the result |
+| `GET/PUT /snmp/agent` | admin | the appliance's **own** SNMP agent — see [`snmp-agent.md`](./snmp-agent.md); `503` when `snmpd` is absent |
 | `GET /ups/availability\|list\|status/{name}\|variables/{name}` | admin | UPS/NUT monitoring (live readings) |
 | `GET/POST /ups/config`, `DELETE /ups/config/{name}` | admin | manage the `ups.conf` device sections (serial/network/USB), then reload NUT; each unit that refused the restart is named in `reload_warnings` |
 

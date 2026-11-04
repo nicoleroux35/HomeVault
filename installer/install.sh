@@ -1174,6 +1174,13 @@ install_optional snmp "SNMP client tools (snmpget/snmpwalk)"
 # view via a drop-in — the same file the installer drops here, see
 # `src/snmp.rs::get_interface_stats`/`get_storage_stats`. Views are additive;
 # `agentaddress 127.0.0.1,[::1]` keeps it localhost-only.
+#
+# Turning the appliance's *own* agent on (Settings → Monitoring → SNMP agent,
+# `src/snmp_agent.rs`) writes a second, separate drop-in —
+# `99-homevault-agent.conf` — which `snmpd` reads after this one and which
+# carries the agent's own `agentaddress`, community and view. Both files can
+# coexist: this one widens the view, that one decides who may ask. Nothing here
+# needs to change when the agent is enabled.
 if command -v snmpd &> /dev/null; then
     mkdir -p /etc/snmp/snmpd.conf.d
     cat > /etc/snmp/snmpd.conf.d/homevault.conf <<'EOF'

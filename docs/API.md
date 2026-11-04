@@ -1502,6 +1502,8 @@ frontend cards in Settings (`UpsCard.svelte`/`SnmpCard.svelte`) — see
 | GET | `/snmp/interfaces` | admin — `?iface=<name>` narrows the table (matched against `ifName`, case-insensitive) |
 | GET | `/snmp/storage` | admin |
 | GET/PUT | `/snmp/settings` | admin — `version` is `1` or `2c`; `3` answers `400` because the card does not collect v3 credentials |
+| GET | `/snmp/agent` | admin — the appliance's **own** agent: `{ enabled, scope, lan_address, location, contact, has_community, installed, serving, lan_candidates[] }`. The community is never returned. **`503`** when `snmpd` is not installed (capability, not a bad request) |
+| PUT | `/snmp/agent` | admin — `{ enabled?, scope?, lan_address?, community?, location?, contact? }` → the same payload. `scope` is `loopback` (127.0.0.1 only) or `lan` (one of the appliance's private addresses — `0.0.0.0` and public addresses are `400`). `public`/`private` communities are `400`; an empty `community` keeps the stored one or generates a 32-hex one. Validated before anything is written, applied to the host, persisted only once the host accepted it; a failed daemon step re-applies the previous configuration and names the failure. See [`guides/snmp-agent.md`](./guides/snmp-agent.md) |
 
 ## DHCP / TFTP / PXE server — `network/dhcp-server/*`
 

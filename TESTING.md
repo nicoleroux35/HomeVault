@@ -91,6 +91,27 @@ tag-filtered global search.
    read as a clean "no results" — the exact failure E2E `desktop 6b.3` was
    written to catch (it was red on `main` before this change, now green).
 
+## B4 — SNMP agent, 2026-11-04 (verified, no live daemon)
+
+The appliance's own `snmpd`: generated read-only community, loopback or
+private-LAN scope, `/etc/snmp/snmpd.conf.d/99-homevault-agent.conf`, settings
+card and `GET|PUT /api/snmp/agent`.
+
+| Coverage | Count / state |
+|---|---|
+| Pure logic | `src/snmp_agent.rs` **11/11** — `public`/`private` refused by name, community bounds and characters (space, tab, newline, quote, `#`, control), private/link-local-only addresses (`0.0.0.0`, `127.0.0.1`, `8.8.8.8` refused), loopback scope discarding a stale address, generation + reuse of the community, the rendered config (read-only, no routing table, no wildcard), the "no community answers nobody" guard, the redacted payload, and directive injection through location/contact |
+| Integration | `tests/snmp_integration.rs` **10/10** (+2) — the admin gate on both routes (401 without a session, 403 for a member) and the **capability contract**: `503` naming `snmpd` on read *and* write, with nothing persisted by the refused write |
+| Sudoers | `src/setup.rs::test_snmp_agent_grants_are_scoped_to_its_own_file_and_unit` — the grant names our own file and the five `snmpd` systemctl actions, and fails if it widens to `snmpd.conf.d/*` or `systemctl *` |
+| E2E | `tests/e2e/settings/snmp-agent.spec.ts` **5/5 green on Chromium and 5/5 on Firefox** — the missing-`snmpd` banner (and no dead form), off-by-default with the fields appearing only when on, the LAN scope offering only the appliance's own addresses, the save payload (an empty community is not round-tripped), and a refusal surfacing the server's own sentence |
+| Frontend | `npm run check` **0 errors / 0 warnings**, `npm run build` green |
+
+**No live daemon was started.** Every E2E call is intercepted with
+`page.route`, so the suite never writes `/etc/snmp/snmpd.conf.d/*` or restarts
+`snmpd` on the machine hosting the run — the same rule the DHCP and fan-control
+suites follow. What is *not* covered here is therefore `snmpwalk` against the
+real agent: that needs a host with `snmpd` installed and root, and is listed
+under "remaining to test live".
+
 ## B5 + B6 — Link aggregation and VLAN devices, 2026-11-04 (verified, no live apply)
 
 Combine physical NICs into a bond (`802.3ad` or `active-backup`) and create

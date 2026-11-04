@@ -763,10 +763,16 @@ pub async fn handle_network_vlan_create(
         Ok(u) => u,
         Err(response) => return response,
     };
+    // Creating a VLAN on the interface that carries the caller's own address
+    // is the one case where `netplan apply` can move the reply path: a
+    // `dhcp4: true` VLAN on a parent that is re-rendered by netplan may take
+    // a different lease than the session is using. Refused up front, like the
+    // bond path.
     let peer_ip = peer.0;
     let outcome = tokio::task::spawn_blocking(move || -> Result<(String, bool), String> {
         let interfaces = net::list_interfaces();
         let spec = net::validate_vlan_spec(&req.parent, req.vid, &interfaces)?;
+        net::refuse_if_carries_session_address(peer_ip, &[spec.parent.clone()])?;
         net::create_vlan_device(&spec)?;
         let persisted = match net::persist_virtual_device(
             &spec.name,

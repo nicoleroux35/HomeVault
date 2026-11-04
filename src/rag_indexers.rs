@@ -377,6 +377,11 @@ Test before saving: the panel tries the form as typed, saving nothing, and for a
             content: r#"Disaster recovery is the plan for getting your data back, and each kind of copy answers a different question. Snapshots undo a mistake — a deleted folder, an overwritten file — but they live on the same disk, so they disappear with the pool. Replication keeps a second copy on another disk or another machine, and a backup received from another computer is a copy of that computer's data. Configuration backup covers accounts, groups, shares, permissions, quotas and settings, not data: restoring it makes the appliance behave as before, then you restore the data on top. A real rebuild is: install HomeVault, restore the configuration archive, then re-attach the data from the pool itself, from a replica, or with a restic restore — and finally re-issue what was tied to the old machine, such as the certificate, share links, tokens and passkeys. Restores are worth rehearsing: restore one folder to a scratch location and compare a checksum, and run the integrity check on each backup destination, so you know the backups are good before you need them."#.to_string(),
         },
         FeatureDoc {
+            id: "snmp-agent".to_string(),
+            title: "SNMP agent".to_string(),
+            content: r##"The SNMP agent lets a monitoring tool on the local network read this appliance's interfaces and disk usage. It is off by default: nothing answers an SNMP request until an administrator enables it under Settings, Monitoring, SNMP agent. The read-only community is generated on enable (32 characters) and never "public" or "private"; a custom one must be 8 to 32 characters with no spaces, quotes or "#". The agent binds either to this machine only (127.0.0.1) or to one of the appliance's own private addresses for the local network - never to a wildcard and never to a public address, so SNMP is never published to the internet. It answers read-only queries only, limited to the system, interface and storage groups. Disabling stops and disables the service and deletes the configuration file. If the snmpd package is not installed the settings card says so instead of showing an unusable form. This is separate from the SNMP client feature, which queries other devices."##.to_string(),
+        },
+        FeatureDoc {
             id: "file-tags".to_string(),
             title: "File tags".to_string(),
             content: r#"File tags let each account add short private labels to files and folders in the Explorer. A path can have up to twenty tags, and a tag can filter the file-name results in the desktop search. Tags never grant access: adding or listing them is limited to paths the account can already browse, and search only filters results from the account's currently visible roots. Tags are stored on the appliance and removed when the account is deleted."#.to_string(),
@@ -1356,6 +1361,7 @@ mod tests {
         ("dashboard", "dashboard.md"),
         ("explorer", "explorer.md"),
         ("file-tags", "file-tags.md"),
+        ("snmp-agent", "snmp-agent.md"),
         ("storage", "storage.md"),
         ("docker", "docker.md"),
         ("virtual-machines", "vm.md"),

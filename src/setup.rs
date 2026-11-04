@@ -638,7 +638,19 @@ impl SetupService {
         }
     }
 
-    pub fn configure_sudoers() -> Result<(), SetupError> {
+    /// The exact text written to `/etc/sudoers.d/homevault`.
+    ///
+    /// Split out of [`Self::configure_sudoers`] so the guards below can assert
+    /// on it without root: the grants are the security boundary of this whole
+    /// file, and a test that cannot see the content cannot protect it.
+    #[cfg(test)]
+    fn sudoers_body_for_tests() -> String {
+        Self::render_sudoers()
+    }
+
+    /// Render the sudoers file from the live host's binary paths. Public to
+    /// the module only; `configure_sudoers` writes the result.
+    fn render_sudoers() -> String {
         // Prepare config directories owned by the unprivileged homevault
         // service user so it can write WireGuard/OpenVPN config files.
         Self::prepare_vpn_directories();
@@ -1058,6 +1070,11 @@ homevault ALL=(root) NOPASSWD: {findmnt} --verify --fstab, {update_initramfs} -u
 # `disable --now` that retires the legacy generated unit.
 homevault ALL=(root) NOPASSWD: {systemctl} reload smbd, {systemctl} start smbd, {systemctl} stop smbd, {systemctl} restart smbd, {systemctl} reload vsftpd, {systemctl} start vsftpd, {systemctl} stop vsftpd, {systemctl} restart vsftpd, {systemctl} start nfs-server, {systemctl} stop nfs-server, {systemctl} restart nfs-server, {systemctl} start homevault-sftp, {systemctl} stop homevault-sftp, {systemctl} restart homevault-sftp, {systemctl} enable homevault-sftp, {systemctl} disable --now homevault-webdav, {systemctl} daemon-reload
 
+# Local SNMP agent (src/snmp_agent.rs, phase B4) — scoped to our own drop-in
+# and to the snmpd unit only, never a bare `tee`/`systemctl`. The config file
+# carries the read-only community, so it is written 600.
+homevault ALL=(root) NOPASSWD: {tee} /etc/snmp/snmpd.conf.d/99-homevault-agent.conf, {chmod} 600 /etc/snmp/snmpd.conf.d/99-homevault-agent.conf, {rm} -f /etc/snmp/snmpd.conf.d/99-homevault-agent.conf, {systemctl} start snmpd, {systemctl} stop snmpd, {systemctl} restart snmpd, {systemctl} enable snmpd, {systemctl} disable snmpd
+
 # Docker daemon start — the Docker page's "daemon down" state lets an admin
 # bring the daemon back up (and enable it for boot persistence) without a
 # shell. `homevault` is only in the `docker` group, so starting the daemon
@@ -1201,6 +1218,11 @@ homevault ALL=(root) NOPASSWD: {power_grants}
             service_grants = service_grants(&systemctl, &tee, &groupadd, &useradd, &chmod),
         );
 
+        sudoers_content
+    }
+
+    pub fn configure_sudoers() -> Result<(), SetupError> {
+        let sudoers_content = Self::render_sudoers();
         match std::fs::write("/etc/sudoers.d/homevault", sudoers_content) {
             Ok(_) => {
                 // Set correct permissions for sudoers file
@@ -2663,6 +2685,33 @@ mod tests {
                     sudoers_shape_matches(granted, &joined)
                 }),
                 "no grant covers `ip {joined}` — grants: {link_grants:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_snmp_agent_grants_are_scoped_to_its_own_file_and_unit() {
+        // The local SNMP agent (phase B4) writes exactly one file and drives
+        // exactly one unit. An unscoped `tee` would let the service account
+        // overwrite any root file; an unscoped `systemctl` would let it
+        // control sshd.
+        let sudoers = SetupService::sudoers_body_for_tests();
+        assert!(
+            sudoers.contains("/etc/snmp/snmpd.conf.d/99-homevault-agent.conf"),
+            "the agent drop-in must be granted"
+        );
+        for action in ["start", "stop", "restart", "enable", "disable"] {
+            assert!(
+                sudoers.contains(&format!("systemctl {action} snmpd")),
+                "systemctl {action} snmpd must be granted"
+            );
+        }
+        // And nothing broader: no bare `snmpd` control of another unit, no
+        // second file under /etc/snmp, no wildcard.
+        for line in sudoers.lines().filter(|l| l.contains("snmpd")) {
+            assert!(
+                !line.contains("snmpd.conf.d/*") && !line.contains("systemctl *"),
+                "'{line}' is broader than the agent needs"
             );
         }
     }

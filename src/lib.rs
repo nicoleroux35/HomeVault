@@ -119,6 +119,7 @@ pub mod share_quota;
 pub mod shares;
 pub mod snapshots;
 pub mod snmp;
+pub mod snmp_agent;
 pub mod tls;
 pub mod traffic_control;
 pub mod transfer_history;

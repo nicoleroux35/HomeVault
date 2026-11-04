@@ -50,16 +50,20 @@ Legend: **S** ≤ 2 days · **M** 3–5 days · **L** 2–3 weeks · **XL** ≥ 
       note in ⌘K was hidden whenever the answer had zero hits — which made
       `desktop 6b.3` red on `main`, now green.
 
-- [ ] **B4 — SNMP agent** · **M**
-      The inverse of `src/snmp.rs`, which is a **client** (`snmpget`/`snmpwalk`
-      against remote devices). Generate `/etc/snmp/snmpd.conf` (community, bind
-      address, sysLocation), start/stop `snmpd`, expose `GET/PUT /api/snmp/agent`.
-      *Why:* `snmpd` is installed by `install.sh` and only *probed* by
-      `src/dependencies.rs:819`; nothing configures it. The installer already
-      drops a view drop-in, so half the plumbing exists.
-      *Rules:* off by default, LAN-bound, never `public` as the default
-      community, `503` when `snmpd` is absent (P0.2 contract).
-      Verified absent: no `/snmp/agent`, no `snmpd.conf` writer.
+- [x] **B4 — SNMP agent** · shipped 2026-11-04
+      `src/snmp_agent.rs` + `GET|PUT /api/snmp/agent` +
+      `SnmpAgentCard.svelte`. Writes its **own** drop-in
+      (`/etc/snmp/snmpd.conf.d/99-homevault-agent.conf`), never the distro's
+      file, and drives the `snmpd` unit.
+      *Rules honoured:* off by default; scope is loopback or one private LAN
+      address (`0.0.0.0` and public addresses refused); community generated
+      (32 hex) and `public`/`private` refused by name; read-only view only (no
+      routing table, no MAC column); `503` naming `snmpd` when absent; the
+      community is never returned by the API.
+      Verified: `snmp_agent.rs` 11/11, `snmp_integration.rs` 10/10 (+2),
+      E2E `settings/snmp-agent` 5/5 on Chromium **and** Firefox, sudoers guard,
+      check 0/0. No live daemon (every E2E call is intercepted).
+      See `docs/guides/snmp-agent.md`.
 
 - [x] **B5 — Link aggregation** · shipped 2026-11-04
       `InterfaceType::Bond` + `GET|POST /api/network/bonds` and
@@ -175,8 +179,8 @@ Kept here so the question does not come back every six months.
 ## 7. Suggested order
 
 1. ~~**B5 + B6 together**~~ — shipped 2026-11-04.
-2. **B4** (SNMP agent) — the installer already ships half of it. ← **next**
-3. **C1 → C2 → C3**.
+2. ~~**B4** (SNMP agent)~~ — shipped 2026-11-04. Phase B is complete.
+3. **C1 → C2 → C3**. ← **next**
 4. **D2 → D1**.
 
 Phases B–D have no blocker between them. Each item ships with its guide,

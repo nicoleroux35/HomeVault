@@ -27,6 +27,7 @@
 //!   GET /api/snmp/storage       (admin)
 //!   GET /api/snmp/settings      (admin)
 //!   PUT /api/snmp/settings      (admin)
+//!   GET|PUT /api/snmp/agent     (admin) — the appliance's own agent
 //!
 //! Fresh in-memory SQLite + all migrations per test, a minimal Axum router,
 //! `tower::ServiceExt` for HTTP-level testing — no real server. Nothing here
@@ -46,8 +47,9 @@ use tower::{Service, ServiceExt};
 use homevault::auth::AuthService;
 use homevault::config::PathGuard;
 use homevault::handlers::snmp::{
-    handle_snmp_availability, handle_snmp_info, handle_snmp_interfaces, handle_snmp_settings_get,
-    handle_snmp_settings_update, handle_snmp_storage,
+    handle_snmp_agent_get, handle_snmp_agent_update, handle_snmp_availability, handle_snmp_info,
+    handle_snmp_interfaces, handle_snmp_settings_get, handle_snmp_settings_update,
+    handle_snmp_storage,
 };
 use homevault::handlers::terminal_pty::PtyManager;
 use homevault::handlers::{auth::handle_login, AppState};
@@ -103,6 +105,11 @@ fn snmp_router(state: Arc<AppState>) -> Router {
         .route("/api/snmp/info", get(handle_snmp_info))
         .route("/api/snmp/interfaces", get(handle_snmp_interfaces))
         .route("/api/snmp/storage", get(handle_snmp_storage))
+        // Local agent (phase B4).
+        .route(
+            "/api/snmp/agent",
+            get(handle_snmp_agent_get).put(handle_snmp_agent_update),
+        )
         .route(
             "/api/snmp/settings",
             get(handle_snmp_settings_get).put(handle_snmp_settings_update),
@@ -422,4 +429,104 @@ async fn test_snmp_read_endpoints_never_500() {
             "GET {uri}: {body}"
         );
     }
+}
+
+// ---------------------------------------------------------------------------
+// Local agent (phase B4)
+//
+// `snmpd` is absent from the test image, so every request below answers the
+// capability status `503` — which *is* the contract under test. The rules the
+// settings must obey (never `public`, private-only address, no directive
+// injection) are covered where they live, in `src/snmp_agent.rs::tests`;
+// asserting them again here would only be a second copy.
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_agent_endpoints_are_admin_only() {
+    let (state, _tmp, _guard) = setup_state().await;
+    create_test_user(&state, "admin", "AdminPass123!", 2).await;
+    create_test_user(&state, "member", "MemberPass123!", 1).await;
+    let mut router = snmp_router(state.clone());
+    let member = login(&mut router, "member", "MemberPass123!").await;
+
+    // No session at all.
+    let (status, _) = send(&mut router, Method::GET, "/api/snmp/agent", None, None).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+
+    // A plain member is refused: the agent exposes the appliance's inventory.
+    let (status, _) = send(
+        &mut router,
+        Method::GET,
+        "/api/snmp/agent",
+        Some(&member),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+
+    let (status, _) = send(
+        &mut router,
+        Method::PUT,
+        "/api/snmp/agent",
+        Some(&member),
+        Some(json!({"enabled": true})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn test_agent_without_snmpd_answers_capability_unavailable() {
+    let (state, _tmp, _guard) = setup_state().await;
+    create_test_user(&state, "admin", "AdminPass123!", 2).await;
+    let mut router = snmp_router(state.clone());
+    let admin = login(&mut router, "admin", "AdminPass123!").await;
+
+    // Reading: `503` with a message that names the missing package, never an
+    // empty success the screen would render as "configured, not running".
+    let (status, body) = send(
+        &mut router,
+        Method::GET,
+        "/api/snmp/agent",
+        Some(&admin),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{body}");
+    assert_eq!(body["success"], json!(false), "{body}");
+    assert!(
+        body["message"].as_str().unwrap_or("").contains("snmpd"),
+        "the answer must name what is missing: {body}"
+    );
+
+    // Writing: the same status. A `400` would blame the request, and a `200`
+    // would claim settings were applied when nothing serves SNMP.
+    let (status, body) = send(
+        &mut router,
+        Method::PUT,
+        "/api/snmp/agent",
+        Some(&admin),
+        Some(json!({"enabled": true, "scope": "loopback"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{body}");
+    assert!(
+        body["message"].as_str().unwrap_or("").contains("snmpd"),
+        "{body}"
+    );
+
+    // And nothing was persisted by the refused write: the capability gate runs
+    // before the settings are read or saved, so a later install starts from
+    // "never configured" (off) rather than from a half-applied enable.
+    let stored = homevault::storage::JsonStorage::new(
+        homevault::config::paths::base_dir()
+            .to_string_lossy()
+            .to_string(),
+    )
+    .load::<serde_json::Value>("snmp-agent")
+    .expect("settings read");
+    assert!(
+        stored.is_none(),
+        "a refused write must not persist: {stored:?}"
+    );
 }

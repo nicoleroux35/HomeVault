@@ -96,6 +96,7 @@
   import WolCard from '$lib/components/settings/WolCard.svelte';
   import UpsCard from '$lib/components/settings/UpsCard.svelte';
   import SnmpCard from '$lib/components/settings/SnmpCard.svelte';
+  import SnmpAgentCard from '$lib/components/settings/SnmpAgentCard.svelte';
   import McpCard from '$lib/components/settings/McpCard.svelte';
   import KnowledgeBaseCard from '$lib/components/settings/KnowledgeBaseCard.svelte';
   // Phase 4 cards
@@ -1498,6 +1499,7 @@
         <UpsCard class="mt-6" />
         <UpsServerCard class="mt-3" />
         <SnmpCard class="mt-3" />
+        <SnmpAgentCard class="mt-3" />
         <SyslogCard class="mt-3" />
         <FanControlCard class="mt-3" />
       {/if}

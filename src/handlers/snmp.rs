@@ -25,6 +25,7 @@
 
 use crate::handlers::AppState;
 use crate::snmp::SnmpService;
+use crate::snmp_agent::{AgentConfig, BindScope};
 use crate::storage::json::JsonStorage;
 use crate::utils::ResponseHelper;
 use axum::{extract::Query, extract::State, http::HeaderMap, response::Response};
@@ -61,6 +62,10 @@ impl Default for SnmpSettings {
 }
 
 const SNMP_STORAGE_KEY: &str = "snmp";
+/// Its own key, so enabling the local agent never touches the client settings
+/// above (and vice versa): they are two different features that happen to
+/// share the word "SNMP".
+const SNMP_AGENT_STORAGE_KEY: &str = "snmp-agent";
 
 fn snmp_storage() -> JsonStorage {
     JsonStorage::new(
@@ -261,4 +266,198 @@ pub async fn handle_snmp_settings_get(
         "community": settings.community,
         "version": settings.version,
     }))
+}
+
+// ---------------------------------------------------------------------------
+// The local agent (phase B4) — the mirror image of everything above, which
+// queries *remote* devices. See `src/snmp_agent.rs`.
+// ---------------------------------------------------------------------------
+
+/// `snmpd` missing is a capability answer (`503`), never a `400` and never a
+/// silent success: the appliance can still store the settings, but it cannot
+/// serve a single SNMP request, and the screen must say which of the two it
+/// is looking at (P0.2 contract).
+fn agent_missing() -> Response {
+    ResponseHelper::json_unavailable(
+        "snmpd is not installed on this appliance — install the 'snmpd' package to serve SNMP",
+    )
+}
+
+/// GET /api/snmp/agent — the agent's configuration and its live state.
+///
+/// The community is **never** returned; `has_community` says whether one is
+/// set. The state is read from the host each time, so a daemon stopped from a
+/// shell shows up here instead of an optimistic "enabled".
+pub async fn handle_snmp_agent_get(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Response {
+    if let Err(resp) = crate::handlers::admin_guard::require_admin(&state, &headers).await {
+        return resp;
+    }
+
+    let installed = tokio::task::spawn_blocking(crate::snmp_agent::agent_installed)
+        .await
+        .unwrap_or(false);
+    if !installed {
+        return agent_missing();
+    }
+
+    let (config, serving, candidates) = tokio::task::spawn_blocking(|| {
+        (
+            load_agent_config(),
+            crate::snmp_agent::is_serving(),
+            crate::snmp_agent::lan_bind_candidates(),
+        )
+    })
+    .await
+    .unwrap_or_else(|_| (AgentConfig::default(), false, Vec::new()));
+
+    let mut payload = config.redacted();
+    payload["installed"] = serde_json::json!(true);
+    payload["serving"] = serde_json::json!(serving);
+    payload["lan_candidates"] = serde_json::json!(candidates);
+    ResponseHelper::json_success(payload)
+}
+
+/// Body for `PUT /api/snmp/agent`. Every field is optional so the screen can
+/// flip `enabled` alone without resending the whole document.
+#[derive(Debug, Deserialize)]
+pub struct AgentConfigRequest {
+    #[serde(default)]
+    pub enabled: Option<bool>,
+    /// `"loopback"` or `"lan"`.
+    #[serde(default)]
+    pub scope: Option<String>,
+    #[serde(default)]
+    pub lan_address: Option<String>,
+    /// Empty or absent keeps the stored community (or generates one).
+    #[serde(default)]
+    pub community: Option<String>,
+    #[serde(default)]
+    pub location: Option<String>,
+    #[serde(default)]
+    pub contact: Option<String>,
+}
+
+/// PUT /api/snmp/agent — enable/disable and configure the local agent.
+///
+/// Contract: the settings are validated **before** anything is written,
+/// persisted only once the host accepted them, and the answer carries the
+/// resulting live state. A failure names which half failed (persisted config
+/// vs daemon) instead of a bare "error".
+pub async fn handle_snmp_agent_update(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    req: axum::extract::Json<AgentConfigRequest>,
+) -> Response {
+    let admin_username = match crate::handlers::admin_guard::require_admin(&state, &headers).await {
+        Ok(u) => u,
+        Err(resp) => return resp,
+    };
+
+    let installed = tokio::task::spawn_blocking(crate::snmp_agent::agent_installed)
+        .await
+        .unwrap_or(false);
+    if !installed {
+        return agent_missing();
+    }
+
+    let previous = load_agent_config();
+    let mut requested = previous.clone();
+    if let Some(enabled) = req.enabled {
+        requested.enabled = enabled;
+    }
+    if let Some(scope) = req.scope.as_deref() {
+        requested.scope = match scope.trim().to_ascii_lowercase().as_str() {
+            "loopback" => BindScope::Loopback,
+            "lan" => BindScope::Lan,
+            other => {
+                return ResponseHelper::json_error(format!(
+                    "Unknown scope '{other}' — use 'loopback' or 'lan'"
+                ))
+            }
+        };
+    }
+    if let Some(address) = &req.lan_address {
+        requested.lan_address = Some(address.clone());
+    }
+    if let Some(community) = &req.community {
+        requested.community = community.clone();
+    }
+    if let Some(location) = &req.location {
+        requested.location = location.clone();
+    }
+    if let Some(contact) = &req.contact {
+        requested.contact = contact.clone();
+    }
+
+    let next = match validate_agent_config(requested, &previous) {
+        Ok(next) => next,
+        Err(e) => return ResponseHelper::json_error(e.0),
+    };
+
+    let applied = next.clone();
+    let result =
+        tokio::task::spawn_blocking(move || crate::snmp_agent::apply_to_host(&applied)).await;
+
+    let state_label = match result {
+        Ok(Ok(state)) => state,
+        Ok(Err(e)) => {
+            // The daemon half failed: put the previous configuration back so
+            // "saved" and "running" can never disagree silently.
+            let restore = previous.clone();
+            let _ = tokio::task::spawn_blocking(move || crate::snmp_agent::apply_to_host(&restore))
+                .await;
+            return ResponseHelper::json_error(format!(
+                "The agent configuration was refused by the host: {e}"
+            ));
+        }
+        Err(e) => return ResponseHelper::json_error(format!("Internal error: {e}")),
+    };
+
+    persist_agent_config(&next);
+    crate::events::log_event(format!(
+        "Admin '{}' {} the SNMP agent (scope: {:?}, state: {})",
+        admin_username,
+        if next.enabled { "enabled" } else { "disabled" },
+        next.scope,
+        state_label
+    ));
+
+    let mut payload = next.redacted();
+    payload["installed"] = serde_json::json!(true);
+    payload["serving"] = serde_json::json!(state_label == "running");
+    payload["message"] = serde_json::json!(if next.enabled {
+        "The SNMP agent is configured"
+    } else {
+        "The SNMP agent is disabled"
+    });
+    ResponseHelper::json_success(payload)
+}
+
+/// Load the agent config from disk; a missing or unreadable file means "never
+/// configured", which is the safe default (off).
+fn load_agent_config() -> AgentConfig {
+    snmp_storage()
+        .load::<AgentConfig>(SNMP_AGENT_STORAGE_KEY)
+        .ok()
+        .flatten()
+        .unwrap_or_default()
+}
+
+fn persist_agent_config(config: &AgentConfig) {
+    if let Err(e) = snmp_storage().save(SNMP_AGENT_STORAGE_KEY, config) {
+        tracing::error!("Failed to persist the SNMP agent settings: {}", e);
+    }
+}
+
+/// Validation is shared with the module's unit tests by going through
+/// `snmp_agent::validate_config`, but the type is spelled out here so the
+/// handler never builds a config the module would reject.
+fn validate_agent_config(
+    requested: crate::snmp_agent::AgentConfig,
+    previous: &crate::snmp_agent::AgentConfig,
+) -> Result<crate::snmp_agent::AgentConfig, crate::snmp_agent::ConfigError> {
+    crate::snmp_agent::validate_config(requested, previous)
 }

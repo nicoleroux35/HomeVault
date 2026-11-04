@@ -1788,6 +1788,13 @@ pub fn create_app(state: AppStateArc) -> Router {
         )
         // SNMP monitoring
         .route("/api/snmp/availability", get(handle_snmp_availability))
+        // The local agent (phase B4). Same admin gate as the client above;
+        // absent `snmpd` answers 503 (capability), never a silent success.
+        .route(
+            "/api/snmp/agent",
+            get(crate::handlers::snmp::handle_snmp_agent_get)
+                .put(crate::handlers::snmp::handle_snmp_agent_update),
+        )
         .route("/api/snmp/info", get(handle_snmp_info))
         .route("/api/snmp/interfaces", get(handle_snmp_interfaces))
         .route("/api/snmp/storage", get(handle_snmp_storage))

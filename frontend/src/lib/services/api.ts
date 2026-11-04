@@ -1557,6 +1557,23 @@ class ApiClient {
     return this.get(`/snmp/storage${qs}`, { ttl: 5000 });
   }
 
+  // SNMP *agent* (the appliance's own snmpd — the client above queries remote
+  // devices). `503` when `snmpd` is not installed.
+  async getSnmpAgent() {
+    return this.get('/snmp/agent', { cache: false });
+  }
+
+  async updateSnmpAgent(data: {
+    enabled?: boolean;
+    scope?: 'loopback' | 'lan';
+    lan_address?: string;
+    community?: string;
+    location?: string;
+    contact?: string;
+  }) {
+    return this.put('/snmp/agent', data);
+  }
+
   // UPS
   async getUpsList() {
     return this.get('/ups/list', { ttl: 5000 });
