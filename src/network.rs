@@ -186,6 +186,10 @@ pub enum InterfaceType {
     Loopback,
     Bridge,
     Vlan,
+    /// A kernel link-aggregation device (`bond0`), detected from
+    /// `/sys/class/net/<name>/bonding` and created by
+    /// [`create_bond_device`].
+    Bond,
     Tunnel,
     Unknown,
 }
@@ -1531,6 +1535,749 @@ fn read_ipv6_dns_servers() -> Vec<String> {
 }
 
 // ---------------------------------------------------------------------------
+// Link aggregation (bond) and VLAN devices (phase B5 + B6)
+//
+// Both create a **new** virtual interface out of one or more existing ones,
+// and both land in the same place afterwards: the new device is configured
+// through the exact path a physical interface uses (`apply_interface_config`
+// → `persist_interface_config` → `apply_persisted_config`, i.e. apply, verify
+// and roll back). That reuse is the point — a second, "just for virtual
+// devices" configuration path is how a NAS ends up with two ideas of what is
+// on the wire.
+//
+// The one rule this section adds is the one that keeps an admin on the box:
+// **a change that would move the address the operator is talking to must be
+// refused, not attempted.** Detaching the last NIC that carries the appliance's
+// own IP, or deleting the interface holding it, severs the session mid-request:
+// no verification step can report it, no rollback can be driven, and the
+// appliance is only reachable from the console. Those requests are rejected
+// before a single `ip` command runs (`refuse_if_carries_session_address`).
+// ---------------------------------------------------------------------------
+
+/// Highest VLAN id 802.1Q reserves for its own use (the id sits in 12 bits,
+/// but 4095 is explicitly not a usable VID).
+pub const MAX_VLAN_ID: u16 = 4094;
+
+/// Linux's interface-name ceiling (`IFNAMSIZ` minus the NUL).
+pub const MAX_INTERFACE_NAME_LEN: usize = 15;
+
+/// How the members of a bond are used.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum BondMode {
+    /// 802.3ad — LACP. Needs a switch that is configured for it.
+    #[serde(rename = "802.3ad")]
+    Lacp,
+    /// One active member, the others on standby. Needs no switch support.
+    #[serde(rename = "active-backup")]
+    ActiveBackup,
+}
+
+impl BondMode {
+    /// The identifier the kernel's bonding driver takes.
+    pub fn kernel_name(self) -> &'static str {
+        match self {
+            BondMode::Lacp => "802.3ad",
+            BondMode::ActiveBackup => "active-backup",
+        }
+    }
+
+    /// Whether the switch must cooperate for this mode to work at all — used
+    /// for the sentence the UI shows before a change.
+    pub fn needs_switch_configuration(self) -> bool {
+        self == BondMode::Lacp
+    }
+
+    /// The only two modes the appliance offers. LACP is the default on a
+    /// managed switch, but `active-backup` is the safe answer for a home
+    /// router that knows nothing about bonding, so the caller always states
+    /// the mode explicitly.
+    pub fn from_kernel_name(name: &str) -> Option<Self> {
+        match name {
+            "802.3ad" => Some(BondMode::Lacp),
+            "active-backup" => Some(BondMode::ActiveBackup),
+            _ => None,
+        }
+    }
+}
+
+/// One bond as the API and the UI see it.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct BondDevice {
+    /// Kernel device name (`bond0`).
+    pub name: String,
+    pub mode: BondMode,
+    /// The member NICs, in the order the kernel lists them.
+    pub members: Vec<String>,
+    /// `true` when the kernel reports the link as up.
+    pub up: bool,
+    /// The address currently carried by the bond, when it has one.
+    pub ipv4: Option<String>,
+}
+
+/// One VLAN device as the API and the UI see it.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct VlanDevice {
+    /// Kernel device name, `<parent>.<vid>`.
+    pub name: String,
+    pub parent: String,
+    pub vid: u16,
+    pub up: bool,
+    pub ipv4: Option<String>,
+}
+
+/// What a creation request asked for, validated and normalised.
+#[derive(Debug, Clone, PartialEq)]
+pub struct BondSpec {
+    pub name: String,
+    pub mode: BondMode,
+    pub members: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct VlanSpec {
+    pub name: String,
+    pub parent: String,
+    pub vid: u16,
+}
+
+/// Linux interface names: 1..=15 characters, no `/`, whitespace or NUL, and
+/// never `.`/`..`. Deliberately stricter than the kernel (which also allows a
+/// few punctuation characters) because the name is interpolated into `ip`
+/// argv and into netplan keys.
+pub fn validate_interface_name(name: &str) -> Result<(), String> {
+    if name.is_empty() || name.len() > MAX_INTERFACE_NAME_LEN {
+        return Err(format!(
+            "A network interface name must be 1 to {} characters long",
+            MAX_INTERFACE_NAME_LEN
+        ));
+    }
+    if name == "." || name == ".." {
+        return Err("A network interface name cannot be '.' or '..'".to_string());
+    }
+    if name
+        .chars()
+        .any(|c| c == '/' || c == '\0' || c.is_whitespace() || c.is_control())
+    {
+        return Err(
+            "A network interface name cannot contain a slash, a space or a control character"
+                .to_string(),
+        );
+    }
+    Ok(())
+}
+
+/// Validate a bond creation request: a fresh `bondN`-shaped name, one of the
+/// two supported modes, and at least one member. Every member must be a real
+/// Ethernet (non-bond, non-VLAN) interface — bonding a VLAN or an existing
+/// bond is refused rather than left to the driver to half-accept.
+pub fn validate_bond_spec(
+    name: &str,
+    mode: &str,
+    members: &[String],
+    available: &[NetworkInterface],
+) -> Result<BondSpec, String> {
+    validate_bond_spec_with(name, mode, members, available, &is_physical_nic)
+}
+
+/// The same rules with the "is this a real NIC?" probe injected, so the
+/// validation itself is testable without a `/sys` of the right shape.
+fn validate_bond_spec_with(
+    name: &str,
+    mode: &str,
+    members: &[String],
+    available: &[NetworkInterface],
+    physical: &dyn Fn(&str) -> bool,
+) -> Result<BondSpec, String> {
+    validate_interface_name(name)?;
+    if available.iter().any(|i| i.name == name) {
+        return Err(format!(
+            "A network interface named '{}' already exists",
+            name
+        ));
+    }
+    let mode = BondMode::from_kernel_name(mode).ok_or_else(|| {
+        "Unsupported bonding mode: use '802.3ad' (LACP) or 'active-backup'".to_string()
+    })?;
+    if members.is_empty() {
+        return Err("A bond needs at least one member interface".to_string());
+    }
+    let mut seen: Vec<&str> = Vec::new();
+    for member in members {
+        validate_interface_name(member)?;
+        if seen.contains(&member.as_str()) {
+            return Err(format!("'{}' is listed twice as a member", member));
+        }
+        seen.push(member);
+        let iface = available
+            .iter()
+            .find(|i| &i.name == member)
+            .ok_or_else(|| format!("'{}' is not a network interface on this appliance", member))?;
+        // A member must be a real NIC: a bond, a VLAN, a bridge or a tunnel
+        // on top of another device is a configuration nobody can reason
+        // about after a reboot.
+        if iface.iface_type != InterfaceType::Ethernet || !physical(member) {
+            return Err(format!(
+                "'{}' cannot join a bond: it is a {:?} interface or a virtual device, \
+                 not a physical network card",
+                member, iface.iface_type
+            ));
+        }
+    }
+    Ok(BondSpec {
+        name: name.to_string(),
+        mode,
+        members: members.to_vec(),
+    })
+}
+
+/// Validate a VLAN creation request: a fresh `<parent>.<vid>`-shaped name, a
+/// real parent interface and an id in `1..=4094`. The name is derived, never
+/// taken from the client, so a VLAN can never be created under a name that
+/// collides with a physical interface.
+pub fn validate_vlan_spec(
+    parent: &str,
+    vid: u16,
+    available: &[NetworkInterface],
+) -> Result<VlanSpec, String> {
+    validate_vlan_spec_with(parent, vid, available, &is_physical_nic)
+}
+
+fn validate_vlan_spec_with(
+    parent: &str,
+    vid: u16,
+    available: &[NetworkInterface],
+    physical: &dyn Fn(&str) -> bool,
+) -> Result<VlanSpec, String> {
+    validate_interface_name(parent)?;
+    if vid == 0 || vid > MAX_VLAN_ID {
+        return Err(format!("A VLAN id must be between 1 and {}", MAX_VLAN_ID));
+    }
+    let iface = available
+        .iter()
+        .find(|i| i.name == parent)
+        .ok_or_else(|| format!("'{}' is not a network interface on this appliance", parent))?;
+    // 802.1Q rides on an Ethernet device or on a bond — both are real links.
+    // Refusing bridges/tunnels keeps the parent list honest.
+    let physical_or_bond = match iface.iface_type {
+        InterfaceType::Bond => true,
+        InterfaceType::Ethernet => physical(parent),
+        _ => false,
+    };
+    if !physical_or_bond {
+        return Err(format!(
+            "'{}' cannot carry a VLAN: it is a {:?} interface or a virtual device",
+            parent, iface.iface_type
+        ));
+    }
+    let name = format!("{}.{}", parent, vid);
+    validate_interface_name(&name)?;
+    if available.iter().any(|i| i.name == name) {
+        return Err(format!("The VLAN interface '{}' already exists", name));
+    }
+    Ok(VlanSpec {
+        name,
+        parent: parent.to_string(),
+        vid,
+    })
+}
+
+/// The `ip link add … type bond` argv for a validated spec. Pure, so the
+/// command shape is unit-tested rather than assumed.
+pub fn bond_create_args(spec: &BondSpec) -> Vec<String> {
+    vec![
+        "link".to_string(),
+        "add".to_string(),
+        spec.name.clone(),
+        "type".to_string(),
+        "bond".to_string(),
+        "mode".to_string(),
+        spec.mode.kernel_name().to_string(),
+    ]
+}
+
+/// The `ip link set … master` argv that attaches one member to a bond.
+pub fn bond_attach_args(bond: &str, member: &str) -> Vec<String> {
+    vec![
+        "link".to_string(),
+        "set".to_string(),
+        member.to_string(),
+        "master".to_string(),
+        bond.to_string(),
+    ]
+}
+
+/// The `ip link add link <parent> name <parent>.<vid> type vlan id <vid>` argv.
+pub fn vlan_create_args(spec: &VlanSpec) -> Vec<String> {
+    vec![
+        "link".to_string(),
+        "add".to_string(),
+        "link".to_string(),
+        spec.parent.clone(),
+        "name".to_string(),
+        spec.name.clone(),
+        "type".to_string(),
+        "vlan".to_string(),
+        "id".to_string(),
+        spec.vid.to_string(),
+    ]
+}
+
+/// True when `name` is a link the kernel itself created (a bridge, a bond, a
+/// VLAN, a tunnel, a Docker/veth pair, a `vmnet` device…), i.e. one that has
+/// no physical port behind it.
+///
+/// Read from the kernel rather than guessed from the name: `eth0` on some
+/// hosts is a `virtio` interface, and `eno1` on others is the only real NIC.
+/// A physical Ethernet card has a device symlink into a real bus
+/// (`/sys/devices/pci…`, `/sys/devices/platform…`, `/sys/devices/usb…`), while
+/// a virtual one is rooted at `/sys/devices/virtual/net`.
+pub fn is_physical_nic(name: &str) -> bool {
+    let link = std::path::Path::new(&format!("/sys/class/net/{}", name)).join("device");
+    match std::fs::canonicalize(&link) {
+        Ok(path) => {
+            let path = path.to_string_lossy();
+            !path.contains("/devices/virtual/")
+        }
+        // No `device` symlink at all: a purely virtual interface (bridge,
+        // veth, dummy, docker0).
+        Err(_) => false,
+    }
+}
+
+/// Read the members a bond currently has, from the kernel's own view.
+fn read_bond_members(name: &str) -> Vec<String> {
+    let Ok(text) = std::fs::read_to_string(format!("/sys/class/net/{}/bonding/slaves", name))
+    else {
+        return Vec::new();
+    };
+    text.split_whitespace().map(|s| s.to_string()).collect()
+}
+
+/// Read the bonding mode the kernel reports.
+fn read_bond_mode(name: &str) -> Option<BondMode> {
+    let text = std::fs::read_to_string(format!("/sys/class/net/{}/bonding/mode", name)).ok()?;
+    // The file reads `<mode> <mode-name>`, e.g. `4 802.3ad`.
+    let name = text.split_whitespace().nth(1)?;
+    BondMode::from_kernel_name(name)
+}
+
+/// The `<parent>.<vid>` split for a VLAN device, taken from the kernel's own
+/// metadata (`/proc/net/vlan/<name>`) rather than from the name — a VLAN the
+/// admin created by hand with a different name must still be readable.
+fn read_vlan_parent(name: &str) -> Option<(String, u16)> {
+    let text = std::fs::read_to_string(format!("/proc/net/vlan/{}", name)).ok()?;
+    // `VID: 42      REORDER_HDR: 1  DEV: eth0`
+    let mut vid = None;
+    let mut parent = None;
+    for line in text.lines() {
+        let line = line.trim();
+        if let Some(rest) = line.strip_prefix("VID:") {
+            vid = rest.split_whitespace().next().and_then(|v| v.parse().ok());
+        }
+        if let Some(pos) = line.find("DEV:") {
+            parent = Some(line[pos + 4..].trim().to_string());
+        }
+    }
+    Some((parent?, vid?))
+}
+
+/// The interfaces a new bond may be built from: Ethernet devices that really
+/// are a physical port. A Docker bridge, a veth pair or a `vmnet` device is an
+/// Ethernet device to the kernel but has no cable behind it, and bonding one
+/// is a change nobody can act on.
+pub fn bond_member_candidates() -> Vec<String> {
+    list_interfaces()
+        .into_iter()
+        .filter(|i| i.iface_type == InterfaceType::Ethernet && is_physical_nic(&i.name))
+        .map(|i| i.name)
+        .collect()
+}
+
+/// The interfaces a VLAN may sit on: a physical NIC or a bond (an LACP trunk
+/// is exactly where a VLAN belongs), never a bridge, a tunnel or a container
+/// device.
+pub fn vlan_parent_candidates() -> Vec<String> {
+    list_interfaces()
+        .into_iter()
+        .filter(|i| match i.iface_type {
+            InterfaceType::Bond => true,
+            InterfaceType::Ethernet => is_physical_nic(&i.name),
+            _ => false,
+        })
+        .map(|i| i.name)
+        .collect()
+}
+
+/// Every bond on the host.
+pub fn list_bonds() -> Vec<BondDevice> {
+    list_interfaces()
+        .into_iter()
+        .filter(|i| i.iface_type == InterfaceType::Bond)
+        .map(|i| BondDevice {
+            mode: read_bond_mode(&i.name).unwrap_or(BondMode::ActiveBackup),
+            members: read_bond_members(&i.name),
+            up: i.status == InterfaceStatus::Up,
+            ipv4: i.ipv4,
+            name: i.name,
+        })
+        .collect()
+}
+
+/// Every VLAN device on the host.
+pub fn list_vlans() -> Vec<VlanDevice> {
+    list_interfaces()
+        .into_iter()
+        .filter(|i| i.iface_type == InterfaceType::Vlan)
+        .filter_map(|i| {
+            let (parent, vid) = read_vlan_parent(&i.name)?;
+            Some(VlanDevice {
+                up: i.status == InterfaceStatus::Up,
+                ipv4: i.ipv4,
+                name: i.name,
+                parent,
+                vid,
+            })
+        })
+        .collect()
+}
+
+/// The interface that carries `ip`, when one does.
+///
+/// Used only for the session-safety refusal below: the caller passes the
+/// address the operator's request arrived on, and this answers "which local
+/// interface holds it".
+fn interface_carrying(ip: std::net::IpAddr) -> Option<String> {
+    let wanted = ip.to_string();
+    list_interfaces()
+        .into_iter()
+        .find(|i| {
+            i.ipv4.as_deref() == Some(wanted.as_str())
+                || i.ipv6.as_deref() == Some(wanted.as_str())
+                || i.ipv6_addresses.iter().any(|a| a == &wanted)
+        })
+        .map(|i| i.name)
+}
+
+/// Refuse a change that would cut the connection the request arrived on.
+///
+/// `peer` is the TCP peer address of the request (the operator's own address)
+/// and `protected` the interfaces about to be detached or deleted. When the
+/// operator's address is one of ours *and* it lives on a protected interface,
+/// the change would sever the session before any verification or rollback
+/// could report it — the appliance would be reachable from the console only.
+/// The handler turns this into a `400` naming the interface.
+///
+/// A request from a peer we cannot place (a `None` peer, as the in-process
+/// test routers produce, or an address on no local interface) is allowed: the
+/// rule protects the admin, it does not block remote management.
+pub fn refuse_if_carries_session_address(
+    peer: Option<std::net::IpAddr>,
+    protected: &[String],
+) -> Result<(), String> {
+    let Some(peer) = peer else {
+        return Ok(());
+    };
+    let Some(hosting) = interface_carrying(peer) else {
+        return Ok(());
+    };
+    if protected.iter().any(|p| p == &hosting) {
+        return Err(format!(
+            "Refused: this session reaches the appliance through '{}', which this change would reconfigure. Keep another interface (or a console) reachable and try again from there.",
+            hosting
+        ));
+    }
+    Ok(())
+}
+
+/// Create (or extend) a bond.
+///
+/// A bond that already exists on the host is **extended**: only the missing
+/// members are attached, so the admin can add a NIC to a live bond without
+/// tearing it down. The mode of an existing bond can never be changed by this
+/// call — the driver refuses that under load, and silently dropping the
+/// configuration would be worse than the explicit error.
+///
+/// Returns the names of the members that were actually attached, so the
+/// caller can detach exactly those if a later step fails.
+pub fn create_bond_device(spec: &BondSpec) -> Result<Vec<String>, String> {
+    let existing = list_bonds().into_iter().find(|b| b.name == spec.name);
+    let attached: Vec<String> = match &existing {
+        Some(bond) => {
+            if bond.mode != spec.mode {
+                return Err(format!(
+                    "'{}' already exists in '{}' mode; its mode cannot be changed without deleting it first",
+                    spec.name,
+                    bond.mode.kernel_name()
+                ));
+            }
+            spec.members
+                .iter()
+                .filter(|m| !bond.members.iter().any(|existing| existing == *m))
+                .cloned()
+                .collect()
+        }
+        None => {
+            let args = bond_create_args(spec);
+            let argv: Vec<&str> = args.iter().map(String::as_str).collect();
+            let output = ip_sudo_run("ip", &argv)?;
+            if !output.status.success() {
+                return Err(format!(
+                    "Could not create the bond '{}': {}",
+                    spec.name,
+                    String::from_utf8_lossy(&output.stderr).trim()
+                ));
+            }
+            spec.members.clone()
+        }
+    };
+
+    let mut done: Vec<String> = Vec::new();
+    for member in &attached {
+        let args = bond_attach_args(&spec.name, member);
+        let argv: Vec<&str> = args.iter().map(String::as_str).collect();
+        match ip_sudo_run("ip", &argv) {
+            Ok(output) if output.status.success() => done.push(member.clone()),
+            Ok(output) => {
+                // Roll back the members this call already moved: a bond with
+                // a partial member set is a configuration nobody asked for.
+                for added in &done {
+                    let _ = detach_bond_member(&spec.name, added);
+                }
+                return Err(format!(
+                    "Could not add '{}' to the bond '{}': {}",
+                    member,
+                    spec.name,
+                    String::from_utf8_lossy(&output.stderr).trim()
+                ));
+            }
+            Err(e) => {
+                for added in &done {
+                    let _ = detach_bond_member(&spec.name, added);
+                }
+                return Err(e);
+            }
+        }
+    }
+    Ok(done)
+}
+
+/// Detach one member from a bond (the rollback half of `create_bond_device`).
+pub fn detach_bond_member(bond: &str, member: &str) -> Result<(), String> {
+    let output = ip_sudo_run("ip", &["link", "set", member, "nomaster"])?;
+    if !output.status.success() {
+        return Err(format!(
+            "Could not detach '{}' from the bond '{}': {}",
+            member,
+            bond,
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+    }
+    Ok(())
+}
+
+/// Create a VLAN device on top of a validated parent.
+pub fn create_vlan_device(spec: &VlanSpec) -> Result<(), String> {
+    let args = vlan_create_args(spec);
+    let argv: Vec<&str> = args.iter().map(String::as_str).collect();
+    let output = ip_sudo_run("ip", &argv)?;
+    if !output.status.success() {
+        return Err(format!(
+            "Could not create the VLAN interface '{}': {}",
+            spec.name,
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+    }
+    Ok(())
+}
+
+/// Delete a virtual interface (bond or VLAN). Refused for anything that is not
+/// one of ours: only an interface this module could have created is removed,
+/// so a typo can never take down a physical NIC.
+pub fn delete_virtual_device(name: &str) -> Result<(), String> {
+    let iface_type = detect_interface_type(name);
+    if !matches!(iface_type, InterfaceType::Bond | InterfaceType::Vlan) {
+        return Err(format!(
+            "'{}' is not a bond or a VLAN interface; only virtual interfaces created here can be deleted",
+            name
+        ));
+    }
+    // A bond goes away with its members detached first, so the NICs come back
+    // as ordinary Ethernet devices instead of staying swallowed.
+    if iface_type == InterfaceType::Bond {
+        for member in read_bond_members(name) {
+            let _ = detach_bond_member(name, &member);
+        }
+    }
+    let output = ip_sudo_run("ip", &["link", "delete", name])?;
+    if !output.status.success() {
+        return Err(format!(
+            "Could not delete '{}': {}",
+            name,
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+    }
+    // The netplan file this module may have written for it goes too, or the
+    // next `netplan apply` would resurrect a device that no longer exists.
+    if let Err(e) = remove_netplan_file(name) {
+        tracing::debug!("no persisted netplan file to remove for '{}': {}", name, e);
+    }
+    Ok(())
+}
+
+/// Apply the netplan file just written for a **new** virtual device, and undo
+/// the write when the apply fails.
+///
+/// This is deliberately not the full `apply_persisted_config` reconcile: that
+/// one re-asserts an address on an interface the operator may be using, which
+/// is why it captures a live rollback target and polls the wire. Creating a
+/// bond or a VLAN touches no existing address, so the only thing that can go
+/// wrong is netplan rejecting the file — and the honest answer there is to
+/// remove it again and say so, leaving the live device the `ip` step created.
+///
+/// No-op for the ifupdown backend and on hosts without netplan, matching
+/// `apply_persisted_config`.
+pub fn netplan_apply_and_verify(name: &str) -> Result<(), String> {
+    if !netplan_dir().is_dir() || !netplan_available() {
+        return Ok(());
+    }
+    match netplan_apply() {
+        Ok(()) => Ok(()),
+        Err(e) => {
+            if let Err(remove) = remove_netplan_file(name) {
+                tracing::warn!(
+                    "could not remove the rejected netplan file for '{}': {}",
+                    name,
+                    remove
+                );
+            }
+            Err(format!(
+                "The device was created but netplan rejected it, so it would not survive a reboot ({}). The persisted file was removed.",
+                e
+            ))
+        }
+    }
+}
+
+/// Render the netplan fragment for a bond or VLAN device. The caller appends
+/// it to the interface's own persisted YAML body, so a bond keeps using the
+/// `ethernets:` mapping (netplan accepts a bond/VLAN there and keys it by
+/// name) and only the extra `parameters`/`id`/`link` fields differ.
+///
+/// Pure, so the shapes are unit-tested: a `- to:` route line with no `via` is
+/// valid YAML but a netplan parse error, which is exactly the kind of mistake
+/// this pin prevents.
+pub fn render_virtual_device_yaml(
+    name: &str,
+    spec: &VirtualDeviceKind,
+    renderer: Option<&str>,
+) -> String {
+    let mut y = String::new();
+    y.push_str("# Written by HomeVault for a virtual network interface\n");
+    y.push_str("# (Network app). Delete this file to hand the interface back.\n");
+    y.push_str("network:\n  version: 2\n");
+    if let Some(r) = renderer {
+        y.push_str(&format!("  renderer: {}\n", r));
+    }
+    y.push_str("  ethernets:\n");
+    match spec {
+        VirtualDeviceKind::Bond { mode, members } => {
+            y.push_str(&format!("    {}:\n", name));
+            y.push_str("      interfaces:\n");
+            for member in members {
+                y.push_str(&format!("        - {}\n", member));
+            }
+            y.push_str("      parameters:\n");
+            y.push_str(&format!("        mode: {}\n", mode.kernel_name()));
+            y.push_str("      dhcp4: true\n");
+        }
+        VirtualDeviceKind::Vlan { parent, vid } => {
+            y.push_str(&format!("    {}:\n", name));
+            y.push_str(&format!("      id: {}\n", vid));
+            y.push_str(&format!("      link: {}\n", parent));
+            y.push_str("      dhcp4: true\n");
+        }
+    }
+    y
+}
+
+/// Persist a bond or VLAN device so it still exists after a reboot.
+///
+/// Same two backends and same file-per-interface convention as
+/// `persist_interface_config`, and the same ownership: our file only ever
+/// declares the one device it creates. Returns the backend that took the
+/// write, so the caller can say "persisted" or "temporary" honestly.
+pub fn persist_virtual_device(
+    name: &str,
+    kind: &VirtualDeviceKind,
+) -> Result<PersistedChange, String> {
+    if netplan_dir().is_dir() && netplan_available() {
+        let previous_netplan = read_netplan_file(name);
+        let yaml = render_virtual_device_yaml(name, kind, netplan_renderer(netplan_dir()));
+        write_as_root(&netplan_path(name), &yaml)?;
+        chmod_netplan_file(&netplan_path(name));
+        return Ok(PersistedChange {
+            backend: "netplan",
+            previous_netplan,
+        });
+    }
+
+    let interfaces_file = std::fs::read_to_string("/etc/network/interfaces").unwrap_or_default();
+    if std::path::Path::new(IFUPDOWN_DIR).is_dir()
+        && interfaces_file
+            .lines()
+            .any(|l| l.trim().starts_with("source ") && l.trim().contains("interfaces.d"))
+    {
+        let stanza = render_ifupdown_virtual(name, kind);
+        let path = format!("{}/homevault-{}", IFUPDOWN_DIR, name);
+        write_as_root(&path, &stanza)?;
+        return Ok(PersistedChange {
+            backend: "ifupdown",
+            previous_netplan: None,
+        });
+    }
+
+    Err("No supported persistence backend found (neither netplan nor ifupdown)".to_string())
+}
+
+/// The ifupdown stanza for a bond or VLAN device (backend 2).
+fn render_ifupdown_virtual(name: &str, kind: &VirtualDeviceKind) -> String {
+    let mut s = String::new();
+    s.push_str("# Written by HomeVault for a virtual network interface\n");
+    s.push_str("# (Network app). Delete this file to remove it.\n");
+    match kind {
+        VirtualDeviceKind::Bond { mode, members } => {
+            s.push_str(&format!(
+                "iface {} inet dhcp\n    bond-mode {}\n    bond-slaves {}\n",
+                name,
+                mode.kernel_name(),
+                members.join(" ")
+            ));
+        }
+        VirtualDeviceKind::Vlan { parent, vid } => {
+            s.push_str(&format!(
+                "iface {} inet dhcp\n    vlan-raw-device {}\n    vlan-id {}\n",
+                name, parent, vid
+            ));
+        }
+    }
+    s
+}
+
+/// What kind of virtual device a persisted fragment describes.
+#[derive(Debug, Clone, PartialEq)]
+pub enum VirtualDeviceKind {
+    Bond {
+        mode: BondMode,
+        members: Vec<String>,
+    },
+    Vlan {
+        parent: String,
+        vid: u16,
+    },
+}
+
+// ---------------------------------------------------------------------------
 // Diagnostics
 // ---------------------------------------------------------------------------
 
@@ -1818,6 +2565,12 @@ async fn fetch_public_ip_from_endpoints() -> Option<Ipv4Addr> {
 // ---------------------------------------------------------------------------
 
 fn detect_interface_type(name: &str) -> InterfaceType {
+    // Link aggregation first: a bond is an ARPHRD_ETHER device, so the
+    // `type` check below would classify it as plain Ethernet. Only a real
+    // bond has the `bonding` sysfs directory.
+    if std::path::Path::new(&format!("/sys/class/net/{}/bonding", name)).is_dir() {
+        return InterfaceType::Bond;
+    }
     // Check /sys/class/net/{name}/type (1 = ARPHRD_ETHER = ethernet, 772 = loopback)
     if let Ok(content) = std::fs::read_to_string(format!("/sys/class/net/{}/type", name)) {
         let t = content.trim();
@@ -2979,5 +3732,232 @@ mod tests {
             .map(|a| a.to_string_lossy().into_owned())
             .collect();
         assert_eq!(args, vec!["ip", "-4", "addr", "show", "eth0"]);
+    }
+
+    // -- link aggregation + VLAN devices (B5 + B6) -----------------------
+
+    fn iface(name: &str, kind: InterfaceType) -> NetworkInterface {
+        NetworkInterface {
+            name: name.to_string(),
+            iface_type: kind,
+            mac: None,
+            status: InterfaceStatus::Up,
+            ipv4: None,
+            ipv4_netmask: None,
+            ipv6: None,
+            ipv6_prefix: None,
+            ipv6_addresses: vec![],
+            mtu: None,
+            speed_mbps: None,
+            duplex: None,
+            rx_bytes: 0,
+            tx_bytes: 0,
+            driver: None,
+        }
+    }
+
+    fn host() -> Vec<NetworkInterface> {
+        vec![
+            iface("lo", InterfaceType::Loopback),
+            iface("eth0", InterfaceType::Ethernet),
+            iface("eth1", InterfaceType::Ethernet),
+            iface("bond0", InterfaceType::Bond),
+            iface("eth0.10", InterfaceType::Vlan),
+            iface("br0", InterfaceType::Bridge),
+            iface("wlan0", InterfaceType::WiFi),
+        ]
+    }
+
+    #[test]
+    fn test_interface_name_bounds_and_characters() {
+        assert!(validate_interface_name("bond0").is_ok());
+        assert!(validate_interface_name("eth0.42").is_ok());
+        for bad in ["", ".", "..", "a/b", "a b", "a\nb", "abcdefghijklmnop"] {
+            assert!(validate_interface_name(bad).is_err(), "accepted {bad:?}");
+        }
+    }
+
+    #[test]
+    fn test_bond_spec_accepts_two_physical_nics() {
+        let spec = validate_bond_spec_with(
+            "bond1",
+            "802.3ad",
+            &["eth0".to_string(), "eth1".to_string()],
+            &host(),
+            &|_| true,
+        )
+        .expect("valid");
+        assert_eq!(spec.mode, BondMode::Lacp);
+        assert_eq!(spec.members, vec!["eth0", "eth1"]);
+        assert!(BondMode::Lacp.needs_switch_configuration());
+        assert!(!BondMode::ActiveBackup.needs_switch_configuration());
+    }
+
+    #[test]
+    fn test_bond_spec_rejects_unknown_mode_exists_duplicate_and_non_nic() {
+        let ok_members = vec!["eth1".to_string()];
+        assert!(validate_bond_spec("bond9", "round-robin", &ok_members, &host()).is_err());
+        // The name may not collide with a live interface.
+        assert!(validate_bond_spec("eth0", "active-backup", &ok_members, &host()).is_err());
+        // Empty member list.
+        assert!(validate_bond_spec("bond9", "active-backup", &[], &host()).is_err());
+        // A duplicate member.
+        assert!(validate_bond_spec(
+            "bond9",
+            "active-backup",
+            &["eth0".to_string(), "eth0".to_string()],
+            &host()
+        )
+        .is_err());
+        // Only a physical NIC may join: a bond, a VLAN, a bridge and a Wi-Fi
+        // radio are all refused.
+        for member in ["bond0", "eth0.10", "br0", "wlan0"] {
+            assert!(
+                validate_bond_spec_with(
+                    "bond9",
+                    "active-backup",
+                    &[member.to_string()],
+                    &host(),
+                    &|_| true
+                )
+                .is_err(),
+                "accepted {member} as a bond member"
+            );
+        }
+        // A kernel-"Ethernet" device with no physical port behind it
+        // (docker0, veth…) is refused too.
+        assert!(validate_bond_spec_with(
+            "bond9",
+            "active-backup",
+            &["eth0".to_string()],
+            &host(),
+            &|_| false
+        )
+        .is_err());
+        // A member that does not exist at all.
+        assert!(
+            validate_bond_spec("bond9", "active-backup", &["eth7".to_string()], &host()).is_err()
+        );
+    }
+
+    #[test]
+    fn test_vlan_spec_derives_the_name_and_bounds_the_id() {
+        let spec = validate_vlan_spec_with("eth0", 42, &host(), &|_| true).expect("valid");
+        assert_eq!(spec.name, "eth0.42");
+        assert_eq!(spec.parent, "eth0");
+        assert_eq!(spec.vid, 42);
+
+        let ok = |parent: &str, vid: u16| validate_vlan_spec_with(parent, vid, &host(), &|_| true);
+        // A bond can carry a VLAN too (LACP trunk).
+        assert!(ok("bond0", 100).is_ok());
+        // 0 and 4095 are reserved; 4094 is the last usable id.
+        assert!(ok("eth0", 0).is_err());
+        assert!(ok("eth0", 4095).is_err());
+        assert!(ok("eth0", MAX_VLAN_ID).is_ok());
+        // Parents must be a real link, not a bridge/tunnel/Wi-Fi device.
+        assert!(ok("br0", 10).is_err());
+        assert!(ok("wlan0", 10).is_err());
+        assert!(ok("eth9", 10).is_err());
+        // A virtual "Ethernet" device (docker0, a veth pair) is refused even
+        // though the kernel types it as Ethernet.
+        assert!(validate_vlan_spec_with("eth0", 10, &host(), &|name| name != "eth0").is_err());
+        // The derived name may not exceed the kernel ceiling: a 15-character
+        // parent leaves no room for ".42".
+        assert!(ok("abcdefghijklmno", 42).is_err());
+    }
+
+    #[test]
+    fn test_bond_and_vlan_argv_shapes() {
+        let bond = BondSpec {
+            name: "bond0".to_string(),
+            mode: BondMode::ActiveBackup,
+            members: vec!["eth0".to_string(), "eth1".to_string()],
+        };
+        assert_eq!(
+            bond_create_args(&bond),
+            vec![
+                "link",
+                "add",
+                "bond0",
+                "type",
+                "bond",
+                "mode",
+                "active-backup"
+            ]
+        );
+        assert_eq!(
+            bond_attach_args("bond0", "eth0"),
+            vec!["link", "set", "eth0", "master", "bond0"]
+        );
+
+        let vlan = VlanSpec {
+            name: "eth0.42".to_string(),
+            parent: "eth0".to_string(),
+            vid: 42,
+        };
+        assert_eq!(
+            vlan_create_args(&vlan),
+            vec!["link", "add", "link", "eth0", "name", "eth0.42", "type", "vlan", "id", "42"]
+        );
+    }
+
+    #[test]
+    fn test_virtual_device_yaml_carries_the_mode_and_the_parent() {
+        let bond = render_virtual_device_yaml(
+            "bond0",
+            &VirtualDeviceKind::Bond {
+                mode: BondMode::Lacp,
+                members: vec!["eth0".to_string(), "eth1".to_string()],
+            },
+            Some("networkd"),
+        );
+        assert!(bond.contains("  renderer: networkd"), "{bond}");
+        assert!(bond.contains("    bond0:"), "{bond}");
+        assert!(bond.contains("        - eth0"), "{bond}");
+        assert!(bond.contains("        mode: 802.3ad"), "{bond}");
+        assert!(bond.contains("      dhcp4: true"), "{bond}");
+
+        let vlan = render_virtual_device_yaml(
+            "eth0.42",
+            &VirtualDeviceKind::Vlan {
+                parent: "eth0".to_string(),
+                vid: 42,
+            },
+            None,
+        );
+        assert!(vlan.contains("      id: 42"), "{vlan}");
+        assert!(vlan.contains("      link: eth0"), "{vlan}");
+        // A route line without `via` parses as YAML but not as netplan.
+        assert!(!vlan.contains("-\n        to:"), "{vlan}");
+    }
+
+    #[test]
+    fn test_session_address_refusal_only_blocks_the_carrying_interface() {
+        // A peer we cannot place never blocks a change: the rule protects the
+        // operator, it does not gate remote management.
+        assert!(refuse_if_carries_session_address(None, &["eth0".to_string()]).is_ok());
+        // An address no local interface holds (a remote client) is fine too.
+        let remote: std::net::IpAddr = "203.0.113.9".parse().unwrap();
+        assert!(refuse_if_carries_session_address(Some(remote), &["eth0".to_string()]).is_ok());
+    }
+
+    #[test]
+    fn test_bond_mode_only_round_trips_the_two_supported_modes() {
+        assert_eq!(BondMode::from_kernel_name("802.3ad"), Some(BondMode::Lacp));
+        assert_eq!(
+            BondMode::from_kernel_name("active-backup"),
+            Some(BondMode::ActiveBackup)
+        );
+        // The driver knows more modes than the appliance offers; none of them
+        // may sneak in through the API.
+        for other in [
+            "balance-rr",
+            "balance-xor",
+            "broadcast",
+            "balance-tlb",
+            "balance-alb",
+        ] {
+            assert_eq!(BondMode::from_kernel_name(other), None);
+        }
     }
 }

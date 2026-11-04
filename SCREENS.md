@@ -339,6 +339,7 @@ and in the Groups screen.
 - Configuration: DHCP/Static, manual IP/netmask/gateway/DNS
 - Connection summary: local IP, gateway, DNS, public IP
 - Diagnostics: gateway reachability, DNS test, Internet reachability, latency
+- Link aggregation and VLANs (bonds and 802.1Q devices): what exists, create a `bondN` (`802.3ad` with a note that the switch must be configured for it, or `active-backup`), create `<parent>.<vid>` with the id bounded to 1–4094, delete either one after a confirmation that names what the network loses. A change that would cut the administrator's own session is refused with the reason
 
 ### WiFi
 - Network list: SSID, signal strength, frequency, channel, security

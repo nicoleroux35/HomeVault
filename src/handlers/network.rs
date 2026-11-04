@@ -532,6 +532,322 @@ pub async fn handle_public_ip(State(state): State<AppStateArc>, headers: HeaderM
 }
 
 // ---------------------------------------------------------------------------
+// Link aggregation and VLAN devices (B5 + B6)
+//
+// Both features create a virtual interface and then hand it to the **same**
+// configuration path a physical NIC uses, so an address on a bond is applied,
+// verified and rolled back exactly like an address on `eth0`. The one thing
+// they add is the session-safety refusal: a change that would reconfigure the
+// interface carrying the operator's own address is rejected before a single
+// `ip` command runs, because no verify/rollback step can report a change that
+// cut the connection.
+// ---------------------------------------------------------------------------
+
+/// GET /api/network/bonds — the host's bonds and its candidate members.
+pub async fn handle_network_bonds_list(
+    State(state): State<AppStateArc>,
+    headers: HeaderMap,
+) -> Response {
+    if let Err(response) = require_auth(&state, &headers).await {
+        return response;
+    }
+    match tokio::task::spawn_blocking(|| {
+        // Members can only come from physical NICs, presented so the form
+        // never offers an impossible choice (a Docker bridge is an Ethernet
+        // device to the kernel but has no cable behind it).
+        (net::list_bonds(), net::bond_member_candidates())
+    })
+    .await
+    {
+        Ok((bonds, candidates)) => ResponseHelper::json_success(serde_json::json!({
+            "bonds": bonds,
+            "candidates": candidates,
+            "modes": [
+                {
+                    "id": net::BondMode::Lacp.kernel_name(),
+                    "needs_switch_configuration": net::BondMode::Lacp.needs_switch_configuration(),
+                },
+                {
+                    "id": net::BondMode::ActiveBackup.kernel_name(),
+                    "needs_switch_configuration": net::BondMode::ActiveBackup.needs_switch_configuration(),
+                },
+            ],
+        })),
+        Err(e) => ResponseHelper::json_error(format!("Internal error: {}", e)),
+    }
+}
+
+#[derive(Debug, Deserialize)]
+pub struct BondCreateRequest {
+    /// Device name to create (`bond0`). Optional: the first free `bondN` is
+    /// used when the client does not name one, so the common case has nothing
+    /// to get wrong.
+    #[serde(default)]
+    pub name: Option<String>,
+    /// `802.3ad` or `active-backup`.
+    pub mode: String,
+    pub members: Vec<String>,
+}
+
+/// POST /api/network/bonds — create a bond, or add members to a live one.
+pub async fn handle_network_bond_create(
+    State(state): State<AppStateArc>,
+    headers: HeaderMap,
+    peer: crate::middleware::PeerAddr,
+    Json(req): Json<BondCreateRequest>,
+) -> Response {
+    let admin_username = match require_admin(&state, &headers).await {
+        Ok(u) => u,
+        Err(response) => return response,
+    };
+
+    let peer_ip = peer.0;
+    let outcome =
+        tokio::task::spawn_blocking(move || -> Result<(String, bool, Vec<String>), String> {
+            let interfaces = net::list_interfaces();
+            let existing = net::list_bonds();
+            let name = match req.name.clone() {
+                Some(name) => name,
+                None => {
+                    let mut index = 0u8;
+                    loop {
+                        let candidate = format!("bond{}", index);
+                        if !interfaces.iter().any(|i| i.name == candidate) {
+                            break candidate;
+                        }
+                        if index == 99 {
+                            return Err("No free bond name is left (bond0…bond99)".to_string());
+                        }
+                        index += 1;
+                    }
+                }
+            };
+            let spec = net::validate_bond_spec(&name, &req.mode, &req.members, &interfaces)?;
+
+            // Session safety: every member is about to change role. If the
+            // operator is talking to us through one of them, detaching it would
+            // cut the request's own reply path.
+            let already_a_bond = existing.iter().any(|b| b.name == spec.name);
+            if !already_a_bond {
+                net::refuse_if_carries_session_address(peer_ip, &spec.members)?;
+            }
+
+            let attached = net::create_bond_device(&spec)?;
+
+            let kind = net::VirtualDeviceKind::Bond {
+                mode: spec.mode,
+                members: existing
+                    .iter()
+                    .find(|b| b.name == spec.name)
+                    .map(|b| b.members.clone())
+                    .unwrap_or_else(|| spec.members.clone()),
+            };
+            let persisted = match net::persist_virtual_device(&spec.name, &kind) {
+                Ok(change) => {
+                    // Apply + verify the file we just wrote; a failure rolls the
+                    // netplan half back and reports it instead of pretending the
+                    // device survives a reboot.
+                    if let Err(e) = net::netplan_apply_and_verify(&spec.name) {
+                        return Err(e);
+                    }
+                    change.backend
+                }
+                Err(e) => {
+                    tracing::warn!("bond persistence for '{}' failed: {}", spec.name, e);
+                    "none"
+                }
+            };
+            Ok((spec.name, persisted != "none", attached))
+        })
+        .await;
+
+    let (name, persisted, attached) = match outcome {
+        Ok(Ok(value)) => value,
+        Ok(Err(e)) => return ResponseHelper::json_error(e),
+        Err(e) => return ResponseHelper::json_error(format!("Internal error: {}", e)),
+    };
+    crate::events::log_event(format!(
+        "Admin '{}' created or extended the bond '{}' (added: {})",
+        admin_username,
+        name,
+        if attached.is_empty() {
+            "nothing".to_string()
+        } else {
+            attached.join(", ")
+        }
+    ));
+    ResponseHelper::json_success(ApiSuccess {
+        success: true,
+        message: Some(if persisted {
+            format!("Bond {} created (persisted)", name)
+        } else {
+            format!(
+                "Bond {} created (temporary — persistence unavailable)",
+                name
+            )
+        }),
+    })
+}
+
+/// DELETE /api/network/bonds/{name} — delete a bond, handing its NICs back.
+pub async fn handle_network_bond_delete(
+    State(state): State<AppStateArc>,
+    headers: HeaderMap,
+    peer: crate::middleware::PeerAddr,
+    Path(name): Path<String>,
+) -> Response {
+    let admin_username = match require_admin(&state, &headers).await {
+        Ok(u) => u,
+        Err(response) => return response,
+    };
+    let peer_ip = peer.0;
+    let to_delete = name.clone();
+    let outcome = tokio::task::spawn_blocking(move || -> Result<(), String> {
+        let bond = net::list_bonds()
+            .into_iter()
+            .find(|b| b.name == to_delete)
+            .ok_or_else(|| format!("No bond named '{}' exists", to_delete))?;
+        net::refuse_if_carries_session_address(peer_ip, &[bond.name.clone()])?;
+        net::delete_virtual_device(&to_delete)
+    })
+    .await;
+    match outcome {
+        Ok(Ok(())) => {
+            crate::events::log_event(format!(
+                "Admin '{}' deleted the bond '{}'",
+                admin_username, name
+            ));
+            ResponseHelper::json_success(ApiSuccess {
+                success: true,
+                message: Some(format!("Bond {} deleted", name)),
+            })
+        }
+        Ok(Err(e)) => ResponseHelper::json_error(e),
+        Err(e) => ResponseHelper::json_error(format!("Internal error: {}", e)),
+    }
+}
+
+/// GET /api/network/vlans — the host's VLAN devices and the parents they may
+/// be created on.
+pub async fn handle_network_vlans_list(
+    State(state): State<AppStateArc>,
+    headers: HeaderMap,
+) -> Response {
+    if let Err(response) = require_auth(&state, &headers).await {
+        return response;
+    }
+    match tokio::task::spawn_blocking(|| (net::list_vlans(), net::vlan_parent_candidates())).await {
+        Ok((vlans, parents)) => ResponseHelper::json_success(serde_json::json!({
+            "vlans": vlans,
+            "parents": parents,
+            "max_vid": net::MAX_VLAN_ID,
+        })),
+        Err(e) => ResponseHelper::json_error(format!("Internal error: {}", e)),
+    }
+}
+
+#[derive(Debug, Deserialize)]
+pub struct VlanCreateRequest {
+    pub parent: String,
+    pub vid: u16,
+}
+
+/// POST /api/network/vlans — create `<parent>.<vid>`.
+pub async fn handle_network_vlan_create(
+    State(state): State<AppStateArc>,
+    headers: HeaderMap,
+    peer: crate::middleware::PeerAddr,
+    Json(req): Json<VlanCreateRequest>,
+) -> Response {
+    let admin_username = match require_admin(&state, &headers).await {
+        Ok(u) => u,
+        Err(response) => return response,
+    };
+    let peer_ip = peer.0;
+    let outcome = tokio::task::spawn_blocking(move || -> Result<(String, bool), String> {
+        let interfaces = net::list_interfaces();
+        let spec = net::validate_vlan_spec(&req.parent, req.vid, &interfaces)?;
+        net::create_vlan_device(&spec)?;
+        let persisted = match net::persist_virtual_device(
+            &spec.name,
+            &net::VirtualDeviceKind::Vlan {
+                parent: spec.parent.clone(),
+                vid: spec.vid,
+            },
+        ) {
+            Ok(change) => {
+                net::netplan_apply_and_verify(&spec.name)?;
+                change.backend != "none"
+            }
+            Err(e) => {
+                tracing::warn!("VLAN persistence for '{}' failed: {}", spec.name, e);
+                false
+            }
+        };
+        Ok((spec.name, persisted))
+    })
+    .await;
+    match outcome {
+        Ok(Ok((name, persisted))) => {
+            crate::events::log_event(format!(
+                "Admin '{}' created the VLAN interface '{}'",
+                admin_username, name
+            ));
+            ResponseHelper::json_success(ApiSuccess {
+                success: true,
+                message: Some(if persisted {
+                    format!("VLAN {} created (persisted)", name)
+                } else {
+                    format!(
+                        "VLAN {} created (temporary — persistence unavailable)",
+                        name
+                    )
+                }),
+            })
+        }
+        Ok(Err(e)) => ResponseHelper::json_error(e),
+        Err(e) => ResponseHelper::json_error(format!("Internal error: {}", e)),
+    }
+}
+
+/// DELETE /api/network/vlans/{name}
+pub async fn handle_network_vlan_delete(
+    State(state): State<AppStateArc>,
+    headers: HeaderMap,
+    peer: crate::middleware::PeerAddr,
+    Path(name): Path<String>,
+) -> Response {
+    let admin_username = match require_admin(&state, &headers).await {
+        Ok(u) => u,
+        Err(response) => return response,
+    };
+    let peer_ip = peer.0;
+    let to_delete = name.clone();
+    let outcome = tokio::task::spawn_blocking(move || -> Result<(), String> {
+        if !net::list_vlans().iter().any(|v| v.name == to_delete) {
+            return Err(format!("No VLAN interface named '{}' exists", to_delete));
+        }
+        net::refuse_if_carries_session_address(peer_ip, &[to_delete.clone()])?;
+        net::delete_virtual_device(&to_delete)
+    })
+    .await;
+    match outcome {
+        Ok(Ok(())) => {
+            crate::events::log_event(format!(
+                "Admin '{}' deleted the VLAN interface '{}'",
+                admin_username, name
+            ));
+            ResponseHelper::json_success(ApiSuccess {
+                success: true,
+                message: Some(format!("VLAN {} deleted", name)),
+            })
+        }
+        Ok(Err(e)) => ResponseHelper::json_error(e),
+        Err(e) => ResponseHelper::json_error(format!("Internal error: {}", e)),
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Router helper
 // ---------------------------------------------------------------------------
 
@@ -576,6 +892,24 @@ pub fn create_network_router(state: AppStateArc) -> Router {
         .route(
             "/diagnostics",
             axum::routing::get(handle_network_diagnostics),
+        )
+        // Link aggregation and VLAN devices (B5 + B6). Reads need a session;
+        // every mutation is admin-only — they bring links up and down.
+        .route(
+            "/bonds",
+            axum::routing::get(handle_network_bonds_list).post(handle_network_bond_create),
+        )
+        .route(
+            "/bonds/{name}",
+            axum::routing::delete(handle_network_bond_delete),
+        )
+        .route(
+            "/vlans",
+            axum::routing::get(handle_network_vlans_list).post(handle_network_vlan_create),
+        )
+        .route(
+            "/vlans/{name}",
+            axum::routing::delete(handle_network_vlan_delete),
         )
         .route("/summary", axum::routing::get(handle_network_summary))
         .route("/services", axum::routing::get(handle_network_services))

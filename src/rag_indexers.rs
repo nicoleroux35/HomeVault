@@ -578,6 +578,9 @@ runs only when you click "Run now" — there is no automatic schedule yet."#.to_
 - Network diagnostics (ping, traceroute)
 - Public IP detection
 - Interface enable/disable
+- Link aggregation: combine physical network cards into a bond in 802.3ad (LACP, the switch must be configured for it) or active-backup mode (no switch support needed), and add more cards to a live bond later
+- VLANs: create eth0.42-style tagged interfaces on a network card or on a bond, with ids from 1 to 4094
+- Bonds and VLANs get their address through the same per-interface configuration card as a physical card; only physical network cards can join a bond or carry a VLAN, and a change that would cut the administrator's own connection is refused with the reason
 
 DNS updates preserve existing search/domains. IPv6 nameservers are appended."#.to_string(),
         },

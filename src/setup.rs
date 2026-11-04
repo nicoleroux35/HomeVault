@@ -1445,6 +1445,15 @@ impl HostBins<'_> {
             grant(self.ip, "-6 addr *"),
             grant(self.ip, "-6 route *"),
             grant(self.ip, "link *"),
+            // Link aggregation and VLAN creation (src/network.rs). `link *`
+            // above already covers the `set`/`delete` shapes those features
+            // run; the two `add` families are listed so the grants the module
+            // actually needs are readable in the sudoers file itself, and so
+            // the source guard
+            // (`test_every_network_command_shape_has_a_grant`) can map each
+            // argv the code builds to an entry.
+            grant(self.ip, "link add * type bond *"),
+            grant(self.ip, "link add link * type vlan *"),
             grant(self.dhclient, "*"),
             grant(self.netplan, "apply"),
             grant(self.wpa_cli, "-i * list_networks"),
@@ -2591,7 +2600,8 @@ mod tests {
             assert!(!grant.contains("tunnel"), "{grant}");
             assert!(!grant.contains("rule"), "{grant}");
         }
-        // `ip` stays scoped per object.
+        // `ip` stays scoped per object (`link` also covers the link-aggregation
+        // and VLAN `add`/`set`/`delete` shapes of src/network.rs).
         for grant in grants.iter().filter(|g| g.starts_with("/sbin/ip ")) {
             let args = grant.trim_start_matches("/sbin/ip ");
             assert!(
@@ -2607,7 +2617,67 @@ mod tests {
                 .any(|prefix| args.starts_with(prefix)),
                 "'{grant}' is not one of the ip object shapes the code runs"
             );
+            // Still never a netns / tunnel / rule grant: those reach namespaces
+            // and policy routing the appliance has no business touching.
+            assert!(
+                !args.starts_with("netns")
+                    && !args.starts_with("tunnel")
+                    && !args.starts_with("rule"),
+                "'{grant}' reaches an object the network feature never uses"
+            );
         }
+    }
+
+    #[test]
+    fn test_bond_and_vlan_commands_are_covered_by_the_ip_grant() {
+        // Every argv src/network.rs builds for link aggregation (B5) and VLAN
+        // creation (B6) must start with the granted `link ` shape, or the
+        // mutation would fail at the sudo prompt on a real appliance.
+        let grants = host_bins().network_grants();
+        let link_grants: Vec<&String> = grants
+            .iter()
+            .filter(|g| g.starts_with("/sbin/ip link "))
+            .collect();
+        assert!(!link_grants.is_empty(), "`ip link` must be granted");
+
+        let bond = crate::network::BondSpec {
+            name: "bond0".to_string(),
+            mode: crate::network::BondMode::ActiveBackup,
+            members: vec!["eth0".to_string()],
+        };
+        let vlan = crate::network::VlanSpec {
+            name: "eth0.42".to_string(),
+            parent: "eth0".to_string(),
+            vid: 42,
+        };
+        let shapes = [
+            crate::network::bond_create_args(&bond),
+            crate::network::bond_attach_args("bond0", "eth0"),
+            crate::network::vlan_create_args(&vlan),
+        ];
+        for argv in shapes {
+            let joined = format!("link {}", argv[1..].join(" "));
+            assert!(
+                link_grants.iter().any(|g| {
+                    let granted = g.trim_start_matches("/sbin/ip ");
+                    sudoers_shape_matches(granted, &joined)
+                }),
+                "no grant covers `ip {joined}` — grants: {link_grants:?}"
+            );
+        }
+    }
+
+    /// Minimal sudoers glob match: `*` matches any run of characters, every
+    /// other character is literal.
+    fn sudoers_shape_matches(pattern: &str, text: &str) -> bool {
+        fn walk(p: &[u8], t: &[u8]) -> bool {
+            match p.first() {
+                None => t.is_empty(),
+                Some(b'*') => (0..=t.len()).any(|i| walk(&p[1..], &t[i..])),
+                Some(c) => t.first().is_some_and(|tc| tc == c) && walk(&p[1..], &t[1..]),
+            }
+        }
+        walk(pattern.as_bytes(), text.as_bytes())
     }
 
     #[test]

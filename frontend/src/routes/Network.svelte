@@ -21,18 +21,20 @@
   import { api } from '$lib/services/api';
   import { t, translate } from '$lib/stores/i18n';
   import { Spinner, Badge, Modal, Button } from '$lib/components/theme';
-  import { PageLayout, StatCard, EmptyState } from '$lib/components/app';
+  import { PageLayout, StatCard, EmptyState, ConfirmDialog } from '$lib/components/app';
+  import { createConfirmState } from '$lib/utils/confirmDialog.svelte';
+  import { notifyError, notifySuccess } from '$lib/utils/notify';
   import { cn } from '$lib/utils.js';
   import { activateOnEnterOrSpace } from '$lib/utils/activateOnEnterOrSpace';
   import WindowHeader from '$lib/components/desktop/WindowHeader.svelte';
-  import { IconPlug, IconDownload, IconLoader, IconUpload, IconWifi, IconWifiOff, IconX, IconGlobe, IconActivity, IconRadio, IconGauge } from '@tabler/icons-svelte';
+  import { IconPlug, IconDownload, IconLoader, IconUpload, IconWifi, IconWifiOff, IconX, IconGlobe, IconActivity, IconRadio, IconGauge, IconLink, IconSitemap, IconTrash, IconPlus } from '@tabler/icons-svelte';
   import { notificationsStore } from '$lib/stores/notifications';
 
   // ---------------------------------------------------------------------------
   // Types (mirroring Rust backend)
   // ---------------------------------------------------------------------------
 
-  type InterfaceType = 'ethernet' | 'wifi' | 'bridge' | 'vlan' | 'tunnel' | 'loopback' | 'unknown';
+  type InterfaceType = 'ethernet' | 'wifi' | 'bridge' | 'vlan' | 'bond' | 'tunnel' | 'loopback' | 'unknown';
   type InterfaceStatus = 'up' | 'down' | 'unknown';
 
   interface NetworkInterface {
@@ -57,6 +59,24 @@
     netmask: string | null;
     gateway: string | null;
     dns_servers: string[];
+  }
+
+  /** A bond device as `GET /api/network/bonds` answers it. */
+  interface BondDevice {
+    name: string;
+    mode: '802.3ad' | 'active-backup';
+    members: string[];
+    up: boolean;
+    ipv4: string | null;
+  }
+
+  /** A VLAN device as `GET /api/network/vlans` answers it. */
+  interface VlanDevice {
+    name: string;
+    parent: string;
+    vid: number;
+    up: boolean;
+    ipv4: string | null;
   }
 
   interface WifiNetwork {
@@ -84,18 +104,18 @@
   // State
   // ---------------------------------------------------------------------------
 
-  let interfaces: NetworkInterface[] = [];
-  let selectedInterface: NetworkInterface | null = null;
-  let interfaceConfig: InterfaceConfig | null = null;
+  let interfaces: NetworkInterface[] = $state([]);
+  let selectedInterface: NetworkInterface | null = $state(null);
+  let interfaceConfig: InterfaceConfig | null = $state(null);
 
-  let wifiNetworks: WifiNetwork[] = [];
-  let wifiStatus: WifiStatus | null = null;
-  let scanningWifi = false;
-  let connectingWifi = false;
+  let wifiNetworks: WifiNetwork[] = $state([]);
+  let wifiStatus: WifiStatus | null = $state(null);
+  let scanningWifi = $state(false);
+  let connectingWifi = $state(false);
 
-  let loading = true;
-  let saving = false;
-  let activeTab: 'ethernet' | 'wifi' = 'ethernet';
+  let loading = $state(true);
+  let saving = $state(false);
+  let activeTab: 'ethernet' | 'wifi' = $state('ethernet');
 
   // Connection summary / diagnostics
   let connectionSummary: {
@@ -105,42 +125,42 @@
     public_ip: string | null;
     primary_interface: string | null;
     connection_type: string;
-  } | null = null;
-  let publicIp: string | null = null;
+  } | null = $state(null);
+  let publicIp: string | null = $state(null);
   let diagnostics: {
     gateway_reachable: boolean;
     dns_working: boolean;
     internet_reachable: boolean;
     latency_ms: number | null;
     message: string;
-  } | null = null;
-  let runningDiagnostics = false;
+  } | null = $state(null);
+  let runningDiagnostics = $state(false);
 
   // Auto-refresh interval
   let refreshInterval: ReturnType<typeof setInterval>;
 
   // Modal state
-  let showConfigModal = false;
-  let showWifiConnectModal = false;
-  let wifiModalMode: 'connect' | 'disconnect' = 'connect';
-  let selectedWifi: WifiNetwork | null = null;
-  let wifiPassword = '';
-  let wifiSecurity = 'wpa2';
-  let wifiScanned = false;
+  let showConfigModal = $state(false);
+  let showWifiConnectModal = $state(false);
+  let wifiModalMode: 'connect' | 'disconnect' = $state('connect');
+  let selectedWifi: WifiNetwork | null = $state(null);
+  let wifiPassword = $state('');
+  let wifiSecurity = $state('wpa2');
+  let wifiScanned = $state(false);
 
   // Config form
-  let configMethod: 'dhcp' | 'static' = 'dhcp';
-  let configIp = '';
-  let configNetmask = '255.255.255.0';
-  let configGateway = '';
-  let configDns = '';
+  let configMethod: 'dhcp' | 'static' = $state('dhcp');
+  let configIp = $state('');
+  let configNetmask = $state('255.255.255.0');
+  let configGateway = $state('');
+  let configDns = $state('');
 
   // IPv6 config form
-  let configIpv6Method: 'auto' | 'dhcp' | 'static' | 'disabled' = 'auto';
-  let configIpv6 = '';
-  let configIpv6Prefix = '64';
-  let configIpv6Gateway = '';
-  let configIpv6Dns = '';
+  let configIpv6Method: 'auto' | 'dhcp' | 'static' | 'disabled' = $state('auto');
+  let configIpv6 = $state('');
+  let configIpv6Prefix = $state('64');
+  let configIpv6Gateway = $state('');
+  let configIpv6Dns = $state('');
 
   // ---------------------------------------------------------------------------
   // Lifecycle
@@ -167,6 +187,120 @@
       name, a missing tool, or any other backend error left the spinner
       stopping with zero feedback (2026-09-05, same bug class already fixed
       in Rescue.svelte, found while writing this page's E2E suite). */
+  // --- Link aggregation and VLAN devices (B5 / B6) ------------------------
+  /** Deleting a bond or a VLAN takes links down: confirm, then say what happened. */
+  const dlg = createConfirmState();
+  let bonds = $state<BondDevice[]>([]);
+  let bondCandidates = $state<string[]>([]);
+  let vlans = $state<VlanDevice[]>([]);
+  let vlanParents = $state<string[]>([]);
+  let maxVid = $state(4094);
+
+  let bondName = $state('');
+  let bondMode = $state<'802.3ad' | 'active-backup'>('802.3ad');
+  let bondMembers = $state<string[]>([]);
+  let bondError = $state('');
+  let savingBond = $state(false);
+
+  let vlanParent = $state('');
+  let vlanId = $state('10');
+  let vlanError = $state('');
+  let savingVlan = $state(false);
+
+  async function loadBonds() {
+    const response = await api.getNetworkBonds();
+    if (response.success && response.data) {
+      bonds = response.data.bonds || [];
+      bondCandidates = response.data.candidates || [];
+      // A member that is gone from the candidate list (already enslaved
+      // elsewhere, or unplugged) must not stay selected.
+      bondMembers = bondMembers.filter((m) => bondCandidates.includes(m));
+    }
+  }
+
+  async function loadVlans() {
+    const response = await api.getNetworkVlans();
+    if (response.success && response.data) {
+      vlans = response.data.vlans || [];
+      vlanParents = response.data.parents || [];
+      maxVid = response.data.max_vid ?? 4094;
+      if (!vlanParents.includes(vlanParent)) vlanParent = vlanParents[0] || '';
+    }
+  }
+
+  function toggleBondMember(name: string) {
+    bondMembers = bondMembers.includes(name)
+      ? bondMembers.filter((m) => m !== name)
+      : [...bondMembers, name];
+  }
+
+  async function createBond() {
+    bondError = '';
+    if (bondMembers.length === 0) {
+      bondError = $t('network.bond_need_member');
+      return;
+    }
+    savingBond = true;
+    const response = await api.createNetworkBond({
+      ...(bondName.trim() ? { name: bondName.trim() } : {}),
+      mode: bondMode,
+      members: bondMembers,
+    });
+    savingBond = false;
+    if (!response.success) {
+      bondError = response.message || $t('network.bond_create_failed');
+      return;
+    }
+    bondName = '';
+    bondMembers = [];
+    await Promise.all([loadBonds(), loadInterfaces(false)]);
+    notifySuccess(response.message || $t('network.bond_created'));
+  }
+
+  async function deleteBond(name: string) {
+    if (!(await dlg.ask(translate('network.bond_delete_confirm', { name }), { danger: true }))) return;
+    const response = await api.deleteNetworkBond(name);
+    if (!response.success) {
+      notifyNetworkError(response.message || $t('network.bond_delete_failed'));
+      return;
+    }
+    await Promise.all([loadBonds(), loadInterfaces(false)]);
+    notifySuccess($t('network.bond_deleted'));
+  }
+
+  async function createVlan() {
+    vlanError = '';
+    const vid = Number(vlanId);
+    if (!vlanParent) {
+      vlanError = $t('network.vlan_need_parent');
+      return;
+    }
+    if (!Number.isInteger(vid) || vid < 1 || vid > maxVid) {
+      vlanError = translate('network.vlan_bad_id', { max: String(maxVid) });
+      return;
+    }
+    savingVlan = true;
+    const response = await api.createNetworkVlan({ parent: vlanParent, vid });
+    savingVlan = false;
+    if (!response.success) {
+      vlanError = response.message || $t('network.vlan_create_failed');
+      return;
+    }
+    await Promise.all([loadVlans(), loadInterfaces(false)]);
+    notifySuccess(response.message || $t('network.vlan_created'));
+  }
+
+  async function deleteVlan(name: string) {
+    if (!(await dlg.ask(translate('network.vlan_delete_confirm', { name }), { danger: true }))) return;
+    const response = await api.deleteNetworkVlan(name);
+    if (!response.success) {
+      notifyNetworkError(response.message || $t('network.vlan_delete_failed'));
+      return;
+    }
+    await Promise.all([loadVlans(), loadInterfaces(false)]);
+    notifySuccess($t('network.vlan_deleted'));
+  }
+
   function notifyNetworkError(message: string) {
     notificationsStore.add({ title: $t('network.title'), message, type: 'error' });
   }
@@ -176,6 +310,8 @@
       loadInterfaces(true),
       loadWifiStatus(),
       loadConnectionSummary(),
+      loadBonds(),
+      loadVlans(),
     ]);
   }
 
@@ -184,6 +320,8 @@
       loadInterfaces(false),
       loadWifiStatus(),
       loadConnectionSummary(),
+      loadBonds(),
+      loadVlans(),
     ]);
   }
 
@@ -402,19 +540,26 @@
     return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
   }
 
-  // Group ethernet, bridge, and VLAN interfaces under the "Ethernet" tab
-  $: ethernetInterfaces = interfaces.filter(
-    i => i.iface_type === 'ethernet' || i.iface_type === 'bridge' || i.iface_type === 'vlan'
+  // Group ethernet, bridge, bond and VLAN interfaces under the "Ethernet" tab
+  // (a bond and a VLAN are how a wired setup grows, so they belong there).
+  const ethernetInterfaces = $derived(
+    interfaces.filter(
+      (i) =>
+        i.iface_type === 'ethernet' ||
+        i.iface_type === 'bridge' ||
+        i.iface_type === 'bond' ||
+        i.iface_type === 'vlan'
+    )
   );
 
   // Only show the WiFi tab if at least one wireless interface is detected
-  $: hasWifi = interfaces.some(i => i.iface_type === 'wifi');
+  const hasWifi = $derived(interfaces.some((i) => i.iface_type === 'wifi'));
 
   // Stats
-  $: totalInterfaces = interfaces.length;
-  $: activeInterfaces = interfaces.filter(i => i.status === 'up').length;
-  $: wifiCount = interfaces.filter(i => i.iface_type === 'wifi').length;
-  $: totalSpeed = interfaces.reduce((sum, i) => sum + (i.speed_mbps || 0), 0);
+  const totalInterfaces = $derived(interfaces.length);
+  const activeInterfaces = $derived(interfaces.filter((i) => i.status === 'up').length);
+  const wifiCount = $derived(interfaces.filter((i) => i.iface_type === 'wifi').length);
+  const totalSpeed = $derived(interfaces.reduce((sum, i) => sum + (i.speed_mbps || 0), 0));
 // Shared shapes (appliance tokens only — the per-app CSS vocabulary is gone).
   const detailRow = 'flex items-center justify-between gap-2 text-sm';
   const detailLabel = 'text-[var(--hv-shell-text-2)]';
@@ -551,6 +696,134 @@
         </div>
       {/if}
 
+
+      <!-- Link aggregation and VLAN devices (B5 + B6). Creating one is a real
+           change to the host's networking; configuring its address afterwards
+           goes through the same card above, never a second editor. -->
+      <section class="mt-6" aria-labelledby="network-virtual-heading">
+        <h2 id="network-virtual-heading" class="text-base font-bold text-[var(--hv-shell-text-strong)] mb-1">{$t('network.virtual_devices')}</h2>
+        <p class="text-sm text-[var(--hv-shell-text-2)] mb-3">{$t('network.virtual_devices_hint')}</p>
+
+        <div class="grid gap-4 [grid-template-columns:repeat(auto-fill,minmax(320px,1fr))]">
+          <!-- Bond -->
+          <div data-testid="network-bond-card" class="rounded-2xl bg-[var(--hv-shell-card)] border border-[var(--hv-shell-border)] shadow-[var(--hv-shell-shadow-card)] p-4">
+            <div class="flex items-center gap-3 mb-3">
+              <span class="grid place-items-center w-11 h-11 rounded-xl flex-none bg-[var(--hv-success-bg)] text-[var(--hv-primary)]"><IconLink size={20} /></span>
+              <div class="min-w-0">
+                <div class="text-sm font-bold text-[var(--hv-shell-text-strong)]">{$t('network.bonds')}</div>
+                <div class="text-xs text-[var(--hv-shell-text-2)]">{$t('network.bonds_hint')}</div>
+              </div>
+            </div>
+
+            {#if bonds.length > 0}
+              <ul class="flex flex-col gap-2 mb-4">
+                {#each bonds as bond (bond.name)}
+                  <li data-testid="network-bond-row" class="flex items-center justify-between gap-2 text-sm">
+                    <span class="min-w-0">
+                      <span class="font-semibold text-[var(--hv-shell-text-strong)]">{bond.name}</span>
+                      <span class="text-[var(--hv-shell-text-2)]"> · {bond.mode} · {bond.members.join(', ') || '—'}{#if bond.ipv4} · {bond.ipv4}{/if}</span>
+                    </span>
+                    <button type="button" class="hv-ic is-danger" data-testid="network-bond-delete" aria-label={translate('network.bond_delete', { name: bond.name })} onclick={() => deleteBond(bond.name)}><IconTrash size={15} /></button>
+                  </li>
+                {/each}
+              </ul>
+            {:else}
+              <p class="text-sm text-[var(--hv-shell-text-2)] mb-4">{$t('network.no_bond')}</p>
+            {/if}
+
+            {#if bondCandidates.length === 0}
+              <p class="text-xs text-[var(--hv-shell-text-2)]">{$t('network.bond_no_members')}</p>
+            {:else}
+              <div class="flex flex-col gap-3">
+                <div>
+                  <label class="block text-xs font-semibold text-[var(--hv-shell-text-2)] mb-1" for="bond-name">{$t('network.bond_name')}</label>
+                  <input id="bond-name" data-testid="network-bond-name" class="w-full h-9 px-3 rounded-lg border border-[var(--hv-shell-border)] bg-[var(--hv-shell-glass)] text-c-base" bind:value={bondName} placeholder={$t('network.bond_name_auto')} maxlength="15" />
+                </div>
+                <fieldset>
+                  <legend class="text-xs font-semibold text-[var(--hv-shell-text-2)] mb-1">{$t('network.bond_mode')}</legend>
+                  <label class="flex items-start gap-2 text-sm mb-1">
+                    <input type="radio" name="bond-mode" value="802.3ad" checked={bondMode === '802.3ad'} onchange={() => (bondMode = '802.3ad')} />
+                    <span><span class="font-semibold text-[var(--hv-shell-text-strong)]">802.3ad</span> <span class="text-[var(--hv-shell-text-2)]">· {$t('network.bond_mode_lacp')}</span></span>
+                  </label>
+                  <label class="flex items-start gap-2 text-sm">
+                    <input type="radio" name="bond-mode" value="active-backup" checked={bondMode === 'active-backup'} onchange={() => (bondMode = 'active-backup')} />
+                    <span><span class="font-semibold text-[var(--hv-shell-text-strong)]">active-backup</span> <span class="text-[var(--hv-shell-text-2)]">· {$t('network.bond_mode_backup')}</span></span>
+                  </label>
+                </fieldset>
+                <fieldset>
+                  <legend class="text-xs font-semibold text-[var(--hv-shell-text-2)] mb-1">{$t('network.bond_members')}</legend>
+                  {#each bondCandidates as candidate (candidate)}
+                    <label class="flex items-center gap-2 text-sm">
+                      <input type="checkbox" checked={bondMembers.includes(candidate)} onchange={() => toggleBondMember(candidate)} />
+                      <span class="font-[family-name:var(--hv-font-mono)]">{candidate}</span>
+                    </label>
+                  {/each}
+                </fieldset>
+                {#if bondError}
+                  <p class="text-xs text-[var(--hv-error)]" role="alert" data-testid="network-bond-error">{bondError}</p>
+                {/if}
+                <Button variant="primary" size="sm" onclick={createBond} disabled={savingBond} data-testid="network-bond-create">
+                  <IconPlus size={15} />
+                  <span>{savingBond ? $t('network.bond_creating') : $t('network.bond_create')}</span>
+                </Button>
+              </div>
+            {/if}
+          </div>
+
+          <!-- VLAN -->
+          <div data-testid="network-vlan-card" class="rounded-2xl bg-[var(--hv-shell-card)] border border-[var(--hv-shell-border)] shadow-[var(--hv-shell-shadow-card)] p-4">
+            <div class="flex items-center gap-3 mb-3">
+              <span class="grid place-items-center w-11 h-11 rounded-xl flex-none bg-[var(--hv-success-bg)] text-[var(--hv-primary)]"><IconSitemap size={20} /></span>
+              <div class="min-w-0">
+                <div class="text-sm font-bold text-[var(--hv-shell-text-strong)]">{$t('network.vlans')}</div>
+                <div class="text-xs text-[var(--hv-shell-text-2)]">{$t('network.vlans_hint')}</div>
+              </div>
+            </div>
+
+            {#if vlans.length > 0}
+              <ul class="flex flex-col gap-2 mb-4">
+                {#each vlans as vlan (vlan.name)}
+                  <li data-testid="network-vlan-row" class="flex items-center justify-between gap-2 text-sm">
+                    <span class="min-w-0">
+                      <span class="font-semibold text-[var(--hv-shell-text-strong)]">{vlan.name}</span>
+                      <span class="text-[var(--hv-shell-text-2)]"> · {$t('network.vlan_on')} {vlan.parent} · {vlan.vid}{#if vlan.ipv4} · {vlan.ipv4}{/if}</span>
+                    </span>
+                    <button type="button" class="hv-ic is-danger" data-testid="network-vlan-delete" aria-label={translate('network.vlan_delete', { name: vlan.name })} onclick={() => deleteVlan(vlan.name)}><IconTrash size={15} /></button>
+                  </li>
+                {/each}
+              </ul>
+            {:else}
+              <p class="text-sm text-[var(--hv-shell-text-2)] mb-4">{$t('network.no_vlan')}</p>
+            {/if}
+
+            {#if vlanParents.length === 0}
+              <p class="text-xs text-[var(--hv-shell-text-2)]">{$t('network.vlan_no_parent')}</p>
+            {:else}
+              <div class="flex flex-col gap-3">
+                <div>
+                  <label class="block text-xs font-semibold text-[var(--hv-shell-text-2)] mb-1" for="vlan-parent">{$t('network.vlan_parent')}</label>
+                  <select id="vlan-parent" data-testid="network-vlan-parent" class="w-full h-9 px-3 rounded-lg border border-[var(--hv-shell-border)] bg-[var(--hv-shell-glass)] text-c-base" bind:value={vlanParent}>
+                    {#each vlanParents as parent (parent)}<option value={parent}>{parent}</option>{/each}
+                  </select>
+                </div>
+                <div>
+                  <label class="block text-xs font-semibold text-[var(--hv-shell-text-2)] mb-1" for="vlan-id">{$t('network.vlan_id')}</label>
+                  <input id="vlan-id" data-testid="network-vlan-id" type="number" min="1" max={maxVid} class="w-full h-9 px-3 rounded-lg border border-[var(--hv-shell-border)] bg-[var(--hv-shell-glass)] text-c-base" bind:value={vlanId} />
+                  <p class="text-xs text-[var(--hv-shell-text-2)] mt-1">{translate('network.vlan_id_hint', { max: String(maxVid) })}</p>
+                </div>
+                {#if vlanError}
+                  <p class="text-xs text-[var(--hv-error)]" role="alert" data-testid="network-vlan-error">{vlanError}</p>
+                {/if}
+                <Button variant="primary" size="sm" onclick={createVlan} disabled={savingVlan} data-testid="network-vlan-create">
+                  <IconPlus size={15} />
+                  <span>{savingVlan ? $t('network.vlan_creating') : $t('network.vlan_create')}</span>
+                </Button>
+              </div>
+            {/if}
+          </div>
+        </div>
+      </section>
+
     {:else if activeTab === 'wifi'}
       {#if wifiStatus?.connected}
         <div data-testid="network-card" class="rounded-2xl bg-[var(--hv-shell-card)] border border-[var(--hv-shell-border)] shadow-[var(--hv-shell-shadow-card)] overflow-hidden mb-4">
@@ -641,6 +914,10 @@
     </span>
   {/snippet}
 </PageLayout>
+
+<!-- Deletion confirmation for the virtual devices: a bond or a VLAN takes
+     links down, so the consequence is named before anything is removed. -->
+<ConfirmDialog {dlg} onconfirm={() => dlg.settle(true)} oncancel={() => dlg.settle(false)} />
 
 <!-- Interface Configuration Modal -->
 <Modal open={showConfigModal && !!selectedInterface} title={translate('network.modal_configure', { name: selectedInterface?.name || '' })} size="md" onclose={() => showConfigModal = false}>

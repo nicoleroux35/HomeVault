@@ -91,6 +91,33 @@ tag-filtered global search.
    read as a clean "no results" — the exact failure E2E `desktop 6b.3` was
    written to catch (it was red on `main` before this change, now green).
 
+## B5 + B6 — Link aggregation and VLAN devices, 2026-11-04 (verified, no live apply)
+
+Combine physical NICs into a bond (`802.3ad` or `active-backup`) and create
+802.1Q VLAN devices, both configured through the existing apply / persist /
+verify / roll back path.
+
+| Coverage | Count / state |
+|---|---|
+| Pure logic | `src/network.rs` **71/71** (+9 for this change) — name bounds and characters, bond spec (mode, existing name, empty/duplicate member, non-NIC and virtual-"Ethernet" members), VLAN spec (derived name, id bounds 1/0/4095/4094, parent type, 15-char ceiling), the `ip` argv shapes, the netplan/ifupdown rendering, the mode round-trip, and the session-address refusal |
+| Sudoers | `src/setup.rs::test_bond_and_vlan_commands_are_covered_by_the_ip_grant` maps every argv the module builds to a grant (with a small sudoers glob matcher); the existing per-object guard was tightened with an explicit "never netns/tunnel/rule" assertion |
+| Integration | `tests/network_integration.rs` **28/28** (+4) — session vs admin split on all four routes, the two modes offered with the right `needs_switch_configuration`, an unsupported mode and an empty member list refused by name, VLAN ids 0/4095 refused with the range, deletion of a name no device carries refused |
+| E2E | `tests/e2e/network/network.spec.ts` category 14 (+5) — **4/4 green + 1 skipped on Chromium**; the skip is 14.4 (delete asks first) because this host has no bond, which is the honest outcome for a delete test. The section, the LACP warning, both refusals and the labelled/keyboard-reachable controls pass |
+| Frontend | `npm run check` **0 errors / 0 warnings**, `npm run build` green (the suite also dismisses the first-visit "What's new" dialog in `gotoDesktop`, which was blocking every launchpad click on a fresh server) |
+
+**No live apply was run, deliberately.** Creating a real bond or VLAN rewrites
+the networking of whatever machine runs the suite — the same reason
+`network_integration.rs` has never exercised a real config change. Everything
+up to the first `ip link add` is covered; the mutation itself and its
+persistence need disposable hardware (or a VM with two spare NICs) and are
+listed under "remaining to test live".
+
+**Pre-existing, not introduced here (verified by rebuilding the pre-change
+tree and re-running the same tests):** `network.spec.ts` 2.2, 4.3, 8.2, 10.1,
+10.5, 13.1 and 13.2 fail identically on `main`. They need a real interface to
+configure (`Configure` → `Static`) and an unauthenticated `400`, which the
+current build answers `401`; none of them touches the code this change adds.
+
 ## B3 — SMS alerts, 2026-11-02 (verified)
 
 Second Phase B item. One short message per alert, on the same events and

@@ -729,6 +729,12 @@ Read endpoints `auth`; config/state/WiFi mutations `admin`.
 | GET | `/network/summary` | auth |
 | GET | `/network/public-ip` | auth |
 | GET | `/network/services` | auth | active network services |
+| GET | `/network/bonds` | auth | `{ bonds[], candidates[], modes[] }` — `candidates` are **physical** NICs only (a Docker/veth/`vmnet` device is `ARPHRD_ETHER` but has no port behind it); each mode carries `needs_switch_configuration` |
+| POST | `/network/bonds` | admin | `{ name?, mode, members[] }` — `mode` is `802.3ad` or `active-backup` (a driver mode the appliance does not offer is a `400` naming the two); members must be distinct physical NICs. Creates the bond, or attaches the missing members to a live one. **`400` before any `ip` runs** when the caller reached the appliance through an interface the change would re-role (peer from the TCP socket, never a header). Answers `(persisted)` / `(temporary — persistence unavailable)` |
+| DELETE | `/network/bonds/{name}` | admin | deletes the bond, detaches its members back to ordinary NICs and removes its persisted file; refusals are the same session rule plus "not a bond" |
+| GET | `/network/vlans` | auth | `{ vlans[], parents[], max_vid: 4094 }` — parents are physical NICs and bonds |
+| POST | `/network/vlans` | admin | `{ parent, vid }` → creates `<parent>.<vid>`; `vid` is bounded to `1..=4094` (0 and 4095 are reserved) |
+| DELETE | `/network/vlans/{name}` | admin | deletes the VLAN and its persisted file |
 
 ## mDNS / Zeroconf — `mdns/*`
 

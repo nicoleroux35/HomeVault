@@ -129,6 +129,21 @@ async function gotoDesktop(page: Page, tokens: Tokens, lang?: string) {
       content: '[class*="-monitor"]{display:none!important;pointer-events:none!important}',
     })
     .catch(() => {});
+  await dismissWhatsNew(page);
+}
+
+/**
+ * A freshly seeded server answers `GET /api/whats-new` with `seen: false`, so
+ * the "What's new" dialog opens over the desktop on the first visit and its
+ * overlay swallows every click meant for the dock. Dismiss it once here, the
+ * way `backup/destinations.spec.ts` does, instead of leaving it to each test.
+ */
+async function dismissWhatsNew(page: Page) {
+  const modal = page.locator('[data-testid="whats-new-modal"]');
+  if (await modal.isVisible().catch(() => false)) {
+    await page.locator('[data-testid="whats-new-dismiss"]').click().catch(() => {});
+    await modal.waitFor({ state: 'hidden', timeout: 5000 }).catch(() => {});
+  }
 }
 
 async function openLaunchpadApp(page: Page, appName: string) {
@@ -805,5 +820,131 @@ test.describe('13 — Edge cases & memory regression', () => {
       console.log(`[MEM] 5x window open/close delta: ${delta.toFixed(1)} MB`);
       expect(delta).toBeLessThan(15);
     }
+  });
+});
+
+// ===========================================================================
+// 14. Link aggregation and VLAN devices (B5 + B6)
+//
+// Same safety rule as the rest of this suite: **nothing here creates a real
+// bond or VLAN**. Creating one would re-shape the networking of the host
+// running the suite, and the validation prefix runs before any `ip` command,
+// so every refusal below is exercised without touching the wire. What is
+// asserted is what the screen owes the user: the inventory is offered, the
+// supported modes are stated, an impossible choice is refused with the reason,
+// deletion asks first, and the whole section is keyboard reachable.
+// ===========================================================================
+test.describe('14 — Link aggregation and VLAN devices', () => {
+  /** POST/PUT/DELETE through the page's own session (CSRF-aware). */
+  async function callApi(
+    page: Page,
+    method: 'POST' | 'DELETE',
+    uri: string,
+    body?: unknown,
+  ): Promise<{ http: number; success?: boolean; message?: string }> {
+    return page.evaluate(
+      async ({ token, csrf, method, uri, body }) => {
+        const r = await fetch(uri, {
+          method,
+          headers: {
+            'x-session-token': token,
+            'x-csrf-token': csrf,
+            ...(body ? { 'Content-Type': 'application/json' } : {}),
+          },
+          body: body ? JSON.stringify(body) : undefined,
+        });
+        const b = await r.json().catch(() => ({}));
+        return { http: r.status, success: b?.success, message: b?.message };
+      },
+      { token: adminTokens.token, csrf: adminTokens.csrf, method, uri, body },
+    );
+  }
+
+  test('14.1 — the section lists the supported modes and marks LACP as needing a switch', async ({
+    page,
+  }) => {
+    await gotoNetwork(page, adminTokens);
+    const bonds = win(page).locator('[data-testid="network-bond-card"]');
+    const vlans = win(page).locator('[data-testid="network-vlan-card"]');
+    // Both cards exist even when nothing is configured: an empty state that
+    // explains what the feature is beats a hidden section.
+    if ((await bonds.count()) === 0) {
+      // A host with no free physical NIC shows the explanation instead.
+      await expect(win(page)).toContainText(/agr[ée]gation|aggregation/i);
+      return;
+    }
+    await expect(bonds).toBeVisible();
+    await expect(vlans).toBeVisible();
+    await expect(bonds).toContainText('802.3ad');
+    await expect(bonds).toContainText('active-backup');
+    // The LACP line says the switch must cooperate — the one piece of
+    // information that decides between the two modes at home.
+    await expect(bonds).toContainText(/commutateur|switch/i);
+  });
+
+  test('14.2 — an unsupported bonding mode is refused with the two that work', async ({
+    page,
+  }) => {
+    await gotoNetwork(page, adminTokens);
+    const r = await callApi(page, 'POST', '/api/network/bonds', {
+      mode: 'balance-rr',
+      members: ['eth0'],
+    });
+    expect(r.success).toBe(false);
+    expect(r.message || '').toContain('802.3ad');
+  });
+
+  test('14.3 — a VLAN id outside 1..4094 is refused before anything is created', async ({
+    page,
+  }) => {
+    await gotoNetwork(page, adminTokens);
+    for (const vid of [0, 4095]) {
+      const r = await callApi(page, 'POST', '/api/network/vlans', { parent: 'eth0', vid });
+      expect(r.success, `vid ${vid} must be refused`).toBe(false);
+      expect(r.message || '').toContain('4094');
+    }
+  });
+
+  test('14.4 — deleting a bond or a VLAN asks first and names the consequence', async ({
+    page,
+  }) => {
+    await gotoNetwork(page, adminTokens);
+    const deleteBtn = win(page).locator('[data-testid="network-bond-delete"]').first();
+    if ((await deleteBtn.count()) === 0) {
+      test.skip(true, 'this host has no bond to delete');
+    }
+    await deleteBtn.click();
+    const dialog = page.locator('[data-slot="dialog-content"]');
+    await expect(dialog).toBeVisible();
+    // The confirmation names the device and what happens to the network.
+    await expect(dialog).toContainText(/bond/i);
+    await dialog.getByRole('button', { name: /cancel|annuler|abbrechen|cancelar/i }).click();
+    await expect(dialog).toHaveCount(0);
+    // Cancelling changed nothing: the row is still there.
+    await expect(win(page).locator('[data-testid="network-bond-delete"]').first()).toBeVisible();
+  });
+
+  test('14.5 — the virtual-device controls are keyboard reachable and labelled', async ({
+    page,
+  }) => {
+    await gotoNetwork(page, adminTokens);
+    const nameInput = win(page).locator('[data-testid="network-bond-name"]');
+    if ((await nameInput.count()) === 0) {
+      test.skip(true, 'this host offers no free network card');
+    }
+    // Every control has an accessible name (a bare input would be unnamed).
+    await expect(nameInput).toHaveAccessibleName(/.+/);
+    await expect(win(page).locator('[data-testid="network-vlan-id"]')).toHaveAccessibleName(/.+/);
+    await expect(win(page).locator('[data-testid="network-vlan-parent"]')).toHaveAccessibleName(
+      /.+/,
+    );
+
+    // The create button reports its state instead of silently doing nothing.
+    await nameInput.focus();
+    await page.keyboard.type('bond9');
+    await expect(nameInput).toHaveValue('bond9');
+    const create = win(page).locator('[data-testid="network-bond-create"]');
+    await create.focus();
+    await expect(create).toBeFocused();
   });
 });

@@ -1722,6 +1722,35 @@ class ApiClient {
     return this.put(`/network/interfaces/${encodeURIComponent(name)}/state`, { up });
   }
 
+  // --- Link aggregation and VLAN devices (phase B5 / B6) ------------------
+
+  /** The host's bonds, the NICs that may join one, and the supported modes. */
+  async getNetworkBonds() {
+    return this.get('/network/bonds', { ttl: 5000 });
+  }
+
+  /** Create a bond, or attach more members to a live one. */
+  async createNetworkBond(data: { name?: string; mode: string; members: string[] }) {
+    return this.post('/network/bonds', data);
+  }
+
+  async deleteNetworkBond(name: string) {
+    return this.delete(`/network/bonds/${encodeURIComponent(name)}`);
+  }
+
+  /** The host's VLAN devices and the parents a new one may use. */
+  async getNetworkVlans() {
+    return this.get('/network/vlans', { ttl: 5000 });
+  }
+
+  async createNetworkVlan(data: { parent: string; vid: number }) {
+    return this.post('/network/vlans', data);
+  }
+
+  async deleteNetworkVlan(name: string) {
+    return this.delete(`/network/vlans/${encodeURIComponent(name)}`);
+  }
+
   async scanWifiNetworks() {
     return this.post('/network/wifi/scan');
   }

@@ -61,22 +61,29 @@ Legend: **S** ≤ 2 days · **M** 3–5 days · **L** 2–3 weeks · **XL** ≥ 
       community, `503` when `snmpd` is absent (P0.2 contract).
       Verified absent: no `/snmp/agent`, no `snmpd.conf` writer.
 
-- [ ] **B5 — Link aggregation** · **M**
-      `InterfaceType::Bond` + `POST /api/network/bonds` (802.3ad /
-      active-backup, member NICs), persisted through the existing
-      `persist_interface_config` + `apply_persisted_config` rollback path in
-      `src/network.rs`.
-      *Risk:* this edits host networking. The apply/verify/roll back path at
-      `docs/guides/network.md` §"Apply, verify, roll back" is the model, and a
-      failed apply must not strand the admin off the box.
-      Verified absent: no `Bond` variant in `InterfaceType`.
+- [x] **B5 — Link aggregation** · shipped 2026-11-04
+      `InterfaceType::Bond` + `GET|POST /api/network/bonds` and
+      `DELETE /api/network/bonds/{name}` — `802.3ad` / `active-backup`,
+      physical-NIC members only, extended in place when the bond exists.
+      Persisted through `persist_virtual_device` + `netplan_apply_and_verify`;
+      the created device is then configured through the ordinary per-interface
+      card (apply / verify / roll back). See `docs/guides/network.md`
+      §"Link aggregation and VLAN devices".
+      *Risk handled:* a change that would re-role the interface carrying the
+      caller's own address is refused **before any `ip` runs**
+      (`refuse_if_carries_session_address`, peer from the TCP socket) — the one
+      case no verify/rollback step can report.
+      Verified: `network.rs` 71/71 (+9), `network_integration.rs` 28/28 (+4),
+      E2E `network` §14 green on Chromium, check 0/0. No live apply (it would
+      rewrite the test host's networking).
 
-- [ ] **B6 — VLAN configuration** · **M**
-      `InterfaceType::Vlan` already exists for **detection only**
-      (`src/network.rs:188`, `:1846`). Extend it into creation: parent
-      interface + VID → `ip link add link … type vlan`, same
-      persist/apply/rollback path as B5.
-      *Do B5 and B6 together* — same file, same risk, same rollback.
+- [x] **B6 — VLAN configuration** · shipped 2026-11-04 (with B5)
+      `InterfaceType::Vlan` extended from detection to creation:
+      `GET|POST /api/network/vlans` + `DELETE /api/network/vlans/{name}`,
+      parent + `VID 1..=4094` → `<parent>.<vid>` via
+      `ip link add link … type vlan`, same persistence and same session-safety
+      refusal as B5.
+      Verified with B5 above.
 
 ---
 
@@ -167,8 +174,8 @@ Kept here so the question does not come back every six months.
 
 ## 7. Suggested order
 
-1. **B5 + B6 together** — one file, one risk model, one host-network rollback path. ← **next**
-2. **B4** — the installer already ships half of it.
+1. ~~**B5 + B6 together**~~ — shipped 2026-11-04.
+2. **B4** (SNMP agent) — the installer already ships half of it. ← **next**
 3. **C1 → C2 → C3**.
 4. **D2 → D1**.
 

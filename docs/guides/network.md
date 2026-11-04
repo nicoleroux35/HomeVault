@@ -115,6 +115,66 @@ is an error. A source guard
 (`test_no_subprocess_of_this_module_runs_without_a_deadline`) fails if a bare
 `.output()`/`.spawn()`/`.status()`/`wait_with_output()` comes back.
 
+## Link aggregation and VLAN devices (2026-11-04, phase B5 + B6)
+
+Two ways to grow a wired network out of the physical NICs, both creating a
+**new virtual interface** and then handing it to the *same* configuration path
+a physical card uses — `apply_interface_config` → `persist_interface_config` →
+`apply_persisted_config`, i.e. apply, verify, roll back.
+
+| Feature | Creates | Modes / bounds |
+|---|---|---|
+| Link aggregation (bond) | `bondN` (`ip link add … type bond`, members attached with `ip link set <nic> master <bond>`) | `802.3ad` (LACP, needs a switch configured for it) or `active-backup` (needs no switch support) |
+| VLAN | `<parent>.<vid>` (`ip link add link <parent> name … type vlan id <vid>`) | id `1..=4094`; parent is a physical NIC or a bond |
+
+**What the appliance refuses, and why**
+
+- **A virtual device is never offered as a candidate.** `docker0`, a `veth`
+  pair and a `vmnet` device are `ARPHRD_ETHER` to the kernel but have no port
+  behind them, so `is_physical_nic` — the `/sys/class/net/<name>/device`
+  symlink resolving outside `/devices/virtual/` — decides, not the name. The
+  same check runs in the handler, so a direct `POST` cannot smuggle one in.
+- **A bond member must be a physical NIC** (not a bond, VLAN, bridge, tunnel
+  or radio), listed once, and at least one is required.
+- **A change that would cut the session is refused before any `ip` runs.**
+  `refuse_if_carries_session_address` compares the request's **TCP peer**
+  (`middleware::PeerAddr`, never `X-Forwarded-For`) with the address each local
+  interface holds: if the operator is talking to the appliance through an
+  interface the change would re-role (a member being enslaved, a bond or VLAN
+  being deleted), the answer is a `400` naming that interface. This is the one
+  case no verify/rollback step can report — the reply path is gone — so it is
+  rejected up front instead of attempted. A peer on no local interface (a
+  remote admin) is not blocked.
+- **Deleting only touches our own devices.** `delete_virtual_device` re-checks
+  that the target really is a bond or a VLAN, so a typo can never take down a
+  physical card; a bond's members are detached first so the NICs come back as
+  ordinary Ethernet devices. The persisted netplan file goes with it, or the
+  next `netplan apply` would resurrect a device that no longer exists.
+
+**Extending a live bond** is allowed (only the missing members are attached);
+**changing its mode** is not — the driver refuses that under load, so the
+answer is an explicit error rather than a silent no-op.
+
+Persistence uses the same two backends and the same file-per-interface rule as
+the rest of this guide (`render_virtual_device_yaml` /
+`render_ifupdown_virtual`). Creating a device does **not** run the full
+reconcile: it touches no existing address, so `netplan_apply_and_verify` only
+applies the new file and, if netplan rejects it, removes it again and says so —
+leaving the live device the `ip` step already created.
+
+Privileges: `ip link add … type bond|vlan`, `ip link set … master|nomaster`
+and `ip link delete` all ride the existing per-object `ip link *` sudoers grant
+(`src/setup.rs::network_grants`); two explicit `add` entries were added so the
+grant file names what the feature needs, and
+`test_bond_and_vlan_commands_are_covered_by_the_ip_grant` maps every argv the
+module builds to a grant.
+
+Not implemented on purpose: no automatic *migration* of an address from a
+member NIC onto its new bond. Moving the appliance's own address is exactly
+the session-severing action above; the admin configures the bond (or the VLAN)
+through the normal per-interface card, from an interface that is not being
+moved.
+
 ## Backend
 Router built by `src/handlers/network.rs::create_network_router` and nested at
 `/api/network` (`src/web/mod.rs:1069`).
@@ -135,6 +195,12 @@ unaffected: the Wi-Fi endpoints report the tool as unavailable.
 | `GET /network/wifi/status` | auth | WiFi status |
 | `POST /network/wifi/connect` | admin | connect (`{ ssid, password, security }`) |
 | `POST /network/wifi/disconnect` | admin | disconnect (`{ ssid }`) |
+| `GET /network/bonds` | auth | bonds, physical-NIC candidates, the two supported modes |
+| `POST /network/bonds` | admin | `{ name?, mode, members[] }` — creates a bond or attaches members to a live one; refused when it would cut the caller's own session |
+| `DELETE /network/bonds/{name}` | admin | deletes the bond, hands its NICs back, removes its persisted file |
+| `GET /network/vlans` | auth | VLAN devices, valid parents, `max_vid` |
+| `POST /network/vlans` | admin | `{ parent, vid }` → `<parent>.<vid>`; `vid` bounded to `1..=4094` |
+| `DELETE /network/vlans/{name}` | admin | deletes the VLAN and its persisted file |
 | `GET /network/diagnostics` | auth | gateway/DNS/internet checks |
 | `GET /network/summary` | auth | connection summary |
 | `GET /network/public-ip` | auth | public IP (geo lookup) |
@@ -147,13 +213,23 @@ unaffected: the Wi-Fi endpoints report the tool as unavailable.
   `getNetworkInterface`, `getNetworkInterfaceConfig`,
   `updateNetworkInterfaceConfig`, `setNetworkInterfaceState`, `scanWifiNetworks`,
   `getWifiStatus`, `connectWifi`, `disconnectWifi`, `getNetworkDiagnostics`,
-  `getNetworkSummary`, `getPublicIp`.
+  `getNetworkSummary`, `getPublicIp`, and the virtual-device pair
+  `getNetworkBonds`/`createNetworkBond`/`deleteNetworkBond` and
+  `getNetworkVlans`/`createNetworkVlan`/`deleteNetworkVlan`.
+- The **Link aggregation and VLANs** section of the Ethernet tab: one card per
+  feature, listing what exists and holding the create form. The mode radios
+  say which one needs a switch configured; the VLAN field states the `1..4094`
+  bound; deleting asks first and names what the network loses. `Network.svelte`
+  is runes-based (`$state`/`$derived`) throughout.
 
 ## Invariants
 
-- All 13 endpoints require a session (a past audit found them wide open). Read
-  endpoints use `require_auth`; config/state/WiFi mutations use `require_admin` —
-  do not collapse that split to "no check".
+- All 18 endpoints require a session (a past audit found them wide open). Read
+  endpoints use `require_auth`; config/state/WiFi/bond/VLAN mutations use
+  `require_admin` — do not collapse that split to "no check".
+- **A change that would cut the caller's own session is refused, never
+  attempted** (`refuse_if_carries_session_address`, peer from the TCP socket).
+  Verification and rollback cannot report a change that severed the reply path.
 - Toast messages use translation keys (a past bug hardcoded English strings);
   diagnostic labels are not double-prefixed (a past bug produced "Gateway Gateway
   reachable").

@@ -30,6 +30,8 @@
 //!   - GET  /api/network/wifi/status
 //!   - POST /api/network/wifi/connect
 //!   - POST /api/network/wifi/disconnect
+//!   - GET|POST /api/network/bonds, DELETE /api/network/bonds/{name}
+//!   - GET|POST /api/network/vlans, DELETE /api/network/vlans/{name}
 //!   - GET  /api/network/diagnostics
 //!   - GET  /api/network/summary
 //!   - GET  /api/network/services
@@ -70,10 +72,12 @@ use homevault::handlers::terminal_pty::PtyManager;
 use homevault::handlers::{
     auth::handle_login,
     network::{
+        handle_network_bond_create, handle_network_bond_delete, handle_network_bonds_list,
         handle_network_diagnostics, handle_network_interface_config,
         handle_network_interface_config_update, handle_network_interface_get,
         handle_network_interface_state, handle_network_interfaces, handle_network_services,
-        handle_network_summary, handle_network_wifi_connect, handle_network_wifi_disconnect,
+        handle_network_summary, handle_network_vlan_create, handle_network_vlan_delete,
+        handle_network_vlans_list, handle_network_wifi_connect, handle_network_wifi_disconnect,
         handle_network_wifi_scan, handle_network_wifi_status, handle_public_ip,
     },
     AppState,
@@ -156,6 +160,22 @@ fn network_router(state: Arc<AppState>) -> Router {
         .route(
             "/api/network/wifi/disconnect",
             post(handle_network_wifi_disconnect),
+        )
+        .route(
+            "/api/network/bonds",
+            get(handle_network_bonds_list).post(handle_network_bond_create),
+        )
+        .route(
+            "/api/network/bonds/{name}",
+            axum::routing::delete(handle_network_bond_delete),
+        )
+        .route(
+            "/api/network/vlans",
+            get(handle_network_vlans_list).post(handle_network_vlan_create),
+        )
+        .route(
+            "/api/network/vlans/{name}",
+            axum::routing::delete(handle_network_vlan_delete),
         )
         .route("/api/network/diagnostics", get(handle_network_diagnostics))
         .route("/api/network/summary", get(handle_network_summary))
@@ -755,4 +775,190 @@ async fn test_a_slow_host_tool_is_waited_out_not_dropped() {
         elapsed >= std::time::Duration::from_millis(200),
         "the shim was never actually waited for ({elapsed:?}) — the probe skipped it"
     );
+}
+
+// ---------------------------------------------------------------------------
+// Link aggregation and VLAN devices (B5 + B6)
+//
+// Like every other mutating endpoint of this module, these are exercised only
+// as far as a *clean refusal*: creating a real bond or VLAN on the machine
+// running the suite would rewrite its networking. What is asserted here is the
+// contract the screen depends on — auth, validation order, and the refusal to
+// touch a device that is not one of ours.
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_bond_endpoints_require_session_and_admin() {
+    let (state, _tmp, _guard) = setup_state().await;
+    create_test_user(&state, "admin", "AdminPass123!", 2).await;
+    create_test_user(&state, "member", "MemberPass123!", 1).await;
+    let mut router = network_router(state.clone());
+    let admin = login(&mut router, "admin", "AdminPass123!").await;
+    let member = login(&mut router, "member", "MemberPass123!").await;
+
+    let (status, _) = send(&mut router, Method::GET, "/api/network/bonds", None, None).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+
+    // Reading the inventory is a session-any route.
+    let (status, body) = send(
+        &mut router,
+        Method::GET,
+        "/api/network/bonds",
+        Some(&member),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(body["data"]["bonds"].is_array(), "{body}");
+    assert!(body["data"]["candidates"].is_array(), "{body}");
+    // Both modes are offered, and only LACP claims to need switch setup.
+    let modes = body["data"]["modes"].as_array().expect("modes");
+    assert_eq!(modes.len(), 2, "{body}");
+    let lacp = modes
+        .iter()
+        .find(|m| m["id"] == json!("802.3ad"))
+        .expect("802.3ad offered");
+    assert_eq!(lacp["needs_switch_configuration"], json!(true));
+    let backup = modes
+        .iter()
+        .find(|m| m["id"] == json!("active-backup"))
+        .expect("active-backup offered");
+    assert_eq!(backup["needs_switch_configuration"], json!(false));
+
+    // Creating one is admin-only — a member is refused before any validation
+    // can leak which interfaces exist.
+    let (status, body) = send(
+        &mut router,
+        Method::POST,
+        "/api/network/bonds",
+        Some(&member),
+        Some(json!({"mode": "active-backup", "members": ["eth0"]})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+
+    let (status, body) = send(
+        &mut router,
+        Method::DELETE,
+        "/api/network/bonds/bond0",
+        Some(&member),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+}
+
+#[tokio::test]
+async fn test_bond_create_rejects_a_bad_mode_and_an_empty_member_list() {
+    let (state, _tmp, _guard) = setup_state().await;
+    create_test_user(&state, "admin", "AdminPass123!", 2).await;
+    let mut router = network_router(state.clone());
+    let admin = login(&mut router, "admin", "AdminPass123!").await;
+
+    // A mode the driver knows but the appliance does not offer.
+    let (_, body) = send(
+        &mut router,
+        Method::POST,
+        "/api/network/bonds",
+        Some(&admin),
+        Some(json!({"mode": "balance-rr", "members": ["eth0"]})),
+    )
+    .await;
+    assert_eq!(body["success"], json!(false), "{body}");
+    assert!(
+        body["message"].as_str().unwrap_or("").contains("802.3ad"),
+        "the refusal must name the two supported modes: {body}"
+    );
+
+    // No members at all.
+    let (_, body) = send(
+        &mut router,
+        Method::POST,
+        "/api/network/bonds",
+        Some(&admin),
+        Some(json!({"mode": "active-backup", "members": []})),
+    )
+    .await;
+    assert_eq!(body["success"], json!(false), "{body}");
+}
+
+#[tokio::test]
+async fn test_vlan_endpoints_require_session_and_validate_the_id() {
+    let (state, _tmp, _guard) = setup_state().await;
+    create_test_user(&state, "admin", "AdminPass123!", 2).await;
+    create_test_user(&state, "member", "MemberPass123!", 1).await;
+    let mut router = network_router(state.clone());
+    let admin = login(&mut router, "admin", "AdminPass123!").await;
+    let member = login(&mut router, "member", "MemberPass123!").await;
+
+    let (status, _) = send(&mut router, Method::GET, "/api/network/vlans", None, None).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+
+    let (status, body) = send(
+        &mut router,
+        Method::GET,
+        "/api/network/vlans",
+        Some(&member),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["data"]["max_vid"], json!(4094), "{body}");
+
+    let (status, body) = send(
+        &mut router,
+        Method::POST,
+        "/api/network/vlans",
+        Some(&member),
+        Some(json!({"parent": "eth0", "vid": 42})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+
+    // 0 and 4095 are not usable VLAN ids, whatever the parent says.
+    for vid in [0, 4095] {
+        let (_, body) = send(
+            &mut router,
+            Method::POST,
+            "/api/network/vlans",
+            Some(&admin),
+            Some(json!({"parent": "eth0", "vid": vid})),
+        )
+        .await;
+        assert_eq!(body["success"], json!(false), "vid {vid} accepted: {body}");
+        assert!(
+            body["message"].as_str().unwrap_or("").contains("4094"),
+            "the refusal must state the range: {body}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn test_deleting_a_virtual_device_refuses_anything_that_is_not_one() {
+    let (state, _tmp, _guard) = setup_state().await;
+    create_test_user(&state, "admin", "AdminPass123!", 2).await;
+    let mut router = network_router(state.clone());
+    let admin = login(&mut router, "admin", "AdminPass123!").await;
+
+    // A name no bond carries: refused by the handler's own ownership check,
+    // never reaching `ip link delete`.
+    let (_, body) = send(
+        &mut router,
+        Method::DELETE,
+        "/api/network/bonds/definitely-not-a-bond",
+        Some(&admin),
+        None,
+    )
+    .await;
+    assert_eq!(body["success"], json!(false), "{body}");
+
+    let (_, body) = send(
+        &mut router,
+        Method::DELETE,
+        "/api/network/vlans/definitely-not-a-vlan",
+        Some(&admin),
+        None,
+    )
+    .await;
+    assert_eq!(body["success"], json!(false), "{body}");
 }
