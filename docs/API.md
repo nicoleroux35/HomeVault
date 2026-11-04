@@ -1558,6 +1558,33 @@ Enabling requires an interface, at least one forwarder and `confirmed: true`.
 Every refusal is a `400` whose message names the rule. See
 [`guides/local-dns.md`](./guides/local-dns.md).
 
+## Generic reverse proxy — `proxy/rules`
+
+User-defined `host [+ path] → upstream` rules (phase C2), served by **one**
+host-routed listener (default port `80`, `HOMEVAULT_REVERSE_PROXY_PORT`
+overrides it). Rules live in the `reverse_proxy_rules` table; the listener
+keeps an in-memory snapshot, reloaded after every mutation. A bind failure is
+reported by the status and never stops the dashboard.
+
+| Method | Path | Auth |
+|--------|------|------|
+| GET | `/proxy/rules` | auth — `{ rules[], listener: { listening, port, error }, max_rules }` |
+| POST | `/proxy/rules` | admin — `{ host, path, upstream, tls, auth_required, enabled }`; validated, DNS-resolved, then persisted |
+| PUT | `/proxy/rules/{id}` | admin — same body; `404` for an unknown id, `400` for a duplicate `(host, path)` |
+| DELETE | `/proxy/rules/{id}` | admin — removes the rule and revokes its sessions and tickets |
+| GET | `/proxy-auth?rule=<id>&next=<path>` | **browser cookie** — validates `hv_session`, mints a one-time ticket (120 s, single use, rule-bound) and redirects to the listener |
+
+Validation refusals are `400` and name the rule they broke: a host with a port
+or scheme, a wildcard, a path prefix without `/`, an upstream that is not
+`host:port`, a port of `0`, an upstream that resolves to a **public** address,
+or an upstream that points at the listener's own port or the dashboard port.
+`tls` means the **upstream** speaks HTTPS; the listener itself is plain HTTP.
+`auth_required` (default `true`) gates the rule with an `hv_app_session`
+scoped to `proxy:<id>`; the browser obtains it through the cross-host ticket
+exchange, never by sending `hv_session` upstream. See
+[`guides/reverse-proxy.md`](./guides/reverse-proxy.md) and the design note
+[`analysis/c2-reverse-proxy-design.md`](./analysis/c2-reverse-proxy-design.md).
+
 ## USB one-touch copy — `usb-copy/*`
 
 Copy rules that pull files off a removable device into a folder on the

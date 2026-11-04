@@ -3,9 +3,9 @@
 Working checklist of what is **left to implement**. Derived on 2026-11-03 by
 grepping the tree, not by trusting a document: every "shipped" claim below was
 checked against `src/`, `sqlx/migrations/`, `docs/guides/` or `frontend/src/`.
-Updated **2026-11-05**: Phase B is complete (B1 and B4–B6 shipped on
-2026-11-04; `ffdd7f1`, `3df8a7d`, `82b7c1e`), and **C1 shipped on 2026-11-05**.
-The next item is **C2**.
+Updated **2026-11-06**: Phase B is complete (B1 and B4–B6 shipped on
+2026-11-04; `ffdd7f1`, `3df8a7d`, `82b7c1e`), **C1 shipped on 2026-11-05**, and
+**C2 shipped on 2026-11-06**. The next item is **C3**.
 
 Sources, in authority order:
 1. `CLAUDE.md` — the rules.
@@ -119,13 +119,30 @@ Legend: **S** ≤ 2 days · **M** 3–5 days · **L** 2–3 weeks · **XL** ≥ 
       file was `dnsmasq --test`-ed against the real 2.91. See
       `docs/guides/local-dns.md`.
 
-- [ ] **C2 — Generic reverse proxy** · **L**
-      Host → upstream rules (`host`, `path`, `upstream`, `tls`), reusing
-      `src/app_proxy/`'s origin resolution and the auth gate.
-      **Must not weaken** the per-app proxy's "never trust a forged header"
-      rule (`docs/guides/apps-center.md:90`) — that rule is why the per-app
-      proxy is safe, and a generic proxy is the obvious way to lose it.
-      Verified absent: only the per-app proxy exists.
+- [x] **C2 — Generic reverse proxy** · **L** · shipped 2026-11-06
+      `src/reverse_proxy/` (`mod.rs`, `rules.rs`, `proxy.rs`, `ticket.rs`),
+      migration `076_reverse_proxy.sql`, `GET|POST|PUT|DELETE
+      /api/proxy/rules`, `GET /proxy-auth` and `ReverseProxyCard.svelte`.
+      **One** host-routed listener (default 80,
+      `HOMEVAULT_REVERSE_PROXY_PORT`), rules selected by exact host + longest
+      segment path prefix, full path forwarded unchanged.
+      *Rules honoured:* every client-supplied `Forwarded`/`X-Forwarded-*`/
+      `X-Real-IP` header is discarded and replaced from the peer socket; both
+      HomeVault cookies are stripped before the upstream; the upstream must
+      resolve to a private/loopback/link-local/ULA address at save **and** on
+      every connection; a rule cannot point at the listener's own port or the
+      dashboard; the auth gate is a cross-host **one-time ticket** exchange
+      (120 s, single use, rule-bound) because `hv_app_session` is host-scoped,
+      so `hv_session` never leaves the dashboard origin.
+      Verified: `reverse_proxy` unit 31/31, `reverse_proxy_integration.rs`
+      21/21 (including a real listener against a loopback upstream),
+      E2E `settings/reverse-proxy` 11/11 on Chromium **and** Firefox,
+      `cargo test --lib` 2,505 passed / the same 5 pre-existing failures,
+      `npm run check` 0/0, build green. Live probe of the full
+      `/proxy-auth` → callback → `hv_app_session` round-trip on a scratch
+      instance; the ticket replayed as `401`.
+      See `docs/guides/reverse-proxy.md` and
+      `docs/analysis/c2-reverse-proxy-design.md`.
 
 - [ ] **C3 — UPnP-IGD port forwarding** · **M**
       `miniupnpc` client: list the router's mappings, add/remove one, show the
@@ -199,8 +216,7 @@ Kept here so the question does not come back every six months.
 
 1. ~~**B5 + B6 together**~~ — shipped 2026-11-04.
 2. ~~**B4** (SNMP agent)~~ — shipped 2026-11-04. Phase B is complete.
-3. **C2 → C3**. ← **next** (C1 shipped 2026-11-05; C2 can now rely on
-   names resolving locally)
+3. ~~**C2**~~ — shipped 2026-11-06. **C3** (UPnP-IGD) is next.
 4. **D2 → D1**.
 
 Phase B is complete (B1–B6). Phases C and D have no blocker between them. Each item ships with its guide,
@@ -209,7 +225,7 @@ counts, per the definition of done in `CLAUDE.md`.
 
 ---
 
-## 8. Session state — 2026-11-05
+## 8. Session state — 2026-11-06
 
 What the Phase B session and this one shipped, and what they left behind, so the
 next one starts from facts rather than from a document.
@@ -222,13 +238,14 @@ next one starts from facts rather than from a document.
 | `3df8a7d` | B5 + B6 — link aggregation and VLAN devices |
 | `82b7c1e` | B4 — the local SNMP agent |
 | C1 (2026-11-05) | the local DNS server, on the `dnsmasq` the DHCP card already drove — `src/local_dns.rs`, `GET|PUT /api/network/dns-server`, `LocalDnsCard.svelte`, `docs/guides/local-dns.md` |
+| C2 (2026-11-06) | the generic reverse proxy — `src/reverse_proxy/`, migration `076`, `GET|POST|PUT|DELETE /api/proxy/rules`, `GET /proxy-auth`, `ReverseProxyCard.svelte`, guides `reverse-proxy.md` and `analysis/c2-reverse-proxy-design.md` |
 
 **Verified on this session's machine**
 
-- `cargo test --lib` — **2,474 passed, 5 failed** (the same five unrelated
-  failures `TESTING.md` has tracked since Phase A: `checksum::…evicts…`,
-  `settings`/`i18n` density ×2, `sse::progress` ×2 — all in files no session
-  touched).
+- `cargo test --lib` — **2,505 passed, 5 failed** after C2 (the same five
+  unrelated failures `TESTING.md` has tracked since Phase A:
+  `checksum::…evicts…`, `settings`/`i18n` density ×2, `sse::progress` ×2 — all
+  in files no session touched).
 - `tests/local_dns_integration.rs` 14/14, `tests/dhcp_server_integration.rs`
   21/21, `tests/phase4_auth_integration.rs` 6/6,
   `tests/explorer_integration.rs` 99/99,
@@ -237,7 +254,14 @@ next one starts from facts rather than from a document.
 - E2E, live server + scratch `DATA_DIRECTORY` (`PORT=8311`): `settings/local-dns`
   **12/12 on Chromium and 12/12 on Firefox**; `settings/dhcp` and
   `settings/snmp-agent` 13/13 on Chromium (13/13 on Firefox for the pair run
-  before the C1 commit).
+  before the C1 commit); C2 `settings/reverse-proxy` **11/11 on Chromium and
+  11/11 on Firefox** against the real backend (rules cleaned up in `afterAll`),
+  plus a live loopback probe of `open rule → upstream`, `302 → /proxy-auth →
+  ticket → __hv_proxy_auth → hv_app_session → upstream`, and ticket replay
+  `401`.
+- C2 integration: `tests/reverse_proxy_integration.rs` **21/21** (CRUD, auth,
+  every refusal, and a real listener against a loopback upstream);
+  `reverse_proxy` unit **31/31**.
 - `npm run check` 0 errors / 0 warnings every time; `npm run build` green;
   `cargo clippy` clean on the added files, `rustfmt` clean.
 - The rendered `dnsmasq` drop-in was syntax-checked with the real `dnsmasq 2.91`
@@ -269,5 +293,8 @@ re-running the same tests**
   single gate in `reconcile_daemon` is covered by unit tests, but a race was
   never produced on a real host.
 
-**Next session starts at C2** (generic reverse proxy), which can now rely on
-names resolving locally — see §7.
+**Next session starts at C3** (UPnP-IGD port forwarding) — see §7. C2's own
+design note is `docs/analysis/c2-reverse-proxy-design.md`; the remaining live
+debt from that session is a browser on a second device resolving a rule name
+through the C1 DNS server, and a TLS upstream with a publicly trusted
+certificate (both need a disposable VM).

@@ -33,6 +33,10 @@ src/
                         forwarding upstream (app_auth.rs, cookie.rs, serve.rs);
                         origin.rs resolves redirect hosts from server state
                         (a forged Host can never aim a redirect elsewhere)
+  reverse_proxy/        Generic host → upstream proxy (phase C2): one
+                        host-routed listener, SQLite rules, private-address-only
+                        upstreams, cross-host ticket gate (mod.rs, rules.rs,
+                        proxy.rs, ticket.rs)
   rescue/               ddrescue / TestDisk / PhotoRec / mdadm-repair service +
                         SecurityValidator (protected-device blocklist)
   groups.rs             GroupService (incl. is_admin_group)

@@ -172,7 +172,7 @@ suites green, `docs/INDEX.md`/`API.md`/`SCREENS.md`/`TESTING.md` updated, and a
 | ID | Work item | Effort | Notes |
 |---|---|---|---|
 | **C1** | **Local DNS server** (source #3) | M | Extend the dnsmasq app: local A/CNAME records, upstream forwarders, `address=/domain/ip` entries, and a "this appliance is the LAN DNS" switch. Reuse `src/dhcp_server.rs`'s config writer and capability gate rather than adding `bind9`. |
-| **C2** | **Generic reverse proxy** (source #8) | L | Host → upstream rules (`host`, `path`, `upstream`, `tls`), reusing `src/app_proxy/`'s origin resolution and the auth gate. Must not weaken the per-app proxy's "never trust a forged header" rule (`docs/guides/apps-center.md:90`). |
+| **C2** | **Generic reverse proxy** (source #8) | L | **Shipped 2026-11-06** — host → upstream rules (`host`, `path`, `upstream`, `tls`), one host-routed listener, `src/app_proxy/` origin resolution, and a cross-host one-time-ticket gate that keeps the per-app proxy's "never trust a forged header" rule. Design: `docs/analysis/c2-reverse-proxy-design.md`; guide: `docs/guides/reverse-proxy.md`. |
 | **C3** | **UPnP-IGD port forwarding** (source #17) | M | `miniupnpc` client: list the router's mappings, add/remove one, show the external IP. Read-only discovery first; every mutation confirmed and reversible. |
 
 ### Phase D — File intelligence (L)
