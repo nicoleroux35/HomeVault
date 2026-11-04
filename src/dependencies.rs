@@ -301,6 +301,11 @@ fn check_7z() -> bool {
 fn check_lspci() -> bool {
     binary_present("lspci", "/usr/bin/lspci")
 }
+
+fn check_upnpc() -> bool {
+    binary_present("upnpc", "/usr/bin/upnpc")
+}
+
 fn check_hostname() -> bool {
     binary_present("hostname", "/bin/hostname")
 }
@@ -496,6 +501,15 @@ fn specs() -> Vec<DependencySpec> {
             required: false,
             used_by: "DHCP lease renew/release (Setup wizard, Network app)",
             check_installed: check_dhclient,
+            check_running: None,
+        },
+        DependencySpec {
+            name: "upnpc",
+            package: "miniupnpc",
+            category: "Network",
+            required: false,
+            used_by: "Router port forwarding (UPnP-IGD, Settings → Security)",
+            check_installed: check_upnpc,
             check_running: None,
         },
         DependencySpec {

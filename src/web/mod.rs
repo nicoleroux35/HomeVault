@@ -85,14 +85,6 @@ use crate::handlers::{
         handle_get as handle_dhcp_get, handle_leases, handle_start as handle_dhcp_start,
         handle_stop as handle_dhcp_stop, handle_update as handle_dhcp_update,
     },
-    local_dns::{
-        handle_get as handle_local_dns_get, handle_update as handle_local_dns_update,
-    },
-    reverse_proxy::{
-        handle_create as handle_proxy_rule_create, handle_delete as handle_proxy_rule_delete,
-        handle_list as handle_proxy_rules_list, handle_proxy_auth,
-        handle_update as handle_proxy_rule_update,
-    },
     directory::{
         handle_directory_get, handle_directory_settings_put, handle_directory_test,
         handle_identity_delete, handle_identity_disabled,
@@ -179,6 +171,7 @@ use crate::handlers::{
         handle_journal_cleanup_settings_get, handle_journal_cleanup_settings_update,
         handle_journal_clear, handle_journal_entries, handle_journal_sources,
     },
+    local_dns::{handle_get as handle_local_dns_get, handle_update as handle_local_dns_update},
     mcp::{
         handle_mcp_create_token, handle_mcp_revoke_token, handle_mcp_rpc, handle_mcp_set_enabled,
         handle_mcp_set_permissions, handle_mcp_status,
@@ -241,6 +234,11 @@ use crate::handlers::{
         handle_restic_stats, handle_restic_unlock, handle_restic_version,
         handle_retention_policies_list, handle_retention_policy_create,
         handle_retention_policy_delete, handle_retention_policy_update,
+    },
+    reverse_proxy::{
+        handle_create as handle_proxy_rule_create, handle_delete as handle_proxy_rule_delete,
+        handle_list as handle_proxy_rules_list, handle_proxy_auth,
+        handle_update as handle_proxy_rule_update,
     },
     rsync::{
         handle_rsync_module_create, handle_rsync_module_delete, handle_rsync_module_update,
@@ -325,6 +323,10 @@ use crate::handlers::{
         handle_transfer_quotas_list,
     },
     transfers::{handle_active_transfers, handle_transfer_history},
+    upnp::{
+        handle_add as handle_upnp_add, handle_get as handle_upnp_get,
+        handle_remove as handle_upnp_remove,
+    },
     ups::{
         handle_ups_availability, handle_ups_config_delete, handle_ups_config_list,
         handle_ups_config_save, handle_ups_list, handle_ups_status, handle_ups_variables,
@@ -1552,6 +1554,13 @@ pub fn create_app(state: AppStateArc) -> Router {
         // Browser navigation entry for a gated rule: validates the real
         // session cookie and hands the listener a one-time ticket.
         .route("/proxy-auth", get(handle_proxy_auth))
+        // Phase C3 — UPnP-IGD router port forwarding (see docs/guides/upnp.md).
+        .route("/api/network/upnp", get(handle_upnp_get))
+        .route("/api/network/upnp/mappings", post(handle_upnp_add))
+        .route(
+            "/api/network/upnp/mappings",
+            axum::routing::delete(handle_upnp_remove),
+        )
         // Phase 4 — Fan Control
         .route("/api/system/fans", get(handle_channels_list))
         .route("/api/system/fans/config", get(handle_config_get))

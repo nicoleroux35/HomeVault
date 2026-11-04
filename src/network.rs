@@ -22,7 +22,7 @@
 
 use crate::utils::process::{run_timed, run_timed_with_stdin, HOST_PROBE_TIMEOUT};
 use serde::{Deserialize, Serialize};
-use std::net::{Ipv4Addr, Ipv6Addr, UdpSocket};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, UdpSocket};
 use std::process::{Command, Output};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
@@ -2418,6 +2418,23 @@ fn determine_connection_type() -> String {
 // ---------------------------------------------------------------------------
 // LAN / Public IP helpers (existing public API)
 // ---------------------------------------------------------------------------
+
+/// Whether an address is inside the intranet ranges HomeVault or its features
+/// may talk to: loopback, RFC 1918, link-local, IPv6 unique-local or
+/// link-local, and an IPv4-mapped form of any of those. Public, unspecified
+/// and multicast addresses are refused.
+pub fn is_private_address(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(v4) => v4.is_loopback() || v4.is_private() || v4.is_link_local(),
+        IpAddr::V6(v6) => {
+            if let Some(v4) = v6.to_ipv4_mapped() {
+                return is_private_address(IpAddr::V4(v4));
+            }
+            let segments = v6.segments();
+            v6.is_loopback() || (segments[0] & 0xfe00) == 0xfc00 || (segments[0] & 0xffc0) == 0xfe80
+        }
+    }
+}
 
 pub fn discover_lan_ipv4_addresses() -> Vec<Ipv4Addr> {
     let mut addresses = Vec::new();

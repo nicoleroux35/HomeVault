@@ -879,6 +879,11 @@ install_optional netplan.io "Netplan (persist interface configuration)"
 # do not ship it, so the action used to fail with nothing to install.
 install_optional isc-dhcp-client "DHCP client (dhclient)"
 
+# `upnpc` lists and edits the router's UPnP-IGD port mappings (Settings ->
+# Security -> Router port forwarding, `src/upnp.rs`). Optional like the rest:
+# the card names the package and shows no dead form when it is absent.
+install_optional miniupnpc "UPnP port mapping (upnpc)"
+
 # `dnsmasq` backs the DHCP/TFTP/PXE server (`src/dhcp_server.rs`). Serving
 # addresses on a home LAN is a choice, not a baseline: `install_optional`
 # keeps a declined answer non-fatal, and the DHCP card hides its editors and
