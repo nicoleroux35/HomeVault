@@ -3,6 +3,8 @@
 Working checklist of what is **left to implement**. Derived on 2026-11-03 by
 grepping the tree, not by trusting a document: every "shipped" claim below was
 checked against `src/`, `sqlx/migrations/`, `docs/guides/` or `frontend/src/`.
+Updated **2026-11-04**: Phase B is complete (B1 and B4–B6 shipped in this
+session; `ffdd7f1`, `3df8a7d`, `82b7c1e`). The next item is **C1**.
 
 Sources, in authority order:
 1. `CLAUDE.md` — the rules.
@@ -159,7 +161,7 @@ Kept here so the question does not come back every six months.
 
 ---
 
-## 6. Document hygiene (done 2026-11-03)
+## 6. Document hygiene (2026-11-03, refreshed 2026-11-04)
 
 - [x] `ROADMAP-DSM.md` "Gap summary" refreshed — 21 of its 23 rows had claimed
       "none" for code that had shipped (`rsync`, `iSCSI`, `replication`,
@@ -167,9 +169,10 @@ Kept here so the question does not come back every six months.
       `Security Advisor`, `fan control`, `UPS server`, `DHCP`, `USB copy`,
       `guided redundancy`, Time Machine, traffic control).
 - [x] `dsm_homevault_comparison.md` re-checked: of its 18 "🔵 À IMPLÉMENTER"
-      rows, **11 are shipped**, 5 are open (content search, tags, DNS, bond,
-      VLAN, reverse proxy — 6 counting SNMP's client-only half), 1 is rejected
-      (QuickConnect) and 1 is the PWA's missing push half.
+      rows, **15 are now shipped** (file tags, bond, VLAN and the SNMP agent joined
+      the 11 already done), **3 are open** (content search ← D1, local DNS
+      ← C1, reverse proxy ← C2), 1 is rejected (QuickConnect) and 1 is the PWA's
+      missing push half ← D2.
       **The file is left untouched on purpose** — it is the dated input record,
       and §2 of the implementation plan is its reconciliation. It is untracked
       (repo rule: no standalone root `.md` in commits).
@@ -186,3 +189,51 @@ Kept here so the question does not come back every six months.
 Phase B is complete (B1–B6). Phases C and D have no blocker between them. Each item ships with its guide,
 `API.md` entry, `FeatureDoc`, unit + integration + E2E tests, and `TESTING.md`
 counts, per the definition of done in `CLAUDE.md`.
+
+---
+
+## 8. Session state — 2026-11-04
+
+What this session shipped, and what it left behind, so the next one starts from
+facts rather than from a document.
+
+**Shipped**
+
+| Commit | Item |
+|---|---|
+| `ffdd7f1` | B1 — private per-user file tags (+ two defects fixed: a tag on a deleted path could not be removed; the ⌘K coverage note was hidden at zero hits, which was making `desktop 6b.3` red on `main`) |
+| `3df8a7d` | B5 + B6 — link aggregation and VLAN devices |
+| `82b7c1e` | B4 — the local SNMP agent |
+
+**Verified on this session's machine**
+
+- `cargo test --lib` — **2,447 passed, 5 failed** (the same five unrelated
+  failures `TESTING.md` has tracked since Phase A: `checksum::…evicts…`,
+  `settings`/`i18n` density ×2, `sse::progress` ×2 — all in files this session
+  never touched).
+- `tests/explorer_integration.rs` 99/99, `tests/global_search_integration.rs`
+  14/14, `tests/network_integration.rs` 28/28, `tests/snmp_integration.rs`
+  10/10.
+- E2E, live server + scratch `DATA_DIRECTORY`: `explorer 15.5`, `desktop` §6/§6b
+  (14/14), `network` §14, `settings/snmp-agent` — green on Chromium (several
+  also on Firefox).
+- `npm run check` 0 errors / 0 warnings every time; `npm run build` green.
+
+**Known-failing, pre-existing — verified by rebuilding the pre-change tree and
+re-running the same tests**
+
+- `network.spec.ts` 2.2, 4.3, 8.2, 10.1, 10.5, 13.1, 13.2 — they need a
+  configurable interface and expect an unauthenticated `400` where the build
+  answers `401`. Untouched by this session's two network commits.
+- The five lib failures above.
+- On a developer box whose `/tmp` holds thousands of entries, the Explorer
+  suite's `navigateTo`/`openWork` helpers time out; that is the harness, not the
+  product (CI's `/tmp` is clean).
+
+**Never exercised live (deliberately), still owed**
+
+- A real bond / VLAN apply and a real `snmpd` start: creating either rewrites
+  the networking of whatever machine runs the suite. The code up to the first
+  `ip link add` / file write is covered; the mutation itself needs a disposable
+  VM with at least two spare NICs.
+- `snmpwalk` against the appliance's own agent, same reason.
