@@ -27,7 +27,7 @@ Legend: **S** ≤ 2 days · **M** 3–5 days · **L** 2–3 weeks · **XL** ≥ 
 
 ---
 
-## 2. Phase B — six items, three done
+## 2. Phase B — six items, all shipped (2026-11-04)
 
 - [x] **B2 — ISO/IMG mounting (read-only)** · shipped `58fe84b`
       `src/iso_mount.rs` + `IsoMountPanel.svelte` · guide `iso-mount.md`
@@ -183,6 +183,6 @@ Kept here so the question does not come back every six months.
 3. **C1 → C2 → C3**. ← **next**
 4. **D2 → D1**.
 
-Phases B–D have no blocker between them. Each item ships with its guide,
+Phase B is complete (B1–B6). Phases C and D have no blocker between them. Each item ships with its guide,
 `API.md` entry, `FeatureDoc`, unit + integration + E2E tests, and `TESTING.md`
 counts, per the definition of done in `CLAUDE.md`.
