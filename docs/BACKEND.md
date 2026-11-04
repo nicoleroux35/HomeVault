@@ -42,6 +42,9 @@ src/
   web_push/             Web Push (phase D2): VAPID keys sealed at rest, RFC
                         8291 encryption on ring, subscription policy, sender
                         (mod.rs, crypto.rs, repo.rs)
+  content_index/        Full-text index (phase D1): opt-in roots, bounded
+                        walker, FTS5 search, ACL filter, retention (mod.rs,
+                        repo.rs)
   rescue/               ddrescue / TestDisk / PhotoRec / mdadm-repair service +
                         SecurityValidator (protected-device blocklist)
   groups.rs             GroupService (incl. is_admin_group)

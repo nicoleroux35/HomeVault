@@ -5,8 +5,9 @@ grepping the tree, not by trusting a document: every "shipped" claim below was
 checked against `src/`, `sqlx/migrations/`, `docs/guides/` or `frontend/src/`.
 Updated **2026-11-06**: Phase B is complete (B1 and B4–B6 shipped on
 2026-11-04; `ffdd7f1`, `3df8a7d`, `82b7c1e`), **C1 shipped on 2026-11-05**, and
-**C2 + C3 shipped on 2026-11-06** — Phase C is complete — and **D2 shipped on
-2026-11-06**. The next (and last) item is **D1**.
+**C2 + C3 shipped on 2026-11-06** — Phase C is complete — **D2 shipped on
+2026-11-06**, and **D1 shipped on 2026-11-06**. **Every item on this list is
+now shipped.**
 
 Sources, in authority order:
 1. `CLAUDE.md` — the rules.
@@ -199,16 +200,30 @@ Legend: **S** ≤ 2 days · **M** 3–5 days · **L** 2–3 weeks · **XL** ≥ 
       generation, 87-char public key, sealed `hv1:` private key, file `0600`.
       No live push service (see below). See `docs/guides/web-push.md`.
 
-- [ ] **D1 — Content index (full-text over file contents)** · **L**
-      `docs/API.md:235` states it explicitly: "**Name search only** (no content
-      index)".
-      *Design note required before the first line of code:* opt-in per root,
-      explicit exclusions, ACL-filtered results (reuse
-      `explorer_roots_for_session`), bounded index size, retention, and a
-      "delete my index" action.
-      *Implementation:* SQLite **FTS5** (already in the tree), not
-      Meilisearch/Elasticsearch — a new daemon contradicts the 1 GB RAM target.
-      Verified absent: no `fts5` in `sqlx/`.
+- [x] **D1 — Content index (full-text over file contents)** · **L** · shipped
+      2026-11-06
+      `src/content_index/` (`mod.rs`, `repo.rs`), migration `078`, `GET
+      /api/search/content`, `GET|PUT /api/search/index`, `POST
+      /api/search/index/run`, `DELETE /api/search/index`, `ContentIndexCard.svelte`,
+      the ⌘K merge in `frontend/src/lib/stores/fileProvider.ts`, and the
+      design note `docs/analysis/d1-content-index-design.md`.
+      *Design constraints honoured:* opt-in per root from the appliance's own
+      Explorer roots, enabling confirmed; text allowlist + name/glob and
+      extension exclusions; hidden entries and symlinks skipped; 1 MiB per
+      file, UTF-8/no-NUL only; 50 000 docs / 256 MiB / 16 roots capped and
+      reported as `truncated`; results filtered by
+      `explorer_roots_for_session` **before** the snippet is built; retention
+      1–3650 days plus per-root pruning; "delete my index" wipes and disables;
+      SQLite **FTS5** (no new daemon) with external-content triggers; queries
+      quoted into at most 8 literals so FTS operators cannot widen them.
+      Verified: `content_index/mod.rs` 14/14, migration-parser +1,
+      `content_index_integration.rs` 9/9 (FTS triggers, retention, admin gate,
+      refusals, delete, ACL), E2E `settings/content-index` 7/7 on Chromium
+      **and** Firefox, `cargo test --lib` 2,553 passed / the same 5
+      pre-existing failures, `npm run check` 0/0, build green. Live probe on a
+      scratch share: 2 text files indexed (a NUL-byte `.txt` skipped),
+      `watermelon` and `banana` both found with snippets, delete removed 2 and
+      disabled the feature. See `docs/guides/content-index.md`.
 
 ---
 
@@ -239,9 +254,9 @@ Kept here so the question does not come back every six months.
       `guided redundancy`, Time Machine, traffic control).
 - [x] `dsm_homevault_comparison.md` re-checked: of its 18 "🔵 À IMPLÉMENTER"
       rows, **17 are shipped** (the local DNS server joined file tags, bond,
-      VLAN and the SNMP agent on 2026-11-05; the reverse proxy on 2026-11-06;
-      the PWA push half on 2026-11-06), **1 is open** (content search ← D1)
-      and 1 is rejected (QuickConnect).
+      VLAN and the SNMP agent on 2026-11-05; the reverse proxy and the PWA push
+      half on 2026-11-06; content search joined them with D1 on 2026-11-06) and
+      1 is rejected (QuickConnect). **No open row remains.**
       **The file is left untouched on purpose** — it is the dated input record,
       and §2 of the implementation plan is its reconciliation. It is untracked
       (repo rule: no standalone root `.md` in commits).
@@ -253,8 +268,8 @@ Kept here so the question does not come back every six months.
 1. ~~**B5 + B6 together**~~ — shipped 2026-11-04.
 2. ~~**B4** (SNMP agent)~~ — shipped 2026-11-04. Phase B is complete.
 3. ~~**C2**~~ and ~~**C3**~~ — shipped 2026-11-06. Phase C is complete.
-4. ~~**D2**~~ — shipped 2026-11-06. **D1** (content index) is next, and needs
-   its design note before the first line of code.
+4. ~~**D2**~~ — shipped 2026-11-06. ~~**D1**~~ — shipped 2026-11-06 with its
+   design note. **The list is complete.**
 
 Phase B is complete (B1–B6). Phases C and D have no blocker between them. Each item ships with its guide,
 `API.md` entry, `FeatureDoc`, unit + integration + E2E tests, and `TESTING.md`
@@ -278,10 +293,11 @@ next one starts from facts rather than from a document.
 | C2 (2026-11-06) | the generic reverse proxy — `src/reverse_proxy/`, migration `076`, `GET|POST|PUT|DELETE /api/proxy/rules`, `GET /proxy-auth`, `ReverseProxyCard.svelte`, guides `reverse-proxy.md` and `analysis/c2-reverse-proxy-design.md` |
 | C3 (2026-11-06) | router port forwarding — `src/upnp.rs`, `GET /api/network/upnp`, `POST|DELETE /api/network/upnp/mappings`, `UpnpCard.svelte`, guide `upnp.md`, optional `miniupnpc` in the installer and dependency inventory |
 | D2 (2026-11-06) | Web Push — `src/web_push/`, migration `077`, push endpoints, `PushCard.svelte`, sender in `notification_engine`, guide `web-push.md` |
+| D1 (2026-11-06) | content index — `src/content_index/`, migration `078`, search/index endpoints, `ContentIndexCard.svelte`, ⌘K merge, guides `content-index.md` and `analysis/d1-content-index-design.md` |
 
 **Verified on this session's machine**
 
-- `cargo test --lib` — **2,538 passed, 5 failed** after D2 (the same five
+- `cargo test --lib` — **2,553 passed, 5 failed** after D1 (the same five
   unrelated failures `TESTING.md` has tracked since Phase A:
   `checksum::…evicts…`, `settings`/`i18n` density ×2, `sse::progress` ×2 — all
   in files no session touched).
@@ -311,6 +327,12 @@ next one starts from facts rather than from a document.
   Chromium and 7/7 on Firefox** with the Push API scripted; live probe of
   `GET /api/notifications/push` on the scratch instance generated the keys
   (`hv1:` sealed, file 0600, 87-char public key).
+- D1 verification: `content_index/mod.rs` **14/14**, the migration parser
+  **+1**, `content_index_integration.rs` **9/9**, E2E
+  `settings/content-index` **7/7 on Chromium and 7/7 on Firefox** with every
+  call intercepted; live probe on a scratch share indexed 2 text files
+  (binary skipped), searched two terms with snippets, then deleted 2 documents
+  and turned the feature off.
 - `npm run check` 0 errors / 0 warnings every time; `npm run build` green;
   `cargo clippy` clean on the added files, `rustfmt` clean.
 - The rendered `dnsmasq` drop-in was syntax-checked with the real `dnsmasq 2.91`
@@ -342,10 +364,10 @@ re-running the same tests**
   single gate in `reconcile_daemon` is covered by unit tests, but a race was
   never produced on a real host.
 
-**Next session starts at D1** (content index) — see §7. **D1 needs its design
-note before the first line of code** (opt-in per root, exclusions,
-ACL-filtered results, bounded index, retention, "delete my index"). Remaining
-live debt from this session: a browser on a second device resolving a
-reverse-proxy rule name through the C1 DNS server, a TLS upstream with a
-publicly trusted certificate, a real UPnP-IGD router, and a real push delivery
-through FCM/Mozilla/Apple (all need a disposable VM/LAN or a real device).
+**No roadmap item is left.** The next work is maintenance or a new roadmap,
+not a queue item. Live debt still owed, unchanged: a browser on a second device
+resolving a reverse-proxy rule name through the C1 DNS server, a TLS upstream
+with a publicly trusted certificate, a real UPnP-IGD router, a real push
+delivery through FCM/Mozilla/Apple, a multi-terabyte content-index run, and the
+pre-existing network/E2E debt listed above (all need a disposable VM/LAN or a
+real device).

@@ -113,6 +113,7 @@ methods, and notable invariants.
 | Reverse proxy (user-defined host → upstream rules, one host-routed listener, cross-host sign-in gate) | [guides/reverse-proxy.md](./guides/reverse-proxy.md) |
 | Router port forwarding (UPnP-IGD: list/add/remove mappings, external address, reversible and confirmed) | [guides/upnp.md](./guides/upnp.md) |
 | Web Push notifications (per-device consent, VAPID, RFC 8291 encryption, revocation, best-effort delivery) | [guides/web-push.md](./guides/web-push.md) |
+| Content search (opt-in FTS5 index, text files only, ACL-filtered results, bounded index, delete-my-index) | [guides/content-index.md](./guides/content-index.md) |
 | USB one-touch copy (copy rules, device matching, checksum verification, safe eject) | [guides/usb-copy.md](./guides/usb-copy.md) |
 | Fan and thermal control (hwmon channels, profiles, 20 % safety floor, failsafe) | [guides/fan-control.md](./guides/fan-control.md) |
 | UPS server mode (NUT server, client allowlist, orderly shutdown, skipped stages) | [guides/ups-server.md](./guides/ups-server.md) |
