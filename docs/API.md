@@ -1522,13 +1522,41 @@ answered `422` and echoed the deserializer's message.
 | GET | `/network/dhcp-server` | auth — `{ config, state, available }`; `state` carries `running`, `leases[]`, `conflict_detected`, `last_error` |
 | PUT | `/network/dhcp-server` | admin — `{ config }`; validates, checks for a conflict, saves **and applies** |
 | POST | `/network/dhcp-server/start` | admin — starts from the saved config; `400` when both switches are off |
-| POST | `/network/dhcp-server/stop` | admin |
+| POST | `/network/dhcp-server/stop` | admin — **`409`** while the local DNS server (which shares the daemon) is on |
 | GET | `/network/dhcp-server/leases` | auth — the live lease table |
 
 A second address server already answering on the interface is a **`409`**, never
 a silent takeover. Validation and the conflict probe both run before anything is
 written, so a refused configuration leaves the previous one and the daemon
 untouched.
+
+## Local DNS server — `network/dns-server`
+
+The appliance's own resolver (phase C1). It is the **same** `dnsmasq` instance
+as the DHCP server — one daemon, one drop-in
+(`/etc/dnsmasq.d/homevault.conf`, composed by `dhcp_server::render_conf`), two
+configuration documents. Configuration lives in
+`{DATA_DIRECTORY}/data/local_dns.json`.
+
+| Method | Path | Auth |
+|--------|------|------|
+| GET | `/network/dns-server` | auth — `{ config, state, available, interfaces[], system_forwarders[], dhcp_enabled }`; `state` carries `running` (the shared daemon) and `serving` (running **and** this feature on) |
+| PUT | `/network/dns-server` | admin — `{ config }`; validated, persisted, then applied by reconciling the shared daemon; a host refusal restores and re-applies the previous document and names the failure |
+
+`config` is `{ enabled, interface, serve_dhcp_clients, forwarders[], records[], overrides[], confirmed }`:
+
+- `records[]` — `{ name, kind: "a" | "cname", value }`. A `cname` target must be
+  an `a` record from the same list (dnsmasq would silently ignore it
+  otherwise), names are lowercased and RFC 1035 validated;
+- `overrides[]` — `{ domain, address }` rendered as `address=/<domain>/<address>`;
+  a leading dot keeps the match on subdomains only;
+- `forwarders[]` — at most 3 upstream resolvers, never loopback;
+- `serve_dhcp_clients` — drop the DHCP card's `dhcp-option=6` list so dnsmasq
+  advertises itself; `400` while the DNS server is off.
+
+Enabling requires an interface, at least one forwarder and `confirmed: true`.
+Every refusal is a `400` whose message names the rule. See
+[`guides/local-dns.md`](./guides/local-dns.md).
 
 ## USB one-touch copy — `usb-copy/*`
 

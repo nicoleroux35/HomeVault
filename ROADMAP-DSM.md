@@ -17,7 +17,7 @@ acceptance criteria needed to pick any item up cold.
 
 | Field | Value |
 |---|---|
-| Status | **Phases 0–4 complete; Phase B shipped (6 of 6).** Every quick win QW-01…QW-13 delivered. Phase 0 closed 2026-11-02 (P0.1: six E2E suites green on Firefox **and** Chromium; P0.2: capability contract, 32 `400`s converted to `503`). Phase 4 hardened by Phase A the same day (22 unauthenticated routes fixed). Phase B: **B2 ISO mounting** (`58fe84b`) and **B3 SMS alerts** (`8e33dd4`) shipped 2026-11-02; B1 (file tags) shipped 2026-11-03, verified live on Chromium and Firefox; B4 (SNMP agent), B5 (link aggregation) and B6 (VLAN) shipped 2026-11-04. Phases C — C1 (local DNS), C2 (generic reverse proxy), C3 (UPnP-IGD) — and D — D1 (content index), D2 (Web Push) — untouched. **5 items left (phases C and D); see `TASKLIST NICOLAS.md` for the order** |
+| Status | **Phases 0–4 complete; Phase B shipped (6 of 6).** Every quick win QW-01…QW-13 delivered. Phase 0 closed 2026-11-02 (P0.1: six E2E suites green on Firefox **and** Chromium; P0.2: capability contract, 32 `400`s converted to `503`). Phase 4 hardened by Phase A the same day (22 unauthenticated routes fixed). Phase B: **B2 ISO mounting** (`58fe84b`) and **B3 SMS alerts** (`8e33dd4`) shipped 2026-11-02; B1 (file tags) shipped 2026-11-03, verified live on Chromium and Firefox; B4 (SNMP agent), B5 (link aggregation) and B6 (VLAN) shipped 2026-11-04; **C1 (local DNS server) shipped 2026-11-05** on the `dnsmasq` the DHCP card already drove (one daemon, one drop-in, one start/stop gate). Phases C — C2 (generic reverse proxy), C3 (UPnP-IGD) — and D — D1 (content index), D2 (Web Push) — untouched. **4 items left (phases C and D); see `TASKLIST NICOLAS.md` for the order** |
 | Reference product | DSM 7.4.1-90080 (Synology DS925+ pat file, extracted) |
 | HomeVault baseline | `main` @ `adf0132` — 75 migrations, 73 guides, 37 screens, 91 integration suites, 2,447 lib tests passing (the same 5 pre-existing failures unrelated to this roadmap, listed in `TESTING.md`) |
 | Method | Static comparison: DSM UI modules, `SYNO.*` API libraries and bundled packages vs HomeVault source, installer package groups and screens |
@@ -95,6 +95,7 @@ in `docs/analysis/dsm-parity-implementation-plan.md`.
 | 19 | Fan control / thermal curves | `src/fan_control.rs` — hwmon PWM, profiles, 20 % floor, failsafe (`docs/guides/fan-control.md`) | Shipped (P4.4) |
 | 20 | UPS server mode (network UPS) + orderly shutdown | `src/ups_server.rs` — client allowlist, five-stage policy, `skipped` reported (`docs/guides/ups-server.md`) | Shipped (P4.1) |
 | 21 | DHCP / TFTP / PXE server | `src/dhcp_server.rs` — dnsmasq, ranges, reservations, leases (`docs/guides/dhcp.md`) | Shipped (P4.3) |
+| 21b | Local DNS server | `src/local_dns.rs` — local A/alias records, answered domains, upstream forwarders, LAN advertisement; the *same* `dnsmasq` as row 21 (`docs/guides/local-dns.md`) | Shipped (C1, 2026-11-05) |
 | 22 | USB one-touch copy | `src/usb_copy.rs` — UUID-matched profiles, checksums, safe eject (`docs/guides/usb-copy.md`) | Shipped (P4.2) |
 | 23 | SHR-style guided redundancy | `src/guided_redundancy.rs` — layout suggestions with capacity/efficiency/risk (`docs/guides/guided-redundancy.md`) | Shipped (P4.5) |
 

@@ -956,11 +956,11 @@ returned, so the field starts empty and blank means "unchanged".
 
 ---
 
-## Settings cards: DHCP server, fan control, UPS server mode
+## Settings cards: DHCP server, local DNS server, fan control, UPS server mode
 
-These three live inside **Settings** (screen 27) rather than as desktop apps.
+These four live inside **Settings** (screen 27) rather than as desktop apps.
 
-### DHCP server (Settings → Network)
+### DHCP server (Settings → Security)
 
 `frontend/src/lib/components/settings/DhcpServerCard.svelte` — DHCP/TFTP
 switches, interface, address range, netmask, gateway, lease time, static
@@ -968,6 +968,17 @@ reservations (add/remove), TFTP root and PXE boot file, live server state, the
 active lease table, and a focus-trapping confirmation before turning either
 server on. A missing `dnsmasq` is reported in place, with the package to
 install. **Guides:** [guides/dhcp.md](./guides/dhcp.md)
+
+### Local DNS server (Settings → Security)
+
+`frontend/src/lib/components/settings/LocalDnsCard.svelte` — the enable switch,
+the answering interface, the upstream forwarder list (add/remove, with the
+appliance's current resolvers offered as suggestions), local names (address or
+alias, one row each), answered domains, the "tell the LAN's DHCP clients to
+resolve here" switch, the shared-daemon state badge, and a focus-trapping
+confirmation before turning the server on. A missing `dnsmasq` is reported in
+place, with the package to install. It is the **same daemon** as the DHCP card
+above it. **Guides:** [guides/local-dns.md](./guides/local-dns.md)
 
 ### Fan control (Settings → Hardware)
 
@@ -987,7 +998,7 @@ policy with a standing note that two stages are **not available** in this build,
 and the daemon state with start/stop. **Guides:**
 [guides/ups-server.md](./guides/ups-server.md)
 
-**Shared invariants for all three:** reads need a session, every mutation is
+**Shared invariants for all four:** reads need a session, every mutation is
 admin-only, and the guard runs **before** the body is deserialized so an
 unauthenticated caller always gets `401` and never a `422` that echoes the
 schema.
@@ -1006,5 +1017,5 @@ schema.
 | Monitoring | 3 (Health, System journal, Metrics) |
 | Productivity | 2 (AI Assistant, Downloader) |
 | Infrastructure | 2 (Docker, Rescue) |
-| Configuration | 1 (Settings — 8 categories, incl. the DHCP server, fan control and UPS server cards) |
+| Configuration | 1 (Settings — 8 categories, incl. the DHCP server, local DNS server, fan control and UPS server cards) |
 | **Total** | **37 main screens** (= the 32 desktop apps + Widgets editor + Login + Setup Wizard + Desktop + the public share page) |

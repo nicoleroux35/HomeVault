@@ -3,8 +3,9 @@
 Working checklist of what is **left to implement**. Derived on 2026-11-03 by
 grepping the tree, not by trusting a document: every "shipped" claim below was
 checked against `src/`, `sqlx/migrations/`, `docs/guides/` or `frontend/src/`.
-Updated **2026-11-04**: Phase B is complete (B1 and B4–B6 shipped in this
-session; `ffdd7f1`, `3df8a7d`, `82b7c1e`). The next item is **C1**.
+Updated **2026-11-05**: Phase B is complete (B1 and B4–B6 shipped on
+2026-11-04; `ffdd7f1`, `3df8a7d`, `82b7c1e`), and **C1 shipped on 2026-11-05**.
+The next item is **C2**.
 
 Sources, in authority order:
 1. `CLAUDE.md` — the rules.
@@ -95,13 +96,28 @@ Legend: **S** ≤ 2 days · **M** 3–5 days · **L** 2–3 weeks · **XL** ≥ 
 
 ## 3. Phase C — network depth, three items
 
-- [ ] **C1 — Local DNS server** · **M**
-      Extend the dnsmasq app: local A/CNAME records, upstream forwarders,
-      `address=/domain/ip` entries, and a "this appliance is the LAN DNS"
-      switch. Reuse `src/dhcp_server.rs`'s config writer and capability gate
-      rather than adding `bind9` — a second daemon contradicts the 1 GB target.
-      *Do C1 before C2* (C2's host rules will want names to resolve).
-      Verified absent: no `address=/domain` generation anywhere.
+- [x] **C1 — Local DNS server** · **M** · shipped 2026-11-05
+      `src/local_dns.rs` + `GET|PUT /api/network/dns-server` +
+      `LocalDnsCard.svelte`. Local A/alias records, `address=/domain/address`
+      entries, up to 3 upstream forwarders, and the "tell the LAN's DHCP clients
+      to resolve here" switch. **No new daemon**: it rides the `dnsmasq` the DHCP
+      card already drives — `dhcp_server::render_conf` composes the *one*
+      drop-in from both halves and `reconcile_daemon` is the single gate that
+      starts, restarts or stops it.
+      *Rules honoured:* off by default and enabling confirmed; `no-resolv` +
+      `domain-needed` + `bogus-priv` + `local-service` so no LAN name leaks to
+      the ISP's resolver and the appliance is never a public resolver; a loopback
+      forwarder refused by name; RFC 1035 names validated (never escaped) so a
+      newline or a `/` cannot inject a directive; an alias whose target the
+      appliance does not serve is a `400` instead of dnsmasq silently ignoring
+      it; one answer per name; the DHCP card's `stop` is a `409` while this is
+      on.
+      Verified: `local_dns.rs` 22/22, `dhcp_server.rs` +5 (15/15),
+      `local_dns_integration.rs` 14/14, `phase4_auth_integration.rs` 6/6,
+      `dhcp_server_integration.rs` 21/21, E2E `settings/local-dns` 12/12 on
+      Chromium **and** Firefox, `npm run check` 0/0, build green. The rendered
+      file was `dnsmasq --test`-ed against the real 2.91. See
+      `docs/guides/local-dns.md`.
 
 - [ ] **C2 — Generic reverse proxy** · **L**
       Host → upstream rules (`host`, `path`, `upstream`, `tls`), reusing
@@ -161,7 +177,7 @@ Kept here so the question does not come back every six months.
 
 ---
 
-## 6. Document hygiene (2026-11-03, refreshed 2026-11-04)
+## 6. Document hygiene (2026-11-03, refreshed 2026-11-05)
 
 - [x] `ROADMAP-DSM.md` "Gap summary" refreshed — 21 of its 23 rows had claimed
       "none" for code that had shipped (`rsync`, `iSCSI`, `replication`,
@@ -169,9 +185,9 @@ Kept here so the question does not come back every six months.
       `Security Advisor`, `fan control`, `UPS server`, `DHCP`, `USB copy`,
       `guided redundancy`, Time Machine, traffic control).
 - [x] `dsm_homevault_comparison.md` re-checked: of its 18 "🔵 À IMPLÉMENTER"
-      rows, **15 are now shipped** (file tags, bond, VLAN and the SNMP agent joined
-      the 11 already done), **3 are open** (content search ← D1, local DNS
-      ← C1, reverse proxy ← C2), 1 is rejected (QuickConnect) and 1 is the PWA's
+      rows, **16 are now shipped** (the local DNS server joined file tags, bond,
+      VLAN and the SNMP agent on 2026-11-05), **2 are open** (content search
+      ← D1, reverse proxy ← C2), 1 is rejected (QuickConnect) and 1 is the PWA's
       missing push half ← D2.
       **The file is left untouched on purpose** — it is the dated input record,
       and §2 of the implementation plan is its reconciliation. It is untracked
@@ -183,7 +199,8 @@ Kept here so the question does not come back every six months.
 
 1. ~~**B5 + B6 together**~~ — shipped 2026-11-04.
 2. ~~**B4** (SNMP agent)~~ — shipped 2026-11-04. Phase B is complete.
-3. **C1 → C2 → C3**. ← **next**
+3. **C2 → C3**. ← **next** (C1 shipped 2026-11-05; C2 can now rely on
+   names resolving locally)
 4. **D2 → D1**.
 
 Phase B is complete (B1–B6). Phases C and D have no blocker between them. Each item ships with its guide,
@@ -192,10 +209,10 @@ counts, per the definition of done in `CLAUDE.md`.
 
 ---
 
-## 8. Session state — 2026-11-04
+## 8. Session state — 2026-11-05
 
-What this session shipped, and what it left behind, so the next one starts from
-facts rather than from a document.
+What the Phase B session and this one shipped, and what they left behind, so the
+next one starts from facts rather than from a document.
 
 **Shipped**
 
@@ -204,27 +221,35 @@ facts rather than from a document.
 | `ffdd7f1` | B1 — private per-user file tags (+ two defects fixed: a tag on a deleted path could not be removed; the ⌘K coverage note was hidden at zero hits, which was making `desktop 6b.3` red on `main`) |
 | `3df8a7d` | B5 + B6 — link aggregation and VLAN devices |
 | `82b7c1e` | B4 — the local SNMP agent |
+| C1 (2026-11-05) | the local DNS server, on the `dnsmasq` the DHCP card already drove — `src/local_dns.rs`, `GET|PUT /api/network/dns-server`, `LocalDnsCard.svelte`, `docs/guides/local-dns.md` |
 
 **Verified on this session's machine**
 
-- `cargo test --lib` — **2,447 passed, 5 failed** (the same five unrelated
+- `cargo test --lib` — **2,474 passed, 5 failed** (the same five unrelated
   failures `TESTING.md` has tracked since Phase A: `checksum::…evicts…`,
-  `settings`/`i18n` density ×2, `sse::progress` ×2 — all in files this session
-  never touched).
-- `tests/explorer_integration.rs` 99/99, `tests/global_search_integration.rs`
-  14/14, `tests/network_integration.rs` 28/28, `tests/snmp_integration.rs`
-  10/10.
-- E2E, live server + scratch `DATA_DIRECTORY`: `explorer 15.5`, `desktop` §6/§6b
-  (14/14), `network` §14, `settings/snmp-agent` — green on Chromium (several
-  also on Firefox).
-- `npm run check` 0 errors / 0 warnings every time; `npm run build` green.
+  `settings`/`i18n` density ×2, `sse::progress` ×2 — all in files no session
+  touched).
+- `tests/local_dns_integration.rs` 14/14, `tests/dhcp_server_integration.rs`
+  21/21, `tests/phase4_auth_integration.rs` 6/6,
+  `tests/explorer_integration.rs` 99/99,
+  `tests/global_search_integration.rs` 14/14,
+  `tests/network_integration.rs` 28/28, `tests/snmp_integration.rs` 10/10.
+- E2E, live server + scratch `DATA_DIRECTORY` (`PORT=8311`): `settings/local-dns`
+  **12/12 on Chromium and 12/12 on Firefox**; `settings/dhcp` and
+  `settings/snmp-agent` 13/13 on Chromium (13/13 on Firefox for the pair run
+  before the C1 commit).
+- `npm run check` 0 errors / 0 warnings every time; `npm run build` green;
+  `cargo clippy` clean on the added files, `rustfmt` clean.
+- The rendered `dnsmasq` drop-in was syntax-checked with the real `dnsmasq 2.91`
+  (`--test` accepts a rendered-shape file and rejects a deliberately broken
+  one); no daemon was restarted.
 
 **Known-failing, pre-existing — verified by rebuilding the pre-change tree and
 re-running the same tests**
 
 - `network.spec.ts` 2.2, 4.3, 8.2, 10.1, 10.5, 13.1, 13.2 — they need a
   configurable interface and expect an unauthenticated `400` where the build
-  answers `401`. Untouched by this session's two network commits.
+  answers `401`. Untouched by the network commits.
 - The five lib failures above.
 - On a developer box whose `/tmp` holds thousands of entries, the Explorer
   suite's `navigateTo`/`openWork` helpers time out; that is the harness, not the
@@ -237,3 +262,12 @@ re-running the same tests**
   `ip link add` / file write is covered; the mutation itself needs a disposable
   VM with at least two spare NICs.
 - `snmpwalk` against the appliance's own agent, same reason.
+- A real `systemctl restart dnsmasq` and a `dig nas.lan @<appliance>` round
+  trip (C1): the same reason — restarting the resolver on the test host breaks
+  the test host. The drop-in was syntax-checked with `dnsmasq --test` instead.
+- The DHCP+DNS reconcile under load (two admins saving both cards at once): the
+  single gate in `reconcile_daemon` is covered by unit tests, but a race was
+  never produced on a real host.
+
+**Next session starts at C2** (generic reverse proxy), which can now rely on
+names resolving locally — see §7.

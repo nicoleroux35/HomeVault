@@ -68,6 +68,12 @@ src/
   shares.rs             Share model/service (SMB/NFS/FTP/WebDAV/SFTP)
   rsync_server.rs       Opt-in rsyncd: module validation, config/secrets/unit
                         rendering, dedicated homevault-rsync service
+  dhcp_server.rs        dnsmasq driver: DHCP/TFTP settings, the *one* drop-in
+                        (/etc/dnsmasq.d/homevault.conf) composed from both halves
+                        (render_conf), the single daemon gate (reconcile_daemon)
+  local_dns.rs          The appliance's resolver: local A/alias records, answered
+                        domains, upstream forwarders, name/domain grammar, the
+                        rendered DNS section (`render_section`)
   backup_target.rs      Backup destination role: tenants, quotas, htpasswd and
                         rest-server unit rendering, integrity checks
   backup_target_scheduler.rs  Quota watchdog (revoke/restore) + daily restic check

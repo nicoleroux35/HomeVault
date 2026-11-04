@@ -11,7 +11,7 @@ they drive `dnsmasq` through `sudo systemctl`.
 
 ## Where it lives
 
-- **Screen:** Settings → Network → **DHCP server** →
+- **Screen:** Settings → Security → **DHCP server** →
   `frontend/src/lib/components/settings/DhcpServerCard.svelte`.
 - **Backend:** `src/dhcp_server.rs` (config validation, `dnsmasq` config
   generation, daemon lifecycle, lease parsing) and
@@ -47,9 +47,18 @@ they drive `dnsmasq` through `sudo systemctl`.
 - **Validation precedes persistence.** `validate_config` and the conflict probe
   both run before anything is written, so a refused configuration leaves the
   previous one intact and the daemon untouched.
-- **Turning both servers off stops the daemon.** "Disabled" and "stopped" are
-  the same state; there is no way to leave `dnsmasq` running against a
-  configuration the admin has turned off.
+- **Turning both servers off stops the daemon — unless the local DNS server is
+  on.** "Disabled" and "stopped" are the same state for this card, but `dnsmasq`
+  is shared with the local DNS server (phase C1, `docs/guides/local-dns.md`):
+  saving with both switches off now goes through
+  `DhcpServerService::reconcile_daemon`, which stops the daemon only when the DNS
+  server is off too, and `POST /stop` answers `409` while it is on. There is
+  still no way to leave `dnsmasq` running against a configuration the admin has
+  turned off.
+- **The drop-in is composed, never written here alone.** Both halves render into
+  the one `/etc/dnsmasq.d/homevault.conf` through
+  `DhcpServerService::render_conf`, including the shared `interface=` /
+  `bind-interfaces` policy. Two files would race for the same directives.
 - **The address range must be inside one subnet.** Start < end, both inside the
   mask. A range that spans two subnets is refused by name.
 - **Turning the server on is confirmed; nothing else is.** It is the one action
@@ -66,8 +75,8 @@ they drive `dnsmasq` through `sudo systemctl`.
 
 | Action | Effect on the host |
 |--------|--------------------|
-| Save with DHCP and/or TFTP on | writes `/etc/dnsmasq.d/homevault.conf`, restarts `dnsmasq`, verifies it is running |
-| Save with both off | stops `dnsmasq` |
+| Save with DHCP and/or TFTP on | writes `/etc/dnsmasq.d/homevault.conf` (DNS half included), restarts `dnsmasq`, verifies it is running |
+| Save with both off | stops `dnsmasq` — or only rewrites the drop-in when the local DNS server is on |
 | Start | starts `dnsmasq` from the saved config; refuses if both switches are off |
 | Stop | stops `dnsmasq` |
 
@@ -85,6 +94,7 @@ error, not a success — the start path re-reads the daemon state.
 
 ## Related
 
+- [Local DNS server](./local-dns.md) — the other half of the same `dnsmasq`
 - [Network interfaces and diagnostics](./network.md)
 - [Firewall](./firewall.md) — `dnsmasq` needs UDP 67/68 and, for PXE, UDP 69
 - [mDNS](./mdns.md) — the other discovery mechanism the appliance offers

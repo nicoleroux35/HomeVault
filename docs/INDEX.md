@@ -109,6 +109,7 @@ methods, and notable invariants.
 | SMS alerts (provider-agnostic gateway, E.164 numbers, one-segment composition) | [guides/sms.md](./guides/sms.md) |
 | ISO / IMG mounting (read-only loop mounts, browsable as a folder) | [guides/iso-mount.md](./guides/iso-mount.md) |
 | DHCP / TFTP / PXE server (address range, static reservations, boot files, live leases) | [guides/dhcp.md](./guides/dhcp.md) |
+| Local DNS server (local names, answered domains, upstream forwarders, DHCP advertisement — the same `dnsmasq`) | [guides/local-dns.md](./guides/local-dns.md) |
 | USB one-touch copy (copy rules, device matching, checksum verification, safe eject) | [guides/usb-copy.md](./guides/usb-copy.md) |
 | Fan and thermal control (hwmon channels, profiles, 20 % safety floor, failsafe) | [guides/fan-control.md](./guides/fan-control.md) |
 | UPS server mode (NUT server, client allowlist, orderly shutdown, skipped stages) | [guides/ups-server.md](./guides/ups-server.md) |

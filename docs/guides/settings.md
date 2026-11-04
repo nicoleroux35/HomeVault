@@ -217,7 +217,8 @@ instead of the plain success toast.
   `general`, `security`, `appearance`, `widgets`, `notifications`, `ai`,
   `monitoring`, `system`. Several groups stack more than one
   `{#if activeCategory === …}` block, each with its own section label: `security`
-  = HTTPS/TLS + Antivirus + Anti-Ransomware + Firewall; `appearance` = wallpaper
+  = HTTPS/TLS + Antivirus + Anti-Ransomware + Firewall + the DHCP server + the
+  local DNS server (phase C1); `appearance` = wallpaper
   grid only; `widgets` = active monitors + refresh interval + weather widget;
   `notifications` = e-mail/SMTP + alerts + webhook; `monitoring` = UPS + SNMP;
   `system` = software update + system information + data management + privacy.
@@ -343,9 +344,12 @@ wording already exists there — no duplicated string.
   immediate actions, not `draft` fields, so the rail-footer Save never
   applies to them.
 - Security cards on Settings: `TlsCard.svelte`, `AntivirusCard.svelte`,
-  `AntiRansomwareCard.svelte`, `FirewallCard.svelte` — see
+  `AntiRansomwareCard.svelte`, `FirewallCard.svelte`, plus the two network
+  service cards `DhcpServerCard.svelte` and `LocalDnsCard.svelte` — see
   [HTTPS/TLS](./tls.md), [Antivirus](./antivirus.md),
-  [Anti-Ransomware](./ransomware.md), [Firewall](./firewall.md).
+  [Anti-Ransomware](./ransomware.md), [Firewall](./firewall.md),
+  [DHCP server](./dhcp.md) and [Local DNS server](./local-dns.md). The two
+  network cards share one `dnsmasq` daemon and say so. See
   `TlsCard` (2026-09-09) configures the built-in HTTPS listener
   (`GET/PUT /api/settings/tls`, `POST /api/settings/tls/regenerate`); its
   editable fields are flushed by the screen-wide Save button, with the

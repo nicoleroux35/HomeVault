@@ -8,6 +8,24 @@ follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **Local DNS server (2026-11-05, phase C1).** Settings → Security → **Local
+  DNS server** lets the appliance answer the names of your own network instead
+  of leaving that to the router — the counterpart of the DHCP server it shares
+  a `dnsmasq` with. Three kinds of answer: **local names** (an address for
+  `nas.lan`, or an alias of another local name), **answered domains** (every
+  name under `.corp.lan` gets one address and is never forwarded) and the
+  **upstream servers** that handle everything else. One switch tells the devices
+  that take their address from the appliance to resolve their names here too.
+  Nothing leaks outward: single names are never forwarded, reverse lookups of
+  private ranges never leave the network, the host's own resolver is ignored in
+  favour of the servers you list, and a loopback upstream is refused. Names are
+  grammar-checked (never escaped, so no line can inject a directive), an alias
+  whose target the appliance does not serve is refused instead of being silently
+  ignored, and turning the server on is confirmed. Since the address server and
+  the name server are one program, the DHCP card now says so: stopping it is
+  refused while the name server is on, and turning DHCP off no longer silences
+  a running name server. See `docs/guides/local-dns.md`.
+
 - **See, verify and remember every transfer in the File Explorer (2026-10-31,
   QW-13).** A comparison against DSM 7's File Station found HomeVault ahead on
   the fundamentals (chunked resumable uploads, a SHA-256 download digest, the
