@@ -485,8 +485,10 @@ found under) and `root_kind` (`home` / `users` / `shares` / `media` / `storage`
   files, and breaks the last tie on the path so two identical runs cannot
   reorder the list. `dedupe_roots` resolves symlinks so `/mnt/data` and
   `/mnt/data-link` are one walk.
-- **Name search only.** Content indexing is explicitly out of scope for this
-  version; the module's docs say so and no index is built.
+- **Name search by default.** This provider walks names; the opt-in content
+  index (D1, `docs/guides/content-index.md`) is queried beside it by the ⌘K
+  overlay and merged by `fileProvider.ts`. A caller that leaves content search
+  off sees exactly the name results described here.
 
 ### Frontend
 

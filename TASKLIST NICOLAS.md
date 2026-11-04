@@ -235,7 +235,7 @@ Kept here so the question does not come back every six months.
 |---|---|
 | QuickConnect-style relay | Central infrastructure, account dependency, third-party traffic. ACME + DDNS + reachability + VPN already cover the job. |
 | Synology C2 / Hybrid Share / Active Insight | Proprietary cloud, vendor account, telemetry — contrary to the product. |
-| Native mobile apps | The installable PWA exists; finish D2 first. |
+| Native mobile apps | The installable PWA and the D2 Web Push backend now exist; native apps would duplicate them. |
 | HA cluster (Pacemaker/DRBD) | Needs fencing, shared identity and split-brain handling. A home appliance is better served by tested restore + replication. |
 | L2TP/IPSec, Mail server, Chat, Surveillance | Niche or out of scope; the Docker catalog already covers Chat/Surveillance/Photos. |
 | SHR metadata | Proprietary. `guided_redundancy` gives the same advice with standard layouts. |
@@ -364,10 +364,71 @@ re-running the same tests**
   single gate in `reconcile_daemon` is covered by unit tests, but a race was
   never produced on a real host.
 
-**No roadmap item is left.** The next work is maintenance or a new roadmap,
-not a queue item. Live debt still owed, unchanged: a browser on a second device
-resolving a reverse-proxy rule name through the C1 DNS server, a TLS upstream
-with a publicly trusted certificate, a real UPnP-IGD router, a real push
-delivery through FCM/Mozilla/Apple, a multi-terabyte content-index run, and the
-pre-existing network/E2E debt listed above (all need a disposable VM/LAN or a
-real device).
+**No roadmap item is left.** The next work is §9 (test-suite hygiene), then
+maintenance or a new roadmap. Live debt still owed, unchanged: a browser on a
+second device resolving a reverse-proxy rule name through the C1 DNS server, a
+TLS upstream with a publicly trusted certificate, a real UPnP-IGD router, a
+real push delivery through FCM/Mozilla/Apple, a multi-terabyte content-index
+run, and the pre-existing network/E2E debt listed above (all need a disposable
+VM/LAN or a real device).
+
+---
+
+## 9. Next implementation — green the suite (no feature left)
+
+Every roadmap item is shipped, so the highest-value next change is not a new
+feature: it is removing the **12 red tests** the project has carried since
+Phase A. They currently hide real regressions (the appearance drift below is
+one) and make "known-failing" the normal state. Effort **S–M** (1–2 days).
+
+### 9.1 `AppearanceSettings.density` is still shipped (real drift)
+
+`src/handlers/settings.rs:559` still declares `density` in the struct and sets
+`"comfortable"` in `Default`, so the API echoes a field ROADMAP 26.2 removed;
+`settings.density` and the `density_*` labels remain in all four
+`src/i18n/*.toml`. The two failing tests
+(`handlers::settings::…appearance…`, `i18n::…appearance_keys…`) are right.
+Fix: drop the field and default, delete the dead i18n keys, keep the
+"old payload still deserializes" guarantee (serde ignores unknown fields), and
+confirm no frontend reader exists (`grep -rn density frontend/src` is clean).
+
+### 9.2 SSE progress: one return contract, one wrong expectation
+
+`src/sse/progress.rs:1328` — `emit_transfer_progress` returns
+`job.sender.send(event).is_ok()`, which is `false` when no subscriber is
+attached even though the job's last event was updated. No production caller
+uses the return value; make every `emit_*` return **"the job exists and its
+last event was recorded"** (ignore the broadcast result), which is what the
+test asserts. `test_speed_tracker_prunes…` expects `5 MB/s` for
+`10 MB` over `1 s`; either move the sample to `t+12 s` (keeping 5 MB/s) or
+assert `10 MB/s`. Fix the **test datum**, not the tracker.
+
+### 9.3 Checksum test mixing the cap and the TTL
+
+`src/checksum.rs:562` inserts outcomes with `recorded_at = 1000 + i` but a
+fixed `now = 1000`, then advances `now` to `2000`: the 15-minute TTL prunes 101
+rows before the cap is exercised (156 ≠ 256). Use one timestamp for the bulk
+insert, then a second insert still inside the TTL; the existing expiry test
+already covers the boundary. No production change.
+
+### 9.4 `network.spec.ts` §2.2, 4.3, 8.2, 10.1, 10.5, 13.1, 13.2
+
+These are stale expectations, verified on the pre-change tree: they expect an
+unauthenticated `400` where the shared guard answers `401`, and assume a fixed
+interface name. Update them to assert `401`, and resolve the interface from the
+API instead of hard-coding one (or use the card's own "no configurable
+interface" state). Run on Chromium **and** Firefox.
+
+### 9.5 Documentation cleanup in the same change
+
+- `ROADMAP-DSM.md` gap summary: row 17 still claims push is missing (D2 fixed
+  it); the intro still says "rows 16 and 17".
+- The Universal Search sections still say content indexing is out of scope (D1
+  shipped it as a separate opt-in).
+- `docs/guides/explorer.md` §"Name search only" still says no index is built.
+- `TESTING.md` and this file: delete the "known-failing, pre-existing" list once
+  green, so it can never silently absorb a new failure.
+
+**Acceptance:** `cargo test --lib` **0 failed** (not 5), `network.spec.ts`
+green on both browsers, `npm run check` 0/0, `npm run build` green, and the
+five `TESTING.md` "pre-existing" entries replaced by "none".

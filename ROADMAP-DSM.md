@@ -66,11 +66,11 @@ that improve already-shipped capabilities.
 
 ## Gap summary
 
-Refreshed 2026-11-02 against the working tree: 21 of the 23 rows below were
+Refreshed 2026-11-06 against the working tree: 21 of the 23 rows below were
 listed as unbuilt long after the code shipped, which made this table contradict
-the detail sections further down. Only rows 16 and 17 remain open (both
-deliberate), and the genuine remaining scope lives in the per-phase sections and
-in `docs/analysis/dsm-parity-implementation-plan.md`.
+the detail sections further down. Row 16 remains **open (deliberate)**; row 17
+is now shipped (D2 added the missing push backend). No feature item remains —
+the next work is test-suite hygiene, tracked in `TASKLIST NICOLAS.md` §9.
 
 | # | DSM capability | HomeVault today | Item |
 |---|---|---|---|
@@ -90,7 +90,7 @@ in `docs/analysis/dsm-parity-implementation-plan.md`.
 | 14 | Configuration backup & restore | full appliance archive with optional secrets and passphrase (`src/config_backup.rs`, QW-11) | Shipped |
 | 15 | AD / LDAP + SSO (OIDC, SAML) | `src/directory.rs` + `src/oidc.rs` + `src/saml.rs` (`docs/guides/directory-sso.md`) | Shipped (P3.1) |
 | 16 | Photos / Video / Audio stations | Docker catalog (Immich, Jellyfin, Navidrome) — deliberate: integrate, do not rebuild | **Open (deliberate)** |
-| 17 | Mobile apps, push notifications | installable PWA (`manifest.json` + `sw.js`, which already handles `push`); **no VAPID keys, no subscription, no sender** | **Open** |
+| 17 | Mobile apps, push notifications | installable PWA (`manifest.json` + `sw.js`) + **D2 Web Push backend**: VAPID keys sealed at rest, per-device subscriptions, RFC 8291 encryption, sender (`src/web_push/`, `docs/guides/web-push.md`) | Shipped (D2, 2026-11-06) |
 | 18 | Security Advisor (hardening audit) | `src/security_advisor.rs` — unified read-only checklist with severity, evidence and score (`docs/guides/health.md`) | Shipped (QW-10) |
 | 19 | Fan control / thermal curves | `src/fan_control.rs` — hwmon PWM, profiles, 20 % floor, failsafe (`docs/guides/fan-control.md`) | Shipped (P4.4) |
 | 20 | UPS server mode (network UPS) + orderly shutdown | `src/ups_server.rs` — client allowlist, five-stage policy, `skipped` reported (`docs/guides/ups-server.md`) | Shipped (P4.1) |
@@ -1472,7 +1472,8 @@ and the answer lists them in `needs_root`).
 > needs it to keep file results tight), the fan-out is capped at 16 roots with a
 > 1.5 s per-root and 4 s total budget, and the answer reports `timed_out` /
 > `unreadable` / `truncated` so a partial result can never masquerade as a
-> complete one. Content indexing remains out of scope, as proposed.
+> complete one. Content indexing was later shipped as the opt-in D1 index
+> (`docs/guides/content-index.md`), not as part of this name-search item.
 
 **DSM reference**: `SynologyUniversalSearch` package + `SYNO.Core.UISearch` —
 search file names and indexed content across every shared folder, with filters.
@@ -1489,8 +1490,8 @@ is a cross-root file provider with the same ACL filter the Explorer uses.
 **Proposal**: add a file provider to the desktop search overlay: fan out the
 existing recursive search over every allowed root the session can read
 (`state.path_guard`), merge, dedupe, rank, cap results; respect the same
-`validate_path_access` filter. Content indexing is explicitly out of scope for
-this win (name search only).
+`validate_path_access` filter. This item stays name-only; content search is the
+separate opt-in D1 index (SQLite FTS5), shipped 2026-11-06.
 
 **Acceptance**: a filename only present in a share the user can read is found
 from the desktop, and a file in a share the user *cannot* read never appears;
