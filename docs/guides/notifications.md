@@ -220,3 +220,9 @@ that fail loudly instead of silently misparsing.
 
 - [Settings](./settings.md), [Health](./health.md),
   [Backup / Restic](./backup-restic.md), [API Contract](../API.md)
+
+## Web Push
+
+Browser push to a subscribed device has its own guide:
+[`web-push.md`](./web-push.md). It covers the HTTPS requirement, the
+per-device consent and revocation, and the delivery semantics.

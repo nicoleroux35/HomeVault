@@ -1329,6 +1329,24 @@ affects the caller. Deleting the shared feed is admin-only. See
 | GET | `/notifications/events/config` | admin | `handle_notification_events_config_get` — event catalog + per-event state + `webhook_format` |
 | PUT | `/notifications/events/config` | admin | `handle_notification_events_config_update` — `{ events?: {id: bool}, webhook_format?: "generic"\|"slack"\|"discord" }` |
 
+## Web Push — `notifications/push/*` (`auth`)
+
+Per-device browser push (phase D2). Consent is personal, so these routes are
+not admin-only: each account manages its own devices, and the three
+subscription secrets (endpoint, `p256dh`, `auth`) are never returned. The VAPID
+private key is sealed with the appliance key; only the public key is exposed.
+See [guides/web-push.md](./guides/web-push.md).
+
+| Method | Path | Auth | Handler |
+|--------|------|------|---------|
+| GET | `/notifications/push` | auth | `handle_push_get` — `{ available, public_key, subscriptions[], max_devices, error }`; `available: false` (with `error`) when the VAPID keys cannot be prepared |
+| POST | `/notifications/push/subscribe` | auth | `handle_push_subscribe` — `{ endpoint, keys: { p256dh, auth } }`; the endpoint must be HTTPS on 443 and resolve to a public address, `p256dh` a 65-byte uncompressed P-256 point, `auth` exactly 16 bytes; at most 10 devices per account |
+| DELETE | `/notifications/push/subscribe/{id}` | auth | `handle_push_unsubscribe` — revokes one of the **caller's** devices; `404` for a foreign or unknown id |
+
+A subscription is stored only after the browser permission and this POST; a
+`404`/`410` from the push service removes the device, and a VAPID key
+regeneration leaves every existing device requiring re-enable.
+
 ## What's New — `whats-new/*` (`auth`)
 
 Per-user release highlights shown once per version. See

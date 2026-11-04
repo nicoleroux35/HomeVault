@@ -180,7 +180,7 @@ suites green, `docs/INDEX.md`/`API.md`/`SCREENS.md`/`TESTING.md` updated, and a
 | ID | Work item | Effort | Notes |
 |---|---|---|---|
 | **D1** | **Content index** (source #1) | L | The only item the source document ranks correctly as high effort. Design constraints before code: opt-in per root, explicit exclusion list, ACL-filtered results (reuse `explorer_roots_for_session`), bounded index size, retention, and a "delete my index" action. Prefer an embedded index (SQLite FTS5, already in the tree) over adding Meilisearch/Elasticsearch — a new daemon contradicts the 1 GB RAM target. |
-| **D2** | **Web Push backend** (source #12) | L | `sw.js` already handles `push`; add VAPID key generation, `POST /api/notifications/subscribe`, a sender in `src/notification_engine.rs`, and per-device revocation. Gate behind explicit consent (RGPD) and document the delivery semantics. |
+| **D2** | **Web Push backend** | L | **Shipped 2026-11-06** — VAPID keys sealed at rest, `GET /api/notifications/push`, `POST\|DELETE /api/notifications/push/subscribe`, RFC 8291 `aes128gcm` on `ring`, sender in `src/notification_engine.rs`, per-device revocation and expired-device cleanup. Guide: `docs/guides/web-push.md`. |
 
 ### Phase E — Deferred / rejected
 

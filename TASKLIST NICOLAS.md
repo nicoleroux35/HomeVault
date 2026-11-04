@@ -5,8 +5,8 @@ grepping the tree, not by trusting a document: every "shipped" claim below was
 checked against `src/`, `sqlx/migrations/`, `docs/guides/` or `frontend/src/`.
 Updated **2026-11-06**: Phase B is complete (B1 and B4–B6 shipped on
 2026-11-04; `ffdd7f1`, `3df8a7d`, `82b7c1e`), **C1 shipped on 2026-11-05**, and
-**C2 + C3 shipped on 2026-11-06** — Phase C is complete. The next item is
-**D2**.
+**C2 + C3 shipped on 2026-11-06** — Phase C is complete — and **D2 shipped on
+2026-11-06**. The next (and last) item is **D1**.
 
 Sources, in authority order:
 1. `CLAUDE.md` — the rules.
@@ -170,14 +170,34 @@ Legend: **S** ≤ 2 days · **M** 3–5 days · **L** 2–3 weeks · **XL** ≥ 
 
 ## 4. Phase D — two large items
 
-- [ ] **D2 — Web Push backend** · **L**
-      `frontend/public/sw.js:107` already has a `push` handler, but there is
-      **no VAPID key, no subscription endpoint, no sender** — the handler can
-      never fire. Add key generation, `POST /api/notifications/subscribe`, a
-      sender in `src/notification_engine.rs`, per-device revocation.
-      *Order:* do this **before** D1 — the service worker is already half
-      written, whereas D1 needs a design note first.
-      *GDPR:* explicit consent, documented delivery semantics.
+- [x] **D2 — Web Push backend** · **L** · shipped 2026-11-06
+      `src/web_push/` (`mod.rs`, `crypto.rs`, `repo.rs`), migration `077`, `GET
+      /api/notifications/push`, `POST|DELETE
+      /api/notifications/push/subscribe`, `PushCard.svelte`, and the sender
+      hook in `src/notification_engine.rs`. `frontend/public/sw.js` now
+      handles `tag`, `requireInteraction` for critical alerts and focuses an
+      existing window on click.
+      *Rules honoured:* VAPID P-256 pair generated once, private half sealed
+      with the appliance key (`hv1:`) and the file `0600`, only the public key
+      exposed; a subscription exists only after the browser permission and an
+      explicit click; the endpoint must be HTTPS on 443 and resolve to a
+      **public** address (SSRF guard), redirects are not followed; `p256dh` is
+      a 65-byte uncompressed point and `auth` exactly 16 bytes; 10 devices per
+      account; RFC 8291 `aes128gcm` on `ring` (ECDH P-256, HKDF-SHA256,
+      AES-128-GCM) with the RFC Appendix A vector as the test; delivery is
+      best-effort with a 24 h TTL, no retry queue, `404`/`410` removes the
+      device, ten other failures remove it, `401`/`403` is treated as a key
+      problem and keeps the device; every device is revocable by its owner and
+      account deletion cascades.
+      *GDPR:* title/message/link only, per-device encryption, the push service
+      sees endpoint/timing/size but not content, consent and revocation are
+      per device — all documented in the guide.
+      Verified: `web_push/crypto.rs` 10/10 (RFC vector), `web_push/mod.rs`
+      6/6, `web_push_integration.rs` 10/10, E2E `settings/web-push` 7/7 on
+      Chromium **and** Firefox, `cargo test --lib` 2,538 passed / the same 5
+      pre-existing failures, `npm run check` 0/0, build green. Live probe: key
+      generation, 87-char public key, sealed `hv1:` private key, file `0600`.
+      No live push service (see below). See `docs/guides/web-push.md`.
 
 - [ ] **D1 — Content index (full-text over file contents)** · **L**
       `docs/API.md:235` states it explicitly: "**Name search only** (no content
@@ -218,10 +238,10 @@ Kept here so the question does not come back every six months.
       `Security Advisor`, `fan control`, `UPS server`, `DHCP`, `USB copy`,
       `guided redundancy`, Time Machine, traffic control).
 - [x] `dsm_homevault_comparison.md` re-checked: of its 18 "🔵 À IMPLÉMENTER"
-      rows, **17 are now shipped** (the local DNS server joined file tags, bond,
-      VLAN and the SNMP agent on 2026-11-05; the reverse proxy on 2026-11-06),
-      **1 is open** (content search ← D1), 1 is rejected (QuickConnect) and
-      1 is the PWA's missing push half ← D2.
+      rows, **17 are shipped** (the local DNS server joined file tags, bond,
+      VLAN and the SNMP agent on 2026-11-05; the reverse proxy on 2026-11-06;
+      the PWA push half on 2026-11-06), **1 is open** (content search ← D1)
+      and 1 is rejected (QuickConnect).
       **The file is left untouched on purpose** — it is the dated input record,
       and §2 of the implementation plan is its reconciliation. It is untracked
       (repo rule: no standalone root `.md` in commits).
@@ -233,7 +253,8 @@ Kept here so the question does not come back every six months.
 1. ~~**B5 + B6 together**~~ — shipped 2026-11-04.
 2. ~~**B4** (SNMP agent)~~ — shipped 2026-11-04. Phase B is complete.
 3. ~~**C2**~~ and ~~**C3**~~ — shipped 2026-11-06. Phase C is complete.
-4. **D2** (Web Push backend) → **D1** (content index). ← **next**
+4. ~~**D2**~~ — shipped 2026-11-06. **D1** (content index) is next, and needs
+   its design note before the first line of code.
 
 Phase B is complete (B1–B6). Phases C and D have no blocker between them. Each item ships with its guide,
 `API.md` entry, `FeatureDoc`, unit + integration + E2E tests, and `TESTING.md`
@@ -256,10 +277,11 @@ next one starts from facts rather than from a document.
 | C1 (2026-11-05) | the local DNS server, on the `dnsmasq` the DHCP card already drove — `src/local_dns.rs`, `GET|PUT /api/network/dns-server`, `LocalDnsCard.svelte`, `docs/guides/local-dns.md` |
 | C2 (2026-11-06) | the generic reverse proxy — `src/reverse_proxy/`, migration `076`, `GET|POST|PUT|DELETE /api/proxy/rules`, `GET /proxy-auth`, `ReverseProxyCard.svelte`, guides `reverse-proxy.md` and `analysis/c2-reverse-proxy-design.md` |
 | C3 (2026-11-06) | router port forwarding — `src/upnp.rs`, `GET /api/network/upnp`, `POST|DELETE /api/network/upnp/mappings`, `UpnpCard.svelte`, guide `upnp.md`, optional `miniupnpc` in the installer and dependency inventory |
+| D2 (2026-11-06) | Web Push — `src/web_push/`, migration `077`, push endpoints, `PushCard.svelte`, sender in `notification_engine`, guide `web-push.md` |
 
 **Verified on this session's machine**
 
-- `cargo test --lib` — **2,522 passed, 5 failed** after C3 (the same five
+- `cargo test --lib` — **2,538 passed, 5 failed** after D2 (the same five
   unrelated failures `TESTING.md` has tracked since Phase A:
   `checksum::…evicts…`, `settings`/`i18n` density ×2, `sse::progress` ×2 — all
   in files no session touched).
@@ -283,6 +305,12 @@ next one starts from facts rather than from a document.
   handler **1/1**, E2E `settings/upnp` **9/9 on Chromium and 9/9 on Firefox**
   with every router call intercepted; dependency-inventory and English-only
   installer tests stay green with the new `miniupnpc` optional package.
+- D2 verification: `web_push/crypto.rs` **10/10** (the RFC 8291 Appendix A
+  vector byte-for-byte), `web_push/mod.rs` **6/6**,
+  `web_push_integration.rs` **10/10**, E2E `settings/web-push` **7/7 on
+  Chromium and 7/7 on Firefox** with the Push API scripted; live probe of
+  `GET /api/notifications/push` on the scratch instance generated the keys
+  (`hv1:` sealed, file 0600, 87-char public key).
 - `npm run check` 0 errors / 0 warnings every time; `npm run build` green;
   `cargo clippy` clean on the added files, `rustfmt` clean.
 - The rendered `dnsmasq` drop-in was syntax-checked with the real `dnsmasq 2.91`
@@ -314,8 +342,10 @@ re-running the same tests**
   single gate in `reconcile_daemon` is covered by unit tests, but a race was
   never produced on a real host.
 
-**Next session starts at D2** (Web Push backend) — see §7. Phase C is
-complete. Remaining live debt from this session: a browser on a second device
-resolving a reverse-proxy rule name through the C1 DNS server, a TLS upstream
-with a publicly trusted certificate, and a real UPnP-IGD router (all three need
-a disposable VM/LAN).
+**Next session starts at D1** (content index) — see §7. **D1 needs its design
+note before the first line of code** (opt-in per root, exclusions,
+ACL-filtered results, bounded index, retention, "delete my index"). Remaining
+live debt from this session: a browser on a second device resolving a
+reverse-proxy rule name through the C1 DNS server, a TLS upstream with a
+publicly trusted certificate, a real UPnP-IGD router, and a real push delivery
+through FCM/Mozilla/Apple (all need a disposable VM/LAN or a real device).

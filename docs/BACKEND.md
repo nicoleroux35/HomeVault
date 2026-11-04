@@ -39,6 +39,9 @@ src/
                         proxy.rs, ticket.rs)
   upnp.rs               Router port forwarding (phase C3): upnpc argv/listing
                         validation, private-client policy, bounded calls
+  web_push/             Web Push (phase D2): VAPID keys sealed at rest, RFC
+                        8291 encryption on ring, subscription policy, sender
+                        (mod.rs, crypto.rs, repo.rs)
   rescue/               ddrescue / TestDisk / PhotoRec / mdadm-repair service +
                         SecurityValidator (protected-device blocklist)
   groups.rs             GroupService (incl. is_admin_group)
