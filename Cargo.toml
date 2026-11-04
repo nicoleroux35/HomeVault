@@ -100,6 +100,11 @@ mime_guess = "2"
 # self-signed certificate generation (rcgen) and introspection (x509-parser).
 axum-server = { version = "0.8", features = ["tls-rustls"] }
 rcgen = "0.14"
+# Root certificates for the generic reverse proxy's HTTPS upstreams. Already a
+# transitive dependency of rustls; naming it directly is what lets
+# `reverse_proxy` build a client config without a second trust store.
+webpki-root-certs = "1"
+
 # rustls-pemfile 2.2.0 is marked unmaintained (RUSTSEC-2025-0134).
 # The crate is still functional and the rustls project continues to use it.
 # There is no maintained drop-in replacement yet. The RustCrypto pem-rfc7468

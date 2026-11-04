@@ -99,6 +99,7 @@ pub mod replication_scheduler;
 pub mod rescue;
 pub mod restic;
 pub mod restic_scheduler;
+pub mod reverse_proxy;
 pub mod rsync_server;
 pub mod saml;
 pub mod scheduled_tasks_scheduler;

@@ -1558,6 +1558,7 @@ dependencies = [
  "url",
  "uuid",
  "validator",
+ "webpki-root-certs",
  "x509-parser",
  "xml",
 ]

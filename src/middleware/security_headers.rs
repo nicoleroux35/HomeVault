@@ -119,11 +119,13 @@ pub async fn security_headers_middleware(
         HeaderValue::from_static("1; mode=block"),
     );
 
-    // Only send the origin as Referer for cross-origin requests.
-    headers.insert(
-        header::REFERRER_POLICY,
-        HeaderValue::from_static("strict-origin-when-cross-origin"),
-    );
+    // Only send the origin as Referer for cross-origin requests. A handler
+    // that carries a one-time credential in the URL (the generic proxy's
+    // `__hv_proxy_auth` callback) may tighten this to `no-referrer`; its value
+    // must survive, so the default is inserted only when absent.
+    headers
+        .entry(header::REFERRER_POLICY)
+        .or_insert(HeaderValue::from_static("strict-origin-when-cross-origin"));
 
     // Deny access to sensitive device APIs (camera, mic, geolocation, etc.).
     headers.insert(

@@ -97,6 +97,7 @@ pub mod replication;
 pub mod rescue;
 pub mod resource_shares;
 pub mod restic;
+pub mod reverse_proxy;
 pub mod rsync;
 pub mod saml;
 pub mod scheduled_tasks;

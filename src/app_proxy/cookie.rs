@@ -93,19 +93,26 @@ pub fn app_session_from_cookie_header(header: &str) -> Option<&str> {
     cookie_value(header, APP_SESSION_COOKIE)
 }
 
-/// Attach `Set-Cookie: hv_app_session=<token>` to a response. `HttpOnly` so
-/// page scripts can't read it; `SameSite=Lax` so a top-level navigation to the
-/// app origin carries it. Deliberately never `Secure` — even when the dashboard
-/// runs HTTPS, the per-app proxy listeners stay plain HTTP, and a `Secure`
-/// cookie is dropped by the browser on any `http://` origin, which would make
-/// the gated apps permanently unavailable. The token is proxy-scoped: it
-/// grants nothing against the API and is stripped before requests reach the
-/// container upstream.
-pub fn attach_app_session(mut resp: Response, token: &str) -> Response {
-    let cookie = format!(
+/// The `Set-Cookie` value for an app-proxy session. Exposed separately so the
+/// generic reverse proxy, whose listener answers in `hyper` types rather than
+/// `axum::Response`, can set the same credential without a second format.
+///
+/// `HttpOnly` so page scripts can't read it; `SameSite=Lax` so a top-level
+/// navigation to the proxied origin carries it. Deliberately never `Secure` —
+/// even when the dashboard runs HTTPS, the proxy listeners stay plain HTTP,
+/// and a `Secure` cookie is dropped by the browser on any `http://` origin,
+/// which would make gated services permanently unavailable. The token is
+/// proxy-scoped: it grants nothing against the API and is stripped before
+/// requests reach the upstream.
+pub fn app_session_cookie(token: &str) -> String {
+    format!(
         "{APP_SESSION_COOKIE}={token}; Path=/; HttpOnly; SameSite=Lax; Max-Age={REMEMBER_MAX_AGE}"
-    );
-    if let Ok(v) = HeaderValue::from_str(&cookie) {
+    )
+}
+
+/// Attach `Set-Cookie: hv_app_session=<token>` to a response.
+pub fn attach_app_session(mut resp: Response, token: &str) -> Response {
+    if let Ok(v) = HeaderValue::from_str(&app_session_cookie(token)) {
         resp.headers_mut().append(SET_COOKIE, v);
     }
     resp

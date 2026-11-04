@@ -88,6 +88,11 @@ use crate::handlers::{
     local_dns::{
         handle_get as handle_local_dns_get, handle_update as handle_local_dns_update,
     },
+    reverse_proxy::{
+        handle_create as handle_proxy_rule_create, handle_delete as handle_proxy_rule_delete,
+        handle_list as handle_proxy_rules_list, handle_proxy_auth,
+        handle_update as handle_proxy_rule_update,
+    },
     directory::{
         handle_directory_get, handle_directory_settings_put, handle_directory_test,
         handle_identity_delete, handle_identity_disabled,
@@ -1534,6 +1539,19 @@ pub fn create_app(state: AppStateArc) -> Router {
         // Phase C1 — Local DNS server (the same dnsmasq instance).
         .route("/api/network/dns-server", get(handle_local_dns_get))
         .route("/api/network/dns-server", put(handle_local_dns_update))
+        // Phase C2 — Generic reverse proxy: user-defined host → upstream
+        // rules, served by a dedicated listener (see docs/guides/reverse-proxy.md).
+        .route(
+            "/api/proxy/rules",
+            get(handle_proxy_rules_list).post(handle_proxy_rule_create),
+        )
+        .route(
+            "/api/proxy/rules/{id}",
+            axum::routing::put(handle_proxy_rule_update).delete(handle_proxy_rule_delete),
+        )
+        // Browser navigation entry for a gated rule: validates the real
+        // session cookie and hands the listener a one-time ticket.
+        .route("/proxy-auth", get(handle_proxy_auth))
         // Phase 4 — Fan Control
         .route("/api/system/fans", get(handle_channels_list))
         .route("/api/system/fans/config", get(handle_config_get))
@@ -2732,6 +2750,19 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         )
         .await;
     });
+
+    // Generic reverse proxy (phase C2): one host-routed listener for the
+    // user-defined rules. A bind failure is reported by the status endpoint,
+    // never fatal — the dashboard and the CRUD API keep working.
+    crate::reverse_proxy::REVERSE_PROXY.init(settings.port);
+    {
+        let proxy_pool = state.db.pool();
+        tokio::spawn(async move {
+            if let Err(e) = crate::reverse_proxy::REVERSE_PROXY.start(proxy_pool).await {
+                tracing::warn!("Reverse proxy: {e}");
+            }
+        });
+    }
 
     // Built-in WebDAV server (in-process, `crate::webdav`): drop the legacy
     // generated Python/systemd service on an upgraded host, then start it when
