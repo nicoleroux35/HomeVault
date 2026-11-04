@@ -204,7 +204,6 @@ impl PersistedSettings {
                 .appearance
                 .as_ref()
                 .and_then(|a| a.accent_color.clone()),
-            density: self.appearance.as_ref().and_then(|a| a.density.clone()),
         }
     }
 }
@@ -266,7 +265,8 @@ impl SettingsPersistence {
                 theme: None,
                 wallpaper: appearance.wallpaper.clone(),
                 accent_color: appearance.accent_color.clone(),
-                density: appearance.density.clone(),
+                // A removed no-op (ROADMAP 26.2): never write a new value.
+                density: None,
             }),
             ai: None,
         };
@@ -728,7 +728,8 @@ pub fn save_all_settings() {
                 theme: None,
                 wallpaper: appearance.wallpaper.clone(),
                 accent_color: appearance.accent_color.clone(),
-                density: appearance.density.clone(),
+                // A removed no-op (ROADMAP 26.2): never write a new value.
+                density: None,
             }),
             // Filled below from `AI_MODEL` (`settings_with_ai`): the model is
             // written by `save_ai_model`, not held in a settings static.
@@ -899,7 +900,6 @@ mod tests {
         let appearance = AppearanceSettings {
             wallpaper: Some("/wallpapers/hv-07.webp".to_string()),
             accent_color: Some("#e2725b".to_string()),
-            density: Some("comfortable".to_string()),
         };
         save(&p, &EmailSettings::default(), &appearance);
 
