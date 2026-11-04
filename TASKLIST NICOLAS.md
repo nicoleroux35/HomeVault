@@ -6,8 +6,9 @@ checked against `src/`, `sqlx/migrations/`, `docs/guides/` or `frontend/src/`.
 Updated **2026-11-06**: Phase B is complete (B1 and B4–B6 shipped on
 2026-11-04; `ffdd7f1`, `3df8a7d`, `82b7c1e`), **C1 shipped on 2026-11-05**, and
 **C2 + C3 shipped on 2026-11-06** — Phase C is complete — **D2 shipped on
-2026-11-06**, **D1 shipped on 2026-11-06**, and the **test suite was greened on
-2026-11-06**. **Every item on this list is shipped and the suite is green.**
+2026-11-06**, **D1 shipped on 2026-11-06**, the **test suite was greened on
+2026-11-06**, and **both security advisories are closed**. **Every item on this
+list is shipped, the suite is green and no advisory is open.**
 
 Sources, in authority order:
 1. `CLAUDE.md` — the rules.
@@ -21,14 +22,32 @@ Legend: **S** ≤ 2 days · **M** 3–5 days · **L** 2–3 weeks · **XL** ≥ 
 
 ---
 
-## 1. One open debt item, unrelated to any feature
+## 1. Security debt — both items closed
 
-- [x] **Dependabot: webpki root certificate advisory**
+- [x] **webpki root certificate advisory**
       `cargo audit --json` identified `RUSTSEC-2026-0383` in the resolved
       `webpki-root-certs 1.0.9`. The dependency is part of rustls' root store;
       `cargo update -p webpki-root-certs` moved the lockfile to **1.0.11**,
       which removes the distrusted emSign root. No advisory dismissal was used.
       Tests were not run by request; verify in CI before release.
+
+- [x] **deepmerge prototype poisoning (frontend)** · closed 2026-11-06
+      `GHSA-gcqx-w48m-w2h4` / `CVE-2026-93753`, low: `deepmerge`
+      `>= 4.2.0, <= 4.3.1` merges `__proto__` / `constructor` / `prototype`
+      keys, so a hostile source object can poison the returned object's
+      prototype. It reached the tree through
+      `@sveltejs/vite-plugin-svelte@7.3.1` (`deepmerge@4.3.1`) and **no
+      upstream patched release existed**.
+      *Fix:* a local drop-in fork in `frontend/vendor/deepmerge` (same API:
+      `arrayMerge`, `customMerge`, `clone`, `isMergeableObject`) that refuses
+      those three keys, plus inherited properties, and reports **4.3.2** so
+      dependency tooling sees a version outside the vulnerable range. It is
+      wired as a direct `file:` devDependency, which satisfies the plugin's
+      `^4.3.1` range and is deduped by npm; `npm ci` stays reproducible.
+      *Verified:* `npm audit` **0 vulnerability** of every severity, the fork's
+      own prototype-poisoning test, `npm ci`, `npm run check` 0/0 and
+      `npm run build` green; the repository alert is **`fixed`**. The fork's
+      README records the removal path once an upstream `> 4.3.1` ships.
 
 ---
 
@@ -294,6 +313,7 @@ next one starts from facts rather than from a document.
 | C3 (2026-11-06) | router port forwarding — `src/upnp.rs`, `GET /api/network/upnp`, `POST|DELETE /api/network/upnp/mappings`, `UpnpCard.svelte`, guide `upnp.md`, optional `miniupnpc` in the installer and dependency inventory |
 | D2 (2026-11-06) | Web Push — `src/web_push/`, migration `077`, push endpoints, `PushCard.svelte`, sender in `notification_engine`, guide `web-push.md` |
 | D1 (2026-11-06) | content index — `src/content_index/`, migration `078`, search/index endpoints, `ContentIndexCard.svelte`, ⌘K merge, guides `content-index.md` and `analysis/d1-content-index-design.md` |
+| Security (2026-11-06) | `941dfed` — `deepmerge` prototype poisoning closed with the hardened local fork `frontend/vendor/deepmerge` (4.3.2); `npm audit` is clean |
 
 **Verified on this session's machine**
 
@@ -331,6 +351,11 @@ next one starts from facts rather than from a document.
   call intercepted; live probe on a scratch share indexed 2 text files
   (binary skipped), searched two terms with snippets, then deleted 2 documents
   and turned the feature off.
+- Security: `cargo audit` shows no open Rust advisory (webpki-root-certs on
+  **1.0.11**); `npm audit` reports **0 vulnerabilities** of every severity and
+  the repository's `deepmerge` alert is **`fixed`**. `npm ci` installs the
+  local fork reproducibly, its own test rejects `__proto__`/`constructor`/
+  `prototype`, and `npm run build` uses it.
 - `npm run check` 0 errors / 0 warnings every time; `npm run build` green;
   `cargo clippy` clean on the added files, `rustfmt` clean.
 - The rendered `dnsmasq` drop-in was syntax-checked with the real `dnsmasq 2.91`
@@ -363,9 +388,8 @@ roadmap or the live-hardware verification below. Live debt still owed,
 unchanged: a browser on a
 second device resolving a reverse-proxy rule name through the C1 DNS server, a
 TLS upstream with a publicly trusted certificate, a real UPnP-IGD router, a
-real push delivery through FCM/Mozilla/Apple, a multi-terabyte content-index
-run, and the pre-existing network/E2E debt listed above (all need a disposable
-VM/LAN or a real device).
+real push delivery through FCM/Mozilla/Apple, and a multi-terabyte content-index
+run (all need a disposable VM/LAN or a real device).
 
 ---
 
