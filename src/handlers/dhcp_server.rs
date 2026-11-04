@@ -12,8 +12,13 @@
  *   stopping dnsmasq runs a root-owned `systemctl` command and a wrong
  *   configuration on a live LAN can hand out the wrong addresses.
  *
+ *   Phase C1: the daemon is shared with the local DNS server
+ *   (`handlers/local_dns.rs`), so "apply" goes through
+ *   `DhcpServerService::reconcile_daemon` rather than stopping and starting it
+ *   from this side alone.
+ *
  * Dependencies:
- *   - axum (>= 0.8), crate::dhcp_server
+ *   - axum (>= 0.8), crate::dhcp_server, crate::local_dns
  *
  * Usage:
  *   Routes under /api/network/dhcp-server in src/web/mod.rs; see
@@ -26,7 +31,8 @@
 //! * `GET  /api/network/dhcp-server`         — configuration, state, capability
 //! * `PUT  /api/network/dhcp-server`         — save (and apply) a configuration
 //! * `POST /api/network/dhcp-server/start`   — start dnsmasq from the saved config
-//! * `POST /api/network/dhcp-server/stop`    — stop dnsmasq
+//! * `POST /api/network/dhcp-server/stop`    — stop dnsmasq (refused while the
+//!   local DNS server, which shares the daemon, is on)
 //! * `GET  /api/network/dhcp-server/leases`  — live lease table
 
 use axum::{
@@ -34,7 +40,6 @@ use axum::{
     extract::State,
     http::{HeaderMap, StatusCode},
     response::Response,
-    Json,
 };
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -58,9 +63,9 @@ pub async fn handle_get(State(state): State<Arc<AppState>>, headers: HeaderMap) 
         return resp;
     }
 
-    let config = match load_config().await {
+    let config = match DhcpServerService::load_persisted().await {
         Ok(config) => config,
-        Err(e) => return fail(e),
+        Err(e) => return fail((StatusCode::INTERNAL_SERVER_ERROR, e)),
     };
     let available = DhcpServerService::is_available().await;
     let running = DhcpServerService::is_running().await;
@@ -125,30 +130,16 @@ pub async fn handle_update(
         }
     }
 
-    if let Err(e) = save_config(&req.config).await {
-        return fail(e);
+    if let Err(e) = DhcpServerService::save_persisted(&req.config).await {
+        return fail((StatusCode::INTERNAL_SERVER_ERROR, e));
     }
 
-    // Apply changes
-    if req.config.dhcp_enabled || req.config.tftp_enabled {
-        // Stop first if running
-        if DhcpServerService::is_running().await {
-            if let Err(e) = DhcpServerService::stop_server().await {
-                return ResponseHelper::json_internal_error(e);
-            }
-        }
-
-        // Start with new config
-        if let Err(e) = DhcpServerService::start_server(&req.config).await {
-            return ResponseHelper::json_internal_error(e);
-        }
-    } else {
-        // Disabled - stop if running
-        if DhcpServerService::is_running().await {
-            if let Err(e) = DhcpServerService::stop_server().await {
-                return ResponseHelper::json_internal_error(e);
-            }
-        }
+    // Apply through the shared gate: it composes the drop-in from *both*
+    // configuration halves and starts, restarts or stops the one daemon as the
+    // three switches require (phase C1 — turning DHCP off must not silence a
+    // local DNS server that is also on).
+    if let Err(e) = DhcpServerService::reconcile_daemon().await {
+        return ResponseHelper::json_internal_error(e);
     }
 
     let enabled = if req.config.dhcp_enabled {
@@ -171,9 +162,9 @@ pub async fn handle_start(State(state): State<Arc<AppState>>, headers: HeaderMap
         Err(resp) => return resp,
     };
 
-    let config = match load_config().await {
+    let config = match DhcpServerService::load_persisted().await {
         Ok(config) => config,
-        Err(e) => return fail(e),
+        Err(e) => return fail((StatusCode::INTERNAL_SERVER_ERROR, e)),
     };
 
     if !config.dhcp_enabled && !config.tftp_enabled {
@@ -191,11 +182,23 @@ pub async fn handle_start(State(state): State<Arc<AppState>>, headers: HeaderMap
 }
 
 /// POST /api/network/dhcp-server/stop
+///
+/// Refused while the local DNS server is on: the two features are one
+/// `dnsmasq`, so "stop the address server" would take name resolution down for
+/// the whole LAN without saying so. Turning the DNS server off in its own card
+/// is the honest way to stop both.
 pub async fn handle_stop(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Response {
     let admin = match require_admin(&state, &headers).await {
         Ok(username) => username,
         Err(resp) => return resp,
     };
+
+    if local_dns_enabled().await {
+        return ResponseHelper::json_error_with_status(
+            StatusCode::CONFLICT,
+            "The local DNS server runs on this same dnsmasq instance — turn it off in Settings > Security > Local DNS server first, which stops the shared daemon".to_string(),
+        );
+    }
 
     if let Err(e) = DhcpServerService::stop_server().await {
         return ResponseHelper::json_internal_error(e);
@@ -203,6 +206,18 @@ pub async fn handle_stop(State(state): State<Arc<AppState>>, headers: HeaderMap)
 
     crate::events::log_event(format!("Admin '{}' stopped the DHCP server", admin));
     ResponseHelper::json_success(serde_json::json!({ "running": false }))
+}
+
+/// Is the local DNS half switched on? A configuration that cannot be read
+/// counts as off — a corrupt file must not make the DHCP card unusable.
+async fn local_dns_enabled() -> bool {
+    match crate::local_dns::load_persisted().await {
+        Ok(config) => config.enabled,
+        Err(e) => {
+            tracing::warn!("Reading the local DNS settings failed: {}", e);
+            false
+        }
+    }
 }
 
 /// GET /api/network/dhcp-server/leases — the live lease table.
@@ -229,64 +244,4 @@ pub struct DhcpServerGetResponse {
 #[derive(Debug, Deserialize)]
 pub struct DhcpServerUpdateRequest {
     pub config: DhcpServerConfig,
-}
-
-// Helper functions
-
-async fn load_config() -> Result<DhcpServerConfig, (StatusCode, String)> {
-    let path = config_path();
-
-    if !path.exists() {
-        return Ok(DhcpServerConfig::default());
-    }
-
-    let content = tokio::fs::read_to_string(&path).await.map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("Failed to read config: {}", e),
-        )
-    })?;
-
-    serde_json::from_str(&content).map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("Failed to parse config: {}", e),
-        )
-    })
-}
-
-async fn save_config(config: &DhcpServerConfig) -> Result<(), (StatusCode, String)> {
-    let path = config_path();
-
-    // Ensure parent directory exists
-    if let Some(parent) = path.parent() {
-        tokio::fs::create_dir_all(parent).await.map_err(|e| {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Failed to create directory: {}", e),
-            )
-        })?;
-    }
-
-    let content = serde_json::to_string_pretty(config).map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("Failed to serialize config: {}", e),
-        )
-    })?;
-
-    tokio::fs::write(&path, content).await.map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("Failed to write config: {}", e),
-        )
-    })?;
-
-    Ok(())
-}
-
-fn config_path() -> std::path::PathBuf {
-    let data_dir =
-        std::env::var("DATA_DIRECTORY").unwrap_or_else(|_| "/var/lib/homevault".to_string());
-    std::path::PathBuf::from(data_dir).join("data/dhcp_server.json")
 }

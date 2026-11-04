@@ -10,6 +10,17 @@
 //! - Explicit LAN confirmation required
 //! - TFTP root path confinement
 //!
+//! # One daemon, one drop-in
+//!
+//! The local DNS server (`crate::local_dns`) is the same `dnsmasq` process, so
+//! the two features share `/etc/dnsmasq.d/homevault.conf`. [`render_conf`] is
+//! the single composer — including the listening policy (`interface=`,
+//! `bind-interfaces`), which is why neither half writes its own file: two
+//! drop-ins would let them disagree about which interfaces the one daemon
+//! answers on, and whichever was written last would win silently.
+//! [`reconcile_daemon`] is the single gate that starts, restarts or stops the
+//! daemon from *both* persisted configurations.
+//!
 //! # Security
 //!
 //! - Default disabled, opt-in only
@@ -25,7 +36,14 @@ use std::path::{Path, PathBuf};
 use tokio::process::Command;
 use tokio::time::Duration;
 
+use crate::config::paths;
+use crate::local_dns::LocalDnsConfig;
 use crate::utils::process::{run_timed_async, run_timed_async_with_stdin};
+
+/// The one drop-in the appliance owns. dnsmasq reads every file in
+/// `/etc/dnsmasq.d/`, so writing a second one would make the two halves race for
+/// the same directives.
+pub const DROPIN_PATH: &str = "/etc/dnsmasq.d/homevault.conf";
 
 const DNSMASQ_TIMEOUT: Duration = Duration::from_secs(30);
 const DHCP_DISCOVER_TIMEOUT: Duration = Duration::from_secs(10);
@@ -292,6 +310,9 @@ impl DhcpServerService {
     }
 
     /// Start DHCP/TFTP server
+    ///
+    /// The drop-in is composed with the *persisted* local DNS settings, so
+    /// starting the address server never silently turns the LAN's resolver off.
     pub async fn start_server(config: &DhcpServerConfig) -> Result<(), String> {
         // Validate first
         Self::validate_config(config)?;
@@ -392,16 +413,41 @@ impl DhcpServerService {
 
     /// Write dnsmasq configuration
     async fn write_dnsmasq_conf(config: &DhcpServerConfig) -> Result<(), String> {
+        let dns = load_persisted_dns();
+        Self::write_config_file(DROPIN_PATH, &Self::render_conf(config, &dns)).await
+    }
+
+    /// Render the whole drop-in from both halves of the appliance.
+    ///
+    /// Pure on purpose: every rule below is unit-tested without touching a host
+    /// (`mod tests` at the bottom of this file).
+    pub fn render_conf(config: &DhcpServerConfig, dns: &LocalDnsConfig) -> String {
         let mut conf = String::from(
-            "# HomeVault DHCP/TFTP Server\n\
+            "# HomeVault DNS / DHCP / TFTP server\n\
              # Generated automatically - do not edit manually\n\n",
         );
 
-        // Interface binding
-        conf.push_str(&format!("interface={}\n", config.interface));
-        conf.push_str("bind-interfaces\n\n");
+        // --- Listening policy (shared by both halves) --------------------
+        // `bind-interfaces` plus one `interface=` per served interface: the
+        // daemon answers on those and nothing else, which is what keeps a
+        // resolver or an address server off the WAN.
+        let mut interfaces: Vec<&str> = Vec::new();
+        if config.dhcp_enabled || config.tftp_enabled {
+            interfaces.push(config.interface.as_str());
+        }
+        if dns.enabled && !dns.interface.is_empty() && !interfaces.contains(&dns.interface.as_str())
+        {
+            interfaces.push(dns.interface.as_str());
+        }
+        for interface in &interfaces {
+            conf.push_str(&format!("interface={}\n", interface));
+        }
+        if !interfaces.is_empty() {
+            conf.push_str("bind-interfaces\n");
+        }
+        conf.push('\n');
 
-        // DHCP configuration
+        // --- DHCP --------------------------------------------------------
         if config.dhcp_enabled {
             conf.push_str(&format!(
                 "dhcp-range={},{},{},{}s\n",
@@ -417,7 +463,16 @@ impl DhcpServerService {
             }
 
             // DNS servers
-            if !config.dns_servers.is_empty() {
+            if dns.enabled && dns.serve_dhcp_clients {
+                // The local DNS server is on and asked to answer for the LAN's
+                // DHCP clients: emitting nothing is how dnsmasq is told to send
+                // its own address for option 6. Emitting both this and the list
+                // below would leave two answers for the same option.
+                conf.push_str(
+                    "# DHCP clients are told to resolve through this appliance (dnsmasq\n\
+                     # sends its own address for option 6 when no list is given).\n",
+                );
+            } else if !config.dns_servers.is_empty() {
                 let dns_list: Vec<String> =
                     config.dns_servers.iter().map(|ip| ip.to_string()).collect();
                 conf.push_str(&format!("dhcp-option=6,{}\n", dns_list.join(",")));
@@ -428,10 +483,10 @@ impl DhcpServerService {
                 conf.push_str(&format!("dhcp-host={},{}\n", mac, ip));
             }
 
-            conf.push_str("\n");
+            conf.push('\n');
         }
 
-        // TFTP configuration
+        // --- TFTP --------------------------------------------------------
         if config.tftp_enabled {
             conf.push_str("enable-tftp\n");
             conf.push_str(&format!("tftp-root={}\n", config.tftp_root.display()));
@@ -439,10 +494,112 @@ impl DhcpServerService {
             if let Some(ref boot_file) = config.pxe_boot_file {
                 conf.push_str(&format!("dhcp-boot={}\n", boot_file));
             }
+            conf.push('\n');
         }
 
-        // Write via sudo
-        Self::write_config_file("/etc/dnsmasq.d/homevault.conf", &conf).await
+        // --- DNS ---------------------------------------------------------
+        conf.push_str(&crate::local_dns::render_section(dns));
+
+        conf
+    }
+
+    /// Reconcile the single daemon with **both** persisted configurations.
+    ///
+    /// The two screens each save their own document; neither of them may decide
+    /// alone whether `dnsmasq` runs, because turning DHCP off used to stop a
+    /// daemon that was also answering DNS. This is the one place that decides:
+    ///
+    /// - any switch on → compose the drop-in, `systemctl restart` (which starts
+    ///   a stopped unit and reloads a running one), then verify it stayed up;
+    /// - every switch off → remove the drop-in and stop the daemon, so a later
+    ///   `systemctl start dnsmasq` cannot resurrect a configuration the admin
+    ///   turned off.
+    ///
+    /// Returns whether the daemon is running afterwards.
+    pub async fn reconcile_daemon() -> Result<bool, String> {
+        let dhcp = match Self::load_persisted().await {
+            Ok(config) => config,
+            Err(e) => {
+                tracing::warn!("Reading the DHCP settings failed, assuming off: {}", e);
+                DhcpServerConfig::default()
+            }
+        };
+        let dns = load_persisted_dns();
+        let wanted = Self::daemon_wanted(&dhcp, &dns);
+
+        if !wanted {
+            // Nothing to undo on a machine that never had a drop-in and whose
+            // daemon is already stopped: skipping the two root commands keeps a
+            // "save while everything is off" from asking for `sudo` at all.
+            let present = std::path::Path::new(DROPIN_PATH).exists();
+            if present {
+                Self::remove_config_file(DROPIN_PATH).await?;
+            }
+            if Self::is_running().await {
+                Self::stop_server().await?;
+            }
+            return Ok(false);
+        }
+
+        Self::write_config_file(DROPIN_PATH, &Self::render_conf(&dhcp, &dns)).await?;
+
+        let mut restart = Command::new("sudo");
+        restart.args(["systemctl", "restart", "dnsmasq"]);
+        let result = run_timed_async(&mut restart, DNSMASQ_TIMEOUT)
+            .await
+            .ok_or_else(|| "dnsmasq restart timed out".to_string())?;
+        if !result.status.success() {
+            return Err(format!(
+                "dnsmasq failed to start: {}",
+                String::from_utf8_lossy(&result.stderr).trim()
+            ));
+        }
+
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        if !Self::is_running().await {
+            return Err(
+                "dnsmasq accepted the configuration but is not running — check that the interface exists and that port 53 is free"
+                    .to_string(),
+            );
+        }
+        Ok(true)
+    }
+
+    /// Does any switch need the daemon? The three of them, in one place.
+    pub fn daemon_wanted(dhcp: &DhcpServerConfig, dns: &LocalDnsConfig) -> bool {
+        dhcp.dhcp_enabled || dhcp.tftp_enabled || dns.enabled
+    }
+
+    /// Where the DHCP settings are stored.
+    pub fn config_path() -> PathBuf {
+        paths::base_dir().join("data/dhcp_server.json")
+    }
+
+    /// The saved DHCP settings, or the safe default (off) when there are none.
+    pub async fn load_persisted() -> Result<DhcpServerConfig, String> {
+        let path = Self::config_path();
+        if !path.exists() {
+            return Ok(DhcpServerConfig::default());
+        }
+        let content = tokio::fs::read_to_string(&path)
+            .await
+            .map_err(|e| format!("Failed to read config: {}", e))?;
+        serde_json::from_str(&content).map_err(|e| format!("Failed to parse config: {}", e))
+    }
+
+    /// Persist the DHCP settings (the caller has already validated them).
+    pub async fn save_persisted(config: &DhcpServerConfig) -> Result<(), String> {
+        let path = Self::config_path();
+        if let Some(parent) = path.parent() {
+            tokio::fs::create_dir_all(parent)
+                .await
+                .map_err(|e| format!("Failed to create directory: {}", e))?;
+        }
+        let content = serde_json::to_string_pretty(config)
+            .map_err(|e| format!("Failed to serialize config: {}", e))?;
+        tokio::fs::write(&path, content)
+            .await
+            .map_err(|e| format!("Failed to write config: {}", e))
     }
 
     /// Write configuration file with sudo.
@@ -462,6 +619,39 @@ impl DhcpServerService {
         }
 
         Ok(())
+    }
+
+    /// Remove the drop-in (the "everything off" state), under a deadline.
+    async fn remove_config_file(path: &str) -> Result<(), String> {
+        let mut rm = Command::new("sudo");
+        rm.args(["rm", "-f", path]);
+        let output = run_timed_async(&mut rm, CONFIG_WRITE_TIMEOUT)
+            .await
+            .ok_or_else(|| format!("removing {} timed out", path))?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(format!("failed to remove {}: {}", path, stderr));
+        }
+
+        Ok(())
+    }
+}
+
+/// The persisted DNS half, for the composer.
+///
+/// A corrupt or unreadable document is reported and treated as "off": a broken
+/// DNS file must never stop the address server from starting.
+fn load_persisted_dns() -> LocalDnsConfig {
+    // The module is async elsewhere, but the composer is called from an async
+    // context that must not block on a nested runtime; the file is tiny and read
+    // through the same synchronous helper the SNMP agent uses.
+    match std::fs::read_to_string(crate::local_dns::config_path()) {
+        Ok(content) => serde_json::from_str(&content).unwrap_or_else(|e| {
+            tracing::warn!("The local DNS settings could not be parsed: {}", e);
+            LocalDnsConfig::default()
+        }),
+        Err(_) => LocalDnsConfig::default(),
     }
 }
 
@@ -603,5 +793,107 @@ mod tests {
             start,
             end
         ));
+    }
+
+    // -----------------------------------------------------------------------
+    // The composed drop-in (phase C1): one daemon, two configuration halves.
+    // -----------------------------------------------------------------------
+
+    fn dns_on(interface: &str) -> LocalDnsConfig {
+        LocalDnsConfig {
+            enabled: true,
+            interface: interface.to_string(),
+            serve_dhcp_clients: false,
+            forwarders: vec!["192.168.1.1".to_string()],
+            records: vec![],
+            overrides: vec![],
+            confirmed: true,
+        }
+    }
+
+    #[test]
+    fn test_render_conf_only_binds_the_interfaces_that_serve_something() {
+        let mut dhcp = DhcpServerConfig::default();
+        dhcp.dhcp_enabled = true;
+        dhcp.interface = "eth0".to_string();
+
+        let conf = DhcpServerService::render_conf(&dhcp, &LocalDnsConfig::default());
+        assert!(conf.contains("interface=eth0\n"), "{conf}");
+        assert!(conf.contains("bind-interfaces"), "{conf}");
+        // The DNS interface is not bound when the DNS server is off.
+        assert_eq!(conf.matches("interface=").count(), 1, "{conf}");
+    }
+
+    #[test]
+    fn test_render_conf_binds_both_halves_and_lists_one_interface_once() {
+        let mut dhcp = DhcpServerConfig::default();
+        dhcp.dhcp_enabled = true;
+        dhcp.interface = "eth0".to_string();
+
+        // Same interface on both halves: one `interface=` line, not two.
+        let same = DhcpServerService::render_conf(&dhcp, &dns_on("eth0"));
+        assert_eq!(same.matches("interface=").count(), 1, "{same}");
+        assert_eq!(same.matches("bind-interfaces").count(), 1, "{same}");
+
+        // Different interfaces: both are bound (dnsmasq serves each of them
+        // for the feature that asked for it).
+        let split = DhcpServerService::render_conf(&dhcp, &dns_on("eth1"));
+        assert!(split.contains("interface=eth0"), "{split}");
+        assert!(split.contains("interface=eth1"), "{split}");
+        assert_eq!(split.matches("bind-interfaces").count(), 1, "{split}");
+    }
+
+    #[test]
+    fn test_render_conf_carries_the_dns_section() {
+        let mut dns = dns_on("eth0");
+        dns.records = vec![crate::local_dns::DnsRecord {
+            name: "nas.lan".to_string(),
+            kind: crate::local_dns::RecordKind::A,
+            value: "192.168.1.5".to_string(),
+        }];
+        let conf = DhcpServerService::render_conf(&DhcpServerConfig::default(), &dns);
+        assert!(conf.contains("server=192.168.1.1"), "{conf}");
+        assert!(conf.contains("host-record=nas.lan,192.168.1.5"), "{conf}");
+        // Off DHCP: no address range, no reservations.
+        assert!(!conf.contains("dhcp-range="), "{conf}");
+    }
+
+    #[test]
+    fn test_advertising_the_appliance_replaces_the_dns_server_list() {
+        let mut dhcp = DhcpServerConfig::default();
+        dhcp.dhcp_enabled = true;
+        dhcp.dns_servers = vec![Ipv4Addr::new(9, 9, 9, 9)];
+
+        // Server off: the DHCP card's list is what clients get.
+        let off = DhcpServerService::render_conf(&dhcp, &LocalDnsConfig::default());
+        assert!(off.contains("dhcp-option=6,9.9.9.9"), "{off}");
+
+        // Server on and asked to answer for DHCP clients: the list is dropped so
+        // dnsmasq sends its own address, and there is still exactly one answer
+        // for option 6.
+        let mut dns = dns_on("eth0");
+        dns.serve_dhcp_clients = true;
+        let on = DhcpServerService::render_conf(&dhcp, &dns);
+        assert!(!on.contains("dhcp-option=6,"), "{on}");
+        assert_eq!(on.matches("dhcp-option=6").count(), 0, "{on}");
+        assert!(on.contains("sends its own address for option 6"), "{on}");
+    }
+
+    #[test]
+    fn test_daemon_wanted_needs_one_of_the_three_switches() {
+        let off = DhcpServerConfig::default();
+        assert!(!DhcpServerService::daemon_wanted(
+            &off,
+            &LocalDnsConfig::default()
+        ));
+
+        let mut dhcp = off.clone();
+        dhcp.tftp_enabled = true;
+        assert!(DhcpServerService::daemon_wanted(
+            &dhcp,
+            &LocalDnsConfig::default()
+        ));
+
+        assert!(DhcpServerService::daemon_wanted(&off, &dns_on("eth0")));
     }
 }

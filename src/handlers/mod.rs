@@ -125,6 +125,7 @@ pub mod ups;
 pub mod ups_server;
 pub mod usb_copy;
 pub mod dhcp_server;
+pub mod local_dns;
 pub mod fan_control;
 pub mod guided_redundancy;
 pub mod user_homes;

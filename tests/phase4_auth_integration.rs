@@ -54,6 +54,9 @@ use homevault::handlers::fan_control::{
     handle_channels_list, handle_config_get, handle_config_update, handle_restore_auto,
 };
 use homevault::handlers::guided_redundancy::{handle_apply, handle_recommend};
+use homevault::handlers::local_dns::{
+    handle_get as handle_local_dns_get, handle_update as handle_local_dns_update,
+};
 use homevault::handlers::terminal_pty::PtyManager;
 use homevault::handlers::ups_server::{
     handle_ups_server_get, handle_ups_server_shutdown, handle_ups_server_start,
@@ -124,6 +127,9 @@ fn router(state: Arc<AppState>) -> Router {
         .route("/api/network/dhcp-server/start", post(handle_dhcp_start))
         .route("/api/network/dhcp-server/stop", post(handle_dhcp_stop))
         .route("/api/network/dhcp-server/leases", get(handle_leases))
+        // Local DNS server (phase C1) — the same dnsmasq instance.
+        .route("/api/network/dns-server", get(handle_local_dns_get))
+        .route("/api/network/dns-server", put(handle_local_dns_update))
         // UPS server
         .route("/api/power/ups-server", get(handle_ups_server_get))
         .route("/api/power/ups-server", put(handle_ups_server_update))
@@ -246,6 +252,15 @@ fn all_routes() -> Vec<(Method, &'static str, Option<Value>, bool)> {
         ),
         (Method::POST, "/api/network/dhcp-server/start", None, true),
         (Method::POST, "/api/network/dhcp-server/stop", None, true),
+        // --- Local DNS server: reads ---
+        (Method::GET, "/api/network/dns-server", None, false),
+        // --- Local DNS server: mutations ---
+        (
+            Method::PUT,
+            "/api/network/dns-server",
+            Some(json!({"config": disabled_local_dns_config()})),
+            true,
+        ),
         // --- UPS server: reads ---
         (Method::GET, "/api/power/ups-server", None, false),
         // --- UPS server: mutations ---
@@ -317,6 +332,18 @@ fn disabled_dhcp_config() -> Value {
         "reservations": {},
         "tftp_root": "/srv/tftp",
         "pxe_boot_file": null,
+        "confirmed": false
+    })
+}
+
+fn disabled_local_dns_config() -> Value {
+    json!({
+        "enabled": false,
+        "interface": "",
+        "serve_dhcp_clients": false,
+        "forwarders": [],
+        "records": [],
+        "overrides": [],
         "confirmed": false
     })
 }

@@ -85,6 +85,9 @@ use crate::handlers::{
         handle_get as handle_dhcp_get, handle_leases, handle_start as handle_dhcp_start,
         handle_stop as handle_dhcp_stop, handle_update as handle_dhcp_update,
     },
+    local_dns::{
+        handle_get as handle_local_dns_get, handle_update as handle_local_dns_update,
+    },
     directory::{
         handle_directory_get, handle_directory_settings_put, handle_directory_test,
         handle_identity_delete, handle_identity_disabled,
@@ -1528,6 +1531,9 @@ pub fn create_app(state: AppStateArc) -> Router {
         .route("/api/network/dhcp-server/start", post(handle_dhcp_start))
         .route("/api/network/dhcp-server/stop", post(handle_dhcp_stop))
         .route("/api/network/dhcp-server/leases", get(handle_leases))
+        // Phase C1 — Local DNS server (the same dnsmasq instance).
+        .route("/api/network/dns-server", get(handle_local_dns_get))
+        .route("/api/network/dns-server", put(handle_local_dns_update))
         // Phase 4 — Fan Control
         .route("/api/system/fans", get(handle_channels_list))
         .route("/api/system/fans/config", get(handle_config_get))
