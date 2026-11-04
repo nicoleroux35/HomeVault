@@ -253,3 +253,49 @@ export interface RecommendationsResponse {
   total_disks: number;
   available_disks: number;
 }
+
+// ============================================================================
+// Generic reverse proxy (phase C2)
+// ============================================================================
+
+export interface ProxyRule {
+  id: number;
+  /** Normalised host name or IP literal; no port. */
+  host: string;
+  /** '' for the whole host, otherwise a /-prefixed segment prefix. */
+  path: string;
+  /** Canonical host:port of the upstream. */
+  upstream: string;
+  /** The upstream speaks HTTPS (the listener itself stays plain HTTP). */
+  tls: boolean;
+  /** Require a rule-scoped session before forwarding. */
+  auth_required: boolean;
+  enabled: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ProxyRuleInput {
+  host: string;
+  path: string;
+  upstream: string;
+  tls: boolean;
+  auth_required: boolean;
+  enabled: boolean;
+}
+
+export interface ProxyListener {
+  listening: boolean;
+  port: number;
+  error: string | null;
+}
+
+export interface ProxyRulesResponse {
+  rules: ProxyRule[];
+  listener: ProxyListener;
+  max_rules: number;
+}
+
+export interface ProxyRuleResponse {
+  rule: ProxyRule;
+}

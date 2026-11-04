@@ -46,6 +46,10 @@ import type {
   LocalDnsConfig,
   LocalDnsGetResponse,
   LocalDnsUpdateResponse,
+  ProxyRule,
+  ProxyRuleInput,
+  ProxyRuleResponse,
+  ProxyRulesResponse,
   FanConfig,
   FanChannelsResponse,
   LayoutRecommendation,
@@ -164,6 +168,41 @@ export async function updateLocalDnsConfig(
   config: LocalDnsConfig
 ): Promise<LocalDnsUpdateResponse> {
   return unwrap(await api.put<LocalDnsUpdateResponse>('/network/dns-server', { config }));
+}
+
+// ============================================================================
+// Generic reverse proxy API (phase C2)
+// ============================================================================
+
+export async function listProxyRules(): Promise<ProxyRulesResponse> {
+  return unwrap(await api.get<ProxyRulesResponse>('/proxy/rules', { cache: false }));
+}
+
+export async function createProxyRule(input: ProxyRuleInput): Promise<ProxyRuleResponse> {
+  return unwrap(await api.post<ProxyRuleResponse>('/proxy/rules', input));
+}
+
+export async function updateProxyRule(
+  id: number,
+  input: ProxyRuleInput
+): Promise<ProxyRuleResponse> {
+  return unwrap(await api.put<ProxyRuleResponse>(`/proxy/rules/${id}`, input));
+}
+
+export async function deleteProxyRule(id: number): Promise<void> {
+  await api.delete(`/proxy/rules/${id}`);
+}
+
+/** Enables/disables a rule without touching the rest of its fields. */
+export async function setProxyRuleEnabled(rule: ProxyRule, enabled: boolean): Promise<ProxyRuleResponse> {
+  return updateProxyRule(rule.id, {
+    host: rule.host,
+    path: rule.path,
+    upstream: rule.upstream,
+    tls: rule.tls,
+    auth_required: rule.auth_required,
+    enabled
+  });
 }
 
 // ============================================================================
