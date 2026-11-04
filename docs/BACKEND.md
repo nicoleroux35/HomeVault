@@ -37,6 +37,8 @@ src/
                         host-routed listener, SQLite rules, private-address-only
                         upstreams, cross-host ticket gate (mod.rs, rules.rs,
                         proxy.rs, ticket.rs)
+  upnp.rs               Router port forwarding (phase C3): upnpc argv/listing
+                        validation, private-client policy, bounded calls
   rescue/               ddrescue / TestDisk / PhotoRec / mdadm-repair service +
                         SecurityValidator (protected-device blocklist)
   groups.rs             GroupService (incl. is_admin_group)

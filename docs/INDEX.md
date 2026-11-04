@@ -111,6 +111,7 @@ methods, and notable invariants.
 | DHCP / TFTP / PXE server (address range, static reservations, boot files, live leases) | [guides/dhcp.md](./guides/dhcp.md) |
 | Local DNS server (local names, answered domains, upstream forwarders, DHCP advertisement — the same `dnsmasq`) | [guides/local-dns.md](./guides/local-dns.md) |
 | Reverse proxy (user-defined host → upstream rules, one host-routed listener, cross-host sign-in gate) | [guides/reverse-proxy.md](./guides/reverse-proxy.md) |
+| Router port forwarding (UPnP-IGD: list/add/remove mappings, external address, reversible and confirmed) | [guides/upnp.md](./guides/upnp.md) |
 | USB one-touch copy (copy rules, device matching, checksum verification, safe eject) | [guides/usb-copy.md](./guides/usb-copy.md) |
 | Fan and thermal control (hwmon channels, profiles, 20 % safety floor, failsafe) | [guides/fan-control.md](./guides/fan-control.md) |
 | UPS server mode (NUT server, client allowlist, orderly shutdown, skipped stages) | [guides/ups-server.md](./guides/ups-server.md) |

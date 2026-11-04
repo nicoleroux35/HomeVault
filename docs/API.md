@@ -1585,6 +1585,27 @@ exchange, never by sending `hv_session` upstream. See
 [`guides/reverse-proxy.md`](./guides/reverse-proxy.md) and the design note
 [`analysis/c2-reverse-proxy-design.md`](./analysis/c2-reverse-proxy-design.md).
 
+## Router port forwarding — `network/upnp`
+
+UPnP-IGD mappings through the `upnpc` client from **miniupnpc** (phase C3).
+Opening the screen is read-only; every mutation is admin-only and must carry
+`confirmed: true`. The appliance stores no router credential.
+
+| Method | Path | Auth |
+|--------|------|------|
+| GET | `/network/upnp` | auth — `{ available, gateway, external_ip, local_address, mappings[], error, suggested_host }`; `available: false` when `upnpc` is absent (no error), `error` carries the router's own refusal otherwise |
+| POST | `/network/upnp/mappings` | admin — `{ protocol: "tcp"\|"udp", external_port, internal_host, internal_port, description, lease_seconds, confirmed }`; adds one mapping, then returns the refreshed state |
+| DELETE | `/network/upnp/mappings` | admin — `{ protocol, external_port, confirmed }`; removes one mapping, then returns the refreshed state |
+
+`internal_host` must be a **private, link-local or unique-local IP literal**;
+loopback, public addresses and host names are `400`. Ports are `1..=65535` and
+the lease is `0` (permanent) or `60..=604800` seconds; the default is `3600`.
+The description is printable ASCII, at most 64 characters including the
+`HomeVault` prefix, with no quotes or backslashes. A missing `confirmed` is a
+`400` before anything is sent to the router; a missing `upnpc` on a mutation is
+a `503` naming `miniupnpc`; a router refusal is a `502` with its own sentence.
+See [`guides/upnp.md`](./guides/upnp.md).
+
 ## USB one-touch copy — `usb-copy/*`
 
 Copy rules that pull files off a removable device into a folder on the

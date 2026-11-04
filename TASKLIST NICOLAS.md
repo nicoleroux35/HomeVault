@@ -5,7 +5,8 @@ grepping the tree, not by trusting a document: every "shipped" claim below was
 checked against `src/`, `sqlx/migrations/`, `docs/guides/` or `frontend/src/`.
 Updated **2026-11-06**: Phase B is complete (B1 and B4–B6 shipped on
 2026-11-04; `ffdd7f1`, `3df8a7d`, `82b7c1e`), **C1 shipped on 2026-11-05**, and
-**C2 shipped on 2026-11-06**. The next item is **C3**.
+**C2 + C3 shipped on 2026-11-06** — Phase C is complete. The next item is
+**D2**.
 
 Sources, in authority order:
 1. `CLAUDE.md` — the rules.
@@ -144,11 +145,26 @@ Legend: **S** ≤ 2 days · **M** 3–5 days · **L** 2–3 weeks · **XL** ≥ 
       See `docs/guides/reverse-proxy.md` and
       `docs/analysis/c2-reverse-proxy-design.md`.
 
-- [ ] **C3 — UPnP-IGD port forwarding** · **M**
-      `miniupnpc` client: list the router's mappings, add/remove one, show the
-      external IP. Read-only discovery first; every mutation confirmed and
-      reversible. `miniupnpc` would be a new optional dependency.
-      Verified absent: nothing.
+- [x] **C3 — UPnP-IGD port forwarding** · **M** · shipped 2026-11-06
+      `src/upnp.rs` + `GET /api/network/upnp` + `POST|DELETE
+      /api/network/upnp/mappings` + `UpnpCard.svelte`. **No new daemon**: it
+      drives the optional `upnpc` client from **miniupnpc** (added to
+      `installer/install.sh` and the dependency inventory; absent, the card
+      names the package and mutations are `503`).
+      *Rules honoured:* read-only discovery first (`upnpc -l`) and it changes
+      nothing; the external client must be a private/link-local/ULA literal
+      (loopback, public and host names refused); ports `1..=65535`; lease
+      `0` or `60..=604800` with one hour as the default and permanent never
+      preselected; the description is ASCII, bounded and prefixed
+      `HomeVault`; every mutation is admin-only **and** requires
+      `confirmed: true`; no shell (validated argv), no router credential
+      stored; every added mapping is removable from the same list, including
+      one added elsewhere.
+      Verified: `upnp.rs` 16/16, `handlers/upnp.rs` 1/1,
+      `upnp_integration.rs` 9/9, E2E `settings/upnp` 9/9 on Chromium **and**
+      Firefox (every call intercepted), `cargo test --lib` 2,522 passed /
+      the same 5 pre-existing failures, `npm run check` 0/0, build green.
+      No live router (see below). See `docs/guides/upnp.md`.
 
 ---
 
@@ -202,10 +218,10 @@ Kept here so the question does not come back every six months.
       `Security Advisor`, `fan control`, `UPS server`, `DHCP`, `USB copy`,
       `guided redundancy`, Time Machine, traffic control).
 - [x] `dsm_homevault_comparison.md` re-checked: of its 18 "🔵 À IMPLÉMENTER"
-      rows, **16 are now shipped** (the local DNS server joined file tags, bond,
-      VLAN and the SNMP agent on 2026-11-05), **2 are open** (content search
-      ← D1, reverse proxy ← C2), 1 is rejected (QuickConnect) and 1 is the PWA's
-      missing push half ← D2.
+      rows, **17 are now shipped** (the local DNS server joined file tags, bond,
+      VLAN and the SNMP agent on 2026-11-05; the reverse proxy on 2026-11-06),
+      **1 is open** (content search ← D1), 1 is rejected (QuickConnect) and
+      1 is the PWA's missing push half ← D2.
       **The file is left untouched on purpose** — it is the dated input record,
       and §2 of the implementation plan is its reconciliation. It is untracked
       (repo rule: no standalone root `.md` in commits).
@@ -216,8 +232,8 @@ Kept here so the question does not come back every six months.
 
 1. ~~**B5 + B6 together**~~ — shipped 2026-11-04.
 2. ~~**B4** (SNMP agent)~~ — shipped 2026-11-04. Phase B is complete.
-3. ~~**C2**~~ — shipped 2026-11-06. **C3** (UPnP-IGD) is next.
-4. **D2 → D1**.
+3. ~~**C2**~~ and ~~**C3**~~ — shipped 2026-11-06. Phase C is complete.
+4. **D2** (Web Push backend) → **D1** (content index). ← **next**
 
 Phase B is complete (B1–B6). Phases C and D have no blocker between them. Each item ships with its guide,
 `API.md` entry, `FeatureDoc`, unit + integration + E2E tests, and `TESTING.md`
@@ -239,10 +255,11 @@ next one starts from facts rather than from a document.
 | `82b7c1e` | B4 — the local SNMP agent |
 | C1 (2026-11-05) | the local DNS server, on the `dnsmasq` the DHCP card already drove — `src/local_dns.rs`, `GET|PUT /api/network/dns-server`, `LocalDnsCard.svelte`, `docs/guides/local-dns.md` |
 | C2 (2026-11-06) | the generic reverse proxy — `src/reverse_proxy/`, migration `076`, `GET|POST|PUT|DELETE /api/proxy/rules`, `GET /proxy-auth`, `ReverseProxyCard.svelte`, guides `reverse-proxy.md` and `analysis/c2-reverse-proxy-design.md` |
+| C3 (2026-11-06) | router port forwarding — `src/upnp.rs`, `GET /api/network/upnp`, `POST|DELETE /api/network/upnp/mappings`, `UpnpCard.svelte`, guide `upnp.md`, optional `miniupnpc` in the installer and dependency inventory |
 
 **Verified on this session's machine**
 
-- `cargo test --lib` — **2,505 passed, 5 failed** after C2 (the same five
+- `cargo test --lib` — **2,522 passed, 5 failed** after C3 (the same five
   unrelated failures `TESTING.md` has tracked since Phase A:
   `checksum::…evicts…`, `settings`/`i18n` density ×2, `sse::progress` ×2 — all
   in files no session touched).
@@ -262,6 +279,10 @@ next one starts from facts rather than from a document.
 - C2 integration: `tests/reverse_proxy_integration.rs` **21/21** (CRUD, auth,
   every refusal, and a real listener against a loopback upstream);
   `reverse_proxy` unit **31/31**.
+- C3 verification: `upnp_integration.rs` **9/9**, `upnp` unit **16/16** +
+  handler **1/1**, E2E `settings/upnp` **9/9 on Chromium and 9/9 on Firefox**
+  with every router call intercepted; dependency-inventory and English-only
+  installer tests stay green with the new `miniupnpc` optional package.
 - `npm run check` 0 errors / 0 warnings every time; `npm run build` green;
   `cargo clippy` clean on the added files, `rustfmt` clean.
 - The rendered `dnsmasq` drop-in was syntax-checked with the real `dnsmasq 2.91`
@@ -293,8 +314,8 @@ re-running the same tests**
   single gate in `reconcile_daemon` is covered by unit tests, but a race was
   never produced on a real host.
 
-**Next session starts at C3** (UPnP-IGD port forwarding) — see §7. C2's own
-design note is `docs/analysis/c2-reverse-proxy-design.md`; the remaining live
-debt from that session is a browser on a second device resolving a rule name
-through the C1 DNS server, and a TLS upstream with a publicly trusted
-certificate (both need a disposable VM).
+**Next session starts at D2** (Web Push backend) — see §7. Phase C is
+complete. Remaining live debt from this session: a browser on a second device
+resolving a reverse-proxy rule name through the C1 DNS server, a TLS upstream
+with a publicly trusted certificate, and a real UPnP-IGD router (all three need
+a disposable VM/LAN).
