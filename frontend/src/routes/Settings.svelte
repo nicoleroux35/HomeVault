@@ -104,6 +104,7 @@
   import DhcpServerCard from '$lib/components/settings/DhcpServerCard.svelte';
   import LocalDnsCard from '$lib/components/settings/LocalDnsCard.svelte';
   import ReverseProxyCard from '$lib/components/settings/ReverseProxyCard.svelte';
+  import UpnpCard from '$lib/components/settings/UpnpCard.svelte';
   import FanControlCard from '$lib/components/settings/FanControlCard.svelte';
   import { IconAlertTriangle, IconCookie, IconShield, IconCheck, IconSettings, IconWifiOff, IconRefresh, IconMapPin, IconPencil, IconLock } from '@tabler/icons-svelte';
 
@@ -1136,6 +1137,9 @@
         <!-- Phase C2: user-defined host → upstream rules, one host-routed
              listener. The names it answers come from the DNS card above. -->
         <ReverseProxyCard class="mt-3" />
+        <!-- Phase C3: router port forwarding through UPnP-IGD. Read-only
+             discovery first; every mapping added here is removable here. -->
+        <UpnpCard class="mt-3" />
         <AutoBlockCard class="mt-3" />
         <ConnectedClientsCard class="mt-3" />
         <AntivirusCard class="mt-3" />

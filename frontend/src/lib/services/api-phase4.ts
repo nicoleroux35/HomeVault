@@ -50,6 +50,9 @@ import type {
   ProxyRuleInput,
   ProxyRuleResponse,
   ProxyRulesResponse,
+  UpnpGetResponse,
+  UpnpMutationResponse,
+  UpnpNewMapping,
   FanConfig,
   FanChannelsResponse,
   LayoutRecommendation,
@@ -203,6 +206,31 @@ export async function setProxyRuleEnabled(rule: ProxyRule, enabled: boolean): Pr
     auth_required: rule.auth_required,
     enabled
   });
+}
+
+// ============================================================================
+// UPnP-IGD router port forwarding (phase C3)
+// ============================================================================
+
+export async function getUpnpState(): Promise<UpnpGetResponse> {
+  return unwrap(await api.get<UpnpGetResponse>('/network/upnp', { cache: false }));
+}
+
+export async function addUpnpMapping(input: UpnpNewMapping): Promise<UpnpMutationResponse> {
+  return unwrap(await api.post<UpnpMutationResponse>('/network/upnp/mappings', input));
+}
+
+export async function removeUpnpMapping(
+  protocol: 'tcp' | 'udp',
+  externalPort: number
+): Promise<UpnpMutationResponse> {
+  return unwrap(
+    await api.delete<UpnpMutationResponse>('/network/upnp/mappings', {
+      protocol,
+      external_port: externalPort,
+      confirmed: true
+    })
+  );
 }
 
 // ============================================================================

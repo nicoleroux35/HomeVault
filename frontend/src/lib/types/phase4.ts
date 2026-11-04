@@ -299,3 +299,56 @@ export interface ProxyRulesResponse {
 export interface ProxyRuleResponse {
   rule: ProxyRule;
 }
+
+// ============================================================================
+// UPnP-IGD router port forwarding (phase C3)
+// ============================================================================
+
+export type UpnpProtocol = 'tcp' | 'udp';
+
+export interface UpnpMapping {
+  protocol: UpnpProtocol;
+  external_port: number;
+  internal_host: string;
+  internal_port: number;
+  description: string;
+  /** 0 = permanent. */
+  lease_seconds: number;
+}
+
+export interface UpnpSnapshot {
+  gateway: string | null;
+  external_ip: string | null;
+  local_address: string | null;
+  mappings: UpnpMapping[];
+}
+
+export interface UpnpGetResponse {
+  /** The `upnpc` client is installed. */
+  available: boolean;
+  gateway: string | null;
+  external_ip: string | null;
+  local_address: string | null;
+  mappings: UpnpMapping[];
+  /** Why discovery failed; null when it did not. */
+  error: string | null;
+  /** The appliance's own LAN address, offered as a form default. */
+  suggested_host: string | null;
+}
+
+export interface UpnpNewMapping {
+  protocol: UpnpProtocol;
+  external_port: number;
+  internal_host: string;
+  internal_port: number;
+  description: string;
+  /** 0 = permanent. */
+  lease_seconds: number;
+  confirmed: boolean;
+}
+
+export interface UpnpMutationResponse {
+  snapshot: UpnpSnapshot | null;
+  error: string | null;
+  message: string;
+}
