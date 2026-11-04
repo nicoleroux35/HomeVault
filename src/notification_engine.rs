@@ -295,13 +295,16 @@ pub(crate) async fn notify(
     }
 
     let repo = NotificationRepository::new(state.db.pool());
-    if let Err(e) = repo
+    let notification = match repo
         .create(title, message, severity, category, source)
         .await
     {
-        tracing::warn!("Notification engine: failed to persist notification: {}", e);
-        return;
-    }
+        Ok(notification) => notification,
+        Err(e) => {
+            tracing::warn!("Notification engine: failed to persist notification: {}", e);
+            return;
+        }
+    };
 
     let settings = settings_snapshot;
     let severity_rank = match severity {
@@ -318,6 +321,20 @@ pub(crate) async fn notify(
     };
     if severity_rank < threshold_rank {
         return;
+    }
+
+    // Web Push runs beside the other channels under the same threshold gate,
+    // and in its own task: the sender encrypts once per device and talks to a
+    // third party, which must never delay the scheduler tick.
+    {
+        let payload = crate::web_push::PushPayload::for_notification(
+            title,
+            message,
+            severity,
+            &notification.id,
+        );
+        let pool = state.db.pool();
+        tokio::spawn(async move { crate::web_push::dispatch(pool, payload).await });
     }
 
     if settings.enable_alerts.unwrap_or(false) && settings.smtp_enabled.unwrap_or(false) {

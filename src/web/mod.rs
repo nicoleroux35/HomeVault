@@ -352,6 +352,10 @@ use crate::handlers::{
         handle_user_update_role, handle_users_list,
     },
     weather_location::{handle_get_weather_location, handle_set_weather_location},
+    web_push::{
+        handle_get as handle_push_get, handle_subscribe as handle_push_subscribe,
+        handle_unsubscribe as handle_push_unsubscribe,
+    },
     whats_new::{handle_whats_new, handle_whats_new_seen},
     widgets::{
         handle_widget_cpu_temp, handle_widget_cpu_usage, handle_widget_network_traffic,
@@ -1382,6 +1386,17 @@ pub fn create_app(state: AppStateArc) -> Router {
         .route(
             "/api/notifications/{id}",
             delete(handle_notification_delete),
+        )
+        // Phase D2 — Web Push: VAPID public key, the caller's devices, and
+        // per-device consent/revocation (see docs/guides/web-push.md).
+        .route("/api/notifications/push", get(handle_push_get))
+        .route(
+            "/api/notifications/push/subscribe",
+            post(handle_push_subscribe),
+        )
+        .route(
+            "/api/notifications/push/subscribe/{id}",
+            delete(handle_push_unsubscribe),
         )
         .route(
             "/api/notifications/events/ticket",

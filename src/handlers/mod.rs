@@ -136,6 +136,7 @@ pub mod users_models;
 pub mod vm;
 pub mod vpn;
 pub mod weather_location;
+pub mod web_push;
 pub mod whats_new;
 pub mod widgets;
 pub mod wol;
