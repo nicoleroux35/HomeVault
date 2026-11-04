@@ -352,3 +352,41 @@ export interface UpnpMutationResponse {
   error: string | null;
   message: string;
 }
+
+// ============================================================================
+// Web Push notifications (phase D2)
+// ============================================================================
+
+export interface PushDevice {
+  id: string;
+  device_label: string;
+  created_at: string;
+  last_success_at: string | null;
+  last_failure_at: string | null;
+  failure_count: number;
+  /** Only the host; the endpoint path is a capability URL and stays private. */
+  endpoint_host: string;
+}
+
+export interface PushGetResponse {
+  /** The server's VAPID keys are usable. */
+  available: boolean;
+  public_key: string | null;
+  subscriptions: PushDevice[];
+  max_devices: number;
+  error: string | null;
+}
+
+export interface PushSubscribeKeys {
+  p256dh: string;
+  auth: string;
+}
+
+export interface PushSubscribeRequest {
+  endpoint: string;
+  keys: PushSubscribeKeys;
+}
+
+export interface PushSubscribeResponse {
+  subscription: PushDevice;
+}

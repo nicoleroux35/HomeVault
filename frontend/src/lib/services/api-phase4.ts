@@ -53,6 +53,9 @@ import type {
   UpnpGetResponse,
   UpnpMutationResponse,
   UpnpNewMapping,
+  PushGetResponse,
+  PushSubscribeRequest,
+  PushSubscribeResponse,
   FanConfig,
   FanChannelsResponse,
   LayoutRecommendation,
@@ -231,6 +234,24 @@ export async function removeUpnpMapping(
       confirmed: true
     })
   );
+}
+
+// ============================================================================
+// Web Push API (phase D2)
+// ============================================================================
+
+export async function getPushState(): Promise<PushGetResponse> {
+  return unwrap(await api.get<PushGetResponse>('/notifications/push', { cache: false }));
+}
+
+export async function subscribePush(
+  request: PushSubscribeRequest
+): Promise<PushSubscribeResponse> {
+  return unwrap(await api.post<PushSubscribeResponse>('/notifications/push/subscribe', request));
+}
+
+export async function unsubscribePush(id: string): Promise<void> {
+  await api.delete(`/notifications/push/subscribe/${encodeURIComponent(id)}`);
 }
 
 // ============================================================================

@@ -103,27 +103,45 @@ self.addEventListener('fetch', (event) => {
   );
 });
 
-// Handle push notifications (future)
+// Handle push notifications. The backend sends
+// { title, body, tag, data: { url, severity, id } } (src/web_push).
 self.addEventListener('push', (event) => {
-  if (event.data) {
-    const data = event.data.json();
-    const options = {
-      body: data.body || 'New notification',
-      icon: '/favicon.svg',
-      badge: '/favicon.svg',
-      vibrate: [100, 50, 100],
-      data: data.data || {}
-    };
-    event.waitUntil(
-      self.registration.showNotification(data.title || 'HomeVault', options)
-    );
+  if (!event.data) return;
+  let data;
+  try {
+    data = event.data.json();
+  } catch {
+    data = { body: event.data.text() };
   }
+  const payload = data.data || {};
+  const options = {
+    body: data.body || 'New notification',
+    icon: '/favicon.svg',
+    badge: '/favicon.svg',
+    tag: data.tag || payload.id,
+    vibrate: [100, 50, 100],
+    requireInteraction: payload.severity === 'critical',
+    data: payload
+  };
+  event.waitUntil(
+    self.registration.showNotification(data.title || 'HomeVault', options)
+  );
 });
 
-// Handle notification clicks
+// Handle notification clicks: reuse an open dashboard window when there is
+// one, instead of piling up new tabs.
 self.addEventListener('notificationclick', (event) => {
   event.notification.close();
+  const url = event.notification.data?.url || '/desktop';
   event.waitUntil(
-    clients.openWindow(event.notification.data?.url || '/')
+    clients.matchAll({ type: 'window', includeUncontrolled: true }).then((windows) => {
+      for (const client of windows) {
+        if ('focus' in client) {
+          client.navigate(url);
+          return client.focus();
+        }
+      }
+      return clients.openWindow(url);
+    })
   );
 });

@@ -105,6 +105,7 @@
   import LocalDnsCard from '$lib/components/settings/LocalDnsCard.svelte';
   import ReverseProxyCard from '$lib/components/settings/ReverseProxyCard.svelte';
   import UpnpCard from '$lib/components/settings/UpnpCard.svelte';
+  import PushCard from '$lib/components/settings/PushCard.svelte';
   import FanControlCard from '$lib/components/settings/FanControlCard.svelte';
   import { IconAlertTriangle, IconCookie, IconShield, IconCheck, IconSettings, IconWifiOff, IconRefresh, IconMapPin, IconPencil, IconLock } from '@tabler/icons-svelte';
 
@@ -1398,6 +1399,9 @@
             {/each}
           {/if}
         </div>
+        <!-- Phase D2: per-device Web Push consent. Each account subscribes
+             its own browsers and revokes them here. -->
+        <PushCard class="mt-3" />
       {/if}
       {#if activeCategory === 'system'}
         <div data-testid="settings-card-title" class={secLabelFirst}></div>
