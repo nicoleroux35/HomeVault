@@ -163,6 +163,11 @@ pub struct SmbConfig {
     pub create_mask: String,
     pub directory_mask: String,
     pub additional_params: Vec<String>,
+    /// Samba `server multi channel support`. Off by default: it only helps
+    /// when the client, the switch and at least two NICs/queues agree, and it
+    /// is harmless to leave it off on a single-link appliance.
+    #[serde(default)]
+    pub multichannel: bool,
 }
 
 impl Default for SmbConfig {
@@ -175,6 +180,7 @@ impl Default for SmbConfig {
             create_mask: "0755".to_string(),
             directory_mask: "0755".to_string(),
             additional_params: Vec::new(),
+            multichannel: false,
         }
     }
 }
@@ -194,7 +200,10 @@ impl Default for NfsConfig {
         Self {
             networks: vec!["*".to_string()],
             default_access: "rw".to_string(),
-            version: "4".to_string(),
+            // `auto` keeps the pre-existing kernel-negotiated behaviour for
+            // installs that never touched the field; an explicit 3/4/4.2 is
+            // written as `vers=` and therefore enforced.
+            version: "auto".to_string(),
             root_squash: "root_squash".to_string(),
             custom_options: Vec::new(),
         }
@@ -583,26 +592,39 @@ fn check_config_value(
 
 /// Validate the global SMB service config before it is formatted into
 /// `smb.conf` (`workgroup = …`, `security = …`, … are one-line directives).
-/// `additional_params` is only persisted to `/etc/homevault/smb.json` today —
-/// it is validated single-line anyway so that any future consumer of the
-/// stored array can never emit multi-line values.
+/// `additional_params` are real global directives: each one must be
+/// `key = value` with a key from [`SMB_EXTRA_KEYS`], so a request can never
+/// inject a section header or an `include` into the root-owned file.
 pub(crate) fn validate_smb_config(config: &SmbConfig) -> Result<(), String> {
     check_config_value("workgroup", &config.workgroup, 15, true)?;
     let security = config.security_mode.to_lowercase();
     match security.as_str() {
-        "user" | "share" | "domain" | "server" | "ads" => {}
+        "user" | "share" => {}
+        // Domain/ADS/server authentication needs winbind, `realm`, idmap and a
+        // keytab, none of which HomeVault configures. Accepting the value used
+        // to write `security = ads` into smb.conf and silently broke SMB.
+        "domain" | "server" | "ads" => {
+            return Err(format!(
+                "security_mode '{security}' is not implemented: domain authentication requires winbind/Kerberos. Use 'user' (local accounts) or 'share'."
+            ))
+        }
         other => {
             return Err(format!(
-                "security_mode '{other}' is not valid (use user, share, domain, server or ads)"
+                "security_mode '{other}' is not valid (use user or share)"
             ))
         }
     }
-    if !config
-        .protocol_version
-        .chars()
-        .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '.')
-    {
-        return Err("protocol_version may only contain letters, digits, '_' and '.'".to_string());
+    match config.protocol_version.trim() {
+        "SMB2" | "SMB3" => {}
+        // SMB1/NT1 is broken and deprecated; the UI used to offer it.
+        "NT1" | "SMB1" | "CIFS" => {
+            return Err("protocol_version NT1/SMB1 is not supported — use SMB2 or SMB3".to_string())
+        }
+        other => {
+            return Err(format!(
+                "protocol_version '{other}' is not valid (use SMB2 or SMB3)"
+            ))
+        }
     }
     for (name, mask) in [
         ("create_mask", &config.create_mask),
@@ -618,8 +640,143 @@ pub(crate) fn validate_smb_config(config: &SmbConfig) -> Result<(), String> {
     }
     for param in &config.additional_params {
         check_config_value("additional_params entries", param, 200, true)?;
+        smb_extra_param(param)?;
     }
     Ok(())
+}
+
+/// Global Samba directives an operator may add through `additional_params`.
+/// A short allowlist is safer than writing arbitrary `key = value` lines into
+/// the root-owned `smb.conf`: `include`, section headers and `%` macros are
+/// deliberately absent.
+const SMB_EXTRA_KEYS: &[&str] = &[
+    "server signing",
+    "server smb encrypt",
+    "smb encrypt",
+    "min receivefile size",
+    "socket options",
+    "deadtime",
+    "keepalive",
+    "log level",
+    "max stat cache size",
+    "aio read size",
+    "aio write size",
+    "use sendfile",
+    "server multi channel support",
+];
+
+/// Parse and validate one `key = value` extra global parameter.
+fn smb_extra_param(param: &str) -> Result<(String, String), String> {
+    let (key, value) = param
+        .split_once('=')
+        .ok_or_else(|| format!("additional parameter '{param}' must be 'key = value'"))?;
+    let key = key.trim().to_ascii_lowercase();
+    let value = value.trim();
+    if !SMB_EXTRA_KEYS.contains(&key.as_str()) {
+        return Err(format!(
+            "additional parameter '{key}' is not allowed (allowed: {})",
+            SMB_EXTRA_KEYS.join(", ")
+        ));
+    }
+    if value.is_empty() {
+        return Err(format!("additional parameter '{key}' needs a value"));
+    }
+    if value
+        .chars()
+        .any(|c| c.is_control() || matches!(c, '[' | ']' | ';'))
+    {
+        return Err(format!(
+            "additional parameter '{key}' contains a forbidden character"
+        ));
+    }
+    Ok((key, value.to_string()))
+}
+
+/// Render the `[global]` block of `smb.conf`. The destructuring is exhaustive
+/// on purpose: adding a field to `SmbConfig` without rendering it here is a
+/// compile error, which is the contract P0‑4 asks for.
+fn smb_global_params(config: &SmbConfig) -> Vec<String> {
+    let SmbConfig {
+        workgroup,
+        security_mode,
+        protocol_version,
+        allow_guest,
+        create_mask,
+        directory_mask,
+        additional_params,
+        multichannel,
+    } = config;
+
+    let mut params = vec![
+        format!("  workgroup = {workgroup}"),
+        format!("  security = {security_mode}"),
+        format!("  server min protocol = {protocol_version}"),
+        "  server max protocol = SMB3".to_string(),
+        format!(
+            "  server multi channel support = {}",
+            if *multichannel { "yes" } else { "no" }
+        ),
+        format!("  guest ok = {}", if *allow_guest { "yes" } else { "no" }),
+        format!("  create mask = {create_mask}"),
+        format!("  directory mask = {directory_mask}"),
+    ];
+    let managed_keys: Vec<String> = params
+        .iter()
+        .filter_map(|param| {
+            param
+                .trim()
+                .split_once('=')
+                .map(|(key, _)| key.trim().to_ascii_lowercase())
+        })
+        .collect();
+    for param in additional_params {
+        if let Ok((key, value)) = smb_extra_param(param) {
+            // A managed field wins over the same key passed as an extra, so a
+            // stale `server multi channel support` cannot fight the toggle.
+            if managed_keys.contains(&key) {
+                continue;
+            }
+            params.push(format!("  {key} = {value}"));
+        }
+    }
+    params
+}
+
+/// Bring a config written by an older build back into the supported set
+/// before it reaches the UI. A stored `ads`/`domain`/`server` would otherwise
+/// render as an empty select (the option no longer exists) and fail on save.
+fn normalize_smb_config(config: &mut SmbConfig) {
+    let security = config.security_mode.to_lowercase();
+    if !matches!(security.as_str(), "user" | "share") {
+        warn!(
+            "stored SMB security_mode '{}' is not implemented; falling back to 'user'",
+            config.security_mode
+        );
+        config.security_mode = "user".to_string();
+    }
+    if !matches!(config.protocol_version.trim(), "SMB2" | "SMB3") {
+        warn!(
+            "stored SMB protocol_version '{}' is not supported; falling back to 'SMB3'",
+            config.protocol_version
+        );
+        config.protocol_version = "SMB3".to_string();
+    }
+}
+
+/// The directive key of an `smb.conf` line, lower-cased. Comments, blank
+/// lines and section headers return `None` and are never removed.
+fn smb_line_key(line: &str) -> Option<String> {
+    let trimmed = line.trim();
+    if trimmed.is_empty()
+        || trimmed.starts_with('#')
+        || trimmed.starts_with(';')
+        || trimmed.starts_with('[')
+    {
+        return None;
+    }
+    trimmed
+        .split_once('=')
+        .map(|(key, _)| key.trim().to_ascii_lowercase())
 }
 
 /// Validate the global FTP service config before it is formatted into
@@ -662,7 +819,113 @@ pub(crate) fn validate_ftp_config(config: &FtpConfig) -> Result<(), String> {
             return Err("passive_ports must be 'min' or 'min-max' (e.g. '30000-31000')".to_string())
         }
     }
+    for user in &config.allowed_users {
+        validate_ftp_user(user)?;
+    }
     Ok(())
+}
+
+/// One line in `/etc/vsftpd.user_list`: no whitespace, `/`, `\` or `:`, so a
+/// value can neither split the line nor escape the file vsftpd reads.
+fn validate_ftp_user(user: &str) -> Result<(), String> {
+    check_config_value("allowed_users entries", user, 32, true)?;
+    if user.is_empty() {
+        return Err("allowed_users entries must not be empty".to_string());
+    }
+    if user
+        .chars()
+        .any(|c| c.is_whitespace() || matches!(c, '/' | '\\' | ':'))
+    {
+        return Err(format!(
+            "allowed_users entry '{user}' contains a forbidden character (whitespace, /, \\ or :)"
+        ));
+    }
+    Ok(())
+}
+
+/// `/etc/vsftpd.user_list`, one account per line. Empty when the whitelist is
+/// off (vsftpd then accepts every local account, the historical behaviour).
+fn ftp_user_list_text(users: &[String]) -> String {
+    if users.is_empty() {
+        String::new()
+    } else {
+        let mut text = users.join("\n");
+        text.push('\n');
+        text
+    }
+}
+
+/// Render the whole `vsftpd.conf`. Exhaustive destructuring: a new
+/// `FtpConfig` field that is not rendered here is a compile error.
+fn ftp_config_text(config: &FtpConfig) -> String {
+    let FtpConfig {
+        port,
+        allowed_users,
+        passive_ports,
+        max_clients,
+        force_tls,
+        allow_anonymous,
+        chroot,
+        welcome_message,
+    } = config;
+
+    // Defence in depth: `ftpd_banner=` is a single-line directive; the value
+    // is already validated, but strip line breaks so no caller can append
+    // directives through the banner.
+    let banner = welcome_message
+        .replace(['\r', '\n'], " ")
+        .replace('\t', " ");
+    let (pasv_min, pasv_max) = match passive_ports.split_once('-') {
+        Some((min, max)) => (min, max),
+        None => (passive_ports.as_str(), "31000"),
+    };
+
+    let mut text = format!(
+        r#"listen=YES
+listen_port={port}
+anonymous_enable={anon}
+local_enable=YES
+write_enable=YES
+local_umask=022
+dirmessage_enable=YES
+xferlog_enable=YES
+connect_from_port_20=YES
+seccomp_sandbox=NO
+pasv_enable=YES
+pasv_min_port={pasv_min}
+pasv_max_port={pasv_max}
+max_clients={max_clients}
+chroot_local_user={chroot}
+allow_writeable_chroot=YES
+userlist_enable={userlist_enable}
+userlist_deny=NO
+userlist_file=/etc/vsftpd.user_list
+ftpd_banner={banner}
+"#,
+        anon = if *allow_anonymous { "YES" } else { "NO" },
+        chroot = if *chroot { "YES" } else { "NO" },
+        userlist_enable = if allowed_users.is_empty() {
+            "NO"
+        } else {
+            "YES"
+        },
+    );
+
+    if *force_tls {
+        text.push_str(
+            r#"ssl_enable=YES
+allow_anon_ssl=NO
+force_local_data_ssl=YES
+force_local_logins_ssl=YES
+ssl_tlsv1=YES
+ssl_sslv2=NO
+ssl_sslv3=NO
+rsa_cert_file=/etc/ssl/certs/ssl-cert-snakeoil.pem
+rsa_private_key_file=/etc/ssl/private/ssl-cert-snakeoil.key
+"#,
+        );
+    }
+    text
 }
 
 /// Build the appended smb.conf section for a share (single line per field;
@@ -922,16 +1185,149 @@ fn smb_section_states() -> HashMap<String, (SmbVfsFlags, u32)> {
     map
 }
 
-/// Build the `/etc/exports` line for a share: `path *(options)`. An empty
-/// options list keeps the historical safe default; the options token is
-/// guarded by [`validate_nfs_options`].
-fn nfs_export_line(path: &str, options: &[String]) -> String {
-    let opts = if options.is_empty() {
-        "rw,sync,no_subtree_check".to_string()
-    } else {
-        options.join(",")
-    };
-    format!("{path} *({opts})\n")
+/// Validate the global NFS service configuration before it is rendered into
+/// `/etc/exports`. The network list is a list of client clauses (`*`, a CIDR
+/// or a host name), never free-form text: whitespace or `()` there would forge
+/// an extra client clause.
+pub fn validate_nfs_config(config: &NfsConfig) -> Result<(), String> {
+    match config.default_access.trim() {
+        "rw" | "ro" => {}
+        other => {
+            return Err(format!(
+                "default_access '{other}' is not valid (use rw or ro)"
+            ))
+        }
+    }
+    match config.root_squash.trim() {
+        "root_squash" | "no_root_squash" | "all_squash" => {}
+        other => {
+            return Err(format!(
+                "root_squash '{other}' is not valid (use root_squash, no_root_squash or all_squash)"
+            ))
+        }
+    }
+    nfs_version_option(&config.version)?;
+    if config.networks.is_empty() {
+        return Err("at least one NFS network/client is required (use * for everyone)".to_string());
+    }
+    for network in &config.networks {
+        validate_nfs_network(network)?;
+    }
+    validate_nfs_options(&config.custom_options)
+}
+
+/// A single `/etc/exports` client clause: `*`, a CIDR, an IP or a host name.
+/// Rejects the characters that would end the clause or inject another one.
+fn validate_nfs_network(network: &str) -> Result<(), String> {
+    let network = network.trim();
+    if network.is_empty() {
+        return Err("NFS network entries must not be empty".to_string());
+    }
+    if network.chars().count() > 64 {
+        return Err(format!("NFS network '{network}' is too long"));
+    }
+    if network != "*"
+        && network.chars().any(|c| {
+            c.is_whitespace()
+                || c.is_control()
+                || matches!(
+                    c,
+                    '(' | ')' | ',' | '#' | '"' | '\'' | '[' | ']' | ';' | '\\'
+                )
+        })
+    {
+        return Err(format!(
+            "NFS network '{network}' contains a forbidden character (whitespace, control character or one of ( ) , # \" ' [ ] ; \\)"
+        ));
+    }
+    Ok(())
+}
+
+/// Translate the UI's version choice into a `vers=` export option.
+/// `auto` (and an empty value) lets the kernel negotiate; this keeps existing
+/// installs working when the field was never touched.
+fn nfs_version_option(version: &str) -> Result<Option<String>, String> {
+    match version.trim() {
+        "" | "auto" => Ok(None),
+        "3" | "4" | "4.1" | "4.2" => Ok(Some(format!("vers={}", version.trim()))),
+        other => Err(format!(
+            "NFS version '{other}' is not valid (use 3, 4, 4.1, 4.2 or auto)"
+        )),
+    }
+}
+
+/// Option classes used to merge service defaults with per-share overrides.
+/// A later option replaces the earlier one of the same class, so a share can
+/// still say `ro` while the service default is `rw`.
+fn nfs_option_class(option: &str) -> &'static str {
+    match option {
+        "rw" | "ro" => "access",
+        "sync" | "async" => "sync",
+        "subtree_check" | "no_subtree_check" => "subtree",
+        "root_squash" | "no_root_squash" | "all_squash" => "squash",
+        _ if option.starts_with("vers=") => "vers",
+        _ if option.starts_with("sec=") => "sec",
+        _ => "other",
+    }
+}
+
+fn nfs_merge_options(defaults: &[String], overrides: &[String]) -> Vec<String> {
+    let mut merged: Vec<String> = Vec::new();
+    for option in defaults.iter().chain(overrides.iter()) {
+        let class = nfs_option_class(option);
+        if class == "other" {
+            if merged.iter().any(|existing| existing == option) {
+                continue;
+            }
+            merged.push(option.clone());
+        } else if let Some(position) = merged
+            .iter()
+            .position(|existing| nfs_option_class(existing) == class)
+        {
+            // Replace in place: a share override must not reorder the line,
+            // so the golden tests and a human reading /etc/exports both see
+            // the same stable option order.
+            merged[position] = option.clone();
+        } else {
+            merged.push(option.clone());
+        }
+    }
+    merged
+}
+
+/// Build the `/etc/exports` line for a share:
+/// `path client1(opts) client2(opts)`. The service configuration provides the
+/// defaults; the share's own options override them by class (access, sync,
+/// subtree, squash, vers, sec). Every token is guarded by
+/// [`validate_nfs_options`] / [`validate_nfs_config`].
+fn nfs_export_line(path: &str, share_options: &[String], config: &NfsConfig) -> String {
+    // Exhaustive destructuring is the NFS half of the P0-4 contract: adding a
+    // field to `NfsConfig` without rendering it here is a compile error.
+    let NfsConfig {
+        networks,
+        default_access,
+        version,
+        root_squash,
+        custom_options,
+    } = config;
+
+    let mut defaults = vec![
+        default_access.trim().to_string(),
+        "sync".to_string(),
+        "no_subtree_check".to_string(),
+        root_squash.trim().to_string(),
+    ];
+    if let Ok(Some(version)) = nfs_version_option(version) {
+        defaults.push(version);
+    }
+    defaults.extend(custom_options.iter().cloned());
+
+    let opts = nfs_merge_options(&defaults, share_options).join(",");
+    let clauses: Vec<String> = networks
+        .iter()
+        .map(|network| format!("{}({opts})", network.trim()))
+        .collect();
+    format!("{path} {}\n", clauses.join(" "))
 }
 
 /// Build the tagged (disabled) form of an `/etc/exports` line:
@@ -979,21 +1375,24 @@ fn parse_nfs_export_line(raw_line: &str) -> Option<Share> {
         .map(|n| n.to_string_lossy().to_string())
         .unwrap_or_else(|| path.to_string());
 
-    // `*(rw,sync,no_subtree_check)` → ["rw", "sync", "no_subtree_check"], so
-    // the parsed option list round-trips through `nfs_export_line` exactly.
+    // `*(rw,sync)` or `192.168.1.0/24(rw) 10.0.0.0/8(rw)` → the option list,
+    // so it round-trips through `nfs_export_line` exactly. A client clause is
+    // `<client>(<options>)`; the parentheses are the only safe delimiter
+    // because host names never contain them.
     let mut options: Vec<String> = Vec::new();
     for client_token in &parts[1..] {
-        let inner = client_token
-            .strip_prefix('*')
-            .unwrap_or(client_token)
-            .trim_start_matches('(')
-            .trim_end_matches(')');
-        options.extend(
-            inner
-                .split(',')
-                .filter(|opt| !opt.is_empty())
-                .map(|opt| opt.to_string()),
-        );
+        let Some(open) = client_token.find('(') else {
+            continue;
+        };
+        let inner = &client_token[open + 1..];
+        let inner = inner.strip_suffix(')').unwrap_or(inner);
+        for option in inner.split(',').filter(|opt| !opt.is_empty()) {
+            // Several clients carry the same option list; keep one copy so the
+            // parsed share round-trips through `nfs_export_line` exactly.
+            if !options.iter().any(|existing| existing == option) {
+                options.push(option.to_string());
+            }
+        }
     }
 
     Some(Share {
@@ -1316,7 +1715,9 @@ impl SharesService {
         let path = get_smb_config_path();
         if path.exists() {
             let data = fs::read_to_string(path)?;
-            Ok(serde_json::from_str(&data)?)
+            let mut config: SmbConfig = serde_json::from_str(&data)?;
+            normalize_smb_config(&mut config);
+            Ok(config)
         } else {
             Ok(SmbConfig::default())
         }
@@ -1340,96 +1741,59 @@ impl SharesService {
     fn apply_smb_config(config: &SmbConfig) -> Result<(), ShareError> {
         let smb_conf = smb_conf_path();
         let smb_conf = smb_conf.as_str();
+        let new_params = smb_global_params(config);
+
         if !std::path::Path::new(smb_conf).exists() {
             warn!("Samba config file not found: {}", smb_conf);
-            let content = format!(
-                "[global]\n  workgroup = {}\n  security = {}\n  server min protocol = {}\n  guest ok = {}\n  create mask = {}\n  directory mask = {}\n",
-                config.workgroup, config.security_mode, config.protocol_version,
-                if config.allow_guest { "yes" } else { "no" },
-                config.create_mask, config.directory_mask
-            );
+            let content = format!("[global]\n{}\n", new_params.join("\n"));
             write_config_file(smb_conf, &content)?;
         } else {
             let mut lines: Vec<String> = fs::read_to_string(smb_conf)?
                 .lines()
                 .map(String::from)
                 .collect();
-            let mut in_global = false;
-            let mut global_end = 0;
 
-            for (i, line) in lines.clone().iter().enumerate() {
-                let trimmed = line.trim();
-                if trimmed.eq_ignore_ascii_case("[global]") {
-                    in_global = true;
-                    continue;
-                }
-                if in_global
-                    && trimmed.starts_with('[')
-                    && !trimmed.eq_ignore_ascii_case("[global]")
-                {
-                    global_end = i;
-                    break;
-                }
-                if in_global {
-                    global_end = i + 1;
-                }
+            let found_global = lines
+                .iter()
+                .any(|line| line.trim().eq_ignore_ascii_case("[global]"));
+            if !found_global {
+                lines.insert(0, "[global]".to_string());
             }
 
-            if in_global {
-                let mut insert_after = global_end;
-                // Remove existing global params we manage
-                let managed_keys = [
-                    "workgroup",
-                    "security",
-                    "server min protocol",
-                    "server max protocol",
-                    "guest ok",
-                    "create mask",
-                    "directory mask",
-                ];
-                for key in &managed_keys {
-                    lines.retain(|l| {
-                        let t = l.trim();
-                        !t.starts_with(key) || t.starts_with('#') || t.starts_with(';')
-                    });
-                }
-                // Find new global_end after removals
-                let mut new_global_end: usize = 0;
-                let mut found_global = false;
-                for (i, line) in lines.iter().enumerate() {
-                    let trimmed = line.trim();
-                    if trimmed.eq_ignore_ascii_case("[global]") {
-                        found_global = true;
-                        continue;
-                    }
-                    if found_global && trimmed.starts_with('[') {
-                        new_global_end = i;
-                        break;
-                    }
-                    if found_global {
-                        new_global_end = i + 1;
-                    }
-                }
-                insert_after = if found_global {
-                    new_global_end
-                } else {
-                    insert_after
-                };
+            // Remove every key we manage (exact key match, comments kept).
+            let managed: Vec<String> = new_params
+                .iter()
+                .filter_map(|param| {
+                    param
+                        .trim()
+                        .split_once('=')
+                        .map(|(key, _)| key.trim().to_ascii_lowercase())
+                })
+                .collect();
+            lines.retain(|line| match smb_line_key(line) {
+                Some(key) => !managed.contains(&key),
+                None => true,
+            });
 
-                let new_params = [
-                    format!("  workgroup = {}", config.workgroup),
-                    format!("  security = {}", config.security_mode),
-                    format!("  server min protocol = {}", config.protocol_version),
-                    format!(
-                        "  guest ok = {}",
-                        if config.allow_guest { "yes" } else { "no" }
-                    ),
-                    format!("  create mask = {}", config.create_mask),
-                    format!("  directory mask = {}", config.directory_mask),
-                ];
-                for (offset, param) in new_params.iter().enumerate() {
-                    lines.insert(insert_after + offset, param.clone());
+            // Recompute the insertion point after removals.
+            let mut found = false;
+            let mut insert_after = 0;
+            for (i, line) in lines.iter().enumerate() {
+                let trimmed = line.trim();
+                if trimmed.eq_ignore_ascii_case("[global]") {
+                    found = true;
+                    continue;
                 }
+                if found && trimmed.starts_with('[') {
+                    insert_after = i;
+                    break;
+                }
+                if found {
+                    insert_after = i + 1;
+                }
+            }
+            for (offset, param) in new_params.iter().enumerate() {
+                lines.insert(insert_after + offset, param.clone());
             }
             write_config_file(smb_conf, &lines.join("\n"))?;
         }
@@ -1454,8 +1818,12 @@ impl SharesService {
         }
     }
 
-    /// Persist the NFS service config to disk.
+    /// Persist the NFS service config to disk and re-render every export line
+    /// so the saved defaults actually apply. Before this, the fields were
+    /// persisted and ignored: `/etc/exports` kept `*(rw,sync,no_subtree_check)`
+    /// whatever the user chose.
     pub fn save_nfs_config(config: &NfsConfig) -> Result<(), ShareError> {
+        validate_nfs_config(config).map_err(ShareError::InvalidField)?;
         let path = get_nfs_config_path();
         if let Some(parent) = path.parent() {
             mkdir_as_root(parent)?;
@@ -1464,6 +1832,36 @@ impl SharesService {
             &path.to_string_lossy(),
             &serde_json::to_string_pretty(config)?,
         )?;
+        Self::rewrite_nfs_exports(config)?;
+        Self::reload_nfs_exports("all shares", "apply NFS service config");
+        Ok(())
+    }
+
+    /// Re-render every export line in `/etc/exports` with `config`. The file
+    /// is HomeVault-owned; per-share options are preserved and override the
+    /// service defaults by class, while blank lines and plain comments are
+    /// left untouched.
+    fn rewrite_nfs_exports(config: &NfsConfig) -> Result<(), ShareError> {
+        let exports_path = "/etc/exports";
+        if !std::path::Path::new(exports_path).exists() {
+            return Ok(());
+        }
+        let raw = std::fs::read_to_string(exports_path)?;
+        let mut out = String::new();
+        for line in raw.lines() {
+            if let Some(share) = parse_nfs_export_line(line) {
+                let plain = nfs_export_line(&share.path, &share.options, config);
+                if share.enabled {
+                    out.push_str(plain.trim_end());
+                } else {
+                    out.push_str(nfs_disabled_line(&share.name, &plain).trim_end());
+                }
+            } else {
+                out.push_str(line);
+            }
+            out.push('\n');
+        }
+        write_file_as_root(exports_path, &out)?;
         Ok(())
     }
 
@@ -1591,57 +1989,14 @@ impl SharesService {
 
     fn apply_ftp_config(config: &FtpConfig) -> Result<(), ShareError> {
         let vsftpd_conf = "/etc/vsftpd.conf";
-        // Defence in depth: `ftpd_banner=` is a single-line directive, and the
-        // banner is already validated single-line in `save_ftp_config`; strip
-        // any line break anyway so no caller path can ever append directives.
-        let banner = config
-            .welcome_message
-            .replace(['\r', '\n'], " ")
-            .replace('\t', " ");
-        let content = format!(
-            r#"listen=YES
-listen_port={port}
-anonymous_enable={anon}
-local_enable=YES
-write_enable=YES
-local_umask=022
-dirmessage_enable=YES
-xferlog_enable=YES
-connect_from_port_20=YES
-seccomp_sandbox=NO
-pasv_enable=YES
-pasv_min_port={pasv_min}
-pasv_max_port={pasv_max}
-max_clients={max_clients}
-chroot_local_user={chroot}
-allow_writeable_chroot=YES
-ftpd_banner={banner}
-"#,
-            port = config.port,
-            anon = if config.allow_anonymous { "YES" } else { "NO" },
-            pasv_min = config.passive_ports.split('-').next().unwrap_or("30000"),
-            pasv_max = config.passive_ports.split('-').nth(1).unwrap_or("31000"),
-            max_clients = config.max_clients,
-            chroot = if config.chroot { "YES" } else { "NO" },
-            banner = banner,
-        );
-
-        if config.force_tls {
-            let tls_conf = r#"ssl_enable=YES
-allow_anon_ssl=NO
-force_local_data_ssl=YES
-force_local_logins_ssl=YES
-ssl_tlsv1=YES
-ssl_sslv2=NO
-ssl_sslv3=NO
-rsa_cert_file=/etc/ssl/certs/ssl-cert-snakeoil.pem
-rsa_private_key_file=/etc/ssl/private/ssl-cert-snakeoil.key
-"#
-            .to_string();
-            write_file_as_root(vsftpd_conf, &format!("{}\n{}", content, tls_conf))?;
-        } else {
-            write_file_as_root(vsftpd_conf, &content)?;
-        }
+        // The whitelist lives in its own root-owned file, read by vsftpd
+        // through `userlist_file`. Writing it before the config means a
+        // reload never sees a half-applied pair.
+        write_file_as_root(
+            "/etc/vsftpd.user_list",
+            &ftp_user_list_text(&config.allowed_users),
+        )?;
+        write_file_as_root(vsftpd_conf, &ftp_config_text(config))?;
 
         let mut cmd = Command::new("sudo");
         cmd.arg("systemctl");
@@ -1719,7 +2074,8 @@ rsa_private_key_file=/etc/ssl/private/ssl-cert-snakeoil.key
 
     fn create_nfs_share(share: &Share) -> Result<(), ShareError> {
         let exports_path = "/etc/exports";
-        let export_line = nfs_export_line(&share.path, &share.options);
+        let nfs_config = Self::get_nfs_config().unwrap_or_default();
+        let export_line = nfs_export_line(&share.path, &share.options, &nfs_config);
 
         append_file_as_root(exports_path, &export_line)?;
 
@@ -2317,10 +2673,11 @@ rsa_private_key_file=/etc/ssl/private/ssl-cert-snakeoil.key
         validate_nfs_options(&new_options).map_err(ShareError::InvalidField)?;
 
         // Preserve the enable/disable state carried by the existing line.
+        let nfs_config = Self::get_nfs_config().unwrap_or_default();
         let replacement = if existing.enabled {
-            nfs_export_line(&new_path, &new_options)
+            nfs_export_line(&new_path, &new_options, &nfs_config)
         } else {
-            nfs_disabled_line(name, &nfs_export_line(&new_path, &new_options))
+            nfs_disabled_line(name, &nfs_export_line(&new_path, &new_options, &nfs_config))
         };
 
         let mut new_exports = String::new();
@@ -2386,12 +2743,13 @@ rsa_private_key_file=/etc/ssl/private/ssl-cert-snakeoil.key
             }
         };
 
+        let nfs_config = Self::get_nfs_config().unwrap_or_default();
         let mut new_exports = String::new();
         for (idx, line) in raw.lines().enumerate() {
             if idx == target {
                 let parsed = parse_nfs_export_line(line)
                     .ok_or_else(|| ShareError::NotFound(name.to_string()))?;
-                let plain = nfs_export_line(&parsed.path, &parsed.options);
+                let plain = nfs_export_line(&parsed.path, &parsed.options, &nfs_config);
                 if enabled {
                     // Un-tag: keep the export line as-is.
                     new_exports.push_str(plain.trim_end());
@@ -2619,7 +2977,10 @@ mod tests {
             d.root_squash, "root_squash",
             "root must be squashed by default"
         );
-        assert_eq!(d.version, "4");
+        assert_eq!(
+            d.version, "auto",
+            "an untouched install keeps kernel negotiation instead of forcing v4"
+        );
     }
 
     #[test]
@@ -3053,21 +3414,94 @@ mod tests {
 
     #[test]
     fn test_nfs_export_line_defaults_and_round_trip() {
+        let config = NfsConfig::default();
         assert_eq!(
-            nfs_export_line("/mnt/pool/media", &[]),
-            "/mnt/pool/media *(rw,sync,no_subtree_check)\n"
+            nfs_export_line("/mnt/pool/media", &[], &config),
+            "/mnt/pool/media *(rw,sync,no_subtree_check,root_squash,vers=4)\n"
         );
 
-        let parsed = parse_nfs_export_line("/mnt/pool/media *(rw,sync,no_subtree_check)").unwrap();
+        let line = "/mnt/pool/media *(rw,sync,no_subtree_check,root_squash,vers=4)";
+        let parsed = parse_nfs_export_line(line).unwrap();
         assert_eq!(parsed.name, "media");
         assert_eq!(parsed.path, "/mnt/pool/media");
         assert!(parsed.enabled);
-        assert_eq!(parsed.options, vec!["rw", "sync", "no_subtree_check"]);
+        assert_eq!(
+            parsed.options,
+            vec!["rw", "sync", "no_subtree_check", "root_squash", "vers=4"]
+        );
         // Round-trip: re-serialising the parsed options reproduces the line.
         assert_eq!(
-            nfs_export_line(&parsed.path, &parsed.options),
-            "/mnt/pool/media *(rw,sync,no_subtree_check)\n"
+            nfs_export_line(&parsed.path, &parsed.options, &config),
+            format!("{line}\n")
         );
+    }
+
+    #[test]
+    fn test_nfs_export_line_applies_networks_and_share_overrides() {
+        let config = NfsConfig {
+            networks: vec!["192.168.1.0/24".to_string(), "10.0.0.0/8".to_string()],
+            default_access: "ro".to_string(),
+            version: "3".to_string(),
+            root_squash: "all_squash".to_string(),
+            custom_options: vec!["no_wdelay".to_string()],
+        };
+        let overrides = vec![
+            "rw".to_string(),
+            "async".to_string(),
+            "no_root_squash".to_string(),
+            "vers=4.2".to_string(),
+        ];
+        let opts = "rw,async,no_subtree_check,no_root_squash,vers=4.2,no_wdelay";
+        let expected = format!("/mnt/pool/media 192.168.1.0/24({opts}) 10.0.0.0/8({opts})\n");
+        assert_eq!(
+            nfs_export_line("/mnt/pool/media", &overrides, &config),
+            expected
+        );
+
+        let parsed = parse_nfs_export_line(expected.trim_end()).unwrap();
+        let expected_options: Vec<String> = opts.split(',').map(str::to_string).collect();
+        assert_eq!(parsed.options, expected_options);
+        assert_eq!(
+            nfs_export_line(&parsed.path, &parsed.options, &config),
+            expected,
+            "the multi-client line must round-trip"
+        );
+    }
+
+    #[test]
+    fn test_nfs_version_auto_omits_vers() {
+        let config = NfsConfig {
+            version: "auto".to_string(),
+            ..NfsConfig::default()
+        };
+        let line = nfs_export_line("/mnt/pool/media", &[], &config);
+        assert_eq!(
+            line,
+            "/mnt/pool/media *(rw,sync,no_subtree_check,root_squash)\n"
+        );
+    }
+
+    #[test]
+    fn test_validate_nfs_config_rejects_injection_and_bad_values() {
+        let with = |f: fn(&mut NfsConfig)| {
+            let mut cfg = NfsConfig::default();
+            f(&mut cfg);
+            cfg
+        };
+
+        assert!(validate_nfs_config(&NfsConfig::default()).is_ok());
+        assert!(validate_nfs_config(&with(|c| c.networks = vec![])).is_err());
+        assert!(
+            validate_nfs_config(&with(|c| { c.networks = vec!["* (rw)".to_string()] })).is_err()
+        );
+        assert!(validate_nfs_config(&with(|c| c.networks = vec!["a\nb".to_string()])).is_err());
+        assert!(validate_nfs_config(&with(|c| c.default_access = "rw) /etc".to_string())).is_err());
+        assert!(validate_nfs_config(&with(|c| c.version = "5".to_string())).is_err());
+        assert!(validate_nfs_config(&with(|c| c.root_squash = "nope".to_string())).is_err());
+        assert!(validate_nfs_config(&with(|c| {
+            c.custom_options = vec!["rw,sync".to_string()]
+        }))
+        .is_err());
     }
 
     #[test]
@@ -3084,7 +3518,8 @@ mod tests {
 
     #[test]
     fn test_nfs_disabled_tag_round_trips_as_a_disabled_share() {
-        let plain = nfs_export_line("/mnt/pool/media", &["rw".to_string()]);
+        let config = NfsConfig::default();
+        let plain = nfs_export_line("/mnt/pool/media", &["rw".to_string()], &config);
         let tagged = nfs_disabled_line("media", &plain);
         assert!(tagged.starts_with(NFS_DISABLED_TAG), "{tagged:?}");
 
@@ -3092,7 +3527,10 @@ mod tests {
         assert_eq!(parsed.name, "media");
         assert_eq!(parsed.path, "/mnt/pool/media");
         assert!(!parsed.enabled, "a tagged line is a disabled share");
-        assert_eq!(parsed.options, vec!["rw"]);
+        assert_eq!(
+            parsed.options,
+            vec!["rw", "sync", "no_subtree_check", "root_squash", "vers=4"]
+        );
     }
 
     #[test]
@@ -3123,6 +3561,176 @@ mod tests {
             c.additional_params = vec!["\n[evil]".to_string()]
         }))
         .is_err());
+    }
+
+    #[test]
+    fn test_validate_smb_config_rejects_unimplemented_domain_auth() {
+        for mode in ["domain", "server", "ads"] {
+            let mut config = SmbConfig::default();
+            config.security_mode = mode.to_string();
+            let error =
+                validate_smb_config(&config).expect_err("domain authentication is not implemented");
+            assert!(error.contains("not implemented"), "{error}");
+        }
+        for version in ["NT1", "SMB1", "CIFS"] {
+            let mut config = SmbConfig::default();
+            config.protocol_version = version.to_string();
+            assert!(
+                validate_smb_config(&config).is_err(),
+                "{version} must be refused"
+            );
+        }
+        let mut config = SmbConfig::default();
+        config.protocol_version = "SMB2".to_string();
+        assert!(validate_smb_config(&config).is_ok());
+    }
+
+    #[test]
+    fn test_smb_extra_params_are_allowlisted() {
+        assert!(smb_extra_param("deadtime = 30").is_ok());
+        assert!(smb_extra_param("server multi channel support = yes").is_ok());
+        assert!(smb_extra_param("include = /etc/passwd").is_err());
+        assert!(smb_extra_param("server max protocol = SMB1").is_err());
+        assert!(smb_extra_param("deadtime").is_err());
+        assert!(smb_extra_param("deadtime = ").is_err());
+        assert!(smb_extra_param("deadtime = 30\n[evil]").is_err());
+    }
+
+    #[test]
+    fn test_smb_global_params_renders_every_field() {
+        let config = SmbConfig {
+            workgroup: "HV".to_string(),
+            security_mode: "user".to_string(),
+            protocol_version: "SMB2".to_string(),
+            allow_guest: true,
+            create_mask: "0770".to_string(),
+            directory_mask: "0700".to_string(),
+            additional_params: vec![
+                "server multi channel support = no".to_string(),
+                "deadtime = 30".to_string(),
+            ],
+            multichannel: true,
+        };
+        let rendered = smb_global_params(&config).join("\n");
+        for expected in [
+            "workgroup = HV",
+            "security = user",
+            "server min protocol = SMB2",
+            "server max protocol = SMB3",
+            "server multi channel support = yes",
+            "guest ok = yes",
+            "create mask = 0770",
+            "directory mask = 0700",
+            "deadtime = 30",
+        ] {
+            assert!(
+                rendered.contains(expected),
+                "missing '{expected}' in:\n{rendered}"
+            );
+        }
+        // 8 managed parameters + 1 allowed extra (the duplicate multichannel
+        // passed as an extra loses against the dedicated toggle).
+        assert_eq!(rendered.lines().count(), 9);
+        assert!(!rendered.contains("server multi channel support = no"));
+    }
+
+    #[test]
+    fn test_smb_config_deserializes_without_multichannel() {
+        // A pre-2026-11-05 /etc/homevault/smb.json has no `multichannel` key;
+        // `#[serde(default)]` must keep it loadable (off).
+        let json = r#"{
+            "workgroup": "WORKGROUP",
+            "security_mode": "user",
+            "protocol_version": "SMB3",
+            "allow_guest": false,
+            "create_mask": "0755",
+            "directory_mask": "0755",
+            "additional_params": []
+        }"#;
+        let config: SmbConfig = serde_json::from_str(json).expect("old config must still load");
+        assert!(!config.multichannel);
+    }
+
+    #[test]
+    fn test_get_smb_config_normalizes_legacy_values() {
+        let mut config = SmbConfig {
+            security_mode: "ads".to_string(),
+            protocol_version: "NT1".to_string(),
+            ..SmbConfig::default()
+        };
+        normalize_smb_config(&mut config);
+        assert_eq!(config.security_mode, "user");
+        assert_eq!(config.protocol_version, "SMB3");
+
+        let mut valid = SmbConfig::default();
+        normalize_smb_config(&mut valid);
+        assert_eq!(valid.security_mode, "user");
+        assert_eq!(valid.protocol_version, "SMB3");
+    }
+
+    #[test]
+    fn test_ftp_config_text_renders_every_field() {
+        let config = FtpConfig {
+            port: 2121,
+            allowed_users: vec!["alice".to_string(), "bob".to_string()],
+            passive_ports: "40000-40100".to_string(),
+            max_clients: 25,
+            force_tls: true,
+            allow_anonymous: true,
+            chroot: false,
+            welcome_message: "Hello".to_string(),
+        };
+        let text = ftp_config_text(&config);
+        for expected in [
+            "listen_port=2121",
+            "pasv_min_port=40000",
+            "pasv_max_port=40100",
+            "max_clients=25",
+            "anonymous_enable=YES",
+            "chroot_local_user=NO",
+            "userlist_enable=YES",
+            "userlist_deny=NO",
+            "userlist_file=/etc/vsftpd.user_list",
+            "ftpd_banner=Hello",
+            "ssl_enable=YES",
+        ] {
+            assert!(text.contains(expected), "missing '{expected}' in:\n{text}");
+        }
+    }
+
+    #[test]
+    fn test_ftp_user_list_and_validation() {
+        assert_eq!(ftp_user_list_text(&[]), "");
+        assert_eq!(
+            ftp_user_list_text(&["alice".to_string(), "bob".to_string()]),
+            "alice\nbob\n"
+        );
+        assert!(validate_ftp_user("alice").is_ok());
+        assert!(validate_ftp_user("alice smith").is_err());
+        assert!(validate_ftp_user("a/b").is_err());
+        assert!(validate_ftp_user("").is_err());
+
+        let mut config = FtpConfig {
+            port: 21,
+            passive_ports: "30000-31000".to_string(),
+            max_clients: 10,
+            ..FtpConfig::default()
+        };
+        config.allowed_users = vec!["a b".to_string()];
+        assert!(validate_ftp_config(&config).is_err());
+    }
+
+    #[test]
+    fn test_smb_line_key_ignores_comments_and_sections() {
+        assert_eq!(
+            smb_line_key("  workgroup = X"),
+            Some("workgroup".to_string())
+        );
+        assert_eq!(smb_line_key("[global]"), None);
+        assert_eq!(smb_line_key("# security = ads"), None);
+        assert_eq!(smb_line_key("; security = ads"), None);
+        assert_eq!(smb_line_key(""), None);
+        assert_eq!(smb_line_key("guest ok = yes"), Some("guest ok".to_string()));
     }
 
     fn ftp_config_fixture() -> FtpConfig {

@@ -357,10 +357,12 @@ pub async fn dispatch(pool: Arc<sqlx::SqlitePool>, payload: PushPayload) {
             return;
         }
     };
-    let client = match reqwest::Client::builder()
-        .timeout(SEND_TIMEOUT)
-        .redirect(reqwest::redirect::Policy::none())
-        .build()
+    let client = match crate::proxy::apply_loaded(
+        reqwest::Client::builder()
+            .timeout(SEND_TIMEOUT)
+            .redirect(reqwest::redirect::Policy::none()),
+    )
+    .build()
     {
         Ok(client) => client,
         Err(e) => {

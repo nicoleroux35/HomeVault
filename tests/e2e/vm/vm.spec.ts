@@ -419,6 +419,29 @@ test.describe('4 — Backend contract', () => {
     expect(body.success).toBe(true);
     expect(typeof body.data.available).toBe('boolean');
   });
+
+  test('4.7 — clone rejects a bad name before touching Incus', async () => {
+    const res = await sharedCtx.post('/api/vm/web/clone', {
+      headers: adminHeaders,
+      data: { name: 'bad name' },
+    });
+    expect(res.status()).toBe(400);
+    expect((await res.json()).success).toBe(false);
+  });
+
+  test('4.8 — clone names the missing Incus capability when it is absent', async () => {
+    const available = await sharedCtx.get('/api/vm/available', { headers: adminHeaders });
+    const body = await available.json();
+    if (body?.data?.available) test.skip(true, 'Incus is present — refusing to clone a real machine');
+    const res = await sharedCtx.post('/api/vm/web/clone', {
+      headers: adminHeaders,
+      data: { name: 'web-copy' },
+    });
+    expect(res.status()).toBe(503);
+    const clone = await res.json();
+    expect(clone.success).toBe(false);
+    expect(String(clone.message).toLowerCase()).toContain('incus');
+  });
 });
 
 // ===========================================================================

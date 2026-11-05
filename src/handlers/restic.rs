@@ -127,7 +127,11 @@ pub async fn handle_restic_available(
     }
 
     ResponseHelper::json_success(serde_json::json!({
-        "available": ResticService::is_available()
+        "available": ResticService::is_available(),
+        // Browsing a repository needs FUSE as well as the CLI; the card hides
+        // the "Browse" action when this is false instead of promising a mount
+        // that would answer 503.
+        "fuse_available": crate::restic::is_fuse_available()
     }))
 }
 
@@ -728,6 +732,108 @@ pub async fn handle_restic_backup_create(
         "backup_job_id": backup_job_id,
         "repository": repo_config.name,
     }))
+}
+
+/// `POST /api/restic/repos/{id}/mount` — mount a repository read-only for
+/// browsing. Idempotent: an already-mounted repository is returned as-is.
+///
+/// `restic mount` runs a FUSE daemon, so the mount point is derived from the
+/// repository id under `{DATA_DIRECTORY}/restic-mounts` and is never taken
+/// from the request. A host without FUSE answers `503` instead of failing in
+/// the background.
+pub async fn handle_restic_mount_create(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+) -> Response {
+    let admin_username = match require_admin(&state, &headers).await {
+        Ok(u) => u,
+        Err(response) => return response,
+    };
+
+    if !ResticService::is_available() {
+        return ResponseHelper::json_unavailable(
+            "restic CLI is not installed or not found in PATH",
+        );
+    }
+    if !crate::restic::is_fuse_available() {
+        return ResponseHelper::json_unavailable(
+            "FUSE is not available on this host (/dev/fuse is missing)",
+        );
+    }
+
+    let repo_repo = ResticRepository::new(state.db.pool());
+    let repo_config = match repo_repo.get_by_id(&id).await {
+        Ok(Some(r)) => r,
+        Ok(None) => return ResponseHelper::json_error("Repository not found".to_string()),
+        Err(e) => return ResponseHelper::json_error(format!("Database error: {}", e)),
+    };
+    let repo_name = repo_config.name.clone();
+
+    let joined = tokio::task::spawn_blocking(move || {
+        ResticService::mount_repository(&repo_config, &repo_name)
+    })
+    .await;
+    match joined {
+        Ok(Ok(mount)) => {
+            crate::events::log_event(format!(
+                "Admin '{}' mounted repository '{}' read-only at {}",
+                admin_username,
+                mount.repo_name.as_deref().unwrap_or("?"),
+                mount.mount_point
+            ));
+            ResponseHelper::json_success(mount)
+        }
+        Ok(Err(ResticError::Unavailable(message))) => ResponseHelper::json_unavailable(message),
+        Ok(Err(e)) => ResponseHelper::json_error(e.to_string()),
+        Err(join_err) => ResponseHelper::json_internal_error(format!(
+            "repository mount task panicked: {join_err}"
+        )),
+    }
+}
+
+/// `GET /api/restic/mounts` — the browse mounts the kernel currently confirms.
+pub async fn handle_restic_mounts_list(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Response {
+    if let Err(response) = require_auth(&state, &headers).await {
+        return response;
+    }
+    match tokio::task::spawn_blocking(ResticService::list_mounts).await {
+        Ok(Ok(mounts)) => ResponseHelper::json_success(mounts),
+        Ok(Err(e)) => ResponseHelper::json_error(e.to_string()),
+        Err(join_err) => {
+            ResponseHelper::json_internal_error(format!("mount list task panicked: {join_err}"))
+        }
+    }
+}
+
+/// `DELETE /api/restic/mounts/{id}` — unmount a repository browse mount.
+pub async fn handle_restic_mount_delete(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+) -> Response {
+    let admin_username = match require_admin(&state, &headers).await {
+        Ok(u) => u,
+        Err(response) => return response,
+    };
+
+    let mount_id = id.clone();
+    match tokio::task::spawn_blocking(move || ResticService::unmount(&mount_id)).await {
+        Ok(Ok(())) => {
+            crate::events::log_event(format!(
+                "Admin '{}' unmounted repository browse mount '{}'",
+                admin_username, id
+            ));
+            ResponseHelper::json_success(serde_json::json!({ "success": true, "id": id }))
+        }
+        Ok(Err(e)) => ResponseHelper::json_error(e.to_string()),
+        Err(join_err) => {
+            ResponseHelper::json_internal_error(format!("mount unmount task panicked: {join_err}"))
+        }
+    }
 }
 
 /// `POST /api/restic/restore` — starts a restore and answers immediately.

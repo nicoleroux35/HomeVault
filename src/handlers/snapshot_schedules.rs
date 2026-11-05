@@ -26,9 +26,11 @@ use crate::handlers::AppState;
 use crate::pools::PoolService;
 use crate::restic_scheduler::compute_next_run;
 use crate::scheduled_tasks_scheduler::is_valid_pool_name;
+use crate::shares::{validate_share_name, ShareType, SharesService};
 use crate::snapshot_scheduler::{
     parse_auto_snapshot_time, run_schedule, GfsPolicy, RunScheduleError,
 };
+use crate::snapshots::SnapshotService;
 use crate::storage::snapshot_schedule_repo::SnapshotScheduleRepository;
 use crate::utils::ResponseHelper;
 use axum::{
@@ -44,6 +46,12 @@ use std::sync::Arc;
 #[derive(Debug, Deserialize)]
 pub struct SnapshotScheduleRequest {
     pub pool: String,
+    /// Optional share target (P1-12). `None`/empty keeps a pool-wide schedule.
+    #[serde(default)]
+    pub share: Option<String>,
+    /// The share's protocol (`smb`, `nfs`, …), required with `share`.
+    #[serde(default)]
+    pub share_type: Option<String>,
     pub cron: String,
     #[serde(default = "default_prefix")]
     pub prefix: String,
@@ -86,6 +94,39 @@ fn default_yearly() -> u32 {
 }
 
 impl SnapshotScheduleRequest {
+    /// Normalises the optional share target: both fields or neither, a valid
+    /// share name and a known protocol. The stored `share_type` is the
+    /// canonical lowercase spelling.
+    fn normalized_share(&self) -> Result<Option<(String, String)>, Response> {
+        let share = self
+            .share
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty());
+        let share_type = self
+            .share_type
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty());
+        match (share, share_type) {
+            (None, None) => Ok(None),
+            (Some(share), Some(share_type)) => {
+                if let Err(reason) = validate_share_name(share) {
+                    return Err(ResponseHelper::json_error(reason));
+                }
+                let Some(parsed) = ShareType::parse(share_type) else {
+                    return Err(ResponseHelper::json_error(format!(
+                        "Invalid share type '{share_type}': use smb, nfs, ftp, webdav or sftp"
+                    )));
+                };
+                Ok(Some((share.to_string(), parsed.as_str().to_string())))
+            }
+            _ => Err(ResponseHelper::json_error(
+                "A share target needs both 'share' and 'share_type'".to_string(),
+            )),
+        }
+    }
+
     fn policy(&self) -> GfsPolicy {
         GfsPolicy {
             hourly: self.gfs_hourly,
@@ -106,6 +147,7 @@ impl SnapshotScheduleRequest {
                 self.pool
             )));
         }
+        self.normalized_share()?;
         // The prefix becomes part of a snapshot name (and the prune filter)
         // — keep it conservative: alphanumerics, dashes, underscores.
         let prefix = self.prefix.trim();
@@ -170,10 +212,21 @@ pub async fn handle_snapshot_schedule_create(
     if let Err(message) = validate_known_pool(req.pool.trim(), &known_pool_names().await) {
         return ResponseHelper::json_error(message);
     }
+    let share_target = match req.normalized_share() {
+        Ok(target) => target,
+        Err(resp) => return resp,
+    };
+    if let Some((share, share_type)) = &share_target {
+        if let Err(resp) = validate_share_target(req.pool.trim(), share, share_type).await {
+            return resp;
+        }
+    }
     let repo = SnapshotScheduleRepository::new(state.db.pool());
     match repo
         .create(
             req.pool.trim(),
+            share_target.as_ref().map(|(s, _)| s.as_str()),
+            share_target.as_ref().map(|(_, t)| t.as_str()),
             req.cron.trim(),
             req.prefix.trim(),
             req.recursive,
@@ -216,10 +269,21 @@ pub async fn handle_snapshot_schedule_update(
     if let Err(message) = validate_known_pool(req.pool.trim(), &known_pool_names().await) {
         return ResponseHelper::json_error(message);
     }
+    let share_target = match req.normalized_share() {
+        Ok(target) => target,
+        Err(resp) => return resp,
+    };
+    if let Some((share, share_type)) = &share_target {
+        if let Err(resp) = validate_share_target(req.pool.trim(), share, share_type).await {
+            return resp;
+        }
+    }
     match repo
         .update(
             &id,
             req.pool.trim(),
+            share_target.as_ref().map(|(s, _)| s.as_str()),
+            share_target.as_ref().map(|(_, t)| t.as_str()),
             req.cron.trim(),
             req.prefix.trim(),
             req.recursive,
@@ -398,6 +462,38 @@ async fn known_pool_names() -> Vec<String> {
     }
 }
 
+/// Confirms that the named share exists **and** that its current path lives on
+/// a snapshot-capable backend belonging to `pool`. A foreign share path or a
+/// non-ZFS/Btrfs pool is refused at save time instead of failing every tick.
+#[allow(clippy::result_large_err)]
+async fn validate_share_target(pool: &str, share: &str, share_type: &str) -> Result<(), Response> {
+    let Some(kind) = ShareType::parse(share_type) else {
+        return Err(ResponseHelper::json_error(format!(
+            "Invalid share type '{share_type}'"
+        )));
+    };
+    let pool = pool.to_string();
+    let share = share.to_string();
+    let resolved = tokio::task::spawn_blocking(move || {
+        let share = SharesService::get_share(&share, kind)
+            .map_err(|e| crate::snapshots::SnapError::PoolNotFound(e.to_string()))?;
+        SnapshotService::resolve_share_target(&pool, &share.path).map(|_| ())
+    })
+    .await;
+    match resolved {
+        Ok(Ok(())) => Ok(()),
+        Ok(Err(crate::snapshots::SnapError::Unsupported(message))) => {
+            Err(ResponseHelper::json_unavailable(message))
+        }
+        Ok(Err(e)) => Err(ResponseHelper::json_error(format!(
+            "The share cannot be snapshotted: {e}"
+        ))),
+        Err(e) => Err(ResponseHelper::json_error(format!(
+            "Could not validate the share target: {e}"
+        ))),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -422,6 +518,44 @@ mod tests {
         assert!(err.contains("tanl") && err.contains("tank"), "got {err}");
         // Nothing to compare against: don't block on an unverifiable name.
         assert!(validate_known_pool("tanl", &[]).is_ok());
+    }
+
+    fn request(share: Option<&str>, share_type: Option<&str>) -> SnapshotScheduleRequest {
+        SnapshotScheduleRequest {
+            pool: "tank".to_string(),
+            share: share.map(str::to_string),
+            share_type: share_type.map(str::to_string),
+            cron: "0 */4 * * *".to_string(),
+            prefix: "hv-auto".to_string(),
+            recursive: true,
+            gfs_hourly: 24,
+            gfs_daily: 7,
+            gfs_weekly: 4,
+            gfs_monthly: 12,
+            gfs_yearly: 1,
+            enabled: true,
+        }
+    }
+
+    #[test]
+    fn a_share_target_needs_both_halves_and_known_values() {
+        assert_eq!(request(None, None).normalized_share().unwrap(), None);
+        assert_eq!(
+            request(Some("photos"), Some("CIFS"))
+                .normalized_share()
+                .unwrap(),
+            Some(("photos".to_string(), "smb".to_string()))
+        );
+        // Only one half is a client mistake, never a silent pool-wide run.
+        assert!(request(Some("photos"), None).normalized_share().is_err());
+        assert!(request(None, Some("smb")).normalized_share().is_err());
+        // The share name and the protocol are validated before any file read.
+        assert!(request(Some("bad/name"), Some("smb"))
+            .normalized_share()
+            .is_err());
+        assert!(request(Some("photos"), Some("rsync"))
+            .normalized_share()
+            .is_err());
     }
 
     #[test]

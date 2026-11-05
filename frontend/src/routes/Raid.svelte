@@ -75,11 +75,15 @@
   const dlg = createConfirmState();
 
   $: raidTypes = [
-    { id: 'raid0', name: 'RAID 0', description: $t('raid.raid0.desc'), protection: $t('raid.manager.failure_raid0'), minDisks: 2, protects: false, recommended: false },
-    { id: 'raid1', name: 'RAID 1', description: $t('raid.raid1.desc'), protection: $t('raid.manager.failure_raid1'), minDisks: 2, protects: true, recommended: false },
-    { id: 'raid5', name: 'RAID 5', description: $t('raid.raid5.desc'), protection: $t('raid.manager.failure_raid5'), minDisks: 3, protects: true, recommended: true },
-    { id: 'raid6', name: 'RAID 6', description: $t('raid.raid6.desc'), protection: $t('raid.manager.failure_raid6'), minDisks: 4, protects: true, recommended: false },
-    { id: 'raid10', name: 'RAID 10', description: $t('raid.raid10.desc'), protection: $t('raid.manager.failure_raid10'), minDisks: 4, protects: true, recommended: false }
+    { id: 'raid0', name: 'RAID 0', description: $t('raid.raid0.desc'), protection: $t('raid.manager.failure_raid0'), minDisks: 2, protects: false, recommended: false, zfsOnly: false },
+    { id: 'raid1', name: 'RAID 1', description: $t('raid.raid1.desc'), protection: $t('raid.manager.failure_raid1'), minDisks: 2, protects: true, recommended: false, zfsOnly: false },
+    { id: 'raid5', name: 'RAID 5', description: $t('raid.raid5.desc'), protection: $t('raid.manager.failure_raid5'), minDisks: 3, protects: true, recommended: true, zfsOnly: false },
+    { id: 'raid6', name: 'RAID 6', description: $t('raid.raid6.desc'), protection: $t('raid.manager.failure_raid6'), minDisks: 4, protects: true, recommended: false, zfsOnly: false },
+    { id: 'raid10', name: 'RAID 10', description: $t('raid.raid10.desc'), protection: $t('raid.manager.failure_raid10'), minDisks: 4, protects: true, recommended: false, zfsOnly: false },
+    // P1-9: ZFS-only triple-parity layout. It is shown with the other levels
+    // and the filesystem step pins ZFS when it is selected (step 3 follows the
+    // level, so a `zfsOnly` flag is what keeps the pair valid).
+    { id: 'raidz3', name: 'RAID Z3', description: $t('raid.raidz3.desc'), protection: $t('raid.manager.failure_raidz3'), minDisks: 4, protects: true, recommended: false, zfsOnly: true }
   ];
 
   $: filesystems = [
@@ -95,9 +99,12 @@
 
   $: minDisks = selectedRaid?.minDisks ?? 2;
   $: mdTechnologies = selectedFilesystem === 'ext4' || selectedFilesystem === 'xfs';
-  // Spares and degraded creates are mdadm concepts — native ZFS/Btrfs pools
-  // always stripe every disk they get.
-  $: sparesPossible = mdTechnologies && selectedRaid?.protects === true;
+  $: zfsSelected = selectedFilesystem === 'zfs';
+  // Hot spares: mdadm has `--spare-devices`, ZFS has a native `spare` vdev
+  // group. Native Btrfs has no spare role, so the opt-in stays hidden there
+  // (the API names the alternative if it is sent anyway).
+  $: sparesPossible = (mdTechnologies || zfsSelected) && selectedRaid?.protects === true;
+  $: zfsOnlyLevel = selectedRaid?.zfsOnly === true;
   $: memberCount = useSpares ? Math.min(minDisks, selectedDevices.length) : selectedDevices.length;
   $: spareCount = Math.max(0, selectedDevices.length - memberCount);
   $: missingSlots = allowMissing && selectedDevices.length < minDisks
@@ -129,6 +136,7 @@
       case 'raid1': return min;
       case 'raid5': return min * Math.max(positions - 1, 0);
       case 'raid6': return min * Math.max(positions - 2, 0);
+      case 'raidz3': return min * Math.max(positions - 3, 0);
       case 'raid10': return min * Math.floor(positions / 2);
       default: return 0;
     }
@@ -155,6 +163,12 @@
 
   function selectRaidType(typeId: string) {
     selectedRaidType = typeId;
+    // RAID Z3 only exists as a ZFS vdev: pin the filesystem so step 3 cannot
+    // submit an ext4/Btrfs request the server would refuse.
+    if (raidTypes.find((r) => r.id === typeId)?.zfsOnly) {
+      selectedFilesystem = 'zfs';
+      allowMissing = false;
+    }
   }
 
   function nextStep() {
@@ -183,6 +197,7 @@
       case 'raid1': return ['data', 'mirror'];
       case 'raid5': return ['data', 'data', 'parity'];
       case 'raid6': return ['data', 'data', 'parity', 'parity'];
+      case 'raidz3': return ['data', 'parity', 'parity', 'parity'];
       case 'raid10': return ['data', 'mirror', 'data', 'mirror'];
       default: return [];
     }
@@ -196,6 +211,7 @@
       case 'raid1': return [{ blocks: ['data', 'data'], label: 'D1' }, { blocks: ['mirror', 'mirror'], label: 'D2' }];
       case 'raid5': return [{ blocks: ['data', 'parity'], label: 'D1' }, { blocks: ['data', 'data'], label: 'D2' }, { blocks: ['parity', 'data'], label: 'D3' }];
       case 'raid6': return [{ blocks: ['data', 'parity'], label: 'D1' }, { blocks: ['data', 'parity'], label: 'D2' }, { blocks: ['parity', 'data'], label: 'D3' }, { blocks: ['parity', 'data'], label: 'D4' }];
+      case 'raidz3': return [{ blocks: ['data', 'parity'], label: 'D1' }, { blocks: ['parity', 'parity'], label: 'D2' }, { blocks: ['parity', 'data'], label: 'D3' }, { blocks: ['parity', 'parity'], label: 'D4' }];
       case 'raid10': return [{ blocks: ['data', 'data'], label: 'D1' }, { blocks: ['mirror', 'mirror'], label: 'D2' }, { blocks: ['data', 'data'], label: 'D3' }, { blocks: ['mirror', 'mirror'], label: 'D4' }];
       default: return [];
     }
@@ -216,7 +232,7 @@
             selectedDevices.length > 0 &&
             selectedDevices.length < minDisks &&
             minDisks - selectedDevices.length <= maxMissing)
-        : raidName.trim().length > 0;
+        : raidName.trim().length > 0 && (!zfsOnlyLevel || zfsSelected);
 
   async function handleCreate() {
     if (!selectedRaidType || !raidName.trim() || selectedDevices.length === 0) return;
@@ -605,15 +621,23 @@
                 <button
                   data-testid="raid-fs-card"
                   class:selected={selectedFilesystem === fs.value}
-                  class={cn(fsCard, selectedFilesystem === fs.value && 'border-[var(--hv-primary)] bg-[var(--hv-primary-light)]')}
+                  class={cn(fsCard, 'disabled:opacity-40 disabled:cursor-not-allowed', selectedFilesystem === fs.value && 'border-[var(--hv-primary)] bg-[var(--hv-primary-light)]')}
                   aria-pressed={selectedFilesystem === fs.value}
-                  onclick={() => (selectedFilesystem = fs.value)}
+                  disabled={zfsOnlyLevel && fs.value !== 'zfs'}
+                  onclick={() => {
+                    if (!zfsOnlyLevel || fs.value === 'zfs') selectedFilesystem = fs.value;
+                  }}
                 >
                   <span class="text-xs font-bold text-[var(--hv-text-primary)]">{fs.label}</span>
                   <span class="text-micro text-[var(--hv-text-tertiary)] leading-relaxed">{fs.description}</span>
                 </button>
               {/each}
             </div>
+            {#if zfsOnlyLevel}
+              <p class="m-0 text-micro text-[var(--hv-text-tertiary)]" data-testid="raid-zfs-only-note">
+                {$t('raid.manager.raidz3_requires_zfs')}
+              </p>
+            {/if}
           </div>
 
           <dl class="m-0 bg-[var(--hv-surface-container-low)] rounded-xl p-4 grid grid-cols-2 gap-3">

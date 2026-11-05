@@ -28,7 +28,7 @@
   import { createConfirmState } from '$lib/utils/confirmDialog.svelte';
   import { cn } from '$lib/utils.js';
   import WindowHeader from '$lib/components/desktop/WindowHeader.svelte';
-  import { IconServer, IconDatabase, IconThermometer, IconUsb, IconActivity, IconLock, IconLockOpen, IconKey, IconShieldCheckered, IconTrash, IconBolt, IconPlus, IconPlayerPlay, IconClock, IconAlertTriangle, IconStack, IconTool, IconCamera } from '@tabler/icons-svelte';
+  import { IconServer, IconDatabase, IconThermometer, IconUsb, IconActivity, IconLock, IconLockOpen, IconKey, IconShieldCheckered, IconTrash, IconBolt, IconPlus, IconPlayerPlay, IconClock, IconAlertTriangle, IconStack, IconTool, IconCamera, IconArrowsExchange, IconArrowBackUp } from '@tabler/icons-svelte';
   import { t, translate } from '$lib/stores/i18n';
   import { isAdmin } from '$lib/stores/auth';
 
@@ -111,6 +111,8 @@
   interface SnapshotScheduleRow {
     id: string;
     pool: string;
+    share: string | null;
+    share_type: string | null;
     enabled: boolean;
     cron: string;
     prefix: string;
@@ -131,23 +133,38 @@
     used: number;
     referenced: number;
     auto: boolean;
+    browse_path?: string;
+  }
+  interface ShareOption {
+    name: string;
+    share_type: string;
+    path: string;
+    enabled: boolean;
   }
   let snapshotSchedules: SnapshotScheduleRow[] = [];
   let snapSchedulesLoaded = false;
   let snapScheduleModal = false;
+  let shareOptions: ShareOption[] = [];
   let snapForm: {
-    id: string | null; pool: string; cron: string; prefix: string; recursive: boolean;
+    id: string | null; pool: string; share_target: string; cron: string; prefix: string; recursive: boolean;
     gfs_hourly: number; gfs_daily: number; gfs_weekly: number; gfs_monthly: number;
     gfs_yearly: number; enabled: boolean;
-  } = { id: null, pool: '', cron: '0 */4 * * *', prefix: 'hv-auto', recursive: true,
+  } = { id: null, pool: '', share_target: '', cron: '0 */4 * * *', prefix: 'hv-auto', recursive: true,
         gfs_hourly: 24, gfs_daily: 7, gfs_weekly: 4, gfs_monthly: 12, gfs_yearly: 1, enabled: true };
   let snapFormError = '';
   /** Last "run now" failure, shown above the schedule list. */
   let snapActionError = '';
   let snapBusyId = '';
+  let btrfsBusy = '';
   let snapViewPool = '';
+  let snapViewShare: { name: string; share_type: string } | null = null;
   let snapViewRows: PoolSnapshotRow[] = [];
   let snapViewLoading = false;
+  let restoreTarget: PoolSnapshotRow | null = null;
+  let restorePath = '';
+  let restoreConfirm = false;
+  let restoreBusy = false;
+  let restoreError = '';
 
   /**
    * Immutable snapshots (P2.5): a snapshot can be locked for a number of days.
@@ -191,6 +208,18 @@
   }
   let virtualDisks: VirtualDisk[] = [];
   let virtualBusy = '';
+
+  interface RaidLevelOption {
+    level: string;
+    allowed: boolean;
+    reason?: string | null;
+  }
+  interface RaidLevelPlan {
+    current_level: string;
+    member_count: number;
+    reshape_in_progress: boolean;
+    options: RaidLevelOption[];
+  }
 
   let disks: PhysicalDisk[] = [];
   let partitions: PartitionInfo[] = [];
@@ -315,29 +344,47 @@
     }
   }
 
+  async function loadShareOptions() {
+    try {
+      const res = await api.getShares();
+      shareOptions = res.success && Array.isArray(res.data) ? res.data : [];
+    } catch {
+      shareOptions = [];
+    }
+  }
+
   function openSnapCreate() {
-    snapForm = { id: null, pool: virtualDisks[0]?.name ?? '', cron: '0 */4 * * *', prefix: 'hv-auto',
+    snapForm = { id: null, pool: virtualDisks[0]?.name ?? '', share_target: '', cron: '0 */4 * * *', prefix: 'hv-auto',
                  recursive: true, gfs_hourly: 24, gfs_daily: 7, gfs_weekly: 4,
                  gfs_monthly: 12, gfs_yearly: 1, enabled: true };
     snapFormError = '';
     snapScheduleModal = true;
+    void loadShareOptions();
   }
 
   function openSnapEdit(row: SnapshotScheduleRow) {
-    snapForm = { id: row.id, pool: row.pool, cron: row.cron, prefix: row.prefix,
+    snapForm = { id: row.id, pool: row.pool,
+                 share_target: row.share && row.share_type ? `${row.share_type}/${row.share}` : '',
+                 cron: row.cron, prefix: row.prefix,
                  recursive: row.recursive, gfs_hourly: row.gfs_hourly, gfs_daily: row.gfs_daily,
                  gfs_weekly: row.gfs_weekly, gfs_monthly: row.gfs_monthly,
                  gfs_yearly: row.gfs_yearly, enabled: row.enabled };
     snapFormError = '';
     snapScheduleModal = true;
+    void loadShareOptions();
   }
 
   async function saveSnapSchedule() {
     if (!snapForm.pool.trim()) { snapFormError = $t('tasks.error_name'); return; }
     snapBusyId = 'form';
     snapFormError = '';
+    const shareTarget = snapForm.share_target.trim();
+    const shareParts = shareTarget ? shareTarget.split('/') : [];
     const body = {
-      pool: snapForm.pool.trim(), cron: snapForm.cron.trim(), prefix: snapForm.prefix.trim(),
+      pool: snapForm.pool.trim(),
+      share: shareParts.length === 2 ? shareParts[1] : null,
+      share_type: shareParts.length === 2 ? shareParts[0] : null,
+      cron: snapForm.cron.trim(), prefix: snapForm.prefix.trim(),
       recursive: snapForm.recursive, gfs_hourly: snapForm.gfs_hourly, gfs_daily: snapForm.gfs_daily,
       gfs_weekly: snapForm.gfs_weekly, gfs_monthly: snapForm.gfs_monthly,
       gfs_yearly: snapForm.gfs_yearly, enabled: snapForm.enabled,
@@ -468,8 +515,49 @@
     }
   }
 
+  function isBtrfsPoolView(): boolean {
+    return !snapViewShare && virtualDisks.some((v) => v.name === snapViewPool && v.pool_type === 'Btrfs');
+  }
+
+  async function prepareBtrfsLayout(v: VirtualDisk) {
+    const status = await api.getBtrfsLayout(v.name);
+    if (!status.success || !status.data) {
+      dlg.notify(status.message || status.error || $t('storage.snapshots.btrfs_layout_failed'));
+      return;
+    }
+    const info = status.data as { migration_required?: boolean };
+    if (!info.migration_required) {
+      dlg.notify($t('storage.snapshots.btrfs_layout_current', { name: v.name }));
+      return;
+    }
+    if (!(await dlg.ask($t('storage.snapshots.btrfs_layout_confirm', { name: v.name }), { requireText: v.name }))) return;
+    const res = await api.migrateBtrfsLayout(v.name);
+    if (!res.success) {
+      dlg.notify(res.message || res.error || $t('storage.snapshots.btrfs_layout_failed'));
+      return;
+    }
+    await loadVirtualDisks();
+  }
+
+  async function rollbackBtrfsSnapshot(snap: PoolSnapshotRow) {
+    if (!isBtrfsPoolView()) return;
+    if (!(await dlg.ask($t('storage.snapshots.btrfs_rollback_confirm', { pool: snapViewPool, snapshot: snap.name }), { requireText: snap.name }))) return;
+    btrfsBusy = snap.name;
+    snapActionError = '';
+    const res = await api.rollbackBtrfsSnapshot(snapViewPool, snap.name);
+    btrfsBusy = '';
+    if (!res.success) {
+      snapActionError = res.message || res.error || $t('storage.snapshots.btrfs_rollback_failed');
+      return;
+    }
+    snapViewRows = [];
+    snapViewPool = '';
+    await loadVirtualDisks();
+  }
+
   async function viewPoolSnapshots(pool: string) {
     snapViewPool = pool;
+    snapViewShare = null;
     snapViewLoading = true;
     void loadSnapshotLocks();
     try {
@@ -479,6 +567,63 @@
       snapViewRows = [];
     } finally {
       snapViewLoading = false;
+    }
+  }
+
+  async function loadShareSnapshotRows(name: string, shareType: string) {
+    snapViewLoading = true;
+    try {
+      const res = await api.listShareSnapshots(name, shareType);
+      snapViewRows = res.success
+        ? (res.data?.snapshots ?? []).map((snap) => ({ ...snap, auto: false }))
+        : [];
+    } catch {
+      snapViewRows = [];
+    } finally {
+      snapViewLoading = false;
+    }
+  }
+
+  async function viewShareSnapshots(row: SnapshotScheduleRow) {
+    if (!row.share || !row.share_type) return;
+    snapViewPool = `${row.pool} · ${row.share}`;
+    snapViewShare = { name: row.share, share_type: row.share_type };
+    await loadShareSnapshotRows(row.share, row.share_type);
+  }
+
+  async function viewScheduleSnapshots(row: SnapshotScheduleRow) {
+    if (row.share && row.share_type) await viewShareSnapshots(row);
+    else await viewPoolSnapshots(row.pool);
+  }
+
+  function openRestore(snap: PoolSnapshotRow) {
+    restoreTarget = snap;
+    restorePath = '';
+    restoreConfirm = false;
+    restoreError = '';
+  }
+
+  async function confirmRestore() {
+    if (!restoreTarget || !snapViewShare || !restorePath.trim() || !restoreConfirm) return;
+    restoreBusy = true;
+    restoreError = '';
+    try {
+      const res = await api.restoreShareSnapshot(
+        snapViewShare.name,
+        snapViewShare.share_type,
+        restoreTarget.name,
+        restorePath.trim(),
+      );
+      if (!res.success) {
+        restoreError = res.message || $t('storage.snapshots.restore_failed');
+        return;
+      }
+      restoreTarget = null;
+      await loadShareSnapshotRows(snapViewShare.name, snapViewShare.share_type);
+    } catch {
+      restoreError = $t('storage.snapshots.restore_failed');
+    } finally {
+      restoreBusy = false;
     }
   }
 
@@ -650,6 +795,54 @@
     const r = await api.growVirtualDisk(growTarget.name, growDevice);
     growBusy = false;
     growTarget = null;
+    if (r.success) { await loadVirtualDisks(); }
+    else dlg.notify(r.message || r.error || translate('storage.vd_action_failed'));
+  }
+
+  // ── Change an mdadm array's RAID level in place ──
+  let levelTarget: VirtualDisk | null = null;
+  let levelPlan: RaidLevelPlan | null = null;
+  let levelValue = '';
+  let levelBackupConfirmed = false;
+  let levelLoading = false;
+  let levelBusy = false;
+
+  function raidLevelLabel(level: string): string {
+    return level.startsWith('raid') ? `RAID ${level.slice(4).toUpperCase()}` : level.toUpperCase();
+  }
+
+  function levelAllowedOptions(): RaidLevelOption[] {
+    return (levelPlan?.options ?? []).filter((o) => o.allowed);
+  }
+
+  function levelRefusedOptions(): RaidLevelOption[] {
+    return (levelPlan?.options ?? []).filter((o) => !o.allowed && o.reason);
+  }
+
+  async function openLevelChange(v: VirtualDisk) {
+    levelTarget = v;
+    levelPlan = null;
+    levelValue = '';
+    levelBackupConfirmed = false;
+    levelLoading = true;
+    const r = await api.getVirtualDiskLevelOptions(v.name);
+    levelLoading = false;
+    if (r.success && r.data) {
+      levelPlan = r.data as RaidLevelPlan;
+      const first = levelAllowedOptions()[0];
+      if (first) levelValue = first.level;
+    } else {
+      levelTarget = null;
+      dlg.notify(r.message || r.error || translate('storage.vd_level_load_failed'));
+    }
+  }
+
+  async function confirmLevelChange() {
+    if (!levelTarget || !levelValue || !levelBackupConfirmed) return;
+    levelBusy = true;
+    const r = await api.migrateVirtualDiskLevel(levelTarget.name, levelValue, true);
+    levelBusy = false;
+    levelTarget = null;
     if (r.success) { await loadVirtualDisks(); }
     else dlg.notify(r.message || r.error || translate('storage.vd_action_failed'));
   }
@@ -1324,8 +1517,12 @@
                   {#if v.pool_type === 'Mdadm'}
                     <Button variant="ghost" disabled={virtualBusy === v.name} onclick={() => rebuildVirtualDisk(v)}><IconTool size={16} /> {$t('storage.vd_rebuild')}</Button>
                     <Button variant="ghost" disabled={virtualBusy === v.name} onclick={() => openGrow(v)}><IconPlus size={16} /> {$t('storage.vd_grow')}</Button>
+                    <Button variant="ghost" disabled={virtualBusy === v.name} onclick={() => openLevelChange(v)}><IconArrowsExchange size={16} /> {$t('storage.vd_level_change')}</Button>
                   {:else}
                     <Button variant="ghost" disabled={virtualBusy === v.name} onclick={() => scrubVirtualDisk(v)}><IconShieldCheckered size={16} /> {$t('storage.vd_scrub')}</Button>
+                    {#if v.pool_type === 'Btrfs'}
+                      <Button variant="ghost" disabled={virtualBusy === v.name} onclick={() => prepareBtrfsLayout(v)}><IconArrowBackUp size={16} /> {$t('storage.snapshots.btrfs_layout')}</Button>
+                    {/if}
                   {/if}
                   <Button variant="ghost" disabled={scrubStatusBusy === v.name} onclick={() => refreshScrubStatus(v)}><IconActivity size={16} /> {$t('storage.vd_scrub_status')}</Button>
                   <Button variant="danger" disabled={virtualBusy === v.name} onclick={() => destroyVirtualDisk(v)}><IconTrash size={16} /> {$t('storage.vd_destroy')}</Button>
@@ -1570,7 +1767,7 @@
                 <div data-testid="snapshots-schedule" class="px-5 py-4 rounded-2xl bg-[var(--hv-shell-card)] border border-[var(--hv-shell-border)] shadow-[var(--hv-shell-shadow-card)]">
                   <div class="flex items-start justify-between gap-3">
                     <div class="flex flex-col gap-1">
-                      <span class="text-c-card-title font-semibold text-[var(--hv-shell-text-strong)]">{row.pool}</span>
+                      <span class="text-c-card-title font-semibold text-[var(--hv-shell-text-strong)]">{row.pool}{#if row.share}<span class="ml-2 text-caption font-bold uppercase text-[var(--hv-primary)]">{$t('storage.snapshots.share_target', { share: row.share })}</span>{/if}</span>
                       <span class="text-xs text-[var(--hv-shell-text-2)]"><code>{row.cron}</code> · {$t('storage.snapshots.prefix')}: {row.prefix}{row.recursive ? ' · ' + $t('storage.snapshots.recursive') : ''}</span>
                       <span class="text-xs text-[var(--hv-shell-text-2)]">
                         {$t('storage.snapshots.gfs_help', { h: String(row.gfs_hourly), d: String(row.gfs_daily), w: String(row.gfs_weekly), m: String(row.gfs_monthly), y: String(row.gfs_yearly) })}
@@ -1583,7 +1780,7 @@
                       <button type="button" class="grid place-items-center w-9 h-9 flex-none rounded-lg border-none bg-transparent text-[var(--hv-shell-text-2)] cursor-pointer hover:bg-[var(--hv-subtle-hover)] hover:text-[var(--hv-shell-text-strong)] hv-ic" data-testid="snapshots-run-{row.id}" aria-label={$t('storage.snapshots.run_now')} disabled={snapBusyId === row.id} onclick={() => runSnapNow(row)}>
                         <IconPlayerPlay size={18} stroke={1.8} />
                       </button>
-                      <button type="button" class="grid place-items-center w-9 h-9 flex-none rounded-lg border-none bg-transparent text-[var(--hv-shell-text-2)] cursor-pointer hover:bg-[var(--hv-subtle-hover)] hover:text-[var(--hv-shell-text-strong)] hv-ic" data-testid="snapshots-view-{row.id}" aria-label={$t('storage.snapshots.snapshots_title')} onclick={() => viewPoolSnapshots(row.pool)}>
+                      <button type="button" class="grid place-items-center w-9 h-9 flex-none rounded-lg border-none bg-transparent text-[var(--hv-shell-text-2)] cursor-pointer hover:bg-[var(--hv-subtle-hover)] hover:text-[var(--hv-shell-text-strong)] hv-ic" data-testid="snapshots-view-{row.id}" aria-label={$t('storage.snapshots.snapshots_title')} onclick={() => viewScheduleSnapshots(row)}>
                         <IconCamera size={18} stroke={1.8} />
                       </button>
                       <button type="button" class="grid place-items-center w-9 h-9 flex-none rounded-lg border-none bg-transparent text-[var(--hv-shell-text-2)] cursor-pointer hover:bg-[var(--hv-subtle-hover)] hover:text-[var(--hv-shell-text-strong)] hv-ic" data-testid="snapshots-edit-{row.id}" aria-label={$t('tasks.edit', { name: row.pool })} onclick={() => openSnapEdit(row)}>
@@ -1608,7 +1805,7 @@
             <div data-testid="snapshots-pool-list" class="px-5 py-4 rounded-2xl bg-[var(--hv-shell-card)] border border-[var(--hv-shell-border)] shadow-[var(--hv-shell-shadow-card)]">
               <div class="flex items-center justify-between gap-2 mb-2">
                 <h3 class="m-0 text-c-card-title font-semibold text-[var(--hv-shell-text-strong)]">{$t('storage.snapshots.snapshots_title')} — {snapViewPool}</h3>
-                <button type="button" class="grid place-items-center w-9 h-9 flex-none rounded-lg border-none bg-transparent text-[var(--hv-shell-text-2)] cursor-pointer hover:bg-[var(--hv-subtle-hover)] hover:text-[var(--hv-shell-text-strong)] hv-ic" aria-label={$t('common.cancel')} onclick={() => (snapViewPool = '')}>✕</button>
+                <button type="button" class="grid place-items-center w-9 h-9 flex-none rounded-lg border-none bg-transparent text-[var(--hv-shell-text-2)] cursor-pointer hover:bg-[var(--hv-subtle-hover)] hover:text-[var(--hv-shell-text-strong)] hv-ic" aria-label={$t('common.cancel')} onclick={() => { snapViewPool = ''; snapViewShare = null; snapViewRows = []; }}>✕</button>
               </div>
               {#if snapViewLoading}
                 <p class="m-0 text-xs text-[var(--hv-shell-text-2)]">{$t('storage.analyzing_devices')}</p>
@@ -1621,7 +1818,19 @@
                       <span class="font-mono truncate">{snap.name}</span>
                       <span class="flex items-center gap-2">
                         {#if snap.auto}<span class="text-[var(--hv-primary)] text-t-caption uppercase">{$t('storage.snapshots.snapshots_auto')}</span>{/if}
-                        {#if $isAdmin}
+                        {#if $isAdmin && snapViewShare}
+                          <button
+                            type="button"
+                            class="grid place-items-center w-7 h-7 flex-none rounded-md border-none bg-transparent text-[var(--hv-shell-text-2)] cursor-pointer hover:bg-[var(--hv-subtle-hover)] hover:text-[var(--hv-shell-text-strong)] hv-ic"
+                            data-testid="snapshots-restore-{snap.name}"
+                            title={snap.browse_path ?? ''}
+                            aria-label={$t('storage.snapshots.restore_open', { snapshot: snap.name })}
+                            onclick={() => openRestore(snap)}
+                          >
+                            <IconArrowBackUp size={15} stroke={1.9} />
+                          </button>
+                        {/if}
+                        {#if $isAdmin && !snapViewShare}
                           <button
                             type="button"
                             class="grid place-items-center w-7 h-7 flex-none rounded-md border-none bg-transparent text-[var(--hv-shell-text-2)] cursor-pointer hover:bg-[var(--hv-subtle-hover)] hover:text-[var(--hv-shell-text-strong)] hv-ic"
@@ -1630,6 +1839,18 @@
                             onclick={() => openLock(snapViewPool, snap.name)}
                           >
                             <IconLock size={15} stroke={1.9} />
+                          </button>
+                        {/if}
+                        {#if $isAdmin && isBtrfsPoolView()}
+                          <button
+                            type="button"
+                            class="grid place-items-center w-7 h-7 flex-none rounded-md border-none bg-transparent text-[var(--hv-shell-text-2)] cursor-pointer hover:bg-[var(--hv-subtle-hover)] hover:text-[var(--hv-shell-text-strong)] hv-ic"
+                            data-testid="snapshots-btrfs-rollback-{snap.name}"
+                            disabled={btrfsBusy === snap.name}
+                            aria-label={$t('storage.snapshots.btrfs_rollback', { snapshot: snap.name })}
+                            onclick={() => rollbackBtrfsSnapshot(snap)}
+                          >
+                            <IconArrowBackUp size={15} stroke={1.9} />
                           </button>
                         {/if}
                       </span>
@@ -1715,6 +1936,18 @@
       <p data-testid="snapshots-form-error" role="alert" class="m-0 text-c-label text-[var(--hv-danger)]">{snapFormError}</p>
     {/if}
     <label class="flex flex-col gap-1.5 text-c-label text-[var(--hv-shell-text-2)]">
+      <span>{$t('storage.snapshots.target')}</span>
+      <select class={inpSel} bind:value={snapForm.share_target} data-testid="snapshots-target">
+        <option value="">{$t('storage.snapshots.target_pool')}</option>
+        {#each shareOptions as share (share.share_type.toLowerCase() + '/' + share.name)}
+          <option value="{share.share_type.toLowerCase()}/{share.name}">
+            {$t('storage.snapshots.target_share', { share: share.name, type: share.share_type.toUpperCase(), path: share.path })}
+          </option>
+        {/each}
+      </select>
+      <span class="text-xs text-[var(--hv-shell-text-3)]">{$t('storage.snapshots.target_hint')}</span>
+    </label>
+    <label class="flex flex-col gap-1.5 text-c-label text-[var(--hv-shell-text-2)]">
       <span>{$t('storage.snapshots.col_pool')}</span>
       <input class={inpSel} type="text" bind:value={snapForm.pool} placeholder="tank/data" />
     </label>
@@ -1741,6 +1974,46 @@
     <div class="flex gap-2.5 justify-end">
       <Button variant="ghost" onclick={() => (snapScheduleModal = false)}>{$t('common.cancel')}</Button>
       <Button variant="primary" data-testid="snapshots-save-btn" onclick={saveSnapSchedule} disabled={snapBusyId === 'form'}>{$t('common.save')}</Button>
+    </div>
+  {/snippet}
+</Modal>
+
+<!-- PER-SHARE SNAPSHOT RESTORE (P1-12) -->
+<Modal open={!!restoreTarget} title={$t('storage.snapshots.restore_title')} size="md" onclose={() => (restoreTarget = null)}>
+  {#if restoreTarget}
+    <div class="flex flex-col gap-4 p-1" data-testid="snapshots-restore-modal">
+      {#if restoreError}
+        <div role="alert" data-testid="snapshots-restore-error"><Alert variant="error">{restoreError}</Alert></div>
+      {/if}
+      <p class="m-0 text-c-label text-[var(--hv-shell-text)] leading-relaxed">
+        {$t('storage.snapshots.restore_hint', { snapshot: restoreTarget.name })}
+      </p>
+      <label class="flex flex-col gap-1.5 text-c-label text-[var(--hv-shell-text-2)]">
+        <span>{$t('storage.snapshots.restore_path')}</span>
+        <input
+          class={inpSel}
+          type="text"
+          bind:value={restorePath}
+          placeholder="photos/2024/image.jpg"
+          data-testid="snapshots-restore-path"
+        />
+        <span class="text-xs text-[var(--hv-shell-text-3)]">{$t('storage.snapshots.restore_path_hint')}</span>
+      </label>
+      <label class="flex min-h-11 items-center gap-2 text-c-label text-[var(--hv-shell-text-strong)] cursor-pointer">
+        <input type="checkbox" class="w-5 h-5 accent-[var(--hv-primary)]" bind:checked={restoreConfirm} data-testid="snapshots-restore-confirm" />
+        <span>{$t('storage.snapshots.restore_confirm')}</span>
+      </label>
+    </div>
+  {/if}
+  {#snippet footer()}
+    <div class="flex gap-2.5 justify-end">
+      <Button variant="ghost" onclick={() => (restoreTarget = null)}>{$t('common.cancel')}</Button>
+      <Button
+        variant="primary"
+        data-testid="snapshots-restore-submit"
+        disabled={restoreBusy || !restorePath.trim() || !restoreConfirm}
+        onclick={confirmRestore}
+      >{$t('storage.snapshots.restore_submit')}</Button>
     </div>
   {/snippet}
 </Modal>
@@ -2000,6 +2273,72 @@
     <div class="flex gap-2.5 justify-end">
       <Button variant="ghost" onclick={() => (growTarget = null)}>{$t('common.cancel')}</Button>
       <Button variant="primary" onclick={confirmGrow} disabled={growBusy || !growDevice}>{$t('storage.vd_grow')}</Button>
+    </div>
+  {/snippet}
+</Modal>
+
+<!-- Change an mdadm array's RAID level in place (mdadm --grow --level). -->
+<Modal open={!!levelTarget} title={$t('storage.vd_level_title')} size="md" onclose={() => (levelTarget = null)}>
+  {#if levelTarget}
+    <div data-testid="storage-level-modal">
+      <p class="m-0 mb-3 text-sm text-[var(--hv-shell-text-2)]">
+        {$t('storage.vd_level_hint', { name: levelTarget.name, current: raidLevelLabel(levelPlan?.current_level || levelTarget.raid_profile || '') })}
+      </p>
+      {#if levelLoading}
+        <div class="flex items-center gap-2 text-sm text-[var(--hv-shell-text-2)]"><Spinner size="sm" /> {$t('common.loading')}</div>
+      {:else if levelPlan}
+        {#if levelPlan.reshape_in_progress}
+          <p class="m-0 mb-3 flex items-start gap-2 text-c-xs text-[var(--hv-warning-text)]" data-testid="storage-level-reshape-running">
+            <IconAlertTriangle size={16} class="flex-none mt-px" />
+            {$t('storage.vd_level_reshape_running')}
+          </p>
+        {/if}
+        <label class="block text-c-label font-semibold text-[var(--hv-shell-text-strong)] mb-1" for="levelTarget">{$t('storage.vd_level_target')}</label>
+        <select id="levelTarget" class={encInput} bind:value={levelValue} disabled={levelAllowedOptions().length === 0 || levelPlan.reshape_in_progress}>
+          {#each levelAllowedOptions() as option (option.level)}
+            <option value={option.level}>{raidLevelLabel(option.level)}</option>
+          {/each}
+        </select>
+        {#if levelAllowedOptions().length === 0}
+          <p class="mt-2 m-0 text-sm text-[var(--hv-shell-text-2)]" data-testid="storage-level-none">
+            {$t('storage.vd_level_none', { current: raidLevelLabel(levelPlan.current_level) })}
+          </p>
+        {/if}
+        {#if levelRefusedOptions().length > 0}
+          <details class="mt-3" data-testid="storage-level-reasons">
+            <summary class="cursor-pointer text-c-label font-semibold text-[var(--hv-shell-text-strong)]">{$t('storage.vd_level_unsupported')}</summary>
+            <ul class="mt-2 mb-0 pl-5 text-xs text-[var(--hv-shell-text-2)]">
+              {#each levelRefusedOptions() as option (option.level)}
+                <li class="mb-1"><strong>{raidLevelLabel(option.level)}</strong> — {option.reason}</li>
+              {/each}
+            </ul>
+          </details>
+        {/if}
+        <p class="mt-3 m-0 flex items-start gap-2 text-c-xs text-[var(--hv-warning-text)]">
+          <IconAlertTriangle size={16} class="flex-none mt-px" />
+          {$t('storage.vd_level_warning')}
+        </p>
+        <label class="mt-3 flex min-h-11 items-center gap-2 text-c-label text-[var(--hv-shell-text-strong)] cursor-pointer">
+          <input
+            data-testid="storage-level-backup"
+            type="checkbox"
+            class="w-5 h-5 accent-[var(--hv-primary)]"
+            bind:checked={levelBackupConfirmed}
+          />
+          <span>{$t('storage.vd_level_backup')}</span>
+        </label>
+      {/if}
+    </div>
+  {/if}
+  {#snippet footer()}
+    <div class="flex gap-2.5 justify-end">
+      <Button variant="ghost" onclick={() => (levelTarget = null)}>{$t('common.cancel')}</Button>
+      <Button
+        data-testid="storage-level-confirm"
+        variant="primary"
+        onclick={confirmLevelChange}
+        disabled={levelBusy || levelLoading || !levelValue || !levelBackupConfirmed || !!levelPlan?.reshape_in_progress}
+      >{$t('storage.vd_level_confirm')}</Button>
     </div>
   {/snippet}
 </Modal>

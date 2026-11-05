@@ -25,7 +25,9 @@ one-line description. All docs are in English (the product UI defaults to French
 - [Architecture](./ARCHITECTURE.md) — how backend and frontend fit together, how to
   build/run, the development workflow.
 - [API Contract](./API.md) — every HTTP endpoint grouped by area, with the auth
-  model (auth vs. admin) and request/response conventions.
+  model (auth vs. admin) and request/response conventions. Also documents the
+  generated OpenAPI 3 document served to administrators at
+  `GET /api/openapi.json`.
 - [Backend Structure](./BACKEND.md) — handlers, storage layer, services, middleware,
   app state, server startup.
 - [Frontend Structure](./FRONTEND.md) — gate routes and the desktop window
@@ -52,9 +54,9 @@ methods, and notable invariants.
 | RAID — **creation-only** wizard (physical disks → one tracked async job → one virtual disk; spares, degraded slots) | [guides/raid.md](./guides/raid.md) |
 | File Explorer (incl. private file tags, reflink/instant copy, trash retention, transfer tray/progress detail/history, resumable-upload durability, on-demand SHA-256/SHA-512/BLAKE3 checksums) | [guides/explorer.md](./guides/explorer.md) |
 | File tags (private per-user labels, tag-filtered search) | [guides/file-tags.md](./guides/file-tags.md) |
-| SNMP agent (the appliance's own `snmpd`: generated community, loopback/LAN scope) | [guides/snmp-agent.md](./guides/snmp-agent.md) |
+| SNMP agent (the appliance's own `snmpd`: v2c community or v3 authPriv, loopback/LAN scope) | [guides/snmp-agent.md](./guides/snmp-agent.md) |
 | Shares (SMB/NFS/FTP/WebDAV + ACLs) | [guides/shares.md](./guides/shares.md) |
-| Network (interfaces, WiFi, diagnostics) | [guides/network.md](./guides/network.md) |
+| Network (interfaces, WiFi, static routes, diagnostics) | [guides/network.md](./guides/network.md) |
 | mDNS / Zeroconf (`homevault.local`, share discovery) | [guides/mdns.md](./guides/mdns.md) |
 | Backup / Restic (repos, snapshots, schedules) | [guides/backup-restic.md](./guides/backup-restic.md) |
 | AI Assistant (Chat, Ollama) | [guides/chat.md](./guides/chat.md) |
@@ -68,14 +70,14 @@ methods, and notable invariants.
 | Snapshots (pool rollback) | [guides/snapshots.md](./guides/snapshots.md) |
 | Rescue tools (ddrescue, TestDisk, PhotoRec, mdadm) | [guides/rescue.md](./guides/rescue.md) |
 | VPN (WireGuard, OpenVPN) | [guides/vpn.md](./guides/vpn.md) |
-| Virtual Machines (Incus, KVM/QEMU) | [guides/vm.md](./guides/vm.md) |
+| Virtual Machines (Incus, KVM/QEMU — create, clone, snapshots, console) | [guides/vm.md](./guides/vm.md) |
 | Wallpapers | [guides/wallpapers.md](./guides/wallpapers.md) |
 | Avatars (DiceBear, generated offline) | [guides/avatars.md](./guides/avatars.md) |
 | Disk quotas (per-user home-directory limit, and per-share size quotas) | [guides/quotas.md](./guides/quotas.md) |
 | Transfer quotas (upload/download, per user/group) — incl. the read-only **Quotas** app | [guides/transfer-quotas.md](./guides/transfer-quotas.md) |
 | Security (sessions, login history, CSP, brute-force, login auto-block, connected clients) | [guides/security.md](./guides/security.md) |
 | Identity (trusted devices, rescue e-mail, account recovery, **passkeys/WebAuthn**) | [guides/identity.md](./guides/identity.md) |
-| Settings (general, security, appearance, widgets, notifications, AI, monitoring, system — 8 rail groups, incl. the full configuration backup/restore) | [guides/settings.md](./guides/settings.md) |
+| Settings (general, security, appearance, widgets, notifications, AI, monitoring, system — 8 rail groups, incl. the outbound proxy and the full configuration backup/restore) | [guides/settings.md](./guides/settings.md) |
 | Themes | [guides/themes.md](./guides/themes.md) |
 | Desktop shell & windowing | [guides/desktop.md](./guides/desktop.md) |
 | Activity taskbar (unified background-job feed) | [guides/activity.md](./guides/activity.md) |
@@ -98,7 +100,7 @@ methods, and notable invariants.
 | Firewall (ufw) | [guides/firewall.md](./guides/firewall.md) |
 | HTTPS / TLS (built-in listener, self-signed, manual and automated certs) | [guides/tls.md](./guides/tls.md) |
 | Certificate automation (ACME, HTTP-01 / DNS-01, renewal worker) | [guides/acme.md](./guides/acme.md) |
-| Dynamic DNS (DuckDNS, dynv6, Cloudflare, custom; change-only updates) | [guides/ddns.md](./guides/ddns.md) |
+| Dynamic DNS (DuckDNS, dynv6, Cloudflare, OVH DynHost, Namecheap, deSEC, custom; change-only updates) | [guides/ddns.md](./guides/ddns.md) |
 | Reachability advisor (ordered checks with their fixes) | [guides/reachability.md](./guides/reachability.md) |
 | System Journal (log viewer, auto-cleanup) | [guides/journal.md](./guides/journal.md) |
 | Widgets (desktop monitor catalog) | [guides/widgets.md](./guides/widgets.md) |

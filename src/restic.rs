@@ -31,10 +31,11 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::io::{BufRead, BufReader, Read};
+use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdout, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, LazyLock, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use thiserror::Error;
 use tracing::info;
 
@@ -59,6 +60,26 @@ pub const RESTIC_PROBE_TIMEOUT: Duration = Duration::from_secs(10);
 /// restore. `mount` on an unreachable ZFS dataset blocks indefinitely, and the
 /// caller holds a guard that must eventually be released (ROADMAP X.9).
 pub const RESTIC_MOUNT_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// Ceiling on `restic mount` becoming visible in `/proc/mounts`. FUSE usually
+/// answers in milliseconds; a repository on a dead backend can hang, and the
+/// call must not pin the admin's request forever.
+pub const RESTIC_FUSE_MOUNT_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Ceiling on `fusermount -u` / `umount` for a repository browse mount.
+pub const RESTIC_FUSE_UNMOUNT_TIMEOUT: Duration = Duration::from_secs(20);
+
+/// Poll interval while waiting for the FUSE mount to appear (or disappear).
+pub const RESTIC_FUSE_POLL: Duration = Duration::from_millis(200);
+
+/// Directory under `{DATA_DIRECTORY}` holding repository browse mounts.
+///
+/// The mount point is always `<root>/<slug>` and the slug is derived from the
+/// repository id — never from a client path.
+pub const RESTIC_FUSE_DIR: &str = "restic-mounts";
+
+/// How often the reaper checks whether a FUSE process exited on its own.
+const RESTIC_FUSE_REAP_INTERVAL: Duration = Duration::from_secs(2);
 
 /// A path, repository or pattern is never longer than this. Guards the DB
 /// columns and keeps a pathological request out of argv.
@@ -90,6 +111,9 @@ pub enum ResticError {
     /// An argument was refused before `restic` was spawned.
     #[error("Invalid input: {0}")]
     InvalidInput(String),
+    /// A host capability this feature needs is absent (FUSE, a mount helper).
+    #[error("Unavailable: {0}")]
+    Unavailable(String),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -324,6 +348,257 @@ impl Drop for Tracked {
         drop(slot);
         running_runs().remove(&self.key);
     }
+}
+
+/// One row of `/proc/mounts`, parsed for the fields a browse mount needs.
+///
+/// `/proc/mounts` is the **authority**: a registry entry is only reported as a
+/// mount when the kernel confirms it, and the read-only flags are checked on
+/// the kernel entry rather than trusted from our own request.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MountEntry {
+    pub device: String,
+    pub mount_point: String,
+    pub fs_type: String,
+    pub options: Vec<String>,
+}
+
+impl MountEntry {
+    pub fn has_option(&self, option: &str) -> bool {
+        self.options.iter().any(|o| o == option)
+    }
+
+    /// A browse mount must be read-only and must not honour setuid/setgid or
+    /// device nodes — FUSE sets all three by default, and a restic repository
+    /// contains arbitrary restored content.
+    pub fn is_read_only(&self) -> bool {
+        self.has_option("ro") && self.has_option("nosuid") && self.has_option("nodev")
+    }
+}
+
+/// A repository mounted read-only for browsing, as the API reports it.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ResticMount {
+    /// Stable id (the derived mount-directory name).
+    pub id: String,
+    pub repo_id: Option<String>,
+    pub repo_name: Option<String>,
+    pub mount_point: String,
+    /// RFC 3339, UTC; empty for a mount recovered from `/proc/mounts` after a
+    /// restart (the registry that carried the timestamp is gone).
+    pub started_at: String,
+    /// Always true for an entry the kernel confirms.
+    pub active: bool,
+}
+
+/// The process behind one browse mount, kept so an explicit unmount can stop
+/// it and so a crashed `restic mount` does not leak a zombie.
+struct FuseProcess {
+    child: Child,
+    repo_id: String,
+    repo_name: String,
+    started_at: String,
+}
+
+static FUSE_PROCESSES: LazyLock<Mutex<HashMap<String, FuseProcess>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+fn fuse_processes() -> std::sync::MutexGuard<'static, HashMap<String, FuseProcess>> {
+    FUSE_PROCESSES.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// Directory holding repository browse mounts (`{DATA_DIRECTORY}/restic-mounts`).
+pub fn mounts_root() -> PathBuf {
+    crate::config::paths::base_dir().join(RESTIC_FUSE_DIR)
+}
+
+/// Whether this host can expose a FUSE mount at all.
+pub fn is_fuse_available() -> bool {
+    Path::new("/dev/fuse").exists()
+}
+
+/// Deterministic, filesystem-safe directory name for a repository id.
+///
+/// The readable prefix is for `ls`; the 64-bit FNV-1a suffix keeps two ids
+/// that sanitize identically apart. Only `[a-z0-9-]` survives, so the result
+/// can never contain a path separator or `..`.
+pub fn slug_for_repo(repo_id: &str) -> String {
+    let readable: String = repo_id
+        .to_lowercase()
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+        .collect();
+    let mut readable = readable;
+    while readable.contains("--") {
+        readable = readable.replace("--", "-");
+    }
+    let readable: String = readable.trim_matches('-').chars().take(48).collect();
+    let readable = readable.trim_end_matches('-');
+
+    let mut hash = 0xcbf2_9ce4_8422_2325u64;
+    for byte in repo_id.as_bytes() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    if readable.is_empty() {
+        format!("{hash:016x}")
+    } else {
+        format!("{readable}-{hash:016x}")
+    }
+}
+
+/// Mount point of a repository: always directly under [`mounts_root`], derived
+/// from the repository id, never from a client-supplied path.
+pub fn mount_point_for(repo_id: &str) -> Result<PathBuf, ResticError> {
+    let id = repo_id.trim();
+    if id.is_empty() {
+        return Err(ResticError::InvalidInput(
+            "A repository id is required".to_string(),
+        ));
+    }
+    let root = mounts_root();
+    let point = root.join(slug_for_repo(id));
+    // Structural confinement even if `slug_for_repo` were to change: the
+    // point must be a direct child of the one directory this feature owns.
+    if point.parent() != Some(root.as_path()) {
+        return Err(ResticError::InvalidInput(
+            "The derived mount point escapes the restic mount root".to_string(),
+        ));
+    }
+    Ok(point)
+}
+
+/// Parse `/proc/mounts` into rows. Whitespace-separated fields; the mount
+/// point is compared as the kernel prints it (no client string is trusted).
+pub fn parse_mounts(mounts: &str) -> Vec<MountEntry> {
+    mounts
+        .lines()
+        .filter_map(|line| {
+            let mut fields = line.split_whitespace();
+            Some(MountEntry {
+                device: fields.next()?.to_string(),
+                mount_point: fields.next()?.to_string(),
+                fs_type: fields.next()?.to_string(),
+                options: fields
+                    .next()
+                    .unwrap_or_default()
+                    .split(',')
+                    .filter(|s| !s.is_empty())
+                    .map(str::to_string)
+                    .collect(),
+            })
+        })
+        .collect()
+}
+
+/// The `/proc/mounts` row for an exact mount point, if the kernel has one.
+pub fn find_mount_entry(mounts: &str, mount_point: &str) -> Option<MountEntry> {
+    parse_mounts(mounts)
+        .into_iter()
+        .find(|entry| entry.mount_point == mount_point)
+}
+
+/// Every **read-only** mount that is a direct child of `root`.
+///
+/// A path outside the feature's directory is never reported, and neither is a
+/// mount whose kernel options lost `ro`/`nosuid`/`nodev`: the API must not
+/// advertise a browse mount with weaker guarantees than the one promised.
+pub fn mounts_under_root(mounts: &str, root: &Path) -> Vec<MountEntry> {
+    parse_mounts(mounts)
+        .into_iter()
+        .filter(|entry| {
+            Path::new(&entry.mount_point).parent() == Some(root) && entry.is_read_only()
+        })
+        .collect()
+}
+
+/// Arguments of `restic mount <mount point>` (binary supplied separately so
+/// the argv is testable without a host).
+pub fn fuse_mount_args(mount_point: &str) -> Vec<String> {
+    vec!["mount".to_string(), mount_point.to_string()]
+}
+
+fn read_proc_mounts() -> Result<String, ResticError> {
+    std::fs::read_to_string("/proc/mounts")
+        .map_err(|e| ResticError::CommandFailed(format!("Cannot read /proc/mounts: {e}")))
+}
+
+fn read_child_stderr(child: &mut Child) -> String {
+    child
+        .stderr
+        .take()
+        .map(|mut stderr| {
+            let mut text = String::new();
+            let _ = stderr.read_to_string(&mut text);
+            text.trim().to_string()
+        })
+        .unwrap_or_default()
+}
+
+fn unmount_path(mount_point: &str) -> Result<(), ResticError> {
+    for tool in ["fusermount3", "fusermount"] {
+        let available = run_timed(&mut Command::new("which").arg(tool), RESTIC_PROBE_TIMEOUT)
+            .map(|out| out.status.success())
+            .unwrap_or(false);
+        if !available {
+            continue;
+        }
+        let output = run_timed(
+            &mut Command::new(tool).args(["-u", mount_point]),
+            RESTIC_FUSE_UNMOUNT_TIMEOUT,
+        )
+        .map_err(ResticError::CommandFailed)?;
+        if output.status.success() {
+            return Ok(());
+        }
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        return Err(ResticError::CommandFailed(if stderr.is_empty() {
+            format!("{tool} could not unmount {mount_point}")
+        } else {
+            stderr
+        }));
+    }
+
+    let output = run_timed(
+        &mut Command::new("umount").arg(mount_point),
+        RESTIC_FUSE_UNMOUNT_TIMEOUT,
+    )
+    .map_err(ResticError::CommandFailed)?;
+    if output.status.success() {
+        Ok(())
+    } else {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        Err(ResticError::CommandFailed(if stderr.is_empty() {
+            format!("umount could not unmount {mount_point}")
+        } else {
+            stderr
+        }))
+    }
+}
+
+/// Reap a FUSE process that exited on its own (repository removed, FUSE
+/// daemon crashed) so `/proc` does not accumulate zombies and the registry
+/// does not keep reporting a dead mount.
+fn spawn_fuse_reaper(id: String) {
+    std::thread::spawn(move || loop {
+        std::thread::sleep(RESTIC_FUSE_REAP_INTERVAL);
+        let exited = {
+            let mut map = fuse_processes();
+            match map.get_mut(&id) {
+                Some(record) => match record.child.try_wait() {
+                    Ok(Some(_)) => true,
+                    Ok(None) => false,
+                    Err(_) => true,
+                },
+                None => return,
+            }
+        };
+        if exited {
+            fuse_processes().remove(&id);
+            let _ = std::fs::remove_dir(mounts_root().join(&id));
+            return;
+        }
+    });
 }
 
 pub struct ResticService;
@@ -1088,6 +1363,237 @@ impl ResticService {
             serde_json::from_str(&stdout).map_err(|e| ResticError::ParseError(e.to_string()))?;
 
         Ok(snapshots)
+    }
+
+    // -----------------------------------------------------------------------
+    // Repository browse mounts (`restic mount`, read-only FUSE)
+    // -----------------------------------------------------------------------
+
+    /// Mount a whole repository read-only so its snapshots can be browsed in
+    /// the Explorer.
+    ///
+    /// The mount point is derived from the repository id under
+    /// [`mounts_root`], never supplied by the caller. `restic mount` is
+    /// read-only by design; the kernel entry is checked for `ro,nosuid,nodev`
+    /// before the mount is reported, and a mount that fails that check is torn
+    /// down rather than exposed.
+    pub fn mount_repository(
+        repo: &ResticRepo,
+        repo_name: &str,
+    ) -> Result<ResticMount, ResticError> {
+        if !is_fuse_available() {
+            return Err(ResticError::Unavailable(
+                "FUSE is not available on this host (/dev/fuse is missing)".to_string(),
+            ));
+        }
+
+        let mount_point = mount_point_for(&repo.id)?;
+        std::fs::create_dir_all(&mount_point)?;
+        let mount_str = mount_point.to_string_lossy().to_string();
+        let id = mount_point
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_default();
+
+        // Idempotent: clicking "Browse" twice reuses the live mount.
+        if let Some(entry) = find_mount_entry(&read_proc_mounts()?, &mount_str) {
+            if entry.is_read_only() {
+                let started_at = fuse_processes()
+                    .get(&id)
+                    .map(|record| record.started_at.clone())
+                    .unwrap_or_default();
+                return Ok(ResticMount {
+                    id,
+                    repo_id: Some(repo.id.clone()),
+                    repo_name: Some(repo_name.to_string()),
+                    mount_point: mount_str,
+                    started_at,
+                    active: true,
+                });
+            }
+            // A mount at our own path that is not read-only was not created
+            // by this feature (or was tampered with): remove it before
+            // recreating it safely.
+            unmount_path(&mount_str)?;
+        }
+
+        let mut cmd = Self::restic_cmd()?;
+        Self::set_env(&mut cmd, repo);
+        cmd.args(fuse_mount_args(&mount_str));
+        cmd.stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped());
+        let mut child = cmd.spawn()?;
+        let deadline = Instant::now() + RESTIC_FUSE_MOUNT_TIMEOUT;
+
+        let entry = loop {
+            if let Some(entry) = find_mount_entry(&read_proc_mounts()?, &mount_str) {
+                break entry;
+            }
+            if let Some(status) = child.try_wait()? {
+                let stderr = read_child_stderr(&mut child);
+                let _ = std::fs::remove_dir(&mount_point);
+                return Err(ResticError::CommandFailed(format!(
+                    "restic mount exited ({status}){}",
+                    if stderr.is_empty() {
+                        String::new()
+                    } else {
+                        format!(": {stderr}")
+                    }
+                )));
+            }
+            if Instant::now() >= deadline {
+                let _ = child.kill();
+                let _ = child.wait();
+                let _ = std::fs::remove_dir(&mount_point);
+                return Err(ResticError::CommandFailed(format!(
+                    "restic mount did not expose {mount_str} within {}s",
+                    RESTIC_FUSE_MOUNT_TIMEOUT.as_secs()
+                )));
+            }
+            std::thread::sleep(RESTIC_FUSE_POLL);
+        };
+
+        if !entry.is_read_only() {
+            let _ = child.kill();
+            let _ = child.wait();
+            let _ = unmount_path(&mount_str);
+            let _ = std::fs::remove_dir(&mount_point);
+            return Err(ResticError::CommandFailed(format!(
+                "The repository mount at {mount_str} is not read-only (options: {})",
+                entry.options.join(",")
+            )));
+        }
+
+        let started_at = Utc::now().to_rfc3339();
+        {
+            let mut processes = fuse_processes();
+            if let Some(mut previous) = processes.remove(&id) {
+                let _ = previous.child.kill();
+                let _ = previous.child.wait();
+            }
+            processes.insert(
+                id.clone(),
+                FuseProcess {
+                    child,
+                    repo_id: repo.id.clone(),
+                    repo_name: repo_name.to_string(),
+                    started_at: started_at.clone(),
+                },
+            );
+        }
+        spawn_fuse_reaper(id.clone());
+
+        Ok(ResticMount {
+            id,
+            repo_id: Some(repo.id.clone()),
+            repo_name: Some(repo_name.to_string()),
+            mount_point: mount_str,
+            started_at,
+            active: true,
+        })
+    }
+
+    /// Every browse mount the kernel currently confirms under [`mounts_root`].
+    /// Registry entries whose mount disappeared are reaped, and an entry that
+    /// is not read-only is never advertised.
+    pub fn list_mounts() -> Result<Vec<ResticMount>, ResticError> {
+        let root = mounts_root();
+        let entries = mounts_under_root(&read_proc_mounts()?, &root);
+        let mut records = fuse_processes();
+        let mut out = Vec::new();
+        for entry in entries {
+            let path = Path::new(&entry.mount_point);
+            let Some(name) = path.file_name() else {
+                continue;
+            };
+            let id = name.to_string_lossy().to_string();
+            let meta = records.get(&id);
+            out.push(ResticMount {
+                id,
+                repo_id: meta.map(|record| record.repo_id.clone()),
+                repo_name: meta.map(|record| record.repo_name.clone()),
+                mount_point: entry.mount_point.clone(),
+                started_at: meta
+                    .map(|record| record.started_at.clone())
+                    .unwrap_or_default(),
+                active: true,
+            });
+        }
+        out.sort_by(|a, b| a.mount_point.cmp(&b.mount_point));
+
+        let live: HashSet<String> = out.iter().map(|mount| mount.id.clone()).collect();
+        records.retain(|id, record| {
+            if live.contains(id) {
+                true
+            } else {
+                let _ = record.child.kill();
+                let _ = record.child.wait();
+                false
+            }
+        });
+        Ok(out)
+    }
+
+    /// Unmount one browse mount and stop its `restic mount` process. Safe to
+    /// call twice; a mount that is already gone is not an error.
+    pub fn unmount(id: &str) -> Result<(), ResticError> {
+        let id = id.trim();
+        if id.is_empty()
+            || !id
+                .chars()
+                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+        {
+            return Err(ResticError::InvalidInput("Invalid mount id".to_string()));
+        }
+        let root = mounts_root();
+        let mount_point = root.join(id);
+        if mount_point.parent() != Some(root.as_path()) {
+            return Err(ResticError::InvalidInput(
+                "The mount id escapes the restic mount root".to_string(),
+            ));
+        }
+        let mount_str = mount_point.to_string_lossy().to_string();
+        let mut record = fuse_processes().remove(id);
+
+        let mut unmount_error = None;
+        if find_mount_entry(&read_proc_mounts()?, &mount_str).is_some() {
+            if let Err(e) = unmount_path(&mount_str) {
+                unmount_error = Some(e);
+            }
+        }
+
+        if let Some(error) = unmount_error {
+            // Killing the FUSE daemon makes the kernel drop its mount; try
+            // that before declaring the unmount failed.
+            if let Some(process) = record.as_mut() {
+                let _ = process.child.kill();
+                let _ = process.child.wait();
+            }
+            std::thread::sleep(RESTIC_FUSE_POLL);
+            if find_mount_entry(&read_proc_mounts()?, &mount_str).is_some() {
+                return Err(ResticError::CommandFailed(format!(
+                    "Cannot unmount {mount_str}: {error}"
+                )));
+            }
+        }
+
+        if let Some(mut process) = record {
+            let deadline = Instant::now() + RESTIC_FUSE_UNMOUNT_TIMEOUT;
+            loop {
+                match process.child.try_wait()? {
+                    Some(_) => break,
+                    None if Instant::now() >= deadline => {
+                        let _ = process.child.kill();
+                        let _ = process.child.wait();
+                        break;
+                    }
+                    None => std::thread::sleep(RESTIC_FUSE_POLL),
+                }
+            }
+        }
+        let _ = std::fs::remove_dir(&mount_point);
+        Ok(())
     }
 
     /// `restic restore <id> --target <dir>`, cancellable through `job_id`.
@@ -2040,6 +2546,105 @@ mod tests {
         };
         let sv = serde_json::to_value(&stats).unwrap();
         assert_eq!(sv["snapshots_count"], 3);
+    }
+    // -- P1-10: repository browse mounts --------------------------------
+
+    #[test]
+    fn test_mount_point_is_derived_and_confined_to_the_restic_root() {
+        let root = mounts_root();
+        let point = mount_point_for("repo-123").expect("derived point");
+        assert_eq!(point.parent(), Some(root.as_path()));
+        assert!(point.starts_with(&root));
+
+        // A client-influenced id cannot escape the one directory this feature
+        // owns, and the derived name carries no path separator or `..`.
+        for id in ["../../etc", "/etc/passwd", "a/b", "..", "repo 1"] {
+            let point = mount_point_for(id).unwrap_or_else(|e| panic!("{id}: {e}"));
+            assert_eq!(point.parent(), Some(root.as_path()), "{id} -> {point:?}");
+            let name = point.file_name().unwrap().to_string_lossy();
+            assert!(
+                !name.contains('/') && !name.contains(".."),
+                "{id} -> {name}"
+            );
+        }
+        assert!(mount_point_for("   ").is_err());
+    }
+
+    #[test]
+    fn test_slug_for_repo_is_deterministic_and_path_free() {
+        assert_eq!(slug_for_repo("abc-123"), slug_for_repo("abc-123"));
+        assert_ne!(slug_for_repo("abc-123"), slug_for_repo("abc-124"));
+        for id in ["../../etc/passwd", "A/B C", "/", ".."] {
+            let slug = slug_for_repo(id);
+            assert!(
+                !slug.contains('/') && !slug.contains('.') && !slug.contains(' '),
+                "{id} -> {slug}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_fuse_mount_argv_is_exactly_mount_then_the_point() {
+        assert_eq!(
+            fuse_mount_args("/data/restic-mounts/r-1"),
+            vec!["mount".to_string(), "/data/restic-mounts/r-1".to_string()]
+        );
+    }
+
+    const RESTIC_MOUNTS: &str = concat!(
+        "/dev/sda1 / ext4 rw,relatime 0 0\n",
+        "restic:189f2a371d /var/lib/homevault/restic-mounts/repo-123 fuse ro,nosuid,nodev,relatime,user_id=0,group_id=0 0 0\n",
+        "restic:bad /var/lib/homevault/restic-mounts/repo-rw fuse rw,nosuid,nodev 0 0\n",
+        "restic:elsewhere /mnt/elsewhere fuse ro,nosuid,nodev 0 0\n",
+    );
+
+    #[test]
+    fn test_parse_mounts_reads_the_kernel_options() {
+        let entries = parse_mounts(RESTIC_MOUNTS);
+        assert_eq!(entries.len(), 4);
+
+        let entry = find_mount_entry(RESTIC_MOUNTS, "/var/lib/homevault/restic-mounts/repo-123")
+            .expect("the restic line");
+        assert_eq!(entry.device, "restic:189f2a371d");
+        assert_eq!(entry.fs_type, "fuse");
+        assert!(entry.has_option("nosuid"));
+        assert!(entry.has_option("nodev"));
+        assert!(entry.is_read_only());
+
+        // A prefix is not a mount point, and a read-write mount fails the
+        // read-only check even though it has the other two flags.
+        assert!(
+            find_mount_entry(RESTIC_MOUNTS, "/var/lib/homevault/restic-mounts/repo-12").is_none()
+        );
+        let rw = find_mount_entry(RESTIC_MOUNTS, "/var/lib/homevault/restic-mounts/repo-rw")
+            .expect("the rw line");
+        assert!(!rw.is_read_only());
+    }
+
+    #[test]
+    fn test_only_read_only_mounts_under_the_root_are_advertised() {
+        let root = mounts_root();
+        let mounts = mounts_under_root(RESTIC_MOUNTS, &root);
+        assert_eq!(mounts.len(), 1, "{mounts:?}");
+        assert_eq!(
+            mounts[0].mount_point,
+            root.join("repo-123").to_string_lossy()
+        );
+        // A read-only FUSE mount outside the managed root is not ours.
+        assert!(find_mount_entry(RESTIC_MOUNTS, "/mnt/elsewhere").is_some());
+        assert!(mounts
+            .iter()
+            .all(|entry| entry.mount_point != "/mnt/elsewhere"));
+    }
+
+    #[test]
+    fn test_an_unmount_id_cannot_traverse() {
+        for id in ["../etc", "a/b", "", "Repo", "repo.1"] {
+            assert!(
+                ResticService::unmount(id).is_err(),
+                "{id} must be refused before touching the host"
+            );
+        }
     }
 }
 

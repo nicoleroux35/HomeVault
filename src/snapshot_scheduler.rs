@@ -27,7 +27,8 @@
 
 use crate::handlers::AppState;
 use crate::restic_scheduler::compute_next_run;
-use crate::snapshots::{PoolBackend, SnapshotBackend};
+use crate::shares::{ShareType, SharesService};
+use crate::snapshots::{PoolBackend, ShareBackend, SnapshotBackend};
 use crate::storage::snapshot_schedule_repo::{SnapshotSchedule, SnapshotScheduleRepository};
 use chrono::{DateTime, Utc};
 use std::collections::HashSet;
@@ -368,6 +369,15 @@ fn is_new_failure(previous_status: Option<&str>) -> bool {
     previous_status != Some("failed")
 }
 
+/// Human target for notifications and log lines: `share 'photos' on 'tank'`
+/// or simply `'tank'` for a pool-wide schedule.
+fn schedule_target_label(schedule: &SnapshotSchedule) -> String {
+    match &schedule.share {
+        Some(share) => format!("share '{}' on '{}'", share, schedule.pool),
+        None => format!("'{}'", schedule.pool),
+    }
+}
+
 /// Records a failed run and, on the transition into failure, raises a
 /// notification the admin can mute (`snapshot.schedules`).
 async fn record_failure(state: &Arc<AppState>, schedule: &SnapshotSchedule, message: &str) {
@@ -380,7 +390,10 @@ async fn record_failure(state: &Arc<AppState>, schedule: &SnapshotSchedule, mess
     crate::notification_engine::notify(
         state,
         "snapshot.schedules",
-        &format!("Snapshot schedule on '{}' failed", schedule.pool),
+        &format!(
+            "Snapshot schedule on {} failed",
+            schedule_target_label(schedule)
+        ),
         message,
         "error",
         "storage",
@@ -424,11 +437,26 @@ async fn run_schedule_inner(
         Some(backend) => backend,
         None => {
             let pool = schedule.pool.clone();
-            let resolved = tokio::task::spawn_blocking(move || PoolBackend::new(&pool))
-                .await
-                .map_err(|e| RunScheduleError::Failed(format!("Snapshot task panicked: {e}")))?;
+            let share = schedule.share.clone();
+            let share_type = schedule.share_type.clone();
+            let resolved = tokio::task::spawn_blocking(move || match (share, share_type) {
+                (Some(share), Some(share_type)) => {
+                    let kind = ShareType::parse(&share_type).ok_or_else(|| {
+                        crate::snapshots::SnapError::ParseError(format!(
+                            "Invalid share type '{share_type}'"
+                        ))
+                    })?;
+                    let share = SharesService::get_share(&share, kind)
+                        .map_err(|e| crate::snapshots::SnapError::CommandFailed(e.to_string()))?;
+                    ShareBackend::new(&pool, &share.path)
+                        .map(|b| Arc::new(b) as Arc<dyn SnapshotBackend>)
+                }
+                _ => PoolBackend::new(&pool).map(|b| Arc::new(b) as Arc<dyn SnapshotBackend>),
+            })
+            .await
+            .map_err(|e| RunScheduleError::Failed(format!("Snapshot task panicked: {e}")))?;
             match resolved {
-                Ok(backend) => Arc::new(backend) as Arc<dyn SnapshotBackend>,
+                Ok(backend) => backend,
                 Err(e) => {
                     let message = e.to_string();
                     record_failure(state, schedule, &message).await;
@@ -776,6 +804,8 @@ mod tests {
         SnapshotSchedule {
             id: id.to_string(),
             pool: pool.to_string(),
+            share: None,
+            share_type: None,
             enabled: true,
             cron: "0 */4 * * *".to_string(),
             prefix: "hv-auto".to_string(),

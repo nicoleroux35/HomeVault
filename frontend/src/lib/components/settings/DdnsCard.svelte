@@ -48,11 +48,18 @@
   let busy = $state(false);
 
   let enabled = $state(false);
-  let provider = $state<'duckdns' | 'dynv6' | 'cloudflare' | 'custom'>('duckdns');
+  let provider = $state<
+    'duckdns' | 'dynv6' | 'cloudflare' | 'ovh' | 'namecheap' | 'desec' | 'custom'
+  >('duckdns');
   let hostname = $state('');
   let token = $state('');
   let tokenSet = $state(false);
+  let username = $state('');
+  let domain = $state('');
   let customUrl = $state('');
+
+  const isOvh = $derived(provider === 'ovh');
+  const isNamecheap = $derived(provider === 'namecheap');
 
   let status = $state('disabled');
   let lastIp = $state<string | null>(null);
@@ -65,10 +72,20 @@
   function applyPayload(d: any) {
     enabled = !!d.enabled;
     const p = d.provider;
-    provider = p === 'dynv6' || p === 'cloudflare' || p === 'custom' ? p : 'duckdns';
+    provider =
+      p === 'dynv6' ||
+      p === 'cloudflare' ||
+      p === 'ovh' ||
+      p === 'namecheap' ||
+      p === 'desec' ||
+      p === 'custom'
+        ? p
+        : 'duckdns';
     hostname = d.hostname ?? '';
     tokenSet = d.token === 'set';
     token = tokenSet ? 'set' : '';
+    username = d.username ?? '';
+    domain = d.domain ?? '';
     customUrl = d.custom_update_url ?? '';
     status = d.status ?? 'disabled';
     lastIp = d.last_ip ?? null;
@@ -96,6 +113,8 @@
       provider,
       hostname: hostname.trim(),
       token,
+      username: username.trim(),
+      domain: domain.trim(),
       custom_update_url: customUrl.trim(),
     });
     if (res.success) {
@@ -178,6 +197,9 @@
         <option value="duckdns">DuckDNS</option>
         <option value="dynv6">dynv6</option>
         <option value="cloudflare">Cloudflare</option>
+        <option value="ovh">OVHcloud DynHost</option>
+        <option value="namecheap">Namecheap</option>
+        <option value="desec">deSEC</option>
         <option value="custom">{$t('settings.ddns_provider_custom')}</option>
       </select>
     </div>
@@ -194,10 +216,50 @@
       />
     </div>
 
+    {#if isOvh}
+      <div class={settingsRow}>
+        <div class="min-w-0">
+          <label class={settingsRowLabel} for="ddns-username">{$t('settings.ddns_username')}</label>
+          <p class={settingsRowHint}>{$t('settings.ddns_username_hint')}</p>
+        </div>
+        <input
+          id="ddns-username"
+          class={cn(settingsInput, 'ddns-input')}
+          type="text"
+          bind:value={username}
+          autocomplete="username"
+          data-testid="ddns-username"
+        />
+      </div>
+    {/if}
+
+    {#if isNamecheap}
+      <div class={settingsRow}>
+        <div class="min-w-0">
+          <label class={settingsRowLabel} for="ddns-domain">{$t('settings.ddns_domain')}</label>
+          <p class={settingsRowHint}>{$t('settings.ddns_domain_hint')}</p>
+        </div>
+        <input
+          id="ddns-domain"
+          class={cn(settingsInput, 'ddns-input')}
+          type="text"
+          bind:value={domain}
+          placeholder="example.com"
+          data-testid="ddns-domain"
+        />
+      </div>
+    {/if}
+
     {#if needsToken}
       <div class={settingsRow}>
         <div class="min-w-0">
-          <label class={settingsRowLabel} for="ddns-token">{$t('settings.ddns_token')}</label>
+          <label class={settingsRowLabel} for="ddns-token">
+            {isOvh
+              ? $t('settings.ddns_password_ovh')
+              : isNamecheap
+                ? $t('settings.ddns_password_namecheap')
+                : $t('settings.ddns_token')}
+          </label>
           <p class={settingsRowHint}>
             {tokenSet ? $t('settings.ddns_token_kept') : $t('settings.ddns_token_hint')}
           </p>

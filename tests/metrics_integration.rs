@@ -23,7 +23,10 @@
 //!   - GET /api/metrics/history?range=1h|24h|7d
 //!   - GET /api/metrics/latest
 
-use axum::{routing::get, Router};
+use axum::{
+    routing::{get, put},
+    Router,
+};
 use http::{Method, Request, StatusCode};
 use serde_json::{json, Value};
 use std::sync::Arc;
@@ -33,7 +36,10 @@ use tower::{Service, ServiceExt};
 
 use homevault::auth::AuthService;
 use homevault::config::PathGuard;
-use homevault::handlers::metrics::{handle_metrics_history, handle_metrics_latest};
+use homevault::handlers::metrics::{
+    handle_metrics_history, handle_metrics_latest, handle_metrics_settings_get,
+    handle_metrics_settings_update,
+};
 use homevault::handlers::terminal_pty::PtyManager;
 use homevault::handlers::AppState;
 use homevault::middleware::rate_limit::RateLimitState;
@@ -91,6 +97,8 @@ fn metrics_router(state: Arc<AppState>) -> Router {
         )
         .route("/api/metrics/history", get(handle_metrics_history))
         .route("/api/metrics/latest", get(handle_metrics_latest))
+        .route("/api/metrics/settings", get(handle_metrics_settings_get))
+        .route("/api/metrics/settings", put(handle_metrics_settings_update))
         .with_state(state)
 }
 
@@ -480,4 +488,128 @@ async fn latest_returns_the_newest_sample() {
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["data"]["cpu"], json!(10.0));
     assert_eq!(body["data"]["mem"], json!(50.0));
+}
+
+async fn send_json(
+    router: &mut Router,
+    method: Method,
+    uri: &str,
+    token: Option<&str>,
+    body: Value,
+) -> (StatusCode, Value) {
+    let mut req = Request::builder().method(method).uri(uri);
+    if let Some(t) = token {
+        req = req.header("x-session-token", t);
+    }
+    let req = req
+        .header("content-type", "application/json")
+        .body(axum::body::Body::from(body.to_string()))
+        .unwrap();
+    let resp = ServiceExt::<Req>::ready(router)
+        .await
+        .unwrap()
+        .call(req)
+        .await
+        .unwrap();
+    let status = resp.status();
+    let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let json: Value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
+    (status, json)
+}
+
+#[tokio::test]
+async fn settings_read_is_authenticated_and_write_is_admin_only() {
+    let (state, _tmp, _guard) = setup_state().await;
+    create_test_user(&state, "admin", "AdminPass123!", ADMIN_ROLE_ID).await;
+    create_test_user(&state, "member", "MemberPass123!", USER_ROLE_ID).await;
+    let mut router = metrics_router(state);
+
+    let (status, _) = send(&mut router, Method::GET, "/api/metrics/settings", None).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+
+    let member = login(&mut router, "member", "MemberPass123!").await;
+    let (status, body) = send(
+        &mut router,
+        Method::GET,
+        "/api/metrics/settings",
+        Some(&member),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["data"]["retention_days"], 8);
+    assert_eq!(body["data"]["min_days"], 1);
+    assert_eq!(body["data"]["max_days"], 365);
+
+    let (status, _) = send_json(
+        &mut router,
+        Method::PUT,
+        "/api/metrics/settings",
+        Some(&member),
+        json!({ "retention_days": 30 }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn settings_round_trip_and_bounds() {
+    let (state, _tmp, _guard) = setup_state().await;
+    create_test_user(&state, "admin", "AdminPass123!", ADMIN_ROLE_ID).await;
+    let mut router = metrics_router(state);
+    let admin = login(&mut router, "admin", "AdminPass123!").await;
+
+    let (status, body) = send_json(
+        &mut router,
+        Method::PUT,
+        "/api/metrics/settings",
+        Some(&admin),
+        json!({ "retention_days": 30 }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["data"]["retention_days"], 30);
+
+    let (_, body) = send(
+        &mut router,
+        Method::GET,
+        "/api/metrics/settings",
+        Some(&admin),
+    )
+    .await;
+    assert_eq!(body["data"]["retention_days"], 30);
+
+    for days in [0, 366] {
+        let (status, body) = send_json(
+            &mut router,
+            Method::PUT,
+            "/api/metrics/settings",
+            Some(&admin),
+            json!({ "retention_days": days }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "days={days}");
+        assert!(body["message"].as_str().unwrap().contains("retention_days"));
+    }
+
+    let (_, body) = send(
+        &mut router,
+        Method::GET,
+        "/api/metrics/settings",
+        Some(&admin),
+    )
+    .await;
+    assert_eq!(
+        body["data"]["retention_days"], 30,
+        "refused writes must not change the stored value"
+    );
+}
+
+#[test]
+fn retention_seconds_are_clamped() {
+    use homevault::metrics::{retention_secs, MAX_RETENTION_DAYS, MIN_RETENTION_DAYS};
+    assert_eq!(retention_secs(0), MIN_RETENTION_DAYS * 86_400);
+    assert_eq!(retention_secs(8), 8 * 86_400);
+    assert_eq!(retention_secs(10_000), MAX_RETENTION_DAYS * 86_400);
 }

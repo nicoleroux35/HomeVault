@@ -57,7 +57,11 @@ interface AgentState {
   enabled?: boolean;
   scope?: 'loopback' | 'lan';
   lan_address?: string | null;
+  version?: 'v2c' | 'v3';
   has_community?: boolean;
+  v3_username?: string;
+  has_v3_auth_secret?: boolean;
+  has_v3_priv_secret?: boolean;
   location?: string;
   contact?: string;
 }
@@ -102,10 +106,15 @@ async function mockAgent(
           json: { success: false, message: opts.rejectPut },
         });
       }
+      // The real API never echoes a secret back; the mock must not either,
+      // otherwise a test could pass on a payload the server would never send.
+      const { community, v3_auth_secret, v3_priv_secret, ...rest } = body;
       state = {
         ...state,
-        ...body,
-        has_community: body.community ? true : state.has_community,
+        ...rest,
+        has_community: community ? true : state.has_community,
+        has_v3_auth_secret: v3_auth_secret ? true : state.has_v3_auth_secret,
+        has_v3_priv_secret: v3_priv_secret ? true : state.has_v3_priv_secret,
       };
       return route.fulfill({ json: { success: true, data: state } });
     }
@@ -252,5 +261,62 @@ test.describe('SNMP agent card', () => {
 
     // The reason is shown verbatim in the toast, not a generic failure.
     await expect(page.getByText(/every scanner tries first/i)).toBeVisible({ timeout: 10_000 });
+  });
+
+  test('SNMPv3 replaces the community with a dedicated user and two passphrases', async ({
+    page,
+    request,
+  }) => {
+    await seedSession(page, await apiLogin(request));
+    const recorder = await mockAgent(page, { state: { version: 'v2c' } });
+    await openSettings(page, /monitoring/i);
+
+    await page.locator('[data-testid="snmp-agent-enabled"]').check();
+    // v2c is the default: the community field is shown, no v3 field.
+    await expect(page.locator('[data-testid="snmp-agent-community"]')).toBeVisible();
+    await expect(page.locator('[data-testid="snmp-agent-v3-auth"]')).toHaveCount(0);
+
+    await page.locator('[data-testid="snmp-agent-version"]').selectOption('v3');
+
+    // Switching versions swaps the credential fields; the community is gone.
+    await expect(page.locator('[data-testid="snmp-agent-community"]')).toHaveCount(0);
+    await expect(page.locator('[data-testid="snmp-agent-v3-username"]')).toHaveValue('homevault');
+    await expect(page.locator('[data-testid="snmp-agent-v3-auth"]')).toBeVisible();
+    await expect(page.locator('[data-testid="snmp-agent-v3-priv"]')).toBeVisible();
+
+    await page.locator('[data-testid="snmp-agent-v3-username"]').fill('monitor');
+    await page.locator('[data-testid="snmp-agent-v3-auth"]').fill('authpass123');
+    await page.locator('[data-testid="snmp-agent-v3-priv"]').fill('privpass456');
+    await page.locator('[data-testid="snmp-agent-save"]').click();
+
+    await expect.poll(() => recorder.puts.length).toBe(1);
+    const sent = recorder.puts[0];
+    expect(sent.version).toBe('v3');
+    expect(sent.v3_username).toBe('monitor');
+    expect(sent.v3_auth_secret).toBe('authpass123');
+    expect(sent.v3_priv_secret).toBe('privpass456');
+    // No v2c credential is sent when the agent runs v3.
+    expect(sent.community).toBeUndefined();
+  });
+
+  test('an already-stored v3 passphrase is not round-tripped', async ({ page, request }) => {
+    await seedSession(page, await apiLogin(request));
+    const recorder = await mockAgent(page, {
+      state: { version: 'v3', has_v3_auth_secret: true, has_v3_priv_secret: true },
+    });
+    await openSettings(page, /monitoring/i);
+
+    await page.locator('[data-testid="snmp-agent-enabled"]').check();
+    // The fields are present (version loaded as v3) and empty: a stored secret
+    // can be kept but never read back.
+    await expect(page.locator('[data-testid="snmp-agent-v3-auth"]')).toHaveValue('');
+    await expect(page.locator('[data-testid="snmp-agent-v3-priv"]')).toHaveValue('');
+
+    await page.locator('[data-testid="snmp-agent-save"]').click();
+    await expect.poll(() => recorder.puts.length).toBe(1);
+    const sent = recorder.puts[0];
+    expect(sent.version).toBe('v3');
+    expect(sent.v3_auth_secret).toBeUndefined();
+    expect(sent.v3_priv_secret).toBeUndefined();
   });
 });

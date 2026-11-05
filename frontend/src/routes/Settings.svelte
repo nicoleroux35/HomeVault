@@ -88,9 +88,11 @@
   import TlsCard from '$lib/components/settings/TlsCard.svelte';
   import AcmeCard from '$lib/components/settings/AcmeCard.svelte';
   import AutoBlockCard from '$lib/components/settings/AutoBlockCard.svelte';
+  import PasswordPolicyCard from '$lib/components/settings/PasswordPolicyCard.svelte';
   import ConfigBackupCard from '$lib/components/settings/ConfigBackupCard.svelte';
   import ConnectedClientsCard from '$lib/components/settings/ConnectedClientsCard.svelte';
   import DdnsCard from '$lib/components/settings/DdnsCard.svelte';
+  import ProxyCard from '$lib/components/settings/ProxyCard.svelte';
   import ReachabilityCard from '$lib/components/settings/ReachabilityCard.svelte';
   import SyslogCard from '$lib/components/settings/SyslogCard.svelte';
   import WolCard from '$lib/components/settings/WolCard.svelte';
@@ -1131,6 +1133,9 @@
         <TlsCard class="mt-6" />
         <AcmeCard class="mt-3" />
         <DdnsCard class="mt-3" />
+        <!-- P1-8: one proxy setting for every outbound call (ACME, DDNS,
+             update checks, notifications, Web Push). -->
+        <ProxyCard class="mt-3" />
         <ReachabilityCard class="mt-3" />
         <DhcpServerCard class="mt-3" />
         <!-- Phase C1: the appliance's own DNS server. It is the *same*
@@ -1143,6 +1148,9 @@
              discovery first; every mapping added here is removable here. -->
         <UpnpCard class="mt-3" />
         <AutoBlockCard class="mt-3" />
+        <!-- P1-2: global password expiry, enforced at sign-in by the existing
+             password-change guard. -->
+        <PasswordPolicyCard class="mt-3" />
         <ConnectedClientsCard class="mt-3" />
         <AntivirusCard class="mt-3" />
         <AntiRansomwareCard class="mt-3" />

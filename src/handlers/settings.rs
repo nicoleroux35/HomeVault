@@ -1366,11 +1366,13 @@ async fn fetch_latest_version() -> Result<UpdateCheckResult, String> {
     // privacy invariant is about *contacting* the third party at all.
     UPDATE_CHECK_ATTEMPTS.fetch_add(1, Ordering::Relaxed);
 
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(5))
-        .user_agent("HomeVault/Server")
-        .build()
-        .map_err(|e| e.to_string())?;
+    let client = crate::proxy::apply_loaded(
+        reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(5))
+            .user_agent("HomeVault/Server"),
+    )
+    .build()
+    .map_err(|e| e.to_string())?;
 
     let resp = client
         .get(version_check_url())

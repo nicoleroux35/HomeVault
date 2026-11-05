@@ -263,6 +263,17 @@ pub async fn handle_login(
                     // ONLY by the per-app reverse proxy's auth gate
                     // (crate::app_proxy). Additive — response body unchanged.
                     let token = session.token.clone();
+                    // Password expiry is checked once the credentials are
+                    // proven, so an expired account still authenticates (and
+                    // is then limited to the change flow) instead of getting
+                    // an indistinguishable "wrong password".
+                    if let Err(e) = state.auth.enforce_password_expiry(&req.username).await {
+                        tracing::warn!(
+                            "Could not evaluate password expiry for '{}': {}",
+                            req.username,
+                            e
+                        );
+                    }
                     // An account still holding an admin-chosen password
                     // (creation/reset) must change it before anything else:
                     // the client routes to the change screen, and the server

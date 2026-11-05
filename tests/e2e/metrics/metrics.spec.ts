@@ -144,6 +144,45 @@ test('2.1 — Range buttons are a toggle group and switch the range', async ({ p
   await expect(group.locator('[data-testid="metrics-range-1h"]')).toHaveAttribute('aria-pressed', 'true');
 });
 
+test('2.2 — the retention select saves the chosen window', async ({ page }) => {
+  let payload: Record<string, unknown> | null = null;
+  await page.route('**/api/metrics/settings', async (route) => {
+    if (route.request().method() === 'PUT') {
+      payload = route.request().postDataJSON();
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          success: true,
+          data: {
+            retention_days: payload!['retention_days'],
+            default_days: 8,
+            min_days: 1,
+            max_days: 365,
+          },
+        }),
+      });
+      return;
+    }
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        success: true,
+        data: { retention_days: 8, default_days: 8, min_days: 1, max_days: 365 },
+      }),
+    });
+  });
+
+  await openMetrics(page, adminTokens);
+  const select = win(page).locator('[data-testid="metrics-retention"]');
+  await expect(select).toBeVisible();
+  await select.selectOption('30');
+
+  await expect.poll(() => payload).not.toBeNull();
+  expect(payload!['retention_days']).toBe(30);
+});
+
 test('3.1 — Charts expose accessible names (or the empty state is announced)', async ({ page }) => {
   await openMetrics(page, adminTokens);
   const chart = win(page).locator('[data-testid="metrics-chart-cpu"]');

@@ -13,14 +13,16 @@ existed (Dashboard widgets) — this adds the *history*.
   Reads `/proc/stat` (deltas between consecutive samples),
   `/proc/meminfo`, `/proc/loadavg`, `/proc/net/dev` (all non-loopback
   interfaces summed) and `/sys/class/thermal` (max zone) — **each file
-  exactly once per tick**. Retention: 8 days, pruned on every tick
-  (indexed PK range delete).
+  exactly once per tick**. Retention: `metrics_settings.retention_days`
+  (default 8, 1–365), pruned on every tick (indexed PK range delete).
 - `src/handlers/metrics.rs` — read-only endpoints.
 
 | Endpoint | Auth | Notes |
 |----------|------|-------|
 | `GET /metrics/history?range=1h\|24h\|7d` | auth | bucketed averages: 60×1 min / 96×15 min / 84×2 h (+ the in-progress trailing bucket) |
 | `GET /metrics/latest` | auth | most recent stored sample; `200` with `data: null` when nothing has been collected yet |
+| `GET /metrics/settings` | auth | `retention_days`, `default_days`, `min_days`, `max_days` |
+| `PUT /metrics/settings` | admin | `{ "retention_days": 1..365 }`; out of range is a `400` naming the field |
 
 ## Null semantics — a gap is not a zero
 
@@ -56,6 +58,21 @@ counters go backwards: both cases store **no rate** (`NULL`), never a zero
 and never a negative. CPU is a ratio of two counter deltas, so it needs no
 elapsed time; without a delta (first sample, counter reset) it falls back to
 the since-boot average, which is what the figure means at that point.
+
+## Retention is configurable (2026-11-05, tasklist P1-3)
+
+The collector used to hard-code 8 days. Migration `080_metrics_retention.sql`
+adds the singleton `metrics_settings` row (`retention_days`, default 8), and
+the collector reads it **every tick** so a change applies without a restart.
+`retention_secs` clamps to `1..=365`: a hand-edited `0` cannot wipe the table
+and a huge value cannot keep it forever. The Metrics app header exposes a
+select (8 / 30 / 90 days); a value stored outside that list is still shown so
+an API-set value is never hidden. A DB read failure falls back to the default
+rather than stopping collection.
+
+Tests: `tests/metrics_integration.rs` — auth matrix (read = any session,
+write = admin), round-trip, `0`/`366` refused, and the pure clamp
+(`retention_seconds_are_clamped`).
 
 ## Invariants
 

@@ -1414,7 +1414,11 @@ mod tests {
         t.record(start, 0);
         t.record(start + std::time::Duration::from_secs(1), 1_000);
         assert_eq!(t.eta_seconds(2_500), Some(2), "1.5 s left rounds up to 2");
-        assert_eq!(t.eta_seconds(1_000), Some(0), "already there is 0, not None");
+        assert_eq!(
+            t.eta_seconds(1_000),
+            Some(0),
+            "already there is 0, not None"
+        );
         assert_eq!(t.eta_seconds(999), Some(0));
     }
 

@@ -462,6 +462,12 @@ that fail loudly instead of silently misparsing.
   `CONTRACT_VERSION`, sends `X-HomeVault-Contract` on every request, and flags
   a 426 into `stores/contract.ts`; `Desktop.svelte` renders the reload banner
   (`[data-testid="contract-mismatch-banner"]`).
+- `src/openapi.rs` generates an OpenAPI 3.0.3 document from the Axum route
+  table (main router + nested sub-routers) and `handlers/openapi.rs` serves it
+  at `GET /api/openapi.json` to administrators. Public operations override the
+  global security requirement; non-JSON transports (WebSocket, SSE, tickets,
+  binary streams) are excluded and named in `x-homevault-excluded`. There is
+  no hand-maintained route table to drift.
 
 **Rule:** bump `CONTRACT_VERSION` in **both** `src/api_contract.rs` and
 `frontend/src/lib/services/api.ts` in the same change, and only for a breaking

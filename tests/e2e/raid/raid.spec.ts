@@ -295,12 +295,15 @@ test.describe('1 — Page load', () => {
 // ===========================================================================
 
 test.describe('2 — Form fields', () => {
-  test('2.1 — step 1 shows the 5 RAID levels with min-disk + protection', async ({ page }) => {
+  test('2.1 — step 1 shows the 6 RAID levels with min-disk + protection', async ({ page }) => {
     await gotoRaid(page, adminTokens);
-    await expect(win(page).locator('[data-testid="raid-type-card"]')).toHaveCount(5);
-    for (const lvl of ['RAID 0', 'RAID 1', 'RAID 5', 'RAID 6', 'RAID 10']) {
+    await expect(win(page).locator('[data-testid="raid-type-card"]')).toHaveCount(6);
+    for (const lvl of ['RAID 0', 'RAID 1', 'RAID 5', 'RAID 6', 'RAID 10', 'RAID Z3']) {
       await expect(raidTypeCard(page, lvl)).toHaveCount(1);
     }
+    // P1-9: the ZFS-only level advertises its four-disk minimum and three
+    // tolerated failures.
+    await expect(raidTypeCard(page, 'RAID Z3')).toContainText(/4\+|min 4|4 disks|4 disques|4 Festplatten|4 discos/i);
   });
 
   test('2.2 — RAID 5 carries the "Recommended" badge', async ({ page }) => {
@@ -807,6 +810,30 @@ test.describe('14 — Edge cases', () => {
     });
     expect(r.http).not.toBe(500);
     expect(r.success).not.toBe(true); // fake devices → clean rejection
+  });
+
+  test('14.4 — RAID Z3 is refused unless the filesystem is ZFS', async ({ page }) => {
+    await gotoRaid(page, adminTokens);
+    // The server names the real problem before any device work happens.
+    const r = await apiCreate(page, adminTokens, {
+      name: 'e2e-z3-ext4',
+      level: 'raidz3',
+      devices: ['/dev/z1', '/dev/z2', '/dev/z3', '/dev/z4'],
+      filesystem: 'ext4',
+    });
+    expect(r.http).toBe(400);
+    expect(r.success).not.toBe(true);
+
+    // A genuine ZFS RAID-Z3 request with fake devices is still a clean 400
+    // (device gate), never a 500.
+    const zfsRequest = await apiCreate(page, adminTokens, {
+      name: 'e2e-z3-zfs',
+      level: 'raidz3',
+      devices: ['/dev/z1', '/dev/z2', '/dev/z3', '/dev/z4'],
+      filesystem: 'zfs',
+    });
+    expect(zfsRequest.http).not.toBe(500);
+    expect(zfsRequest.success).not.toBe(true);
   });
 
   test('14.3 — switching level after reaching step 2 keeps the wizard consistent', async ({ page }) => {

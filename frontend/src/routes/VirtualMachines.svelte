@@ -143,6 +143,18 @@
   let snapName = $state('');
   let snapBusy = $state(false);
 
+  // Clone dialog
+  let cloneOpen = $state(false);
+  let cloneName = $state('');
+  let cloneSnapshot = $state('');
+  let cloneBusy = $state(false);
+  let cloneNameError = $derived(
+    !cloneName
+      ? ''
+      : validateName(cloneName) ||
+        (detail && cloneName === detail.name ? translate('vm.clone_same_name') : '')
+  );
+
   // Delete confirm
   let confirmDelete = $state<string | null>(null);
   let confirmRestore = $state<Snapshot | null>(null);
@@ -334,6 +346,38 @@
     if (res.success) setBanner('ok', translate('vm.snap_deleted', { name: s.name }));
     else setBanner('error', res.message || translate('vm.action_failed'));
     await Promise.all([load(), refreshDetail()]);
+  }
+
+  // ── Clone ────────────────────────────────────────────────────────────────
+  function openClone() {
+    if (!detail) return;
+    cloneName = `${detail.name}-copy`;
+    cloneSnapshot = '';
+    cloneOpen = true;
+  }
+
+  async function submitClone() {
+    if (!detail || !cloneName.trim() || cloneNameError || cloneBusy) return;
+    const source = detail.name;
+    const name = cloneName.trim();
+    cloneBusy = true;
+    const res = await call('POST', `/vm/${encodeURIComponent(source)}/clone`, {
+      name,
+      snapshot: cloneSnapshot || null,
+    });
+    cloneBusy = false;
+    if (res.success) {
+      cloneOpen = false;
+      setBanner('ok', translate('vm.clone_ok', { name }));
+      await load();
+      // A copy Incus is still making is already listed; only open the drawer
+      // once the operation has really completed.
+      if ((res.data as { status?: string } | undefined)?.status === 'cloned') {
+        await openDetail(name);
+      }
+    } else {
+      setBanner('error', res.message || translate('vm.clone_failed'));
+    }
   }
 
   // ── Wizard ───────────────────────────────────────────────────────────────
@@ -643,6 +687,7 @@
           {:else}
             <Button variant="primary" onclick={() => act(detail!.name, 'start')}><IconPlayerPlay size={16} stroke={2} /> {$t('vm.start')}</Button>
           {/if}
+          <Button variant="secondary" data-testid="vm-clone" onclick={openClone}><IconCopy size={16} stroke={1.9} /> {$t('vm.clone')}</Button>
         </div>
         {#if detail.running && detail.has_screen}
           <section class="vm-d-card p-3 rounded-xl bg-[var(--hv-shell-border-soft)] border border-[var(--hv-shell-border)] mb-3">
@@ -901,6 +946,40 @@
       <div class="flex gap-2.5 justify-end">
         <Button variant="secondary" onclick={() => confirmDelete = null}>{$t('common.cancel')}</Button>
         <Button variant="danger" data-testid="vm-btn-primary" onclick={() => doDelete(cd)}><IconTrash size={15} stroke={1.9} /> {$t('vm.delete')}</Button>
+      </div>
+    {/snippet}
+  </Modal>
+{/if}
+
+{#if cloneOpen && detail}
+  <Modal open={cloneOpen} title={$t('vm.clone_title')} size="md" onclose={() => (cloneOpen = false)}>
+    {#snippet icon()}<IconCopy size={18} stroke={2} />{/snippet}
+    {#snippet children()}
+      <div class="flex flex-col gap-3">
+        <p class="m-0 text-sm text-[var(--hv-shell-text)]">{$t('vm.clone_desc')}</p>
+        <label class="flex flex-col gap-1 text-c-label text-[var(--hv-shell-text-2)]" for="vm-clone-name">
+          {$t('vm.clone_name')}
+          <input id="vm-clone-name" class={textInput} bind:value={cloneName} data-testid="vm-clone-name" />
+        </label>
+        {#if cloneNameError}<span class="text-c-xs text-[var(--hv-error)]" role="alert">{cloneNameError}</span>{/if}
+        <label class="flex flex-col gap-1 text-c-label text-[var(--hv-shell-text-2)]" for="vm-clone-snapshot">
+          {$t('vm.clone_snapshot')}
+          <select id="vm-clone-snapshot" class={textInput} bind:value={cloneSnapshot} data-testid="vm-clone-snapshot">
+            <option value="">{$t('vm.clone_no_snapshot')}</option>
+            {#each detail!.snapshots as s (s.name)}
+              <option value={s.name}>{s.name}</option>
+            {/each}
+          </select>
+        </label>
+      </div>
+    {/snippet}
+    {#snippet footer()}
+      <div class="flex gap-2.5 justify-end">
+        <Button variant="secondary" onclick={() => (cloneOpen = false)}>{$t('common.cancel')}</Button>
+        <Button variant="primary" data-testid="vm-clone-submit" disabled={!cloneName.trim() || !!cloneNameError || cloneBusy} onclick={submitClone}>
+          {#if cloneBusy}<IconLoader2 class="vm-spin" size={16} stroke={2} />{:else}<IconCopy size={15} stroke={1.9} />{/if}
+          {$t('vm.clone')}
+        </Button>
       </div>
     {/snippet}
   </Modal>

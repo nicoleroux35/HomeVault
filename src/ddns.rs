@@ -74,6 +74,15 @@ pub enum DdnsProvider {
     Dynv6,
     /// An A record managed through the Cloudflare API.
     Cloudflare,
+    /// An OVHcloud DynHost entry (`username` + `token` as the DynHost
+    /// password; HTTP Basic authentication).
+    Ovh,
+    /// A Namecheap Dynamic DNS record (host + registered `domain` + DDNS
+    /// password).
+    Namecheap,
+    /// A deSEC `dedyn.io` (or custom domain) record; the token travels as
+    /// `Authorization: Token …`.
+    Desec,
     /// Any provider that accepts an HTTP GET with the address in the URL.
     Custom,
 }
@@ -83,6 +92,9 @@ impl DdnsProvider {
         DdnsProvider::DuckDns,
         DdnsProvider::Dynv6,
         DdnsProvider::Cloudflare,
+        DdnsProvider::Ovh,
+        DdnsProvider::Namecheap,
+        DdnsProvider::Desec,
         DdnsProvider::Custom,
     ];
 
@@ -91,6 +103,9 @@ impl DdnsProvider {
             DdnsProvider::DuckDns => "duckdns",
             DdnsProvider::Dynv6 => "dynv6",
             DdnsProvider::Cloudflare => "cloudflare",
+            DdnsProvider::Ovh => "ovh",
+            DdnsProvider::Namecheap => "namecheap",
+            DdnsProvider::Desec => "desec",
             DdnsProvider::Custom => "custom",
         }
     }
@@ -139,6 +154,15 @@ pub struct DdnsSettings {
     /// Provider credential. Write-only from the API's point of view.
     #[serde(default)]
     pub token: String,
+    /// `ovh` only: the DynHost login (not a secret, so it is returned).
+    #[serde(default)]
+    pub username: String,
+    /// `namecheap` only: the registered domain the host belongs to. Needed
+    /// because the update API takes the host and the domain separately, and
+    /// the public suffix cannot be inferred from the host name alone
+    /// (`home.example.co.uk`).
+    #[serde(default)]
+    pub domain: String,
     /// `custom` only: the URL to call, with `{ip}` and optionally `{host}`.
     #[serde(default)]
     pub custom_update_url: String,
@@ -161,6 +185,8 @@ impl Default for DdnsSettings {
             provider: DdnsProvider::default(),
             hostname: String::new(),
             token: String::new(),
+            username: String::new(),
+            domain: String::new(),
             custom_update_url: String::new(),
             status: DdnsStatus::Disabled,
             last_ip: None,
@@ -260,10 +286,30 @@ pub fn validate_settings(s: &DdnsSettings) -> Result<(), String> {
     if !s.enabled {
         return Ok(());
     }
-    validate_hostname(&s.hostname)?;
+    let hostname = validate_hostname(&s.hostname)?;
     match s.provider {
         DdnsProvider::Custom => {
             validate_custom_url(&s.custom_update_url)?;
+        }
+        DdnsProvider::Ovh => {
+            if s.username.trim().is_empty() {
+                return Err("OVH DynHost needs a username".to_string());
+            }
+            if s.token.trim().is_empty() {
+                return Err("OVH DynHost needs a password".to_string());
+            }
+        }
+        DdnsProvider::Namecheap => {
+            if s.domain.trim().is_empty() {
+                return Err("Namecheap needs the registered domain".to_string());
+            }
+            let domain = validate_hostname(&s.domain)?;
+            if hostname != domain && !hostname.ends_with(&format!(".{domain}")) {
+                return Err("the host name must be inside the registered domain".to_string());
+            }
+            if s.token.trim().is_empty() {
+                return Err("Namecheap needs a password".to_string());
+            }
         }
         _ if s.token.trim().is_empty() => {
             return Err(format!("{} needs an API token", s.provider.as_str()))
@@ -310,12 +356,24 @@ pub fn redacted(mut s: DdnsSettings) -> DdnsSettings {
 // Request building
 // --------------------------------------------------------------------------
 
+/// How a provider's answer proves the record was updated.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SuccessCheck {
+    /// The HTTP status is the whole answer (dynv6, Cloudflare, custom).
+    StatusOnly,
+    /// The body must equal this text (DuckDNS `OK`).
+    Exact(String),
+    /// The body must start with one of these words (`good` / `nochg`).
+    PrefixAny(Vec<String>),
+    /// The body must contain this case-insensitive fragment (Namecheap XML).
+    Contains(String),
+}
+
 /// What the provider expects for one update.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UpdateCall {
     pub request: HttpRequest,
-    /// Text a successful plain-text provider answers with, when it does.
-    pub success_marker: Option<String>,
+    pub success: SuccessCheck,
 }
 
 /// Build the update call for the configured provider and address.
@@ -342,7 +400,7 @@ pub fn build_update(settings: &DdnsSettings, ip: &str) -> Result<UpdateCall, Str
                     "https://www.duckdns.org/update?domains={sub}&token={}&ip={ip}",
                     settings.token.trim()
                 )),
-                success_marker: Some("OK".to_string()),
+                success: SuccessCheck::Exact("OK".to_string()),
             })
         }
         DdnsProvider::Dynv6 => {
@@ -356,7 +414,7 @@ pub fn build_update(settings: &DdnsSettings, ip: &str) -> Result<UpdateCall, Str
                 )),
                 // dynv6 answers "addresses updated" / "no change"; both are a
                 // success, and neither is "OK".
-                success_marker: None,
+                success: SuccessCheck::StatusOnly,
             })
         }
         DdnsProvider::Cloudflare => Ok(UpdateCall {
@@ -366,8 +424,63 @@ pub fn build_update(settings: &DdnsSettings, ip: &str) -> Result<UpdateCall, Str
                 "https://api.cloudflare.com/client/v4/zones?name={host}"
             ))
             .with_bearer(settings.token.trim()),
-            success_marker: None,
+            success: SuccessCheck::StatusOnly,
         }),
+        DdnsProvider::Ovh => {
+            let username = settings.username.trim();
+            if username.is_empty() {
+                return Err("OVH DynHost needs a username".to_string());
+            }
+            if settings.token.trim().is_empty() {
+                return Err("OVH DynHost needs a password".to_string());
+            }
+            Ok(UpdateCall {
+                request: HttpRequest::get(&format!(
+                    "https://www.ovh.com/nic/update?system=dyndns&hostname={host}&myip={ip}"
+                ))
+                .with_basic_auth(username, settings.token.trim()),
+                success: SuccessCheck::PrefixAny(vec!["good".to_string(), "nochg".to_string()]),
+            })
+        }
+        DdnsProvider::Namecheap => {
+            if settings.domain.trim().is_empty() {
+                return Err("Namecheap needs the registered domain".to_string());
+            }
+            let domain = validate_hostname(&settings.domain)?;
+            if host != domain && !host.ends_with(&format!(".{domain}")) {
+                return Err("the host name must be inside the registered domain".to_string());
+            }
+            if settings.token.trim().is_empty() {
+                return Err("Namecheap needs a password".to_string());
+            }
+            let provider_host = if host == domain {
+                "@".to_string()
+            } else {
+                host.strip_suffix(&format!(".{domain}"))
+                    .unwrap_or(&host)
+                    .to_string()
+            };
+            Ok(UpdateCall {
+                request: HttpRequest::get(&format!(
+                    "https://dynamicdns.park-your-domain.com/update?host={provider_host}&domain={domain}&password={}&ip={ip}",
+                    settings.token.trim()
+                )),
+                // Namecheap answers 200 with XML even on a refusal.
+                success: SuccessCheck::Contains("<errcount>0</errcount>".to_string()),
+            })
+        }
+        DdnsProvider::Desec => {
+            if settings.token.trim().is_empty() {
+                return Err("deSEC needs a token".to_string());
+            }
+            Ok(UpdateCall {
+                request: HttpRequest::get(&format!(
+                    "https://update.dedyn.io/nic/update?hostname={host}&myip={ip}"
+                ))
+                .with_authorization(&format!("Token {}", settings.token.trim())),
+                success: SuccessCheck::PrefixAny(vec!["good".to_string(), "nochg".to_string()]),
+            })
+        }
         DdnsProvider::Custom => {
             validate_custom_url(&settings.custom_update_url)?;
             let url = settings
@@ -377,7 +490,7 @@ pub fn build_update(settings: &DdnsSettings, ip: &str) -> Result<UpdateCall, Str
                 .replace("{host}", &host);
             Ok(UpdateCall {
                 request: HttpRequest::get(&url),
-                success_marker: None,
+                success: SuccessCheck::StatusOnly,
             })
         }
     }
@@ -393,17 +506,46 @@ pub fn interpret_response(call: &UpdateCall, response: &HttpResponse) -> Result<
         ));
     }
     let body = response.body.trim();
-    match call.success_marker.as_deref() {
+    match &call.success {
+        // The status is the whole answer.
+        SuccessCheck::StatusOnly => Ok(()),
         // Some plain-text providers answer 200 with a refusal in the body;
         // the status alone is not enough.
-        Some(marker) if !body.is_empty() && !body.eq_ignore_ascii_case(marker) => Err(format!(
+        SuccessCheck::Exact(marker) if body.is_empty() => Err(format!(
+            "the provider answered with no body; expected {marker}"
+        )),
+        SuccessCheck::Exact(marker) if !body.eq_ignore_ascii_case(marker) => Err(format!(
             "the provider refused the update: {}",
             first_line(body)
         )),
-        Some(marker) if body.is_empty() => Err(format!(
-            "the provider answered with no body; expected {marker}"
+        SuccessCheck::Exact(_) => Ok(()),
+        SuccessCheck::PrefixAny(prefixes) if body.is_empty() => Err(format!(
+            "the provider answered with no body; expected one of {}",
+            prefixes.join(" / ")
         )),
-        _ => Ok(()),
+        SuccessCheck::PrefixAny(prefixes)
+            if !prefixes.iter().any(|prefix| {
+                body.to_ascii_lowercase()
+                    .starts_with(&prefix.to_ascii_lowercase())
+            }) =>
+        {
+            Err(format!(
+                "the provider refused the update: {}",
+                first_line(body)
+            ))
+        }
+        SuccessCheck::PrefixAny(_) => Ok(()),
+        SuccessCheck::Contains(marker)
+            if !body
+                .to_ascii_lowercase()
+                .contains(&marker.to_ascii_lowercase()) =>
+        {
+            Err(format!(
+                "the provider refused the update: {}",
+                first_line(body)
+            ))
+        }
+        SuccessCheck::Contains(_) => Ok(()),
     }
 }
 
@@ -747,6 +889,7 @@ mod tests {
             DdnsProvider::DuckDns,
             DdnsProvider::Dynv6,
             DdnsProvider::Cloudflare,
+            DdnsProvider::Desec,
         ] {
             let s = DdnsSettings {
                 enabled: true,
@@ -784,7 +927,7 @@ mod tests {
             call.request.url,
             "https://www.duckdns.org/update?domains=myhome&token=secret&ip=203.0.113.7"
         );
-        assert_eq!(call.success_marker.as_deref(), Some("OK"));
+        assert_eq!(call.success, SuccessCheck::Exact("OK".to_string()));
     }
 
     #[test]
@@ -800,6 +943,144 @@ mod tests {
             call.request.url,
             "https://dynv6.com/api/update?hostname=home.dynv6.net&token=tok&ipv4=198.51.100.4"
         );
+    }
+
+    #[test]
+    fn test_ovh_uses_basic_auth_and_keeps_the_password_out_of_the_url() {
+        let s = DdnsSettings {
+            provider: DdnsProvider::Ovh,
+            hostname: "home.example.com".to_string(),
+            username: "dynhost-user".to_string(),
+            token: "ovh-password".to_string(),
+            ..base()
+        };
+        let call = build_update(&s, "198.51.100.4").unwrap();
+        assert_eq!(
+            call.request.url,
+            "https://www.ovh.com/nic/update?system=dyndns&hostname=home.example.com&myip=198.51.100.4"
+        );
+        assert!(!call.request.url.contains("ovh-password"));
+        assert_eq!(
+            call.request.basic_auth,
+            Some(("dynhost-user".to_string(), "ovh-password".to_string()))
+        );
+        assert_eq!(
+            call.success,
+            SuccessCheck::PrefixAny(vec!["good".into(), "nochg".into()])
+        );
+    }
+
+    #[test]
+    fn test_ovh_requires_a_username() {
+        let s = DdnsSettings {
+            provider: DdnsProvider::Ovh,
+            hostname: "home.example.com".to_string(),
+            token: "ovh-password".to_string(),
+            ..base()
+        };
+        assert!(validate_settings(&s).is_err());
+        assert!(build_update(&s, "198.51.100.4").is_err());
+    }
+
+    #[test]
+    fn test_namecheap_splits_the_host_from_the_registered_domain() {
+        let s = DdnsSettings {
+            provider: DdnsProvider::Namecheap,
+            hostname: "home.example.com".to_string(),
+            domain: "example.com".to_string(),
+            token: "nc-password".to_string(),
+            ..base()
+        };
+        let call = build_update(&s, "198.51.100.4").unwrap();
+        assert_eq!(
+            call.request.url,
+            "https://dynamicdns.park-your-domain.com/update?host=home&domain=example.com&password=nc-password&ip=198.51.100.4"
+        );
+        assert_eq!(
+            call.success,
+            SuccessCheck::Contains("<errcount>0</errcount>".to_string())
+        );
+
+        // The apex is spelled `@`, which is what Namecheap expects.
+        let apex = DdnsSettings {
+            hostname: "example.com".to_string(),
+            ..s
+        };
+        let call = build_update(&apex, "198.51.100.4").unwrap();
+        assert!(call.request.url.contains("host=@&domain=example.com"));
+    }
+
+    #[test]
+    fn test_namecheap_refuses_a_host_outside_the_configured_domain() {
+        let s = DdnsSettings {
+            provider: DdnsProvider::Namecheap,
+            hostname: "home.example.net".to_string(),
+            domain: "example.com".to_string(),
+            token: "nc-password".to_string(),
+            ..base()
+        };
+        assert!(validate_settings(&s).is_err());
+        assert!(build_update(&s, "198.51.100.4").is_err());
+    }
+
+    #[test]
+    fn test_desec_uses_a_token_authorization_header() {
+        let s = DdnsSettings {
+            provider: DdnsProvider::Desec,
+            hostname: "home.dedyn.io".to_string(),
+            token: "desec-token".to_string(),
+            ..base()
+        };
+        let call = build_update(&s, "198.51.100.4").unwrap();
+        assert_eq!(
+            call.request.url,
+            "https://update.dedyn.io/nic/update?hostname=home.dedyn.io&myip=198.51.100.4"
+        );
+        assert_eq!(
+            call.request.authorization.as_deref(),
+            Some("Token desec-token")
+        );
+        assert!(call.request.bearer.is_none());
+        assert!(!call.request.url.contains("desec-token"));
+    }
+
+    #[test]
+    fn test_good_and_nochg_are_both_successes() {
+        let s = DdnsSettings {
+            provider: DdnsProvider::Desec,
+            hostname: "home.dedyn.io".to_string(),
+            token: "desec-token".to_string(),
+            ..base()
+        };
+        let call = build_update(&s, "198.51.100.4").unwrap();
+        assert!(interpret_response(&call, &reply(200, "good 198.51.100.4")).is_ok());
+        assert!(interpret_response(&call, &reply(200, "nochg 198.51.100.4")).is_ok());
+        assert!(interpret_response(&call, &reply(200, "badauth")).is_err());
+    }
+
+    #[test]
+    fn test_namecheap_refusal_is_detected_in_a_200_xml_body() {
+        let s = DdnsSettings {
+            provider: DdnsProvider::Namecheap,
+            hostname: "home.example.com".to_string(),
+            domain: "example.com".to_string(),
+            token: "nc-password".to_string(),
+            ..base()
+        };
+        let call = build_update(&s, "198.51.100.4").unwrap();
+        assert!(interpret_response(
+            &call,
+            &reply(
+                200,
+                "<interface-response><ErrCount>0</ErrCount><Done>true</Done></interface-response>"
+            )
+        )
+        .is_ok());
+        assert!(interpret_response(
+            &call,
+            &reply(200, "<interface-response><ErrCount>1</ErrCount><errors><Err1>Invalid password</Err1></errors></interface-response>")
+        )
+        .is_err());
     }
 
     #[test]

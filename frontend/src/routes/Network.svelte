@@ -27,7 +27,7 @@
   import { cn } from '$lib/utils.js';
   import { activateOnEnterOrSpace } from '$lib/utils/activateOnEnterOrSpace';
   import WindowHeader from '$lib/components/desktop/WindowHeader.svelte';
-  import { IconPlug, IconDownload, IconLoader, IconUpload, IconWifi, IconWifiOff, IconX, IconGlobe, IconActivity, IconRadio, IconGauge, IconLink, IconSitemap, IconTrash, IconPlus } from '@tabler/icons-svelte';
+  import { IconPlug, IconDownload, IconLoader, IconUpload, IconWifi, IconWifiOff, IconX, IconGlobe, IconActivity, IconRadio, IconGauge, IconLink, IconSitemap, IconTrash, IconPlus, IconRoute } from '@tabler/icons-svelte';
   import { notificationsStore } from '$lib/stores/notifications';
 
   // ---------------------------------------------------------------------------
@@ -68,6 +68,15 @@
     members: string[];
     up: boolean;
     ipv4: string | null;
+  }
+
+  /** A saved static route as `GET /api/network/routes` answers it. */
+  interface StaticRoute {
+    destination: string;
+    via: string;
+    metric: number | null;
+    interface: string;
+    active: boolean;
   }
 
   /** A VLAN device as `GET /api/network/vlans` answers it. */
@@ -207,6 +216,21 @@
   let vlanError = $state('');
   let savingVlan = $state(false);
 
+  let routes = $state<StaticRoute[]>([]);
+  let routesAvailable = $state(true);
+  let routeDestination = $state('');
+  let routeVia = $state('');
+  let routeMetric = $state('');
+  let routeInterface = $state('');
+  let routeError = $state('');
+  let savingRoute = $state(false);
+
+  $effect(() => {
+    if (!routeInterface && interfaces.length > 0) {
+      routeInterface = interfaces[0].name;
+    }
+  });
+
   async function loadBonds() {
     const response = await api.getNetworkBonds();
     if (response.success && response.data) {
@@ -301,6 +325,55 @@
     notifySuccess($t('network.vlan_deleted'));
   }
 
+  async function loadRoutes() {
+    const response = await api.getNetworkRoutes();
+    if (response.success && response.data) {
+      routes = response.data.routes || [];
+      routesAvailable = response.data.available !== false;
+    }
+  }
+
+  async function createRoute() {
+    routeError = '';
+    const metricText = routeMetric.trim();
+    const metric = metricText ? Number(metricText) : undefined;
+    if (metricText && (!Number.isInteger(metric) || metric! < 0 || metric! > 65535)) {
+      routeError = $t('network.route_bad_metric');
+      return;
+    }
+    savingRoute = true;
+    const response = await api.addNetworkRoute({
+      destination: routeDestination.trim(),
+      via: routeVia.trim(),
+      ...(metric === undefined ? {} : { metric }),
+      interface: routeInterface,
+    });
+    savingRoute = false;
+    if (!response.success) {
+      routeError = response.message || $t('network.route_create_failed');
+      return;
+    }
+    routeDestination = '';
+    routeVia = '';
+    routeMetric = '';
+    await loadRoutes();
+    notifySuccess($t('network.route_created'));
+  }
+
+  async function deleteRoute(route: StaticRoute) {
+    if (!(await dlg.ask(translate('network.route_delete_confirm', { destination: route.destination }), { danger: true }))) return;
+    const response = await api.deleteNetworkRoute({
+      destination: route.destination,
+      interface: route.interface,
+    });
+    if (!response.success) {
+      notifyNetworkError(response.message || $t('network.route_delete_failed'));
+      return;
+    }
+    await loadRoutes();
+    notifySuccess($t('network.route_deleted'));
+  }
+
   function notifyNetworkError(message: string) {
     notificationsStore.add({ title: $t('network.title'), message, type: 'error' });
   }
@@ -312,6 +385,7 @@
       loadConnectionSummary(),
       loadBonds(),
       loadVlans(),
+      loadRoutes(),
     ]);
   }
 
@@ -322,6 +396,7 @@
       loadConnectionSummary(),
       loadBonds(),
       loadVlans(),
+      loadRoutes(),
     ]);
   }
 
@@ -820,6 +895,65 @@
                 <Button variant="primary" size="sm" onclick={createVlan} disabled={savingVlan} data-testid="network-vlan-create">
                   <IconPlus size={15} />
                   <span>{savingVlan ? $t('network.vlan_creating') : $t('network.vlan_create')}</span>
+                </Button>
+              </div>
+            {/if}
+          </div>
+
+          <!-- Static routes -->
+          <div data-testid="network-routes-card" class="rounded-2xl bg-[var(--hv-shell-card)] border border-[var(--hv-shell-border)] shadow-[var(--hv-shell-shadow-card)] p-4">
+            <div class="flex items-center gap-3 mb-3">
+              <span class="grid place-items-center w-11 h-11 rounded-xl flex-none bg-[var(--hv-success-bg)] text-[var(--hv-primary)]"><IconRoute size={20} /></span>
+              <div class="min-w-0">
+                <div class="text-sm font-bold text-[var(--hv-shell-text-strong)]">{$t('network.routes')}</div>
+                <div class="text-xs text-[var(--hv-shell-text-2)]">{$t('network.routes_hint')}</div>
+              </div>
+            </div>
+
+            {#if !routesAvailable}
+              <p class="text-xs text-[var(--hv-error)]" role="alert" data-testid="network-routes-unavailable">{$t('network.routes_unavailable')}</p>
+            {:else}
+              {#if routes.length > 0}
+                <ul class="flex flex-col gap-2 mb-4">
+                  {#each routes as route (route.destination)}
+                    <li data-testid="network-route-row" class="flex items-center justify-between gap-2 text-sm">
+                      <span class="min-w-0">
+                        <span class="font-semibold font-[family-name:var(--hv-font-mono)] text-[var(--hv-shell-text-strong)]">{route.destination}</span>
+                        <span class="text-[var(--hv-shell-text-2)]"> · {$t('network.route_via')} {route.via} · {route.interface}{#if route.metric != null} · {$t('network.route_metric')} {route.metric}{/if}{#if !route.active} · {$t('network.route_inactive')}{/if}</span>
+                      </span>
+                      <button type="button" class="hv-ic is-danger" data-testid="network-route-delete" aria-label={translate('network.route_delete', { destination: route.destination })} onclick={() => deleteRoute(route)}><IconTrash size={15} /></button>
+                    </li>
+                  {/each}
+                </ul>
+              {:else}
+                <p class="text-sm text-[var(--hv-shell-text-2)] mb-4">{$t('network.no_route')}</p>
+              {/if}
+
+              <div class="flex flex-col gap-3">
+                <div>
+                  <label class="block text-xs font-semibold text-[var(--hv-shell-text-2)] mb-1" for="route-destination">{$t('network.route_destination')}</label>
+                  <input id="route-destination" data-testid="network-route-destination" class="w-full h-9 px-3 rounded-lg border border-[var(--hv-shell-border)] bg-[var(--hv-shell-glass)] text-c-base" bind:value={routeDestination} placeholder="192.168.20.0/24" />
+                </div>
+                <div>
+                  <label class="block text-xs font-semibold text-[var(--hv-shell-text-2)] mb-1" for="route-via">{$t('network.route_via')}</label>
+                  <input id="route-via" data-testid="network-route-via" class="w-full h-9 px-3 rounded-lg border border-[var(--hv-shell-border)] bg-[var(--hv-shell-glass)] text-c-base" bind:value={routeVia} placeholder="192.168.1.1" />
+                </div>
+                <div>
+                  <label class="block text-xs font-semibold text-[var(--hv-shell-text-2)] mb-1" for="route-interface">{$t('network.route_interface')}</label>
+                  <select id="route-interface" data-testid="network-route-interface" class="w-full h-9 px-3 rounded-lg border border-[var(--hv-shell-border)] bg-[var(--hv-shell-glass)] text-c-base" bind:value={routeInterface}>
+                    {#each interfaces as iface (iface.name)}<option value={iface.name}>{iface.name}</option>{/each}
+                  </select>
+                </div>
+                <div>
+                  <label class="block text-xs font-semibold text-[var(--hv-shell-text-2)] mb-1" for="route-metric">{$t('network.route_metric')}</label>
+                  <input id="route-metric" data-testid="network-route-metric" type="number" min="0" max="65535" class="w-full h-9 px-3 rounded-lg border border-[var(--hv-shell-border)] bg-[var(--hv-shell-glass)] text-c-base" bind:value={routeMetric} placeholder={$t('network.route_metric_optional')} />
+                </div>
+                {#if routeError}
+                  <p class="text-xs text-[var(--hv-error)]" role="alert" data-testid="network-route-error">{routeError}</p>
+                {/if}
+                <Button variant="primary" size="sm" onclick={createRoute} disabled={savingRoute || !routeDestination.trim() || !routeVia.trim() || !routeInterface} data-testid="network-route-create">
+                  <IconPlus size={15} />
+                  <span>{savingRoute ? $t('network.route_creating') : $t('network.route_create')}</span>
                 </Button>
               </div>
             {/if}

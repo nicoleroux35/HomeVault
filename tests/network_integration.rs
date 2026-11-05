@@ -32,6 +32,7 @@
 //!   - POST /api/network/wifi/disconnect
 //!   - GET|POST /api/network/bonds, DELETE /api/network/bonds/{name}
 //!   - GET|POST /api/network/vlans, DELETE /api/network/vlans/{name}
+//!   - GET|POST|DELETE /api/network/routes (static routes)
 //!   - GET  /api/network/diagnostics
 //!   - GET  /api/network/summary
 //!   - GET  /api/network/services
@@ -75,7 +76,8 @@ use homevault::handlers::{
         handle_network_bond_create, handle_network_bond_delete, handle_network_bonds_list,
         handle_network_diagnostics, handle_network_interface_config,
         handle_network_interface_config_update, handle_network_interface_get,
-        handle_network_interface_state, handle_network_interfaces, handle_network_services,
+        handle_network_interface_state, handle_network_interfaces, handle_network_route_add,
+        handle_network_route_delete, handle_network_routes_list, handle_network_services,
         handle_network_summary, handle_network_vlan_create, handle_network_vlan_delete,
         handle_network_vlans_list, handle_network_wifi_connect, handle_network_wifi_disconnect,
         handle_network_wifi_scan, handle_network_wifi_status, handle_public_ip,
@@ -176,6 +178,12 @@ fn network_router(state: Arc<AppState>) -> Router {
         .route(
             "/api/network/vlans/{name}",
             axum::routing::delete(handle_network_vlan_delete),
+        )
+        .route(
+            "/api/network/routes",
+            get(handle_network_routes_list)
+                .post(handle_network_route_add)
+                .delete(handle_network_route_delete),
         )
         .route("/api/network/diagnostics", get(handle_network_diagnostics))
         .route("/api/network/summary", get(handle_network_summary))
@@ -931,6 +939,83 @@ async fn test_vlan_endpoints_require_session_and_validate_the_id() {
             "the refusal must state the range: {body}"
         );
     }
+}
+
+#[tokio::test]
+async fn test_static_route_endpoints_require_session_and_admin_and_validate() {
+    let (state, _tmp, _guard) = setup_state().await;
+    create_test_user(&state, "admin", "AdminPass123!", 2).await;
+    create_test_user(&state, "member", "MemberPass123!", 1).await;
+    let mut router = network_router(state.clone());
+    let admin = login(&mut router, "admin", "AdminPass123!").await;
+    let member = login(&mut router, "member", "MemberPass123!").await;
+
+    // Reads are session-level; mutations are admin-level.
+    let (status, _) = send(&mut router, Method::GET, "/api/network/routes", None, None).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+
+    let (status, body) = send(
+        &mut router,
+        Method::GET,
+        "/api/network/routes",
+        Some(&member),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(body["data"]["available"].is_boolean(), "{body}");
+    assert!(body["data"]["routes"].is_array(), "{body}");
+
+    let (status, body) = send(
+        &mut router,
+        Method::POST,
+        "/api/network/routes",
+        Some(&member),
+        Some(json!({
+            "destination": "192.168.20.0/24",
+            "via": "192.168.1.1",
+            "interface": "eth0"
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+
+    // Everything below must be refused before `ip route` runs. Skip only on a
+    // host without iproute2, where the endpoint honestly answers 503 first.
+    if !homevault::static_routes::ip_available() {
+        return;
+    }
+
+    for bad in [
+        json!({"destination": "not-a-network", "via": "192.168.1.1", "interface": "eth0"}),
+        json!({"destination": "0.0.0.0/0", "via": "192.168.1.1", "interface": "eth0"}),
+        json!({"destination": "192.168.20.0/24", "via": "2001:db8::1", "interface": "eth0"}),
+        json!({"destination": "192.168.20.0/24", "via": "192.168.1.1", "interface": "no-such-iface"}),
+        json!({"destination": "192.168.20.0/24", "via": "192.168.1.1", "interface": "eth0", "metric": 70000}),
+    ] {
+        let (status, body) = send(
+            &mut router,
+            Method::POST,
+            "/api/network/routes",
+            Some(&admin),
+            Some(bad.clone()),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{bad}: {body}");
+        assert_eq!(body["success"], false, "{bad}: {body}");
+    }
+
+    // Removing something that was never saved is a clean refusal.
+    let (status, body) = send(
+        &mut router,
+        Method::DELETE,
+        "/api/network/routes",
+        Some(&admin),
+        Some(json!({"destination": "192.168.20.0/24", "interface": "eth0"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert_eq!(body["success"], false);
 }
 
 #[tokio::test]

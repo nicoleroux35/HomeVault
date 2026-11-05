@@ -39,8 +39,14 @@
   let lanAddress = $state('');
   let location = $state('');
   let contact = $state('');
+  let version = $state<'v2c' | 'v3'>('v2c');
   let community = $state('');
   let hasCommunity = $state(false);
+  let v3Username = $state('homevault');
+  let v3AuthSecret = $state('');
+  let v3PrivSecret = $state('');
+  let hasV3Auth = $state(false);
+  let hasV3Priv = $state(false);
   let serving = $state(false);
   let candidates = $state<string[]>([]);
 
@@ -55,7 +61,11 @@
       lanAddress = d.lan_address || '';
       location = d.location || '';
       contact = d.contact || '';
+      version = d.version === 'v3' ? 'v3' : 'v2c';
       hasCommunity = !!d.has_community;
+      v3Username = d.v3_username || 'homevault';
+      hasV3Auth = !!d.has_v3_auth_secret;
+      hasV3Priv = !!d.has_v3_priv_secret;
       serving = !!d.serving;
       candidates = (d.lan_candidates as string[]) || [];
       if (!lanAddress && candidates.length > 0) lanAddress = candidates[0];
@@ -69,9 +79,13 @@
       enabled,
       scope,
       lan_address: lanAddress || undefined,
-      // Only send the community when the admin typed one: an empty field means
-      // "keep the current one".
+      version,
+      // Only send a secret when the admin typed one: an empty field means
+      // "keep the current one", so a secret is never round-tripped.
       community: community.trim() ? community.trim() : undefined,
+      v3_username: version === 'v3' ? v3Username.trim() : undefined,
+      v3_auth_secret: version === 'v3' && v3AuthSecret.trim() ? v3AuthSecret.trim() : undefined,
+      v3_priv_secret: version === 'v3' && v3PrivSecret.trim() ? v3PrivSecret.trim() : undefined,
       location,
       contact,
     });
@@ -81,6 +95,8 @@
       return;
     }
     community = '';
+    v3AuthSecret = '';
+    v3PrivSecret = '';
     await load();
     notifySuccess('settings.snmp_agent_saved');
   }
@@ -133,17 +149,69 @@
           {/if}
 
           <div class="settings-field flex flex-col gap-1.5">
-            <label class={settingsRowLabel} for="snmp-agent-community">{translate('settings.snmp_agent_community')}</label>
-            <input
-              id="snmp-agent-community"
-              data-testid="snmp-agent-community"
-              class={settingsInput}
-              bind:value={community}
-              autocomplete="new-password"
-              placeholder={hasCommunity ? translate('settings.snmp_agent_community_keep') : translate('settings.snmp_agent_community_generate')}
-            />
-            <p class={settingsHint}>{translate('settings.snmp_agent_community_hint')}</p>
+            <label class={settingsRowLabel} for="snmp-agent-version">{translate('settings.snmp_agent_version')}</label>
+            <select id="snmp-agent-version" data-testid="snmp-agent-version" class={settingsSelect} bind:value={version}>
+              <option value="v2c">{translate('settings.snmp_agent_version_v2c')}</option>
+              <option value="v3">{translate('settings.snmp_agent_version_v3')}</option>
+            </select>
+            <p class={settingsHint}>{translate('settings.snmp_agent_version_hint')}</p>
           </div>
+
+          {#if version === 'v2c'}
+            <div class="settings-field flex flex-col gap-1.5">
+              <label class={settingsRowLabel} for="snmp-agent-community">{translate('settings.snmp_agent_community')}</label>
+              <input
+                id="snmp-agent-community"
+                data-testid="snmp-agent-community"
+                class={settingsInput}
+                bind:value={community}
+                autocomplete="new-password"
+                placeholder={hasCommunity ? translate('settings.snmp_agent_community_keep') : translate('settings.snmp_agent_community_generate')}
+              />
+              <p class={settingsHint}>{translate('settings.snmp_agent_community_hint')}</p>
+            </div>
+          {:else}
+            <div class="settings-field flex flex-col gap-1.5">
+              <label class={settingsRowLabel} for="snmp-agent-v3-username">{translate('settings.snmp_agent_v3_username')}</label>
+              <input
+                id="snmp-agent-v3-username"
+                data-testid="snmp-agent-v3-username"
+                class={settingsInput}
+                bind:value={v3Username}
+                maxlength="32"
+                autocomplete="off"
+              />
+              <p class={settingsHint}>{translate('settings.snmp_agent_v3_username_hint')}</p>
+            </div>
+
+            <div class="settings-field flex flex-col gap-1.5">
+              <label class={settingsRowLabel} for="snmp-agent-v3-auth">{translate('settings.snmp_agent_v3_auth')}</label>
+              <input
+                id="snmp-agent-v3-auth"
+                data-testid="snmp-agent-v3-auth"
+                class={settingsInput}
+                type="password"
+                bind:value={v3AuthSecret}
+                autocomplete="new-password"
+                placeholder={hasV3Auth ? translate('settings.snmp_agent_v3_keep') : translate('settings.snmp_agent_v3_generate')}
+              />
+              <p class={settingsHint}>{translate('settings.snmp_agent_v3_secret_hint')}</p>
+            </div>
+
+            <div class="settings-field flex flex-col gap-1.5">
+              <label class={settingsRowLabel} for="snmp-agent-v3-priv">{translate('settings.snmp_agent_v3_priv')}</label>
+              <input
+                id="snmp-agent-v3-priv"
+                data-testid="snmp-agent-v3-priv"
+                class={settingsInput}
+                type="password"
+                bind:value={v3PrivSecret}
+                autocomplete="new-password"
+                placeholder={hasV3Priv ? translate('settings.snmp_agent_v3_keep') : translate('settings.snmp_agent_v3_generate')}
+              />
+              <p class={settingsHint}>{translate('settings.snmp_agent_v3_secret_hint')}</p>
+            </div>
+          {/if}
 
           <div class="settings-field flex flex-col gap-1.5">
             <label class={settingsRowLabel} for="snmp-agent-location">{translate('settings.snmp_agent_location')}</label>

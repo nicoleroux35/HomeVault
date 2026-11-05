@@ -29,6 +29,9 @@ use uuid::Uuid;
 pub struct SnapshotSchedule {
     pub id: String,
     pub pool: String,
+    /// Optional share target. `None` keeps the historical pool-wide schedule.
+    pub share: Option<String>,
+    pub share_type: Option<String>,
     pub enabled: bool,
     pub cron: String,
     pub prefix: String,
@@ -51,6 +54,8 @@ pub struct SnapshotSchedule {
 struct SnapshotScheduleRow {
     id: String,
     pool: String,
+    share: Option<String>,
+    share_type: Option<String>,
     enabled: i64,
     cron: String,
     prefix: String,
@@ -73,6 +78,10 @@ impl From<SnapshotScheduleRow> for SnapshotSchedule {
         Self {
             id: r.id,
             pool: r.pool,
+            // Empty strings are normalised to `None` so a row that predates
+            // the columns and one written as pool-wide behave identically.
+            share: r.share.filter(|s| !s.is_empty()),
+            share_type: r.share_type.filter(|s| !s.is_empty()),
             enabled: r.enabled != 0,
             cron: r.cron,
             prefix: r.prefix,
@@ -103,9 +112,9 @@ impl SnapshotScheduleRepository {
 
     pub async fn list(&self) -> Result<Vec<SnapshotSchedule>, sqlx::Error> {
         sqlx::query_as::<_, SnapshotScheduleRow>(
-            "SELECT id, pool, enabled, cron, prefix, recursive, gfs_hourly, gfs_daily, \
-             gfs_weekly, gfs_monthly, gfs_yearly, last_run_at, last_status, last_error, \
-             next_run_at, created_at, updated_at \
+            "SELECT id, pool, share, share_type, enabled, cron, prefix, recursive, gfs_hourly, \
+             gfs_daily, gfs_weekly, gfs_monthly, gfs_yearly, last_run_at, last_status, \
+             last_error, next_run_at, created_at, updated_at \
              FROM snapshot_schedules ORDER BY pool, prefix",
         )
         .fetch_all(self.pool.as_ref())
@@ -115,9 +124,9 @@ impl SnapshotScheduleRepository {
 
     pub async fn list_enabled(&self) -> Result<Vec<SnapshotSchedule>, sqlx::Error> {
         sqlx::query_as::<_, SnapshotScheduleRow>(
-            "SELECT id, pool, enabled, cron, prefix, recursive, gfs_hourly, gfs_daily, \
-             gfs_weekly, gfs_monthly, gfs_yearly, last_run_at, last_status, last_error, \
-             next_run_at, created_at, updated_at \
+            "SELECT id, pool, share, share_type, enabled, cron, prefix, recursive, gfs_hourly, \
+             gfs_daily, gfs_weekly, gfs_monthly, gfs_yearly, last_run_at, last_status, \
+             last_error, next_run_at, created_at, updated_at \
              FROM snapshot_schedules WHERE enabled = 1 ORDER BY pool",
         )
         .fetch_all(self.pool.as_ref())
@@ -127,9 +136,9 @@ impl SnapshotScheduleRepository {
 
     pub async fn get(&self, id: &str) -> Result<Option<SnapshotSchedule>, sqlx::Error> {
         sqlx::query_as::<_, SnapshotScheduleRow>(
-            "SELECT id, pool, enabled, cron, prefix, recursive, gfs_hourly, gfs_daily, \
-             gfs_weekly, gfs_monthly, gfs_yearly, last_run_at, last_status, last_error, \
-             next_run_at, created_at, updated_at \
+            "SELECT id, pool, share, share_type, enabled, cron, prefix, recursive, gfs_hourly, \
+             gfs_daily, gfs_weekly, gfs_monthly, gfs_yearly, last_run_at, last_status, \
+             last_error, next_run_at, created_at, updated_at \
              FROM snapshot_schedules WHERE id = ?",
         )
         .bind(id)
@@ -142,6 +151,8 @@ impl SnapshotScheduleRepository {
     pub async fn create(
         &self,
         pool: &str,
+        share: Option<&str>,
+        share_type: Option<&str>,
         cron: &str,
         prefix: &str,
         recursive: bool,
@@ -151,12 +162,14 @@ impl SnapshotScheduleRepository {
         let id = Uuid::new_v4().to_string();
         let now = Utc::now().to_rfc3339();
         sqlx::query(
-            "INSERT INTO snapshot_schedules (id, pool, enabled, cron, prefix, recursive, \
-             gfs_hourly, gfs_daily, gfs_weekly, gfs_monthly, gfs_yearly, next_run_at, \
-             created_at, updated_at) VALUES (?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO snapshot_schedules (id, pool, share, share_type, enabled, cron, prefix, \
+             recursive, gfs_hourly, gfs_daily, gfs_weekly, gfs_monthly, gfs_yearly, next_run_at, \
+             created_at, updated_at) VALUES (?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(&id)
         .bind(pool)
+        .bind(share)
+        .bind(share_type)
         .bind(cron)
         .bind(prefix)
         .bind(recursive)
@@ -178,6 +191,8 @@ impl SnapshotScheduleRepository {
         &self,
         id: &str,
         pool: &str,
+        share: Option<&str>,
+        share_type: Option<&str>,
         cron: &str,
         prefix: &str,
         recursive: bool,
@@ -187,12 +202,14 @@ impl SnapshotScheduleRepository {
     ) -> Result<(), sqlx::Error> {
         let now = Utc::now().to_rfc3339();
         sqlx::query(
-            "UPDATE snapshot_schedules SET pool = ?, cron = ?, prefix = ?, recursive = ?, \
-             enabled = ?, gfs_hourly = ?, gfs_daily = ?, gfs_weekly = ?, gfs_monthly = ?, \
-             gfs_yearly = ?, next_run_at = ?, last_status = NULL, last_error = NULL, \
-             updated_at = ? WHERE id = ?",
+            "UPDATE snapshot_schedules SET pool = ?, share = ?, share_type = ?, cron = ?, \
+             prefix = ?, recursive = ?, enabled = ?, gfs_hourly = ?, gfs_daily = ?, \
+             gfs_weekly = ?, gfs_monthly = ?, gfs_yearly = ?, next_run_at = ?, \
+             last_status = NULL, last_error = NULL, updated_at = ? WHERE id = ?",
         )
         .bind(pool)
+        .bind(share)
+        .bind(share_type)
         .bind(cron)
         .bind(prefix)
         .bind(recursive)
@@ -287,6 +304,8 @@ mod tests {
         let schedule = repo
             .create(
                 "tank",
+                None,
+                None,
                 "0 */4 * * *",
                 "hv-auto",
                 true,
@@ -311,6 +330,8 @@ mod tests {
         let s = repo
             .create(
                 "tank",
+                None,
+                None,
                 "* * * * *",
                 "hv-auto",
                 true,
@@ -323,6 +344,8 @@ mod tests {
         repo.update(
             &s.id,
             "tank",
+            None,
+            None,
             "0 3 * * *",
             "hv-auto",
             false,
@@ -344,6 +367,8 @@ mod tests {
         let s = repo
             .create(
                 "tank",
+                None,
+                None,
                 "* * * * *",
                 "hv-auto",
                 true,

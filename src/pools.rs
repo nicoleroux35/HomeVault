@@ -520,6 +520,14 @@ impl PoolService {
                 let mount_point = Self::btrfs_mount_point(name);
 
                 if let Some(ref mp) = mount_point {
+                    // `@snapshots` is mounted below the live subvolume; release
+                    // it first or the live unmount stays busy.
+                    let _ = run_timed(
+                        Command::new("sudo")
+                            .arg("umount")
+                            .arg(format!("{mp}/.snapshots")),
+                        POOL_WRITE_TIMEOUT,
+                    );
                     let _ = run_timed(
                         Command::new("sudo").arg("umount").arg(mp),
                         POOL_WRITE_TIMEOUT,
@@ -528,6 +536,7 @@ impl PoolService {
 
                 let devices = Self::get_btrfs_devices(name)?;
                 Self::remove_pool_fstab_entry(&format!("# homevault-pool:{}", name));
+                Self::remove_pool_fstab_entry(&format!("# homevault-pool-snapshots:{}", name));
 
                 for dev in &devices {
                     let _ = run_timed(
@@ -1353,7 +1362,7 @@ impl PoolService {
         Ok(())
     }
 
-    fn append_pool_fstab_entry(marker: &str, entry: &str) -> Result<(), PoolError> {
+    pub(crate) fn append_pool_fstab_entry(marker: &str, entry: &str) -> Result<(), PoolError> {
         let existing = std::fs::read_to_string("/etc/fstab").unwrap_or_default();
         if existing.lines().any(|l| l == marker) {
             return Ok(());
@@ -1373,7 +1382,7 @@ impl PoolService {
     }
 
     /// Removes the `marker` line and the entry right after it from `/etc/fstab`.
-    fn remove_pool_fstab_entry(marker: &str) {
+    pub(crate) fn remove_pool_fstab_entry(marker: &str) {
         let Ok(existing) = std::fs::read_to_string("/etc/fstab") else {
             return;
         };
@@ -1594,6 +1603,10 @@ impl PoolService {
                 String::from_utf8_lossy(&mkdir_output.stderr)
             )));
         }
+        // Mount the top-level subvolume first so `@` and `@snapshots` can be
+        // created inside it. Every new Btrfs pool uses this layout: `@` holds
+        // the live data, `@snapshots` is mounted at `<mount>/.snapshots` and
+        // holds the snapshots (P1-13 in-place rollback).
         let mount_output = run_timed(
             Command::new("sudo")
                 .arg("mount")
@@ -1607,7 +1620,76 @@ impl PoolService {
             )));
         }
 
+        for subvolume in ["@", "@snapshots"] {
+            let path = format!("{mount_point}/{subvolume}");
+            let created = run_timed(
+                Command::new("sudo")
+                    .arg("btrfs")
+                    .args(["subvolume", "create", &path]),
+                POOL_WRITE_TIMEOUT,
+            )?;
+            if !created.status.success() {
+                return Err(PoolError::CommandFailed(format!(
+                    "Pool created but the {subvolume} subvolume could not be created: {}",
+                    String::from_utf8_lossy(&created.stderr)
+                )));
+            }
+        }
+
+        // Remount the live subvolume, then mount the snapshot subvolume where
+        // the snapshot code has always expected it (`<mount>/.snapshots`).
+        let unmount = run_timed(
+            Command::new("sudo").arg("umount").arg(mount_point),
+            POOL_WRITE_TIMEOUT,
+        )?;
+        if !unmount.status.success() {
+            return Err(PoolError::CommandFailed(format!(
+                "Pool created but the temporary top-level mount could not be released: {}",
+                String::from_utf8_lossy(&unmount.stderr)
+            )));
+        }
+        let live_mount = run_timed(
+            Command::new("sudo")
+                .arg("mount")
+                .args(["-o", "subvol=@", &devices[0], mount_point]),
+            POOL_WRITE_TIMEOUT,
+        )?;
+        if !live_mount.status.success() {
+            return Err(PoolError::CommandFailed(format!(
+                "Pool created but the @ subvolume could not be mounted: {}",
+                String::from_utf8_lossy(&live_mount.stderr)
+            )));
+        }
+        let mkdir_snapshots = run_timed(
+            Command::new("sudo")
+                .arg("mkdir")
+                .args(["-p", &format!("{mount_point}/.snapshots")]),
+            POOL_QUERY_TIMEOUT,
+        )?;
+        if !mkdir_snapshots.status.success() {
+            return Err(PoolError::CommandFailed(format!(
+                "Pool created but the snapshot mount point could not be created: {}",
+                String::from_utf8_lossy(&mkdir_snapshots.stderr)
+            )));
+        }
+        let snapshots_mount = run_timed(
+            Command::new("sudo").arg("mount").args([
+                "-o",
+                "subvol=@snapshots",
+                &devices[0],
+                &format!("{mount_point}/.snapshots"),
+            ]),
+            POOL_WRITE_TIMEOUT,
+        )?;
+        if !snapshots_mount.status.success() {
+            return Err(PoolError::CommandFailed(format!(
+                "Pool created but @snapshots could not be mounted: {}",
+                String::from_utf8_lossy(&snapshots_mount.stderr)
+            )));
+        }
+
         let marker = format!("# homevault-pool:{}", name);
+        let snapshots_marker = format!("# homevault-pool-snapshots:{}", name);
         if let Ok(uuid_output) = run_timed(
             Command::new("sudo")
                 .arg("blkid")
@@ -1618,8 +1700,16 @@ impl PoolService {
                 .trim()
                 .to_string();
             if !uuid.is_empty() {
-                let fstab_line = format!("UUID={} {} btrfs defaults,nofail 0 2", uuid, mount_point);
+                let fstab_line = format!(
+                    "UUID={} {} btrfs defaults,nofail,subvol=@ 0 2",
+                    uuid, mount_point
+                );
+                let snapshots_line = format!(
+                    "UUID={} {}/.snapshots btrfs defaults,nofail,subvol=@snapshots 0 2",
+                    uuid, mount_point
+                );
                 let _ = Self::append_pool_fstab_entry(&marker, &fstab_line);
+                let _ = Self::append_pool_fstab_entry(&snapshots_marker, &snapshots_line);
             }
         }
 

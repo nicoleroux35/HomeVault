@@ -97,6 +97,7 @@ use homevault::handlers::{
         handle_encryption_lock, handle_encryption_unlock,
     },
     storage::{
+        handle_btrfs_layout_migrate, handle_btrfs_layout_status, handle_btrfs_rollback,
         handle_disk_smart_capabilities, handle_disk_smart_test_start,
         handle_disk_smart_test_status, handle_disks_list, handle_import_pool,
         handle_importable_pools_list, handle_partitions_list, handle_removable_disks_list,
@@ -176,6 +177,14 @@ fn storage_router(state: Arc<AppState>) -> Router {
         .route(
             "/api/storage/virtual-disks/{name}/grow",
             post(handle_virtual_disk_grow),
+        )
+        .route(
+            "/api/storage/virtual-disks/{name}/btrfs-layout",
+            get(handle_btrfs_layout_status).post(handle_btrfs_layout_migrate),
+        )
+        .route(
+            "/api/storage/virtual-disks/{name}/btrfs-rollback",
+            post(handle_btrfs_rollback),
         )
         .route(
             "/api/storage/importable-pools",
@@ -375,6 +384,16 @@ fn write_endpoints() -> Vec<(Method, &'static str, Option<Value>)> {
             Method::POST,
             "/api/storage/virtual-disks/ghost/grow",
             Some(json!({"device": "/dev/hv-x"})),
+        ),
+        (
+            Method::POST,
+            "/api/storage/virtual-disks/ghost/btrfs-layout",
+            None,
+        ),
+        (
+            Method::POST,
+            "/api/storage/virtual-disks/ghost/btrfs-rollback",
+            Some(json!({"snapshot": "hv-auto-20261105-120000", "confirm": true})),
         ),
         (
             Method::POST,
@@ -1077,6 +1096,76 @@ async fn test_a_finished_mover_run_releases_its_single_flight_slot() {
     .await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert!(body["data"]["job_id"].is_string(), "{body}");
+}
+
+/// P1-13 — the Btrfs layout/rollback routes are gated before any mount or
+/// subvolume command: auth first, then the confirmation/name shape, then the
+/// pool type. A missing `@` layout is reported by the service (503), never by
+/// a failed command here.
+#[tokio::test]
+async fn test_btrfs_layout_and_rollback_validate_before_any_command() {
+    let (state, _tmp, _guard) = setup_state().await;
+    let mut router = storage_router(state.clone());
+
+    let (status, _) = send(
+        &mut router,
+        Method::GET,
+        "/api/storage/virtual-disks/ghost/btrfs-layout",
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+
+    create_test_user(&state, "admin", "Password123!", 2).await;
+    let token = login(&mut router, "admin", "Password123!").await;
+
+    // Unknown pool: a clean 400, never a 500 (and no layout command).
+    let (status, body) = send(
+        &mut router,
+        Method::GET,
+        "/api/storage/virtual-disks/ghost/btrfs-layout",
+        Some(&token),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+
+    // Rollback without confirmation.
+    let (status, body) = send(
+        &mut router,
+        Method::POST,
+        "/api/storage/virtual-disks/ghost/btrfs-rollback",
+        Some(&token),
+        Some(json!({"snapshot": "hv-auto-20261105-120000", "confirm": false})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert!(
+        body["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("confirm the rollback"),
+        "{body}"
+    );
+
+    // A traversal-shaped snapshot name is refused before the pool lookup.
+    let (status, body) = send(
+        &mut router,
+        Method::POST,
+        "/api/storage/virtual-disks/ghost/btrfs-rollback",
+        Some(&token),
+        Some(json!({"snapshot": "../escape", "confirm": true})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert!(
+        body["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("Invalid snapshot name"),
+        "{body}"
+    );
 }
 
 #[tokio::test]

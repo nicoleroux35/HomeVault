@@ -25,6 +25,7 @@
 //!   GET    /api/vm/os-options
 //!   GET    /api/vm/list
 //!   POST   /api/vm/create
+//!   POST   /api/vm/{name}/clone
 //!   POST   /api/vm/console/ticket
 //!   POST   /api/vm/{name}/screen/ticket
 //!   GET    /api/vm/{name}
@@ -36,7 +37,9 @@
 //!   DELETE /api/vm/{name}/snapshots/{snap}
 //!
 //! There is no Incus Unix socket in CI, so any handler that reaches an Incus
-//! call answers `{success:false}` at HTTP 400 (`incus_err` → `json_error`).
+//! call answers `{success:false}` at HTTP **503** (`incus_err` →
+//! `json_unavailable`, the capability contract), while validation failures
+//! stay `400`.
 //! The tests that exercise the Incus boundary detect the daemon's real state
 //! via `IncusService::is_available()` and adapt (a live daemon is never asked
 //! to create a real VM — that side effect is out of scope for integration
@@ -66,8 +69,8 @@ use homevault::handlers::terminal_pty::PtyManager;
 use homevault::handlers::{
     auth::handle_login,
     vm::{
-        handle_console_ticket, handle_screen_ticket, handle_vm_available, handle_vm_config,
-        handle_vm_create, handle_vm_delete, handle_vm_get, handle_vm_iso_delete,
+        handle_console_ticket, handle_screen_ticket, handle_vm_available, handle_vm_clone,
+        handle_vm_config, handle_vm_create, handle_vm_delete, handle_vm_get, handle_vm_iso_delete,
         handle_vm_iso_download, handle_vm_isos, handle_vm_list, handle_vm_os_options,
         handle_vm_restart, handle_vm_snapshot_create, handle_vm_snapshot_delete,
         handle_vm_snapshot_restore, handle_vm_snapshots, handle_vm_start, handle_vm_stop,
@@ -127,6 +130,7 @@ fn vm_router(state: Arc<AppState>) -> Router {
         .route("/api/vm/os-options", get(handle_vm_os_options))
         .route("/api/vm/list", get(handle_vm_list))
         .route("/api/vm/create", post(handle_vm_create))
+        .route("/api/vm/{name}/clone", post(handle_vm_clone))
         .route("/api/vm/console/ticket", post(handle_console_ticket))
         .route("/api/vm/{name}/screen/ticket", post(handle_screen_ticket))
         .route("/api/vm/isos", get(handle_vm_isos))
@@ -234,6 +238,11 @@ fn all_endpoints() -> Vec<(Method, &'static str, Option<Value>)> {
             Method::POST,
             "/api/vm/create",
             Some(json!({"name":"web","os":"ubuntu-24.04","password":"secret12"})),
+        ),
+        (
+            Method::POST,
+            "/api/vm/web/clone",
+            Some(json!({"name":"web-copy"})),
         ),
         (
             Method::POST,
@@ -370,8 +379,8 @@ async fn list_handles_incus_cleanly() {
         assert_eq!(status, StatusCode::OK);
         assert_eq!(body["success"], true);
     } else {
-        // Incus down → clean 400 with a friendly message
-        assert_eq!(status, StatusCode::BAD_REQUEST);
+        // Incus down → clean 503 with a friendly message
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
         assert_eq!(body["success"], false);
         let msg = body["message"].as_str().unwrap_or("");
         assert!(
@@ -520,8 +529,77 @@ async fn create_with_valid_input_then_hits_incus_unavailable() {
     )
     .await;
     // Passed every validation gate, then Incus is missing.
-    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
     assert_eq!(body["success"], false);
+}
+
+// ── Clone validation (before any Incus call) ─────────────────────────────
+
+#[tokio::test]
+async fn clone_rejects_a_bad_name_before_touching_incus() {
+    let (state, _tmp, _guard) = setup_state().await;
+    let mut router = vm_router(state.clone());
+    let token = admin_token(&state, &mut router).await;
+
+    for bad in ["", "bad name", "UPPER", "a--b", "-copy"] {
+        let (status, body) = send(
+            &mut router,
+            Method::POST,
+            "/api/vm/web/clone",
+            Some(&token),
+            Some(json!({"name": bad})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{bad:?}: {body}");
+        assert_eq!(body["success"], false);
+    }
+
+    let (status, body) = send(
+        &mut router,
+        Method::POST,
+        "/api/vm/web/clone",
+        Some(&token),
+        Some(json!({"name": "web"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert!(body["message"].as_str().unwrap().contains("different name"));
+
+    let (status, body) = send(
+        &mut router,
+        Method::POST,
+        "/api/vm/web/clone",
+        Some(&token),
+        Some(json!({"name": "web-copy", "snapshot": "../bad"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert!(body["message"].as_str().unwrap().contains("snapshot"));
+}
+
+#[tokio::test]
+async fn clone_with_valid_input_answers_503_without_incus() {
+    let (state, _tmp, _guard) = setup_state().await;
+    let mut router = vm_router(state.clone());
+    let token = admin_token(&state, &mut router).await;
+    if IncusService::is_available().await {
+        return; // never clone a real machine in an integration test
+    }
+    let (status, body) = send(
+        &mut router,
+        Method::POST,
+        "/api/vm/web/clone",
+        Some(&token),
+        Some(json!({"name": "web-copy", "snapshot": "before-upgrade"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{body}");
+    assert_eq!(body["success"], false);
+    assert!(body["message"]
+        .as_str()
+        .unwrap()
+        .to_lowercase()
+        .contains("incus"));
 }
 
 // ── ISO install validation (before any Incus call) ───────────────────────
@@ -692,8 +770,8 @@ async fn create_iso_with_real_file_reaches_incus() {
     )
     .await;
     // Every validation gate passed (path, extension, size, free display),
-    // then Incus is missing → clean failure.
-    assert_eq!(status, StatusCode::BAD_REQUEST);
+    // then Incus is missing → named capability failure.
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
     assert_eq!(body["success"], false);
 }
 
@@ -711,7 +789,7 @@ async fn screen_ticket_needs_a_screen_and_a_running_machine() {
         None,
     )
     .await;
-    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
     assert_eq!(body["success"], false);
     assert!(body["data"]["ticket"].is_null());
 }
@@ -781,7 +859,7 @@ async fn console_ticket_needs_a_running_machine() {
         Some(json!({"name": "web"})),
     )
     .await;
-    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
     assert_eq!(body["success"], false);
     assert!(body["data"]["ticket"].is_null());
 }

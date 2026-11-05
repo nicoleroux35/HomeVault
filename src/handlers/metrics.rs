@@ -20,7 +20,7 @@
 
 //! Metrics history endpoints (read-only, auth).
 
-use crate::handlers::admin_guard::require_auth;
+use crate::handlers::admin_guard::{require_admin, require_auth};
 use crate::handlers::AppState;
 use crate::metrics::{bucket_samples, MetricsRange, RawSample};
 use crate::utils::ResponseHelper;
@@ -31,6 +31,62 @@ use axum::{
 };
 use serde::Deserialize;
 use std::sync::Arc;
+
+#[derive(Debug, Deserialize)]
+pub struct RetentionUpdate {
+    pub retention_days: i64,
+}
+
+fn retention_payload(days: i64) -> serde_json::Value {
+    serde_json::json!({
+        "retention_days": days,
+        "default_days": crate::metrics::DEFAULT_RETENTION_DAYS,
+        "min_days": crate::metrics::MIN_RETENTION_DAYS,
+        "max_days": crate::metrics::MAX_RETENTION_DAYS,
+    })
+}
+
+/// GET /api/metrics/settings — the stored retention (readable by any session).
+pub async fn handle_metrics_settings_get(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Response {
+    if let Err(response) = require_auth(&state, &headers).await {
+        return response;
+    }
+    match crate::metrics::get_retention_days(state.db.pool().as_ref()).await {
+        Ok(days) => ResponseHelper::json_success(retention_payload(days)),
+        Err(e) => ResponseHelper::json_internal_error(format!(
+            "Failed to read the metrics retention: {e}"
+        )),
+    }
+}
+
+/// PUT /api/metrics/settings — admin; `retention_days` in 1..=365.
+pub async fn handle_metrics_settings_update(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    axum::Json(body): axum::Json<RetentionUpdate>,
+) -> Response {
+    if let Err(response) = require_admin(&state, &headers).await {
+        return response;
+    }
+    if body.retention_days < crate::metrics::MIN_RETENTION_DAYS
+        || body.retention_days > crate::metrics::MAX_RETENTION_DAYS
+    {
+        return ResponseHelper::json_error(format!(
+            "retention_days must be between {} and {}",
+            crate::metrics::MIN_RETENTION_DAYS,
+            crate::metrics::MAX_RETENTION_DAYS
+        ));
+    }
+    match crate::metrics::set_retention_days(state.db.pool().as_ref(), body.retention_days).await {
+        Ok(()) => ResponseHelper::json_success(retention_payload(body.retention_days)),
+        Err(e) => ResponseHelper::json_internal_error(format!(
+            "Failed to save the metrics retention: {e}"
+        )),
+    }
+}
 
 #[derive(Debug, Deserialize)]
 pub struct HistoryQuery {

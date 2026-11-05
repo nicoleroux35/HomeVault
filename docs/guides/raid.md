@@ -2,8 +2,8 @@
 
 **Purpose:** A **creation-only** wizard that turns physical disks into one
 **"virtual disk"**. Everything else — listing, verifying/scrubbing, rebuilding,
-**growing onto a new disk**, destroying — lives in the [Storage](./storage.md)
-app's "Virtual disks" tab.
+**growing onto a new disk**, **changing the RAID level in place**, destroying —
+lives in the [Storage](./storage.md) app's "Virtual disks" tab.
 
 > The RAID/Storage split was **inverted** on 2026-09-06. The words
 > "pool"/"grappe"/"array" are out of the RAID UI/i18n; RAID never lists or
@@ -52,19 +52,28 @@ app's "Virtual disks" tab.
   (`compression=lz4`, `atime=off`, `acltype=posixacl`, `xattr=sa`) so the
   shares' ACL tooling works identically. **raid10 is a stripe of mirrors** (one
   `mirror` vdev per device pair) — it used to mis-map to a single raidz3
-  (2026-10-19 fixed).
+  (2026-10-19 fixed). **`raidz3` (P1-9, 2026-11-05)** is the triple-parity vdev:
+  ZFS-only, four-disk minimum, and the wizard pins the filesystem to ZFS when
+  it is selected. The API names the real problem (`RAID Z3 is a ZFS layout`)
+  instead of failing later at device inspection.
 
-Extra mdadm options (`ext4`/`xfs` techs only): `spares` attaches extra checked
-disks as **hot spares** (`--spare-devices`) and `allow_missing` starts the
-array **deliberately degraded** — mdadm `missing` placeholders fill up to the
-level's budget. That budget is **one table** (`max_missing_for_level`) read by
-both the API gate and the job, so the two can never disagree: raid1/5 → 1,
-raid6 → 2, and **raid0/raid10 → 0**. The raid10 refusal is deliberate, not an
-oversight: mdadm only places a `missing` slot in RAID 10 with an explicit
-`--layout`, and the slot placement then depends on the layout it picks — the
-wizard never showed that geometry, so the request is refused with that reason
-in the message. Native ZFS/Btrfs pools strip every disk they get: spares and
-missing are rejected for those technologies.
+Extra options:
+- `spares` attaches extra checked disks as **hot spares**: mdadm
+  `--spare-devices` for ext4/xfs, or a native ZFS `spare` vdev group
+  (`zpool create tank raidz2 d1..d4 spare s1…`). zpool starts a resilver
+  automatically when a member fails. **Btrfs has no hot-spare role** — an extra
+  disk is either a full member or nothing — so it is refused with the
+  alternative named (add the disk later, or keep it as a separate spare
+  disk/pool). Spares are never allowed on raid0 (no redundancy).
+- `allow_missing` starts the array **deliberately degraded** — mdadm `missing`
+  placeholders fill up to the level's budget. That budget is **one table**
+  (`max_missing_for_level`) read by both the API gate and the job, so the two
+  can never disagree: raid1/5 → 1, raid6 → 2, and **raid0/raid10 → 0**. The
+  raid10 refusal is deliberate, not an oversight: mdadm only places a `missing`
+  slot in RAID 10 with an explicit `--layout`, and the slot placement then
+  depends on the layout it picks — the wizard never showed that geometry, so
+  the request is refused with that reason in the message. ZFS has no
+  missing-member create and refuses it too.
 
 Progress milestones flow through the `CreateProgress` trait into the job
 (validation → array creation → resync percent → format → mount/persist →
@@ -166,6 +175,57 @@ per disk, and only when the tree itself doesn't already disqualify it.
 | `GET /storage/raid/devices` | auth | candidate physical disks (`inUse`, `reason`, `smart_status`) |
 | `POST /storage/raid` | admin | create one virtual disk as a background job → `{message, job_id}`; body takes `spares?` / `allow_missing?`; device-is-free + name-collision + request-shape gates enforced server-side |
 | `POST /storage/virtual-disks/{name}/grow` | admin | mdadm only: `--add` the device then `--grow --raid-devices N+1` (`grow_raid`); raid0/raid10 refused; the reshape runs in the background |
+| `GET /storage/virtual-disks/{name}/level-options` | auth | `raid_level_plan`: `mdadm --detail` is read for the current level/member count and every target is returned with `allowed` + `reason` (refused targets carry the sentence the UI shows) |
+| `POST /storage/virtual-disks/{name}/migrate-level` | admin | mdadm only: `{ target_level, backup_confirmed }` → `mdadm --grow --level N --backup-file <off-array path>` (`migrate_raid_level`); only the documented transitions below; `backup_confirmed` is mandatory; the reshape runs in the background |
+
+### In-place RAID level migration (P1-11, 2026-11-05)
+
+An existing mdadm array can change level without being recreated, through
+Storage's "Change RAID level" action. Two gates run **before** any command:
+
+1. **The transition matrix.** mdadm's GROW MODE documents only these
+   conversions, and HomeVault exposes the subset whose two ends the wizard can
+   create:
+
+   | From | To | Notes |
+   |---|---|---|
+   | RAID 0 | RAID 5 | needs at least 3 members |
+   | RAID 0 | RAID 10 | even member count, at least 4 |
+   | RAID 1 | RAID 5 | needs at least 3 members |
+   | RAID 5 | RAID 6 | needs at least 4 members |
+   | RAID 6 | RAID 5 | same member count |
+
+   Everything else is refused with the reason, not attempted: RAID 0 → RAID 1
+   changes the on-disk layout and requires a copy; RAID 0 → RAID 6 and
+   RAID 1 → RAID 6 are two steps (through RAID 5). The pure matrix is
+   `raid_level_change_refusal`; the current member count from
+   `mdadm --detail` decides whether the target minimum is met (a RAID 1 of two
+   disks cannot become RAID 5 until a third disk is added — the API says "add
+   a disk first").
+2. **The backup acknowledgement.** `backup_confirmed` must be `true`: a level
+   change rewrites the first stripes in a critical section, and mdadm requires
+   an **off-array** `--backup-file`. HomeVault derives that file under
+   `{DATA_DIRECTORY}/raid-backups/` from a slug of the array name (separators,
+   `.` and `..` are stripped, so a hostile name cannot escape the directory),
+   creates the directory, and deletes a partial file if mdadm refuses. When
+   that directory would sit on the array being changed (`findmnt` reports the
+   array's mount point and it contains `DATA_DIRECTORY`), the change is refused
+   with that reason — a backup on the device being rewritten cannot restore it.
+   Without the acknowledgement the endpoint answers `400` and runs nothing.
+
+The command is `sudo mdadm --grow <dev> --level <n> --backup-file <path>` under
+`MDADM_TIMEOUT`. An array already reshaping is refused (`Reshape Status` or
+`State: … reshaping` from `mdadm --detail`) rather than queued. The reshape
+continues in the background; Storage's existing "Check status" shows it as in
+progress. A host without mdadm answers `503` (`json_unavailable`), never a fake
+success.
+
+The Storage card's dialog lists only the allowed targets and, behind a
+"why other levels are not offered" details block, every refused target with
+its reason. The backup checkbox must be ticked before the action enables, and
+the warning says the array is rewritten in place and the server must not be
+stopped until the reshape completes. i18n keys are `storage.vd_level_*` in all
+four locales.
 
 The old `GET /storage/raid` (list) route still exists for compatibility, and
 `POST /storage/raid/{name}/rebuild` is reused by Storage's Rebuild button.
@@ -203,13 +263,19 @@ nothing). The deadline table lives in
   `.rl-progress-track > span`, `.rl-disk-row.selectable`, `.rl-fs-card`,
   `#raidName`. During the tracked job the footer shows the milestone +
   percent bar and locks the wizard; the in-use rows stay listed (dimmed,
-  non-interactive, with the server's `reason` and a SMART chip). Beyond the
-  level minimum the wizard offers "hot spares" for the extra disks; below it,
-  a "create degraded" opt-in for mdadm redundant levels.
+  non-interactive, with the server's `reason` and a SMART chip). Six types are
+  offered (0/1/5/6/10/Z3); picking **RAID Z3** selects ZFS and disables the
+  other filesystems with a visible reason. Beyond the level minimum the wizard
+  offers "hot spares" for the extra disks on mdadm **and ZFS** (not Btrfs);
+  below it, a "create degraded" opt-in for mdadm redundant levels.
 - `frontend/src/lib/services/api.ts`: `getRaidAvailableDevices`, `createRaid`
-  (spares / allow_missing), `growVirtualDisk`, `subscribeToProgress`.
+  (spares / allow_missing), `growVirtualDisk`, `getVirtualDiskLevelOptions`,
+  `migrateVirtualDiskLevel`, `subscribeToProgress`.
 - `frontend/src/routes/Storage.svelte`: "Add disk" on mdadm cards — a modal
-  lists the free devices (`grow` endpoint).
+  lists the free devices (`grow` endpoint) — and "Change RAID level", which
+  loads the server's transition plan, lists only the allowed targets, explains
+  each refused one, and keeps the action disabled until the backup
+  acknowledgement is ticked.
 - `frontend/src/routes/Health.svelte`: a 9th check card (`raid_arrays`).
 
 ## Invariants

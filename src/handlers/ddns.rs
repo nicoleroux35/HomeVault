@@ -43,6 +43,8 @@ pub fn settings_payload(s: &DdnsSettings) -> serde_json::Value {
         "providers": ddns::DdnsProvider::ALL.iter().map(|p| p.as_str()).collect::<Vec<_>>(),
         "hostname": redacted.hostname,
         "token": redacted.token,
+        "username": redacted.username,
+        "domain": redacted.domain,
         "custom_update_url": redacted.custom_update_url,
         "status": redacted.status,
         "last_ip": redacted.last_ip,
@@ -84,7 +86,11 @@ pub async fn handle_ddns_settings_update(
     body.last_error = stored.last_error.clone();
     // Changing the target or the provider invalidates the recorded result:
     // the admin just acted on it.
-    if body.hostname != stored.hostname || body.provider != stored.provider {
+    if body.hostname != stored.hostname
+        || body.provider != stored.provider
+        || body.username != stored.username
+        || body.domain != stored.domain
+    {
         body.status = ddns::DdnsStatus::Unknown;
         body.last_ip = None;
         body.last_error = None;
@@ -179,12 +185,21 @@ mod tests {
             enabled: true,
             hostname: "myhome.duckdns.org".to_string(),
             token: "secret".to_string(),
+            username: "dynhost-user".to_string(),
+            domain: "example.com".to_string(),
             ..Default::default()
         };
         let payload = settings_payload(&s);
         assert_eq!(payload["token"], "set");
         assert!(!payload.to_string().contains("\"secret\""));
-        assert_eq!(payload["providers"][3], "custom");
+        assert_eq!(payload["username"], "dynhost-user");
+        assert_eq!(payload["domain"], "example.com");
+        let providers = payload["providers"].as_array().unwrap();
+        assert_eq!(providers.first().unwrap(), "duckdns");
+        assert_eq!(providers.last().unwrap(), "custom");
+        assert!(providers.iter().any(|p| p.as_str() == Some("ovh")));
+        assert!(providers.iter().any(|p| p.as_str() == Some("namecheap")));
+        assert!(providers.iter().any(|p| p.as_str() == Some("desec")));
     }
 
     #[test]

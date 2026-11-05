@@ -129,6 +129,9 @@ retention in `src/storage/backup_retention_repo.rs`. Wrapper in `src/restic.rs`.
 | `GET/PUT/DELETE /restic/repos/{id}` | auth/admin | |
 | `GET /restic/repos/{id}/snapshots\|stats\|jobs` | auth | |
 | `POST /restic/repos/{id}/unlock\|prune` | admin | |
+| `POST /restic/repos/{id}/mount` | admin | **browse mount** (`restic mount`): read-only FUSE at a path derived from the repo id; idempotent; `503` when `restic`/FUSE is absent |
+| `GET /restic/mounts` | auth | browse mounts the kernel currently confirms, with the repo name and mount point |
+| `DELETE /restic/mounts/{id}` | admin | unmount and stop the FUSE process; an already-gone mount is not an error |
 | `POST /restic/backup` | admin | **starts** a backup, answers `{status:"running", job_id, backup_job_id}` |
 | `POST /restic/restore` | admin | **starts** a restore, answers `{status:"running", job_id}` |
 | `POST /restic/forget` | admin | at least one retention rule required |
@@ -203,6 +206,32 @@ Every value that would become an argv entry is checked in `src/restic.rs`:
 - repository create/update refuse an empty name, an empty location, an empty
   password, a relative source path and an unknown `retention_policy_id`.
 
+### Browsing a repository (`restic mount`, P1-10, 2026-11-05)
+
+`POST /restic/repos/{id}/mount` starts `restic mount <point>` as a background
+FUSE daemon. The point is `{DATA_DIRECTORY}/restic-mounts/<slug>` where the slug
+is derived from the repository id — a client-provided path is never used, and
+`mount_point_for()` refuses an id whose derived point would leave the directory.
+The call is idempotent: a live mount for the same repository is returned
+unchanged.
+
+- **Read-only is verified, not assumed.** `restic mount` is read-only by
+  design and its `/proc/mounts` entry carries `ro,nosuid,nodev`; the service
+  parses that entry and tears the mount down if any of the three is missing.
+  A mount is only advertised by `GET /restic/mounts` when `/proc/mounts`
+  confirms it **and** all three options are present.
+- **Bounded.** `restic mount` must appear within
+  `RESTIC_FUSE_MOUNT_TIMEOUT` (30 s); the process is killed and the directory
+  removed on failure. Unmount is bounded by `RESTIC_FUSE_UNMOUNT_TIMEOUT`
+  (20 s) using `fusermount3`/`fusermount`, with `umount` as the fallback.
+- **Guaranteed cleanup.** An explicit unmount stops the child; a `restic mount`
+  that exits on its own is reaped by a small watcher, so no zombie or stale
+  registry entry survives. `list_mounts()` also drops registry entries whose
+  kernel mount disappeared (an external `umount`).
+- **Capability contract.** Missing `/dev/fuse` or the `restic` CLI answers
+  `503` with the missing piece named (`json_unavailable`); the card shows the
+  same sentence instead of offering a mount that cannot work.
+
 ### The check verdict
 
 `restic check` prints **"no errors were found"** on success — a line that
@@ -239,11 +268,17 @@ exit path.
 
 - `frontend/src/routes/Restic.svelte` (full i18n coverage; date locale follows UI
   language, not hardcoded `en-US`).
-- `frontend/src/lib/services/api.ts`: all `restic*` methods including schedules
-  and retention policies, plus `resticReminders` and `resticRestorePlan`.
+- `frontend/src/lib/services/api.ts`: all `restic*` methods including schedules,
+  retention policies, repository browse mounts
+  (`resticMountRepo`/`resticMounts`/`resticUnmount`), `resticReminders` and
+  `resticRestorePlan`.
 - **Backup reminders banner** — the page opens with a warning when any repository
   is stale (`GET /restic/reminders`), naming the repository and how many days
   since its last successful backup.
+- **Browse repository** — the repo detail toolbar offers "Browse repository"
+  when the API reports `fuse_available`; the mounted path is shown with an
+  "Unmount" button. Without FUSE the card says so (`restic-fuse-missing`)
+  instead of showing a button that would answer `503`.
 - **Split-view restore dialog** — choosing a snapshot opens a two-pane restore
   view (snapshot tree on one side, destination on the other). Before the user
   commits, a **debounced pre-flight** calls `GET /restic/restore-plan` and shows
@@ -266,7 +301,7 @@ exit path.
   shared `notifyError` (`frontend/src/lib/utils/notify.ts`), which shows the
   server's own `message`/`error`. The empty `else {}` branches this replaced made
   a refused click look like a click that did nothing.
-- Every one of the 26 `restic.rs` handlers requires a session (a past bug accepted
+- Every one of the 29 `restic.rs` handlers requires a session (a past bug accepted
   any non-empty token, and `?include_password=true` leaked every repo password
   in plaintext). Read = `require_auth`; mutations (incl. `include_password`) =
   `require_admin`; `check` is `require_auth` but `read_data: true` is admin.

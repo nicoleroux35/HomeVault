@@ -74,9 +74,12 @@ handlers surface them as a `400` naming the offending field.
 | `name` | ASCII letters, digits, `-`, `_`, `.`; ≤ 64 chars; no leading `.`, no `..`, not `global`/`homes`/`printers`/`admin$` | becomes an `smb.conf` `[section]` header, an `/etc/homevault/*.json` key and a jail directory (`jail/<name>`) |
 | `comment` | one line (no control chars except tab), ≤ 200 chars | `comment = …` is one `smb.conf` line — a newline forged extra directives |
 | `welcome_message` (FTP) | one line, ≤ 120 chars | `ftpd_banner=…` is one `vsftpd.conf` line |
+| `allowed_users` (FTP) | each non-empty, ≤ 32 chars, no whitespace/control `/ \ :` | one line in `/etc/vsftpd.user_list`, read through `userlist_file` |
 | `path` | absolute, no whitespace/control/`( ) , # ;`, no `..` | first column of `/etc/exports` and of the SFTP `/etc/fstab` bind entry — a space shifts columns, `)`/`#` rewrite the option list |
-| `options` (NFS) | one token each: no whitespace/control/`( ) , # " '`, ≤ 16 entries | written as `path *(opt1,opt2)`; a `)` closed the client list and fabricated extra exports |
-| SMB global | `workgroup` one line ≤ 15, `security_mode` ∈ {user, share, domain, server, ads}, `protocol_version` alnum/`_`/`.`, masks 3-4 octal digits | `[global]` directives are one line each |
+| `options` (NFS, per share) | one token each: no whitespace/control/`( ) , # " '`, ≤ 16 entries | merged with the service defaults by class, then written as `path client(opt1,opt2)` |
+| NFS global `networks` | non-empty; `*` or a CIDR/IP/hostname; no whitespace/control/`( ) , # " ' [ ] ; \`, ≤ 64 chars | each entry becomes a client clause; a space or `)` forged another clause |
+| NFS global `default_access` / `root_squash` / `version` | `rw`\|`ro` · `root_squash`\|`no_root_squash`\|`all_squash` · `auto`\|`3`\|`4`\|`4.1`\|`4.2` | written as `ro`/`root_squash`/`vers=…`; an unknown value would be ignored by the kernel |
+| SMB global | `workgroup` one line ≤ 15, `security_mode` ∈ {user, share} (**domain/server/ads refused**), `protocol_version` ∈ {SMB2, SMB3} (**NT1 refused**), masks 3-4 octal digits, `additional_params` = allowlisted `key = value` | `[global]` directives are one line each; domain auth needs winbind/Kerberos and SMB1 is deprecated |
 | FTP ports | `port`/passive bounds non-zero u16, `passive_ports` = `min` or `min-max` with min < max, `max_clients` ≥ 1 | parsed then formatted into `vsftpd.conf` |
 
 `PathGuard` still applies downstream (it guards the *filesystem* operations of
@@ -100,6 +103,63 @@ exactly one line:
   whose path basename matched, so two exports `/data/media` and `/backup/media`
   silently deleted each other. A name that matches several exports is now an
   explicit `400` listing the colliding paths instead of a wrong-line edit.
+
+### Global SMB/NFS config is applied, not just persisted (2026-11-05)
+
+Two “config fields that went nowhere” were closed. The rule now is: **a field
+that is persisted must be rendered, or it must not exist in the API.**
+
+**NFS.** `NfsConfig` (`src/shares.rs`) advertised `networks`,
+`default_access`, `version`, `root_squash` and `custom_options`, and
+`save_nfs_config` only wrote `/etc/homevault/nfs.json`; `nfs_export_line`
+always emitted `path *(rw,sync,no_subtree_check)`. The fields are now part of
+the generated line:
+
+- `networks` becomes one client clause per entry
+  (`path 192.168.1.0/24(opts) 10.0.0.0/8(opts)`);
+- `default_access`, `root_squash` and `version` seed the option list
+  (`rw`/`ro`, `root_squash`/`no_root_squash`/`all_squash`, `vers=3|4|4.1|4.2`);
+- `custom_options` are appended after `validate_nfs_options`;
+- per-share options **override by class** (access, sync, subtree, squash,
+  `vers=`, `sec=`) without reordering the line;
+- `save_nfs_config` re-renders every export line in `/etc/exports` (the file
+  is HomeVault-owned) and runs `exportfs -ra`, so saving the service form now
+  changes the real exports.
+
+`version` defaults to **`auto`** (kernel negotiation, the historical
+behaviour); an explicit 3/4/4.2 is enforced. `validate_nfs_config` rejects an
+empty network list, an unknown version/squash value, and any network token
+that could open a second client clause.
+
+**SMB.** `security_mode` accepted `domain`, `server` and `ads` while nothing
+configured winbind, `realm`, idmap or a keytab — selecting “ADS” wrote
+`security = ads` into `smb.conf` and broke SMB. Those three values are now
+refused with a message that names the missing capability; the UI only offers
+*User* and *Share*. `protocol_version` accepts **SMB2/SMB3** only (NT1 is
+gone), and `smb.conf` now receives both `server min protocol` and
+`server max protocol = SMB3`. `additional_params` are real `[global]`
+directives behind a short allowlist (`SMB_EXTRA_KEYS`), so `include`,
+section headers and unknown keys are refused. `multichannel` adds the
+`server multi channel support = yes|no` toggle (off by default; the UI explains
+that it needs a switch and two links). A config file written by an older build
+with `ads`/`domain`/`server` or `NT1` is normalized to `user`/`SMB3` when it is
+read (`normalize_smb_config`), with a warning in the log, so the form never
+renders an empty select.
+
+**FTP.** `allowed_users` was the same kind of ghost: persisted in `ftp.json`
+and never read. It is now written to `/etc/vsftpd.user_list` and wired through
+`userlist_enable` / `userlist_deny=NO` / `userlist_file`; an empty list keeps
+the historical “every local account” behaviour (`userlist_enable=NO`). The
+whole `vsftpd.conf` is rendered by one pure `ftp_config_text`.
+
+All three renderers destructure their config struct exhaustively
+(`smb_global_params`, `nfs_export_line`, `ftp_config_text`): **adding a field
+without rendering it is a compile error**, and the tests
+`test_smb_global_params_renders_every_field`,
+`test_nfs_export_line_applies_networks_and_share_overrides` and
+`test_ftp_config_text_renders_every_field` pin the output.
+`test_smb_config_deserializes_without_multichannel` keeps old `smb.json` files
+loadable (`#[serde(default)]`).
 
 ### Blocking work is off the async runtime (2026-10-21)
 
@@ -388,6 +448,15 @@ and the mDNS advertisement is unit-tested for its shape, but "a Mac backs up
 successfully" is an acceptance test to run on hardware, not a claim this guide
 makes.
 
+## Per-share snapshots
+
+A share can be snapshotted on its own, with its own GFS retention, from
+Storage → Snapshots → New schedule → **Snapshot target**. The schedule stores
+the share name and protocol (not its path), resolves the current path on every
+run, and lists/restores only the snapshots that cover that share. See
+[Snapshots](./snapshots.md#per-share-snapshots-p1-12-2026-11-05).
+
 ## Related
 
-- [Explorer](./explorer.md), [Storage](./storage.md), [API Contract](../API.md)
+- [Explorer](./explorer.md), [Storage](./storage.md),
+  [Snapshots](./snapshots.md), [API Contract](../API.md)

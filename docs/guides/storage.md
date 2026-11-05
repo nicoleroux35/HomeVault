@@ -28,6 +28,11 @@ standalone `/snapshots/*` HTTP endpoints were removed, see
 | `DELETE /storage/virtual-disks/{name}` | admin | destroy — dispatches: mdadm → `DiskService::delete_raid`, ZFS/Btrfs → `PoolService::delete_pool`. **Refuses to go on when unmount fails** (see "Destroying is unmount-gated" below) |
 | `POST /storage/virtual-disks/{name}/scrub` | admin | verify — ZFS/Btrfs → `PoolService::start_scrub`; mdadm → `sudo mdadm --action check <array>` |
 | `POST /storage/virtual-disks/{name}/grow` | admin | mdadm only: `{ device }` (a free whole disk) → `DiskService::grow_raid` (`mdadm --add` then `--grow --raid-devices N+1`); raid0/raid10 and ZFS/Btrfs refused; the reshape runs in the background. UI: the "Add disk" modal in Storage's Virtual-disks tab (see [RAID](./raid.md)) |
+| `GET /storage/virtual-disks/{name}/level-options` | auth | mdadm only: current level/member count plus every migration target with `allowed` and the refusal `reason` (`DiskService::raid_level_plan`) |
+| `POST /storage/virtual-disks/{name}/migrate-level` | admin | mdadm only: `{ target_level, backup_confirmed }` → `mdadm --grow --level N --backup-file <derived off-array path>` (`DiskService::migrate_raid_level`); only the documented transitions (0→5/10, 1→5, 5↔6), target minimum enforced, backup confirmation mandatory, background reshape. UI: "Change RAID level" on the virtual-disk card (see [RAID](./raid.md#in-place-raid-level-migration-p1-11-2026-11-05)) |
+| `GET /storage/virtual-disks/{name}/btrfs-layout` | auth | Btrfs only: `{ mount_point, layout: legacy\|at, layout_name, rollback_available, migration_required }` |
+| `POST /storage/virtual-disks/{name}/btrfs-layout` | admin | explicit legacy → `@`/`@snapshots` migration: moves snapshots/data, rewrites the two fstab entries, remounts on `subvol=@`; serialized, failure moves entries back. Legacy rollback stays `503` until this has run |
+| `POST /storage/virtual-disks/{name}/btrfs-rollback` | admin | `{ snapshot, confirm: true }` — in-place rollback on a migrated pool: safety snapshot, `@` swapped for the snapshot, previous `@` kept, both remounted and the recovery path run on failure |
 | `GET /storage/virtual-disks/{name}/scrub` | auth | current scrub / consistency-check status (ZFS `scan:` line, Btrfs `Status:` line, mdadm `sync_action`) + `in_progress` |
 | `GET /storage/importable-pools` | auth | "foreign" pools present on attached disks but not imported (ZFS `zpool import`, Btrfs `btrfs filesystem show` minus mounted UUIDs) |
 | `POST /storage/import-pool` | admin | import a foreign pool — ZFS `zpool import [-N] <name>` (optional rename), Btrfs mount + `/etc/fstab` persistence |
@@ -96,11 +101,19 @@ still binding:
 - `PoolService::create_pool(name, pool_type, raid_profile, devices, mount_point)`
   in `src/pools.rs`. Profiles: ZFS `stripe|mirror|raidz1|raidz2|raidz3`, Btrfs
   `single|raid0|raid1|raid10|raid5|raid6`. ZFS pools self-persist via
-  `zpool.cache`; Btrfs pools are mounted at `/mnt/pools/{name}` and persisted
-  in `/etc/fstab` under their own `# homevault-pool:{name}` marker (distinct
-  from the RAID Manager's `# homevault-raid:{name}` marker — the two
-  mount/persist paths are fully independent, by design, so neither can touch
-  the other's fstab entries).
+  `zpool.cache`; Btrfs pools use the `@`/`@snapshots` layout: `@` is mounted
+  at `/mnt/pools/{name}` (`subvol=@`) and `@snapshots` at
+  `/mnt/pools/{name}/.snapshots` (`subvol=@snapshots`). They are persisted in
+  `/etc/fstab` under `# homevault-pool:{name}` and
+  `# homevault-pool-snapshots:{name}` (distinct from the RAID Manager's
+  `# homevault-raid:{name}` marker — the two mount/persist paths are fully
+  independent, by design, so neither can touch the other's fstab entries).
+- **Legacy Btrfs pools** (mounted at `subvolid=5`, created before 2026-11-05)
+  still work for snapshots, but in-place rollback is refused with a named
+  `503`. `GET /storage/virtual-disks/{name}/btrfs-layout` reports the layout
+  and `POST` the same path performs the explicit migration (moves `.snapshots`
+  to `@snapshots`, data into `@`, rewrites fstab, remounts); the Storage card
+  asks for the pool name. See [Snapshots](./snapshots.md#btrfs-atsnapshots-layout-and-in-place-rollback-p1-13-2026-11-05).
 - **Btrfs raid5/raid6**: metadata is forced to `raid1` even when data uses
   `raid5`/`raid6`, to avoid the known upstream Btrfs raid5/6 write-hole bug —
   surfaced in the create-pool UI as a tooltip, not silent.
@@ -220,13 +233,13 @@ idle box.
   subcommands as if it were a path; fixed via
   `PoolService::btrfs_mount_point` (`pub(crate)`), resolved once at the top
   of each Btrfs-specific function in `src/snapshots.rs`.
-- Btrfs snapshot **rollback** of the default (`subvolid=5`) mounted top-level
-  subvolume — which is how every pool created here is mounted — has no safe
-  single-command equivalent to `zfs rollback`. `rollback_btrfs_snapshot`
-  returns a clear, explicit error rather than attempting the naive
-  `btrfs subvolume snapshot <snap> <mountpoint>` (which always fails: the
-  destination already exists and is mounted) or silently doing nothing.
-  ZFS rollback (`zfs rollback -R pool@snapshot`) works correctly in place.
+- Btrfs snapshot **rollback** now has a safe in-place path on migrated
+  pools: `@` is renamed aside, `@snapshots/<name>` becomes the new `@`, and
+  both subvolumes are remounted. A `pre-rollback-*` snapshot and the previous
+  `@before-rollback-*` subvolume are kept, so the destructive swap always
+  leaves a recovery copy. Legacy pools refuse with a named `503` until the
+  explicit migration above. ZFS rollback (`zfs rollback -R pool@snapshot`)
+  is unchanged.
 - Every disk-write command in `pools.rs`/`disk.rs`/`encryption.rs`/`acl.rs`
   stays `sudo`-wrapped; `/etc/fstab` is only ever written via
   `write_file_as_root` (`sudo tee`). A 2026-07-17 audit found that on a real
@@ -235,7 +248,7 @@ idle box.
 - **The sudoers grants are scoped (2026-10-23).** The Storage/LUKS block in
   `SetupService::configure_sudoers` used to grant `zpool`, `zfs`, `mkfs.btrfs`/
   `ext4`/`xfs`, `mount`, `umount`, `wipefs`, `btrfs`, `cryptsetup`, `blkid`,
-  `mkdir`, `rmdir` and `tee` **with no argument restriction** — any
+  `mkdir`, `rmdir`, `mv` and `tee` **with no argument restriction** — any
   attacker-controlled string reaching an argv became `mkfs.ext4 /dev/sda`,
   `zfs destroy -r tank` or `tee /etc/shadow` as root. The block is now
   rendered from one table (`StorageBins` → `pool_grants` /
@@ -249,7 +262,9 @@ idle box.
     `mkfs.exfat [-n <label>] /dev/…`, `wipefs -a …`,
     `blkid -s UUID -o value …`;
   - per path: `mount [-o <opts>] … /mnt/*`, `umount /mnt/*`,
-    `mkdir -p /mnt/*`, `rmdir /mnt/*`, `tee /etc/fstab`,
+    `mkdir -p /mnt/*`, `rmdir /mnt/*`,
+    `mv /mnt/pools/* /mnt/pools/*`, `mv /mnt/raid/* /mnt/raid/*` (Btrfs
+    layout migration / rollback only), `tee /etc/fstab`,
     `tee /etc/mdadm/mdadm.conf`.
   The SFTP jail root (`/var/lib/homevault-sftp/…`) and removable media
   (`/media`, `/run/media`) keep the `mount`/`umount`/`mkdir`/`rmdir` grants

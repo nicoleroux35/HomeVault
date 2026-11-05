@@ -36,9 +36,36 @@ use std::time::Duration;
 /// the rate series: `sample_from` uses the real distance between two reads, so
 /// a suspend or a missed tick cannot inflate or deflate a throughput figure.
 pub const SAMPLE_INTERVAL_SECS: u64 = 60;
-/// Samples older than this are pruned (gives the 7-day chart one day of
-/// headroom).
-const RETENTION_SECS: i64 = 8 * 24 * 3600;
+/// Default retention (gives the 7-day chart one day of headroom). The value
+/// is stored in `metrics_settings` and editable from the Metrics app.
+pub const DEFAULT_RETENTION_DAYS: i64 = 8;
+pub const MIN_RETENTION_DAYS: i64 = 1;
+pub const MAX_RETENTION_DAYS: i64 = 365;
+
+/// Retention in seconds, clamped to the accepted range so a hand-edited row
+/// can never delete the whole table (`0`) or keep it forever.
+pub fn retention_secs(days: i64) -> i64 {
+    days.clamp(MIN_RETENTION_DAYS, MAX_RETENTION_DAYS) * 24 * 3600
+}
+
+pub async fn get_retention_days(pool: &SqlitePool) -> Result<i64, sqlx::Error> {
+    let days: Option<i64> =
+        sqlx::query_scalar("SELECT retention_days FROM metrics_settings WHERE id = 1")
+            .fetch_optional(pool)
+            .await?;
+    Ok(days.unwrap_or(DEFAULT_RETENTION_DAYS))
+}
+
+pub async fn set_retention_days(pool: &SqlitePool, days: i64) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "INSERT INTO metrics_settings (id, retention_days) VALUES (1, ?)
+         ON CONFLICT(id) DO UPDATE SET retention_days = excluded.retention_days",
+    )
+    .bind(days.clamp(MIN_RETENTION_DAYS, MAX_RETENTION_DAYS))
+    .execute(pool)
+    .await?;
+    Ok(())
+}
 
 /// A named time range the UI can ask for, with its bucket size.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -443,9 +470,14 @@ async fn store_sample(pool: &SqlitePool, ts: i64, values: &SampleValues) -> Resu
     .map_err(|e| e.to_string())?;
 
     // Retention — cheap (indexed PK range delete), run on every tick so the
-    // bound holds even if ticks are far apart.
+    // bound holds even if ticks are far apart. Read each tick so a change in
+    // the Metrics app applies without a restart; a read failure falls back to
+    // the default rather than stopping collection.
+    let days = get_retention_days(pool)
+        .await
+        .unwrap_or(DEFAULT_RETENTION_DAYS);
     sqlx::query("DELETE FROM metric_samples WHERE ts < ?")
-        .bind(ts - RETENTION_SECS)
+        .bind(ts - retention_secs(days))
         .execute(pool)
         .await
         .map_err(|e| e.to_string())?;

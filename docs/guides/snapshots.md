@@ -33,6 +33,10 @@ reuses it for every call of a run.
 > | Virtual machines | `GET/POST /vm/{name}/snapshots`, `POST …/restore`, `DELETE …/{snap}` | admin |
 > | **Schedules (reads)** | `GET /api/snapshot-schedules/snapshots?pool=` | auth |
 > | **Schedules (mutations)** | `GET/POST /api/snapshot-schedules`, `PUT/DELETE /api/snapshot-schedules/{id}`, `POST …/{id}/run` | **admin** |
+> | **Per-share snapshots (read)** | `GET /api/shares/{name}/{share_type}/snapshots` | auth |
+> | **Per-share snapshots (mutations)** | `POST` same path, `DELETE …/{snapshot}`, `POST …/{snapshot}/restore` | **admin** |
+> | **Btrfs layout (read)** | `GET /api/storage/virtual-disks/{name}/btrfs-layout` | auth |
+> | **Btrfs layout/rollback (mutations)** | `POST` same path, `POST /api/storage/virtual-disks/{name}/btrfs-rollback` | **admin** |
 
 ## Scheduled snapshots + GFS retention (2026-10-13)
 
@@ -87,6 +91,104 @@ reuses it for every call of a run.
 - Deleting a schedule keeps its snapshots (history is only removed by the
   prune policy, never as a side effect).
 
+## Per-share snapshots (P1-12, 2026-11-05)
+
+A schedule may target one **share** instead of the whole pool. This is the
+first, non-destructive mode: recursive snapshots filtered by the share's
+dataset/subvolume, with file-level restore. It does **not** create a dataset
+per share — a later migration can move to that layout without changing the
+API.
+
+- `snapshot_schedules.share` + `share_type` (migration `081`) are both
+  `NULL` for the historical pool-wide schedule, or both set. The API refuses
+  a half pair, an invalid share name or an unknown protocol before writing.
+  The share's **current path** is resolved at save time and again on every
+  run, so moving a share is followed instead of snapshotting a stale path.
+- The target is derived from the filesystem, not from a second setting:
+  - **ZFS**: the deepest dataset mount point that contains the share path
+    (`/proc/mounts`, restricted to datasets of the schedule's pool). The
+    snapshot is `dataset@name`; `recursive` adds `-r`. If the share lives in a
+    subdirectory of that dataset, the snapshot covers the whole dataset, but
+    listing and pruning are scoped to that dataset and the schedule's prefix.
+  - **Btrfs**: the share path itself must be a subvolume. Its snapshots go to
+    `<mount>/.snapshots/<slug>-<hash>/<name>`; the slug is deterministic and
+    hashed so `data/photos` and `data-photos` cannot collide. A directory that
+    is not a subvolume is refused with that reason (`503`).
+- A per-share schedule uses the same GFS windows, single-flight guard
+  (still one run per pool), lock protection and failure notification as a
+  pool schedule. `ShareBackend` lists/deletes only the share's own backend, so
+  a prune can never select a pool-wide snapshot or another share's snapshot.
+- `GET /api/shares/{name}/{share_type}/snapshots` returns the snapshots that
+  cover the share plus a read-only `browse_path`:
+  - ZFS: `<dataset mount>/.zfs/snapshot/<name>/<relative share path>` (the
+    Explorer already browses this path and copies files back out);
+  - Btrfs: `<mount>/.snapshots/<slug>/<name>/<relative share path>`.
+- `POST …/snapshots` creates a manual snapshot named
+  `manual-YYYYMMDD-HHMMSS` (or the validated `name` supplied by the caller).
+- `POST …/snapshots/{snapshot}/restore` restores one **relative** path from
+  the snapshot to the live share. The request must carry `confirm: true`;
+  absolute paths, `..`, NUL bytes and symlink restores are refused. Source and
+  destination are canonicalised and required to stay under the snapshot root
+  and the share root. A file is copied atomically (`FileBrowser`), a folder is
+  merged; existing files are overwritten, which is exactly what the UI's
+  warning states.
+- The Storage → Snapshots modal gains a **target** selector: whole pool, or
+  one share (name, protocol and path shown). The snapshot list for a share
+  schedule exposes a restore action and the shared restore dialog; pool
+  schedules keep their existing lock action.
+- **Quota interaction:** a snapshot is not a second copy charged to a share's
+  configured ceiling. ZFS/Btrfs still charge the blocks the snapshot holds to
+  the pool (and, depending on the filesystem's quota mode, to the dataset /
+  qgroup), while HomeVault's per-share quota continues to measure the live
+  files. A share that is exactly at its ceiling can therefore still consume
+  pool space through its snapshots — retention is the control, and the pool's
+  free space stays visible on the Storage screen. No automatic quota change is
+  made by taking or restoring a snapshot.
+
+## Btrfs `@`/`@snapshots` layout and in-place rollback (P1-13, 2026-11-05)
+
+Btrfs can now roll a pool back **in place**, with the same user-visible
+outcome as `zfs rollback`. The requirement is an explicit subvolume layout:
+
+- **New pools** (`create_btrfs_advanced_pool`) are created with `@` (live
+  data) and `@snapshots` (snapshots). `@` is mounted at the pool mount point
+  and `@snapshots` at `<mount>/.snapshots`; the two fstab lines carry
+  `subvol=@` / `subvol=@snapshots` and their own markers so deleting the pool
+  removes both.
+- **Existing pools** stay on the legacy top-level layout and keep working for
+  listing/creating/deleting snapshots. `GET
+  /api/storage/virtual-disks/{name}/btrfs-layout` reports
+  `layout: "legacy"`, `migration_required: true`; `POST` the same path
+  performs the explicit migration:
+  1. move `.snapshots` to `@snapshots` (or create `@snapshots`),
+  2. create `@`, its `.snapshots` mount point, and move every other top-level
+     entry into `@`,
+  3. rewrite the two fstab entries,
+  4. unmount the legacy top level, mount `subvol=@`, then mount
+     `subvol=@snapshots` under `.snapshots`.
+  The operation is serialized (`BTRFS_LAYOUT_LOCK`) and a failure before the
+  remount moves the entries back; the pool is never silently left on a
+  half-written layout. The Storage UI asks for the pool name before running
+  it.
+- **Rollback** (`POST /api/storage/virtual-disks/{name}/btrfs-rollback`,
+  `{ snapshot, confirm: true }`, admin) works only on the migrated layout;
+  a legacy pool answers **`503`** with the migration reason. The sequence:
+  1. take a `pre-rollback-<timestamp>` snapshot of the current `@` (kept
+     forever by retention because it does not carry a schedule prefix),
+  2. unmount `@snapshots`, then the pool,
+  3. mount the top-level, rename `@` to `@before-rollback-<timestamp>`, and
+     snapshot `@snapshots/<name>` to `@`,
+  4. remount `subvol=@` and `subvol=@snapshots`.
+  The previous live state and the safety snapshot remain on the pool: there
+  is no automatic undo from the UI, but neither is data erased without a
+  recovery copy. A failure after the swap runs a recovery path that puts the
+  previous `@` back and remounts the pool; if even that fails the error names
+  the exact subvolume to rename back manually.
+- `GET /api/storage/virtual-disks/{name}/btrfs-layout` is `require_auth`;
+  migration and rollback are `require_admin`. The Storage virtual-disk card
+  exposes the migration action, and a Btrfs pool's snapshot list exposes the
+  rollback action (typed snapshot name confirmation).
+
 ## Deadlines on every `zfs`/`btrfs` call (2026-10-24, ROADMAP X.2)
 
 Every call of `SnapshotService` runs under a deadline now: reads (`zfs list`,
@@ -110,7 +212,13 @@ honest case. See [storage.md](./storage.md#deadlines-on-every-host-tool-2026-10-
   pool tagging auto-managed snapshots. A refused or failed "Run now" is
   reported above the list (`snapshots-action-error`, translated message when
   the server sends none) — the button used to ignore the response, so a 409
-  from a concurrent tick looked like a successful run.
+  from a concurrent tick looked like a successful run. The create/edit modal
+  gained a **target** selector (whole pool or one share, with its protocol and
+  path); a share schedule's snapshot list shows a restore action that opens a
+  path + overwrite-confirmation dialog (`snapshots-restore-*` hooks). A
+  Btrfs virtual-disk card gains a **Btrfs rollback layout** action (status
+  check, then typed pool-name confirmation), and a migrated Btrfs pool's
+  snapshot list gains a typed-name rollback action.
 - Translation keys: `restic.*snapshot*` / `restic.tab_snapshots` (backup
   snapshots), `explorer.no_snapshots` / `explorer.snapshot_readonly` /
   `explorer.snapshot_exit` (read-only `.zfs` browsing), `vm.snapshots_title`
@@ -119,18 +227,16 @@ honest case. See [storage.md](./storage.md#deadlines-on-every-host-tool-2026-10-
 
 ## Invariants
 
-- Rollback is destructive and irreversible for ZFS (`zfs rollback -R`, works
-  correctly in place) — the confirm dialog states this.
-- **Btrfs rollback of the default mounted subvolume is not supported.**
-  Every pool created by the Advanced Storage flow (see
-  [Storage](./storage.md#advanced-pools)) mounts Btrfs at `subvolid=5`, the
-  top level — there's no single-command way to revert that in place (unlike
-  `zfs rollback`), and the naive `btrfs subvolume snapshot <snap> <mount>`
-  an earlier version of this code attempted always fails (the destination
-  already exists and is mounted). `rollback_btrfs_snapshot` now returns a
-  clear error explaining to restore files manually from
-  `<mount>/.snapshots/<name>` instead of silently no-op'ing or crashing with
-  a confusing low-level error.
+- Rollback is destructive: the live contents are replaced by the snapshot.
+  ZFS uses `zfs rollback -R`; Btrfs swaps `@` for the snapshot subvolume and
+  keeps the previous `@` plus a `pre-rollback-*` safety snapshot. The confirm
+  dialog states this.
+- **Btrfs rollback requires the `@`/`@snapshots` layout.** A legacy pool is
+  not converted silently; its rollback answers `503` naming the migration.
+  New pools are created on the layout, existing ones are migrated explicitly
+  from Storage (pool name typed) before the first rollback.
+- The Btrfs layout/rollback operations are serialized: only one may unmount
+  and remount the same filesystem at a time.
 - Snapshot listing is scoped per pool.
 - Schedule endpoints are admin-only (they destroy snapshots); reading a
   pool's snapshot list is `require_auth`. The prune filter can never match a

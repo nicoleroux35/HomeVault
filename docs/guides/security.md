@@ -186,6 +186,37 @@ itself. Disconnecting takes **two clicks** (the first turns the button into
 "Disconnect now?"), and the confirmation is carried by text *and* an outline,
 never colour alone. A row that cannot be disconnected shows that as a label.
 
+## Password expiry (2026-11-05, tasklist P1-2)
+
+A global policy, `password_policy.expiry_days` (migration `079`, singleton
+row). **`0` = never** and is the default, so an upgrade changes nothing.
+
+- **Endpoints** — `GET/PUT /api/settings/password-policy`, admin only. The
+  body is `{ "expiry_days": n }`, `0..=3650`; an out-of-range value is a
+  `400` naming the field rather than a silent clamp.
+- **Clock** — `users.password_changed_at` (RFC 3339). Every password write
+  touches it: self change, admin reset (`force_change`), recovery-code reset.
+  Legacy rows (NULL) fall back to `created_at`, which is what the migration
+  backfills.
+- **Enforcement** — at sign-in, once the password is proven,
+  `AuthService::enforce_password_expiry` compares `changed_at + expiry_days`
+  with now and, when elapsed, sets `must_change_password = 1`. The existing
+  `middleware::password_change_guard` then limits that session to
+  `/auth/me`, `/auth/logout` and the self password change. The login response
+  carries `must_change_password: true`, so the client routes to the change
+  screen.
+- **Failure mode** — a database error while checking expiry is logged and
+  does **not** block sign-in; an expired policy is a policy, not a lockout
+  primitive.
+- **UI** — Settings → Security → **Password expiry** card (`PasswordPolicyCard`,
+  `data-testid="settings-card"`), one number field and Save; the hint states
+  the `0`/maximum semantics. E2E 12.7 intercepts the PUT and pins the body.
+
+Tests: `src/storage/password_policy_repo.rs` (4 unit — `0`, exact boundary,
+future timestamp, RFC 3339), `tests/password_policy_integration.rs` (3 — admin
+matrix + bounds, expired flag + clock restart after a change, `0` never
+expires / fresh password not flagged).
+
 ## Backend
 
 Handlers in `src/handlers/security.rs`.

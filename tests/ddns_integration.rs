@@ -230,8 +230,13 @@ async fn an_admin_reads_the_defaults_with_the_token_redacted() {
     assert_eq!(data["enabled"], false);
     assert_eq!(data["status"], "disabled");
     assert_eq!(data["token"], "");
+    assert_eq!(data["username"], "");
+    assert_eq!(data["domain"], "");
     assert_eq!(data["providers"][0], "duckdns");
-    assert_eq!(data["providers"][3], "custom");
+    assert_eq!(data["providers"][3], "ovh");
+    assert_eq!(data["providers"][4], "namecheap");
+    assert_eq!(data["providers"][5], "desec");
+    assert_eq!(data["providers"][6], "custom");
     // The detected address is reported (null on a host with no route out) so
     // the card can show "unknown" instead of guessing.
     assert!(data.get("current_ip").is_some());
@@ -285,6 +290,105 @@ async fn an_enabled_configuration_is_validated_before_any_provider_is_contacted(
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{resp}");
+}
+
+#[tokio::test]
+async fn the_new_providers_validate_their_own_credentials() {
+    let (state, _tmp, _guard) = setup_state().await;
+    create_user(&state, "admin", "AdminPass123!", 2).await;
+    let mut r = router(state);
+    let token = login(&mut r, "admin", "AdminPass123!").await;
+
+    // OVH DynHost needs the login that goes in the Basic-auth header.
+    let mut body = duckdns_settings();
+    body["provider"] = json!("ovh");
+    body["hostname"] = json!("home.example.com");
+    let (status, resp) = send(
+        &mut r,
+        Method::PUT,
+        "/api/settings/ddns",
+        Some(&token),
+        Some(body),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{resp}");
+    assert!(resp["message"].as_str().unwrap().contains("username"));
+
+    let mut body = duckdns_settings();
+    body["provider"] = json!("ovh");
+    body["hostname"] = json!("home.example.com");
+    body["username"] = json!("dynhost-user");
+    let (status, resp) = send(
+        &mut r,
+        Method::PUT,
+        "/api/settings/ddns",
+        Some(&token),
+        Some(body),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{resp}");
+    assert_eq!(resp["data"]["settings"]["provider"], "ovh");
+    assert_eq!(resp["data"]["settings"]["username"], "dynhost-user");
+
+    // Namecheap takes the host and the registered domain separately.
+    let mut body = duckdns_settings();
+    body["provider"] = json!("namecheap");
+    body["hostname"] = json!("home.example.com");
+    let (status, resp) = send(
+        &mut r,
+        Method::PUT,
+        "/api/settings/ddns",
+        Some(&token),
+        Some(body.clone()),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{resp}");
+    assert!(resp["message"]
+        .as_str()
+        .unwrap()
+        .contains("registered domain"));
+
+    body["domain"] = json!("example.net");
+    let (status, resp) = send(
+        &mut r,
+        Method::PUT,
+        "/api/settings/ddns",
+        Some(&token),
+        Some(body.clone()),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{resp}");
+    assert!(resp["message"]
+        .as_str()
+        .unwrap()
+        .contains("inside the registered domain"));
+
+    body["domain"] = json!("example.com");
+    let (status, resp) = send(
+        &mut r,
+        Method::PUT,
+        "/api/settings/ddns",
+        Some(&token),
+        Some(body),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{resp}");
+    assert_eq!(resp["data"]["settings"]["domain"], "example.com");
+
+    // deSEC only needs the token; it travels as a Token authorization header.
+    let mut body = duckdns_settings();
+    body["provider"] = json!("desec");
+    body["hostname"] = json!("home.dedyn.io");
+    let (status, resp) = send(
+        &mut r,
+        Method::PUT,
+        "/api/settings/ddns",
+        Some(&token),
+        Some(body),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{resp}");
+    assert_eq!(resp["data"]["settings"]["provider"], "desec");
 }
 
 #[tokio::test]

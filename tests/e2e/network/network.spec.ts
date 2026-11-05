@@ -951,3 +951,79 @@ test.describe('14 — Link aggregation and VLAN devices', () => {
     await expect(create).toBeFocused();
   });
 });
+
+// ===========================================================================
+// 15. Static routes (P1-7)
+//
+// **Nothing here adds a real route.** A valid route would change the host's
+// routing table; every test stays in the validation prefix, which fails before
+// any `ip route` call. The point is that the card exists, its controls are
+// named, and an impossible destination is refused with the reason and nothing
+// stored.
+// ===========================================================================
+test.describe('15 — Static routes', () => {
+  async function callApi(
+    page: Page,
+    method: 'POST' | 'DELETE',
+    uri: string,
+    body?: unknown,
+  ): Promise<{ http: number; success?: boolean; message?: string }> {
+    return page.evaluate(
+      async ({ token, csrf, method, uri, body }) => {
+        const r = await fetch(uri, {
+          method,
+          headers: {
+            'x-session-token': token,
+            'x-csrf-token': csrf,
+            'Content-Type': 'application/json',
+          },
+          body: body ? JSON.stringify(body) : undefined,
+        });
+        const b = await r.json().catch(() => ({}));
+        return { http: r.status, success: b?.success, message: b?.message };
+      },
+      { token: adminTokens.token, csrf: adminTokens.csrf, method, uri, body },
+    );
+  }
+
+  test('15.1 — the Routes card is present with a labelled destination, next hop and interface', async ({
+    page,
+  }) => {
+    await gotoNetwork(page, adminTokens);
+    const card = win(page).locator('[data-testid="network-routes-card"]');
+    await card.scrollIntoViewIfNeeded();
+    await expect(card).toBeVisible();
+    await expect(card.locator('[data-testid="network-route-destination"]')).toHaveAccessibleName(
+      /.+/,
+    );
+    await expect(card.locator('[data-testid="network-route-via"]')).toHaveAccessibleName(/.+/);
+    await expect(card.locator('[data-testid="network-route-interface"]')).toHaveAccessibleName(
+      /.+/,
+    );
+  });
+
+  test('15.2 — an impossible destination is refused before any route is added', async ({
+    page,
+  }) => {
+    await gotoNetwork(page, adminTokens);
+    const before = await page.evaluate(async (token) => {
+      const r = await fetch('/api/network/routes', { headers: { 'x-session-token': token } });
+      return (await r.json())?.data?.routes?.length ?? 0;
+    }, adminTokens.token);
+
+    const r = await callApi(page, 'POST', '/api/network/routes', {
+      destination: 'not-a-network',
+      via: '192.168.1.1',
+      interface: 'eth0',
+    });
+    if (r.http === 503) test.skip(true, 'iproute2 (ip) is not installed on this host');
+    expect(r.http).toBe(400);
+    expect(r.success).toBe(false);
+
+    const after = await page.evaluate(async (token) => {
+      const r = await fetch('/api/network/routes', { headers: { 'x-session-token': token } });
+      return (await r.json())?.data?.routes?.length ?? 0;
+    }, adminTokens.token);
+    expect(after).toBe(before);
+  });
+});

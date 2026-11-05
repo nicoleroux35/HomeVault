@@ -189,6 +189,127 @@ test('3.1 — Run-now on a missing pool records a clean failure on the card', as
   await expect(row.locator('[data-testid="snapshots-schedule-error"]')).toBeVisible({ timeout: 20_000 });
 });
 
+test('5.1 — a share target sends share and share_type, not just a pool', async ({ page }) => {
+  let posted: any = null;
+  await page.route('**/api/shares', async (route) => {
+    if (route.request().method() !== 'GET') return route.continue();
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        success: true,
+        data: [{ name: 'photos', share_type: 'smb', path: '/tank/photos', enabled: true }],
+      }),
+    });
+  });
+  await page.route('**/api/snapshot-schedules', async (route) => {
+    if (route.request().method() !== 'POST') return route.continue();
+    posted = route.request().postDataJSON();
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({ success: true, data: { id: 'fake-share-schedule' } }),
+    });
+  });
+
+  await openSnapshotsTab(page, adminTokens);
+  await win(page).locator('[data-testid="snapshots-new-btn"]').click();
+  const target = page.locator('[data-testid="snapshots-target"]');
+  await expect(target).toBeVisible();
+  await target.selectOption('smb/photos');
+  await page.locator('input[placeholder="tank/data"]').first().fill('tank');
+  await page.locator('[data-testid="snapshots-save-btn"]').click();
+
+  await expect.poll(() => posted).toEqual(
+    expect.objectContaining({ pool: 'tank', share: 'photos', share_type: 'smb' }),
+  );
+});
+
+test('5.2 — a share snapshot restores only after the overwrite confirmation', async ({ page }) => {
+  let restored: any = null;
+  await page.route('**/api/snapshot-schedules', async (route) => {
+    if (route.request().method() !== 'GET') return route.continue();
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        success: true,
+        data: {
+          schedules: [
+            {
+              id: 'share-schedule',
+              pool: 'tank',
+              share: 'photos',
+              share_type: 'smb',
+              enabled: true,
+              cron: '0 3 * * *',
+              prefix: 'hv-auto',
+              recursive: true,
+              gfs_hourly: 24,
+              gfs_daily: 7,
+              gfs_weekly: 4,
+              gfs_monthly: 12,
+              gfs_yearly: 1,
+              last_run_at: null,
+              last_status: null,
+              last_error: null,
+              next_run_at: null,
+            },
+          ],
+        },
+      }),
+    });
+  });
+  await page.route('**/api/shares/photos/smb/snapshots', async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        success: true,
+        data: {
+          share: { name: 'photos', share_type: 'smb', path: '/tank/photos' },
+          pool: 'tank',
+          snapshots: [
+            {
+              name: 'hv-auto-20261105-030000',
+              created: '1760000000',
+              used: 0,
+              referenced: 0,
+              browse_path: '/tank/photos/.zfs/snapshot/hv-auto-20261105-030000',
+            },
+          ],
+        },
+      }),
+    });
+  });
+  await page.route('**/api/shares/photos/smb/snapshots/hv-auto-20261105-030000/restore', async (route) => {
+    restored = route.request().postDataJSON();
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({ success: true, data: { restored: true } }),
+    });
+  });
+
+  await openSnapshotsTab(page, adminTokens);
+  const row = win(page).locator('[data-testid="snapshots-schedule"]', { hasText: 'share: photos' });
+  await row.locator('[data-testid^="snapshots-view-"]').click();
+  await win(page).locator('[data-testid="snapshots-restore-hv-auto-20261105-030000"]').click();
+
+  const submit = page.locator('[data-testid="snapshots-restore-submit"]');
+  await expect(submit).toBeDisabled();
+  await page.locator('[data-testid="snapshots-restore-path"]').fill('photos/2024/image.jpg');
+  await expect(submit).toBeDisabled();
+  await page.locator('[data-testid="snapshots-restore-confirm"]').check();
+  await expect(submit).toBeEnabled();
+  await submit.click();
+
+  await expect.poll(() => restored).toEqual({
+    path: 'photos/2024/image.jpg',
+    confirm: true,
+  });
+});
+
 test('4.1 — Delete goes through the confirm dialog', async ({ page }) => {
   test.skip(!scheduleId, 'schedule not created');
   await openSnapshotsTab(page, adminTokens);

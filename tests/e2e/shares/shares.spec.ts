@@ -549,6 +549,119 @@ test.describe('4 — All user interactions', () => {
       await expect(win(page).locator('[data-testid="shares-recycle-row"]')).toHaveCount(smbCount);
     }
   });
+  test('4.9 — SMB advanced offers local security, SMB2/3 and the multichannel toggle', async ({
+    page,
+  }) => {
+    let payload: Record<string, unknown> | null = null;
+    await page.route('**/api/shares/smb/config', async (route) => {
+      if (route.request().method() !== 'PUT') return route.continue();
+      payload = route.request().postDataJSON();
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({ success: true, data: {} }),
+      });
+    });
+
+    await gotoShares(page, adminTokens);
+    await switchTab(page, 'SMB');
+    await win(page).locator('[data-testid="shares-mode-btn"]').nth(1).click();
+
+    const form = win(page).locator('[data-testid="shares-config"] [data-testid="shares-form"]');
+    const selects = form.locator('select');
+    await expect(selects).toHaveCount(2);
+
+    const securityValues = await selects.nth(0).locator('option').evaluateAll((options) =>
+      options.map((option) => (option as HTMLOptionElement).value),
+    );
+    expect(securityValues).toEqual(['user', 'share']);
+
+    const protocolValues = await selects.nth(1).locator('option').evaluateAll((options) =>
+      options.map((option) => (option as HTMLOptionElement).value),
+    );
+    expect(protocolValues).toEqual(['SMB2', 'SMB3']);
+
+    // The multichannel toggle is present and explained.
+    await expect(form).toContainText(/multichannel|multicanal/i);
+
+    await form
+      .getByRole('button', { name: /save|enregistrer|speichern|guardar/i })
+      .first()
+      .click();
+
+    await expect.poll(() => payload).not.toBeNull();
+    expect(payload!['security_mode']).toBe('user');
+    expect(payload!['multichannel']).toBe(false);
+    expect(payload!['protocol_version']).toBe('SMB3');
+  });
+
+  test('4.10 — FTP advanced sends the account whitelist as a list', async ({ page }) => {
+    let payload: Record<string, unknown> | null = null;
+    await page.route('**/api/shares/ftp/config', async (route) => {
+      if (route.request().method() !== 'PUT') return route.continue();
+      payload = route.request().postDataJSON();
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({ success: true, data: {} }),
+      });
+    });
+
+    await gotoShares(page, adminTokens);
+    await switchTab(page, 'FTP');
+    await win(page).locator('[data-testid="shares-mode-btn"]').nth(1).click();
+
+    const form = win(page).locator('[data-testid="shares-config"] [data-testid="shares-form"]');
+    await expect(form).toContainText(/allowed accounts|comptes autorisés|erlaubte konten|cuentas permitidas/i);
+    const whitelist = form.locator('textarea').last();
+    await whitelist.fill('alice\nbob\n');
+    await form
+      .getByRole('button', { name: /save|enregistrer|speichern|guardar/i })
+      .first()
+      .click();
+
+    await expect.poll(() => payload).not.toBeNull();
+    expect(payload!['allowed_users']).toEqual(['alice', 'bob']);
+  });
+
+  test('4.11 — NFS advanced offers Auto/3/4/4.2 and saves the applied config', async ({ page }) => {
+    let payload: Record<string, unknown> | null = null;
+    await page.route('**/api/shares/nfs/config', async (route) => {
+      if (route.request().method() !== 'PUT') return route.continue();
+      payload = route.request().postDataJSON();
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({ success: true, data: {} }),
+      });
+    });
+
+    await gotoShares(page, adminTokens);
+    await switchTab(page, 'NFS');
+    await win(page).locator('[data-testid="shares-mode-btn"]').nth(1).click();
+
+    const form = win(page).locator('[data-testid="shares-config"] [data-testid="shares-form"]');
+    const optionSets = await form.locator('select').evaluateAll((selects) =>
+      selects.map((select) =>
+        Array.from((select as HTMLSelectElement).options).map((option) => option.value),
+      ),
+    );
+    const versionIndex = optionSets.findIndex((values) => values.includes('auto'));
+    expect(versionIndex).toBeGreaterThanOrEqual(0);
+    expect(optionSets[versionIndex]).toEqual(['auto', '3', '4', '4.2']);
+
+    await form
+      .getByRole('button', { name: /save|enregistrer|speichern|guardar/i })
+      .first()
+      .click();
+
+    await expect.poll(() => payload).not.toBeNull();
+    expect(payload!['version']).toBe('auto');
+    expect(payload!['networks']).toEqual(['*']);
+    expect(payload!['default_access']).toBe('rw');
+    expect(payload!['root_squash']).toBe('root_squash');
+  });
+
 });
 
 // ===========================================================================

@@ -45,6 +45,7 @@ pub mod models;
 pub mod notification_repo;
 pub mod passkey_repo;
 pub mod password_history_repo;
+pub mod password_policy_repo;
 pub mod password_recovery_repo;
 pub mod ransomware_repo;
 pub mod recent_repo;
@@ -100,6 +101,7 @@ pub use models::{Session, User, Widget};
 pub use notification_repo::{Notification, NotificationRepository};
 pub use passkey_repo::{NewPasskey, PasskeyRepository, PasskeyRow, PasskeySummary};
 pub use password_history_repo::PasswordHistoryRepository;
+pub use password_policy_repo::{is_expired, PasswordPolicyRepository, MAX_EXPIRY_DAYS};
 pub use password_recovery_repo::PasswordRecoveryCodeRepository;
 pub use ransomware_repo::{
     ProtectedPath, RansomwareEvent, RansomwareRepository, RansomwareSettings,

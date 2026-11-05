@@ -238,11 +238,13 @@ pub async fn remote_image_digest(client: &reqwest::Client, image: &str) -> Optio
 }
 
 fn http_client() -> reqwest::Client {
-    reqwest::Client::builder()
-        .timeout(Duration::from_secs(10))
-        .user_agent("HomeVault/AppUpdates")
-        .build()
-        .unwrap_or_default()
+    crate::proxy::apply_loaded(
+        reqwest::Client::builder()
+            .timeout(Duration::from_secs(10))
+            .user_agent("HomeVault/AppUpdates"),
+    )
+    .build()
+    .unwrap_or_default()
 }
 
 /// Check every installed catalog app for image and package updates.

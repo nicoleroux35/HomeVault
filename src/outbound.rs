@@ -53,6 +53,13 @@ pub struct HttpRequest {
     /// `Authorization: Bearer …`, used by DNS providers (never by the ACME
     /// server, which authenticates the JWS body itself).
     pub bearer: Option<String>,
+    /// `Authorization: <scheme> …` for providers that do not use Bearer
+    /// (deSEC expects `Token …`).
+    pub authorization: Option<String>,
+    /// HTTP Basic credentials for providers whose update URL is authenticated
+    /// that way (OVH DynHost). Kept out of the URL so it cannot leak into a
+    /// log line or a `last_error`.
+    pub basic_auth: Option<(String, String)>,
 }
 
 impl HttpRequest {
@@ -63,6 +70,8 @@ impl HttpRequest {
             body: None,
             content_type: "application/json",
             bearer: None,
+            authorization: None,
+            basic_auth: None,
         }
     }
 
@@ -73,6 +82,8 @@ impl HttpRequest {
             body: None,
             content_type: "application/json",
             bearer: None,
+            authorization: None,
+            basic_auth: None,
         }
     }
 
@@ -83,6 +94,8 @@ impl HttpRequest {
             body: Some(body),
             content_type,
             bearer: None,
+            authorization: None,
+            basic_auth: None,
         }
     }
 
@@ -93,6 +106,8 @@ impl HttpRequest {
             body: Some(body),
             content_type,
             bearer: None,
+            authorization: None,
+            basic_auth: None,
         }
     }
 
@@ -103,12 +118,27 @@ impl HttpRequest {
             body: None,
             content_type: "application/json",
             bearer: None,
+            authorization: None,
+            basic_auth: None,
         }
     }
 
     /// Attach a provider API token.
     pub fn with_bearer(mut self, token: &str) -> Self {
         self.bearer = Some(token.to_string());
+        self
+    }
+
+    /// Attach a provider-specific `Authorization` value (for example
+    /// `Token <secret>` for deSEC).
+    pub fn with_authorization(mut self, value: &str) -> Self {
+        self.authorization = Some(value.to_string());
+        self
+    }
+
+    /// Attach HTTP Basic credentials (OVH DynHost).
+    pub fn with_basic_auth(mut self, username: &str, password: &str) -> Self {
+        self.basic_auth = Some((username.to_string(), password.to_string()));
         self
     }
 }
@@ -151,8 +181,19 @@ pub struct ReqwestTransport {
 }
 
 impl ReqwestTransport {
+    /// Production transport: uses the outbound proxy saved in Settings, if any.
     pub fn new() -> Result<Self, AcmeError> {
-        reqwest::Client::builder()
+        Self::build(crate::proxy::apply_loaded(reqwest::Client::builder()))
+    }
+
+    /// Transport with an explicit proxy configuration, so the routing decision
+    /// can be pinned in a test without touching `data/proxy.json`.
+    pub fn new_with_proxy(settings: &crate::proxy::ProxySettings) -> Result<Self, AcmeError> {
+        Self::build(crate::proxy::apply(reqwest::Client::builder(), settings))
+    }
+
+    fn build(builder: reqwest::ClientBuilder) -> Result<Self, AcmeError> {
+        builder
             .timeout(crate::acme::HTTP_TIMEOUT)
             .user_agent(concat!("HomeVault/", env!("CARGO_PKG_VERSION")))
             .build()
@@ -171,7 +212,12 @@ impl Transport for ReqwestTransport {
                 HttpMethod::Put => self.client.put(&request.url),
                 HttpMethod::Delete => self.client.delete(&request.url),
             };
-            if let Some(token) = request.bearer {
+            if let Some((username, password)) = request.basic_auth {
+                builder = builder.basic_auth(username, Some(password));
+            }
+            if let Some(value) = request.authorization {
+                builder = builder.header(reqwest::header::AUTHORIZATION, value);
+            } else if let Some(token) = request.bearer {
                 builder = builder.bearer_auth(token);
             }
             if let Some(body) = request.body {

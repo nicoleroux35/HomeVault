@@ -61,6 +61,21 @@ pub struct InterfaceResponse {
 }
 
 #[derive(Debug, Deserialize)]
+pub struct StaticRouteRequest {
+    pub destination: String,
+    pub via: String,
+    #[serde(default)]
+    pub metric: Option<u32>,
+    pub interface: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct DeleteStaticRouteRequest {
+    pub destination: String,
+    pub interface: String,
+}
+
+#[derive(Debug, Deserialize)]
 pub struct InterfaceConfigRequest {
     pub method: String,
     #[serde(default)]
@@ -854,6 +869,115 @@ pub async fn handle_network_vlan_delete(
 }
 
 // ---------------------------------------------------------------------------
+// Static routes (P1-7)
+// ---------------------------------------------------------------------------
+
+/// GET /api/network/routes — saved static routes and whether the kernel has
+/// them. `available: false` means `ip` (iproute2) is missing; the card then
+/// explains it instead of offering a form that cannot work.
+pub async fn handle_network_routes_list(
+    State(state): State<AppStateArc>,
+    headers: HeaderMap,
+) -> Response {
+    if let Err(response) = require_auth(&state, &headers).await {
+        return response;
+    }
+    let result = tokio::task::spawn_blocking(
+        || -> Result<(bool, Vec<crate::static_routes::StaticRouteView>), String> {
+            if !crate::static_routes::ip_available() {
+                return Ok((false, Vec::new()));
+            }
+            Ok((true, crate::static_routes::list_views()?))
+        },
+    )
+    .await;
+    match result {
+        Ok(Ok((available, routes))) => ResponseHelper::json_success(serde_json::json!({
+            "available": available,
+            "routes": routes,
+        })),
+        Ok(Err(e)) => ResponseHelper::json_internal_error(e),
+        Err(e) => ResponseHelper::json_internal_error(format!("Internal error: {e}")),
+    }
+}
+
+/// POST /api/network/routes — add or replace a static route.
+pub async fn handle_network_route_add(
+    State(state): State<AppStateArc>,
+    headers: HeaderMap,
+    Json(req): Json<StaticRouteRequest>,
+) -> Response {
+    let admin = match require_admin(&state, &headers).await {
+        Ok(u) => u,
+        Err(response) => return response,
+    };
+    match tokio::task::spawn_blocking(crate::static_routes::ip_available).await {
+        Ok(true) => {}
+        Ok(false) => return ResponseHelper::json_unavailable("iproute2 (ip) is not installed"),
+        Err(e) => return ResponseHelper::json_internal_error(format!("Internal error: {e}")),
+    }
+
+    let route = crate::static_routes::StaticRoute {
+        destination: req.destination,
+        via: req.via,
+        metric: req.metric,
+        interface: req.interface,
+    };
+    let outcome = tokio::task::spawn_blocking(move || crate::static_routes::add_route(route)).await;
+    match outcome {
+        Ok(Ok(route)) => {
+            crate::events::log_event(format!(
+                "Admin '{}' added the static route {} via {} dev {}{}",
+                admin,
+                route.destination,
+                route.via,
+                route.interface,
+                route
+                    .metric
+                    .map(|m| format!(" metric {m}"))
+                    .unwrap_or_default()
+            ));
+            ResponseHelper::json_success(serde_json::json!({ "route": route }))
+        }
+        Ok(Err(e)) => ResponseHelper::json_error(e),
+        Err(e) => ResponseHelper::json_internal_error(format!("Internal error: {e}")),
+    }
+}
+
+/// DELETE /api/network/routes — remove a saved route.
+pub async fn handle_network_route_delete(
+    State(state): State<AppStateArc>,
+    headers: HeaderMap,
+    Json(req): Json<DeleteStaticRouteRequest>,
+) -> Response {
+    let admin = match require_admin(&state, &headers).await {
+        Ok(u) => u,
+        Err(response) => return response,
+    };
+    match tokio::task::spawn_blocking(crate::static_routes::ip_available).await {
+        Ok(true) => {}
+        Ok(false) => return ResponseHelper::json_unavailable("iproute2 (ip) is not installed"),
+        Err(e) => return ResponseHelper::json_internal_error(format!("Internal error: {e}")),
+    }
+
+    let outcome = tokio::task::spawn_blocking(move || {
+        crate::static_routes::delete_route(&req.destination, &req.interface)
+    })
+    .await;
+    match outcome {
+        Ok(Ok(route)) => {
+            crate::events::log_event(format!(
+                "Admin '{}' removed the static route {} via {} dev {}",
+                admin, route.destination, route.via, route.interface
+            ));
+            ResponseHelper::json_success(serde_json::json!({ "removed": route }))
+        }
+        Ok(Err(e)) => ResponseHelper::json_error(e),
+        Err(e) => ResponseHelper::json_internal_error(format!("Internal error: {e}")),
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Router helper
 // ---------------------------------------------------------------------------
 
@@ -916,6 +1040,13 @@ pub fn create_network_router(state: AppStateArc) -> Router {
         .route(
             "/vlans/{name}",
             axum::routing::delete(handle_network_vlan_delete),
+        )
+        // Static routes (P1-7): reads for any session, mutations admin-only.
+        .route(
+            "/routes",
+            axum::routing::get(handle_network_routes_list)
+                .post(handle_network_route_add)
+                .delete(handle_network_route_delete),
         )
         .route("/summary", axum::routing::get(handle_network_summary))
         .route("/services", axum::routing::get(handle_network_services))

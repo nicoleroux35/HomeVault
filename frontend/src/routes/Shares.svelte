@@ -110,6 +110,7 @@
     create_mask: string;
     directory_mask: string;
     additional_params: string[];
+    multichannel: boolean;
   }
 
   interface NfsConfig {
@@ -216,7 +217,7 @@
    * must degrade to one field showing a default, never blank the whole tab
    * (`allow_guest: undefined` used to break the guest switch's binding).
    */
-  const SMB_CONFIG_DEFAULTS: SmbConfig = { workgroup: 'WORKGROUP', security_mode: 'user', protocol_version: 'SMB3', allow_guest: false, create_mask: '0755', directory_mask: '0755', additional_params: [] };
+  const SMB_CONFIG_DEFAULTS: SmbConfig = { workgroup: 'WORKGROUP', security_mode: 'user', protocol_version: 'SMB3', allow_guest: false, create_mask: '0755', directory_mask: '0755', additional_params: [], multichannel: false };
 
   let smbConfig: SmbConfig = $state({ ...SMB_CONFIG_DEFAULTS });
   let smbRecycle = $state<Record<string, boolean>>({});
@@ -236,7 +237,8 @@
   let rsyncBusyName = $state<string | null>(null);
   let rsyncSecretDrafts = $state<Record<string, string>>({});
   let rsyncSecretBusy = $state<string | null>(null);
-  let nfsConfig: NfsConfig = $state({ networks: ['*'], default_access: 'rw', version: '4', root_squash: 'root_squash', custom_options: [] });
+  let nfsConfig: NfsConfig = $state({ networks: ['*'], default_access: 'rw', version: 'auto', root_squash: 'root_squash', custom_options: [] });
+  let ftpUsers = $state('');
   let ftpConfig: FtpConfig = $state({ port: 21, allowed_users: [], passive_ports: '30000-31000', max_clients: 10, force_tls: false, allow_anonymous: false, chroot: true, welcome_message: 'Welcome to HomeVault FTP' });
   let webdavConfig: WebdavConfig = $state({ port: 8082, path_prefix: '/', require_ssl: false, require_auth: true, compression: false, locking: true, allowed_methods: [] });
   let sftpConfig: SftpConfig = $state({ port: 2222 });
@@ -630,11 +632,18 @@
   async function loadFtpConfig() {
     configLoading = true;
     const resp = await api.get('/shares/ftp/config');
-    if (resp.success && resp.data) ftpConfig = resp.data;
+    if (resp.success && resp.data) {
+      ftpConfig = resp.data;
+      ftpUsers = (ftpConfig.allowed_users || []).join('\n');
+    }
     configLoading = false;
   }
 
   async function saveFtpConfig() {
+    ftpConfig.allowed_users = ftpUsers
+      .split('\n')
+      .map((user) => user.trim())
+      .filter((user) => user.length > 0);
     const resp = await api.put('/shares/ftp/config', ftpConfig);
     if (resp.success) notifySuccess('common.saved');
     else notifyError(resp);
@@ -1070,8 +1079,11 @@
           <label class={field}><span class={fieldLabel}>{$t('shares.workgroup')}</span><input class={inp} bind:value={smbConfig.workgroup} /></label>
           {@render toggleField($t('shares.guest'), smbConfig.allow_guest, (v) => (smbConfig.allow_guest = v))}
           {#if smbMode === 'advanced'}
-            <label class={field}><span class={fieldLabel}>{$t('shares.security_mode')}</span><select class={inp} bind:value={smbConfig.security_mode}><option value="user">{$t('shares.opt_user')}</option><option value="share">{$t('shares.opt_share')}</option><option value="domain">{$t('shares.opt_domain')}</option><option value="ads">{$t('shares.opt_ads')}</option></select></label>
-            <label class={field}><span class={fieldLabel}>{$t('shares.version')}</span><select class={inp} bind:value={smbConfig.protocol_version}><option value="SMB2">SMB2</option><option value="SMB3">SMB3</option><option value="NT1">NT1 (CIFS)</option></select></label>
+            <label class={field}><span class={fieldLabel}>{$t('shares.security_mode')}</span><select class={inp} bind:value={smbConfig.security_mode}><option value="user">{$t('shares.opt_user')}</option><option value="share">{$t('shares.opt_share')}</option></select></label>
+            <label class={field}><span class={fieldLabel}>{$t('shares.version')}</span><select class={inp} bind:value={smbConfig.protocol_version}><option value="SMB2">SMB2</option><option value="SMB3">SMB3</option></select></label>
+            {@render toggleField($t('shares.multichannel'), smbConfig.multichannel, (v) => (smbConfig.multichannel = v))}
+            <p class="m-0 text-c-small text-[var(--hv-shell-text-muted)]">{$t('shares.multichannel_hint')}</p>
+            <p class="m-0 text-c-small text-[var(--hv-shell-text-muted)]">{$t('shares.smb_domain_note')}</p>
             <label class={field}><span class={fieldLabel}>{$t('shares.create_mask')}</span><input class={inp} bind:value={smbConfig.create_mask} /></label>
             <label class={field}><span class={fieldLabel}>{$t('shares.directory_mask')}</span><input class={inp} bind:value={smbConfig.directory_mask} /></label>
           {/if}
@@ -1158,7 +1170,7 @@
           <label class={field}><span class={fieldLabel}>{$t('shares.networks')}</span><textarea class={cn(inp, 'h-auto min-h-[76px] py-3 font-[family-name:var(--hv-font-mono)] text-c-base leading-relaxed resize-y')} bind:value={nfsNetworks} rows="3"></textarea></label>
           <label class={field}><span class={fieldLabel}>{$t('shares.access')}</span><select class={inp} bind:value={nfsConfig.default_access}><option value="rw">{$t('shares.read_write')}</option><option value="ro">{$t('shares.read_only_opt')}</option></select></label>
           {#if nfsMode === 'advanced'}
-            <label class={field}><span class={fieldLabel}>{$t('shares.version')}</span><select class={inp} bind:value={nfsConfig.version}><option value="3">NFS v3</option><option value="4">NFS v4</option><option value="4.2">NFS v4.2</option></select></label>
+            <label class={field}><span class={fieldLabel}>{$t('shares.version')}</span><select class={inp} bind:value={nfsConfig.version}><option value="auto">{$t('shares.nfs_version_auto')}</option><option value="3">NFS v3</option><option value="4">NFS v4</option><option value="4.2">NFS v4.2</option></select></label>
             <label class={field}><span class={fieldLabel}>{$t('shares.root_squash')}</span><select class={inp} bind:value={nfsConfig.root_squash}><option value="root_squash">{$t('shares.root_squash')}</option><option value="no_root_squash">{$t('shares.no_root_squash')}</option><option value="all_squash">{$t('shares.all_squash')}</option></select></label>
           {/if}
           <Button variant="primary" size="lg" onclick={saveNfsConfig}>{$t('common.save')}</Button>
@@ -1179,6 +1191,8 @@
             <label class={field}><span class={fieldLabel}>{$t('shares.ftp_port')}</span><input class={inp} type="number" bind:value={ftpConfig.port} /></label>
             <label class={field}><span class={fieldLabel}>{$t('shares.passive_ports')}</span><input class={inp} bind:value={ftpConfig.passive_ports} /></label>
             <label class={field}><span class={fieldLabel}>{$t('shares.max_clients')}</span><input class={inp} type="number" bind:value={ftpConfig.max_clients} /></label>
+            <label class={field}><span class={fieldLabel}>{$t('shares.allowed_users')}</span><textarea class={cn(inp, 'h-auto min-h-[76px] py-3 font-[family-name:var(--hv-font-mono)] text-c-base leading-relaxed resize-y')} bind:value={ftpUsers} rows="3"></textarea></label>
+            <p class="m-0 text-c-small text-[var(--hv-shell-text-muted)]">{$t('shares.allowed_users_hint')}</p>
             {@render toggleField($t('shares.chroot'), ftpConfig.chroot, (v) => (ftpConfig.chroot = v))}
           {/if}
           <Button variant="primary" size="lg" onclick={saveFtpConfig}>{$t('common.save')}</Button>

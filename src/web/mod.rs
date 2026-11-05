@@ -159,7 +159,8 @@ use crate::handlers::{
     firewall::{
         handle_firewall_default_policy, handle_firewall_disable, handle_firewall_enable,
         handle_firewall_enable_preview, handle_firewall_history, handle_firewall_rule_add,
-        handle_firewall_rule_delete, handle_firewall_status,
+        handle_firewall_rule_delete, handle_firewall_status, handle_geoip_apply,
+        handle_geoip_rule_delete, handle_geoip_rule_set, handle_geoip_status,
     },
     groups::{
         handle_group_add_member, handle_group_create, handle_group_delete, handle_group_get,
@@ -183,7 +184,10 @@ use crate::handlers::{
     },
     mdns::handle_mdns_status,
     meta::handle_meta,
-    metrics::{handle_metrics_history, handle_metrics_latest},
+    metrics::{
+        handle_metrics_history, handle_metrics_latest, handle_metrics_settings_get,
+        handle_metrics_settings_update,
+    },
     monitor_layout::{handle_get_monitor_layout, handle_set_monitor_layout},
     notifications::{
         handle_notification_delete, handle_notification_events_config_get,
@@ -230,14 +234,15 @@ use crate::handlers::{
     },
     restic::{
         handle_restic_available, handle_restic_backup_create, handle_restic_backup_jobs,
-        handle_restic_check, handle_restic_forget, handle_restic_prune, handle_restic_reminders,
-        handle_restic_repo_create, handle_restic_repo_delete, handle_restic_repo_get,
-        handle_restic_repo_update, handle_restic_repos_list, handle_restic_restore,
-        handle_restic_restore_plan, handle_restic_schedule_create, handle_restic_schedule_delete,
-        handle_restic_schedule_set_enabled, handle_restic_schedule_update,
-        handle_restic_schedules_list, handle_restic_snapshot_delete, handle_restic_snapshots_list,
-        handle_restic_stats, handle_restic_unlock, handle_restic_version,
-        handle_retention_policies_list, handle_retention_policy_create,
+        handle_restic_check, handle_restic_forget, handle_restic_mount_create,
+        handle_restic_mount_delete, handle_restic_mounts_list, handle_restic_prune,
+        handle_restic_reminders, handle_restic_repo_create, handle_restic_repo_delete,
+        handle_restic_repo_get, handle_restic_repo_update, handle_restic_repos_list,
+        handle_restic_restore, handle_restic_restore_plan, handle_restic_schedule_create,
+        handle_restic_schedule_delete, handle_restic_schedule_set_enabled,
+        handle_restic_schedule_update, handle_restic_schedules_list, handle_restic_snapshot_delete,
+        handle_restic_snapshots_list, handle_restic_stats, handle_restic_unlock,
+        handle_restic_version, handle_retention_policies_list, handle_retention_policy_create,
         handle_retention_policy_delete, handle_retention_policy_update,
     },
     reverse_proxy::{
@@ -277,6 +282,10 @@ use crate::handlers::{
         handle_share_link_create, handle_share_link_delete, handle_share_link_download,
         handle_share_link_unlock, handle_share_links_list,
     },
+    share_snapshots::{
+        handle_share_snapshot_create, handle_share_snapshot_delete, handle_share_snapshot_restore,
+        handle_share_snapshots_list,
+    },
     shares::{
         handle_ftp_config_get, handle_ftp_config_update, handle_nfs_config_get,
         handle_nfs_config_update, handle_sftp_config_get, handle_sftp_config_update,
@@ -308,11 +317,13 @@ use crate::handlers::{
     spa::serve_static_file,
     spa::serve_wallpapers_file,
     storage::{
+        handle_btrfs_layout_migrate, handle_btrfs_layout_status, handle_btrfs_rollback,
         handle_disk_smart_capabilities, handle_disk_smart_test_start,
         handle_disk_smart_test_status, handle_disks_list, handle_import_pool,
         handle_importable_pools_list, handle_partitions_list, handle_raid_arrays_list,
         handle_raid_available_devices, handle_raid_create, handle_raid_rebuild,
         handle_removable_disks_list, handle_virtual_disk_delete, handle_virtual_disk_grow,
+        handle_virtual_disk_level_options, handle_virtual_disk_migrate_level,
         handle_virtual_disk_scrub, handle_virtual_disk_scrub_status, handle_virtual_disks_list,
     },
     syncthing::{
@@ -615,6 +626,11 @@ pub fn create_app(state: AppStateArc) -> Router {
         // Settings - general
         .route("/api/settings/general", get(handle_general_settings_get))
         .route("/api/settings/general", put(handle_general_settings_update))
+        .route(
+            "/api/settings/password-policy",
+            get(crate::handlers::password_policy::handle_password_policy_get)
+                .put(crate::handlers::password_policy::handle_password_policy_update),
+        )
         .route("/api/settings/timezones", get(handle_timezones_get))
         // Settings - start on boot (systemd autostart for homevault.service)
         .route("/api/settings/autostart", get(handle_autostart_get))
@@ -708,6 +724,13 @@ pub fn create_app(state: AppStateArc) -> Router {
         .route(
             "/api/settings/ddns/update",
             post(crate::handlers::ddns::handle_ddns_update_now),
+        )
+        // Settings - outbound HTTP(S) proxy (admin-only). Applied to ACME,
+        // DDNS, update checks, notifications and Web Push.
+        .route(
+            "/api/settings/proxy",
+            get(crate::handlers::proxy::handle_proxy_settings_get)
+                .put(crate::handlers::proxy::handle_proxy_settings_update),
         )
         // Settings - reachability advisor (admin-only, read-only).
         .route(
@@ -941,6 +964,15 @@ pub fn create_app(state: AppStateArc) -> Router {
             post(handle_firewall_default_policy),
         )
         .route("/api/firewall/history", get(handle_firewall_history))
+        .route(
+            "/api/firewall/geoip",
+            get(handle_geoip_status).post(handle_geoip_rule_set),
+        )
+        .route("/api/firewall/geoip/apply", post(handle_geoip_apply))
+        .route(
+            "/api/firewall/geoip/{country}",
+            axum::routing::delete(handle_geoip_rule_delete),
+        )
         .route(
             "/api/firewall/rules",
             post(handle_firewall_rule_add).delete(handle_firewall_rule_delete),
@@ -1279,6 +1311,24 @@ pub fn create_app(state: AppStateArc) -> Router {
             "/api/storage/virtual-disks/{name}/grow",
             post(handle_virtual_disk_grow),
         )
+        // Change an mdadm array's RAID level in place (mdadm --grow --level).
+        .route(
+            "/api/storage/virtual-disks/{name}/level-options",
+            get(handle_virtual_disk_level_options),
+        )
+        .route(
+            "/api/storage/virtual-disks/{name}/migrate-level",
+            post(handle_virtual_disk_migrate_level),
+        )
+        // Btrfs @/@snapshots layout and in-place rollback (P1-13).
+        .route(
+            "/api/storage/virtual-disks/{name}/btrfs-layout",
+            get(handle_btrfs_layout_status).post(handle_btrfs_layout_migrate),
+        )
+        .route(
+            "/api/storage/virtual-disks/{name}/btrfs-rollback",
+            post(handle_btrfs_rollback),
+        )
         // Foreign (importable) pools discovered on attached disks
         .route(
             "/api/storage/importable-pools",
@@ -1529,6 +1579,8 @@ pub fn create_app(state: AppStateArc) -> Router {
         // authed users; samples are written only by the collector loop.
         .route("/api/metrics/history", get(handle_metrics_history))
         .route("/api/metrics/latest", get(handle_metrics_latest))
+        .route("/api/metrics/settings", get(handle_metrics_settings_get))
+        .route("/api/metrics/settings", put(handle_metrics_settings_update))
         // Host power management + disk spindown (admin-only; see
         // docs/guides/power.md).
         .route("/api/power/status", get(handle_power_status))
@@ -1610,6 +1662,11 @@ pub fn create_app(state: AppStateArc) -> Router {
         .route("/app-auth", get(handle_app_auth))
         // Versioned client/server contract handshake (unauthenticated).
         .route("/api/meta", get(handle_meta))
+        // Generated OpenAPI 3 contract (administrator only).
+        .route(
+            "/api/openapi.json",
+            get(crate::handlers::openapi::handle_openapi_json),
+        )
         // What's New (release highlights, per-user acknowledgement)
         .route("/api/whats-new", get(handle_whats_new))
         .route("/api/whats-new/seen", post(handle_whats_new_seen))
@@ -1766,6 +1823,19 @@ pub fn create_app(state: AppStateArc) -> Router {
         .route(
             "/api/shares/{name}/{share_type}/toggle/{enabled}",
             put(handle_share_toggle),
+        )
+        // Per-share snapshots (P1-12): list/read any session, mutations admin.
+        .route(
+            "/api/shares/{name}/{share_type}/snapshots",
+            get(handle_share_snapshots_list).post(handle_share_snapshot_create),
+        )
+        .route(
+            "/api/shares/{name}/{share_type}/snapshots/{snapshot}",
+            axum::routing::delete(handle_share_snapshot_delete),
+        )
+        .route(
+            "/api/shares/{name}/{share_type}/snapshots/{snapshot}/restore",
+            post(handle_share_snapshot_restore),
         )
         .route(
             "/api/shares/{name}/{share_type}",
@@ -2090,6 +2160,15 @@ pub fn create_app(state: AppStateArc) -> Router {
         )
         .route("/api/restic/repos/{id}/unlock", post(handle_restic_unlock))
         .route("/api/restic/repos/{id}/prune", post(handle_restic_prune))
+        .route(
+            "/api/restic/repos/{id}/mount",
+            post(handle_restic_mount_create),
+        )
+        .route("/api/restic/mounts", get(handle_restic_mounts_list))
+        .route(
+            "/api/restic/mounts/{id}",
+            delete(handle_restic_mount_delete),
+        )
         .route("/api/restic/backup", post(handle_restic_backup_create))
         .route("/api/restic/restore", post(handle_restic_restore))
         .route("/api/restic/restore-plan", get(handle_restic_restore_plan))
@@ -2238,6 +2317,10 @@ pub fn create_app(state: AppStateArc) -> Router {
         .route(
             "/api/vm/{name}/config",
             put(crate::handlers::vm::handle_vm_config),
+        )
+        .route(
+            "/api/vm/{name}/clone",
+            post(crate::handlers::vm::handle_vm_clone),
         )
         .route(
             "/api/vm/{name}/snapshots",
@@ -2659,6 +2742,21 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // Per-service bandwidth control (P3.2): re-evaluates the weekly schedule
     // once a minute and only runs `tc` when the effective policy changed.
     tokio::spawn(crate::traffic_control::run_scheduler());
+    // HomeVault-managed static routes: re-assert the saved list once the
+    // interfaces have had time to come up. Failures are logged and the saved
+    // entries are kept for the next boot (a slow DHCP lease is not a reason to
+    // forget the operator's routes).
+    tokio::spawn(async move {
+        tokio::time::sleep(crate::static_routes::BOOT_REAPPLY_DELAY).await;
+        match tokio::task::spawn_blocking(crate::static_routes::reapply_all).await {
+            Ok(failures) => {
+                for failure in failures {
+                    tracing::warn!("Static route not restored at boot: {failure}");
+                }
+            }
+            Err(e) => tracing::warn!("Static-route boot re-apply task failed: {e}"),
+        }
+    });
     tokio::spawn(crate::metrics::run_collector_loop(state.db.pool()));
     // Transfer quotas (ROADMAP 23.2): re-opens the counters of every subject
     // whose counting window elapsed, so the Quotas/Users screens show a reset

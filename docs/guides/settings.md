@@ -155,12 +155,55 @@ evidence the roadmap tracked.
 | Per-disk spindown | `disk_power_settings` rows | `DiskPowerRepository::delete_all()` |
 | Database snapshots | `data/db_backup.json` | `DbBackupService::reset_settings()` (the scheduler also re-reads the file every tick) |
 | UPS devices | `/etc/nut/ups.conf` | `ups::reset_config()` — shipped section restored, NUT reloaded |
+| Outbound proxy | `data/proxy.json` | `proxy::clear_settings()` from `SettingsPersistence::reset()` |
 
 Scan history, quarantined threats and protected paths are evidence/admin data,
 not settings, and are deliberately left in place. A domain that fails is
 returned in `warnings` (the response is still `success: true`, because most of
 the reset did happen) and the page shows `settings.settings_reset_partial`
 instead of the plain success toast.
+
+### Outbound HTTP proxy (P1-8, 2026-11-05)
+
+Settings → Security → **Outbound proxy** routes HomeVault's third-party calls
+through one proxy: certificate renewal (`src/acme*`), dynamic DNS
+(`src/ddns.rs`), the version check
+(`handlers/settings.rs::fetch_latest_version`), app-image update checks
+(`app_catalog/updates.rs`), notification webhooks and SMS
+(`notification_engine.rs`) and Web Push (`web_push/mod.rs`). Local-only clients
+(Ollama, Docker, Incus, the app proxy) and the ACME challenge probe stay
+direct by design.
+
+- **Storage.** `data/proxy.json` through `src/proxy.rs`
+  (`ProxySettings { enabled, http_proxy, https_proxy, no_proxy }`), cleared by
+  `reset_settings()`. An absent or corrupt file degrades to *disabled* — a bad
+  proxy must never stop the server.
+- **Application.** `src/proxy.rs::apply`/`apply_loaded` wraps the
+  `reqwest::Client::builder()` of each client in the list above. When the
+  setting is off the builder is explicitly told `no_proxy()`, so
+  `HTTP_PROXY`/`HTTPS_PROXY` in the service environment cannot redirect traffic
+  behind the admin's back.
+- **Local traffic is never proxied.** `effective_no_proxy()` always prepends
+  loopback (`localhost`, `127.0.0.1`, `::1`), the link-local block, every RFC
+  1918 private range, IPv6 ULA/link-local and mDNS `.local`; the admin's list
+  is merged and de-duplicated, never a replacement. This keeps health checks,
+  the app proxy, LAN webhooks and the local Docker socket off the third-party
+  proxy and stops it leaking the home network's topology.
+- **Validation.** Only `http://` and `https://` URLs are accepted (this build
+  has reqwest without the SOCKS feature, so a `socks*://` URL is refused with
+  that reason rather than silently ignored). A URL carrying a username,
+  password, query or fragment is refused: credentials in a proxy URL would end
+  up in a log line or an export. `no_proxy` entries are bare hosts, IPs or
+  CIDRs — never URLs.
+- **Live effect.** `ReqwestTransport::new_with_proxy` exists for tests;
+  production clients are rebuilt per call, and the webhook cache is keyed on
+  the saved settings so a new proxy applies on the next alert. The API reports
+  `requires_restart: false`.
+- **Tests.** `src/proxy.rs` unit tests (URL/scheme/credential refusals,
+  loopback merge, serde defaults), `tests/proxy_integration.rs` (guard matrix,
+  round-trip, validation, plus a real mock proxy proving routing and the
+  loopback bypass) and `tests/e2e/settings/proxy.spec.ts` (card shape,
+  validation, keyboard, security, narrow window).
 
 ### UPS device configuration and NUT reloads (ROADMAP 13.2)
 

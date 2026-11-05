@@ -106,7 +106,7 @@ test.beforeAll(async ({ playwright }) => {
   adminTokens = { username: ADMIN_USER, password: ADMIN_PASS, token, csrf };
 });
 
-test('1.1 — The dynamic DNS card renders its four providers', async ({ page }) => {
+test('1.1 — The dynamic DNS card renders its seven providers', async ({ page }) => {
   await openSecurityCategory(page, adminTokens);
 
   const provider = page.locator('[data-testid="ddns-provider"]');
@@ -114,10 +114,36 @@ test('1.1 — The dynamic DNS card renders its four providers', async ({ page })
   const values = await provider.locator('option').evaluateAll((els) =>
     els.map((e) => (e as HTMLOptionElement).value),
   );
-  expect(values).toEqual(['duckdns', 'dynv6', 'cloudflare', 'custom']);
+  expect(values).toEqual([
+    'duckdns',
+    'dynv6',
+    'cloudflare',
+    'ovh',
+    'namecheap',
+    'desec',
+    'custom',
+  ]);
 
   await expect(page.locator('[data-testid="ddns-hostname"]')).toBeVisible();
   await expect(page.locator('[data-testid="ddns-save"]')).toBeVisible();
+});
+
+test('1.2 — Provider-specific fields appear only for their provider', async ({ page }) => {
+  await openSecurityCategory(page, adminTokens);
+  const provider = page.locator('[data-testid="ddns-provider"]');
+
+  await provider.selectOption('ovh');
+  await expect(page.locator('[data-testid="ddns-username"]')).toBeVisible();
+  await expect(page.locator('[data-testid="ddns-domain"]')).toHaveCount(0);
+
+  await provider.selectOption('namecheap');
+  await expect(page.locator('[data-testid="ddns-domain"]')).toBeVisible();
+  await expect(page.locator('[data-testid="ddns-username"]')).toHaveCount(0);
+
+  await provider.selectOption('desec');
+  await expect(page.locator('[data-testid="ddns-username"]')).toHaveCount(0);
+  await expect(page.locator('[data-testid="ddns-domain"]')).toHaveCount(0);
+  await expect(page.locator('[data-testid="ddns-token"]')).toBeVisible();
 });
 
 test('2.1 — The status badge is one of the documented values', async ({ page }) => {

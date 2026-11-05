@@ -30,7 +30,7 @@
 //! sets (mdadm, ZFS, native Btrfs), SMART self-tests, scrub/consistency
 //! checks, and discovery/import of foreign pools.
 
-use crate::disk::DiskService;
+use crate::disk::{DiskError, DiskService};
 use crate::handlers::admin_guard::{require_admin, require_auth};
 use crate::handlers::AppState;
 use crate::health::HealthService;
@@ -160,7 +160,9 @@ pub struct CreateRaidRequest {
     pub level: String,
     pub devices: Vec<String>,
     pub filesystem: String,
-    /// Extra devices attached to the array as hot spares (mdadm techs only).
+    /// Extra devices attached as hot spares: mdadm `--spare-devices` for
+    /// ext4/xfs, or a native ZFS `spare` vdev group. Btrfs has no hot-spare
+    /// role and refuses them with an alternative.
     #[serde(default)]
     pub spares: Option<Vec<String>>,
     /// Create the array when `devices` is one (raid6: two) short of the level
@@ -768,6 +770,284 @@ pub async fn handle_virtual_disk_grow(
             }))
         }
         Err(e) => ResponseHelper::json_error(format!("Failed to grow virtual disk: {}", e)),
+    }
+}
+
+/// Turns a level-change failure into the right HTTP status: a host without
+/// `mdadm` is `503` (the request was fine, the capability is missing), while
+/// every validation/command refusal stays a `400` naming the reason.
+fn raid_level_error(prefix: &str, error: DiskError) -> Response {
+    let missing_mdadm = match &error {
+        DiskError::Io(io) => io.kind() == std::io::ErrorKind::NotFound,
+        DiskError::CommandFailed { stderr, .. } => {
+            let lower = stderr.to_ascii_lowercase();
+            lower.contains("command not found") || lower.contains("no such file or directory")
+        }
+        _ => false,
+    };
+    if missing_mdadm {
+        ResponseHelper::json_unavailable(
+            "mdadm is not installed on this host — install mdadm to manage RAID levels",
+        )
+    } else {
+        ResponseHelper::json_error(format!("{}: {}", prefix, error))
+    }
+}
+
+/// `GET /api/storage/virtual-disks/{name}/level-options` — the current level
+/// and every target the pure transition matrix allows, with the reason for
+/// each refusal. Any signed-in user may read it; nothing is executed.
+#[axum_macros::debug_handler]
+pub async fn handle_virtual_disk_level_options(
+    State(state): State<Arc<AppState>>,
+    axum::extract::Path(name): axum::extract::Path<String>,
+    headers: HeaderMap,
+) -> Response {
+    if let Err(response) = require_auth(&state, &headers).await {
+        return response;
+    }
+
+    match virtual_disk_type(&name).await {
+        Some(crate::pools::PoolType::Mdadm) => {}
+        Some(_) => {
+            return ResponseHelper::json_error(format!(
+                "Virtual disk '{}' is not an mdadm array — only mdadm arrays can change RAID level",
+                name
+            ))
+        }
+        None => return ResponseHelper::json_error(format!("Virtual disk '{}' not found", name)),
+    }
+
+    match DiskService::raid_level_plan(&name).await {
+        Ok(plan) => ResponseHelper::json_success(plan),
+        Err(e) => raid_level_error("Failed to read the RAID level options", e),
+    }
+}
+
+#[derive(serde::Deserialize)]
+pub struct MigrateRaidLevelRequest {
+    /// One of `raid0`, `raid1`, `raid5`, `raid6`, `raid10`.
+    pub target_level: String,
+    /// The administrator must confirm a backup exists: mdadm level changes
+    /// rewrite the first stripes in a critical section.
+    #[serde(default)]
+    pub backup_confirmed: bool,
+}
+
+/// `POST /api/storage/virtual-disks/{name}/migrate-level` — changes an mdadm
+/// array's RAID level in place (`mdadm --grow --level`). The reshape runs in
+/// the background. Admin-only: it rewrites the array's layout.
+#[axum_macros::debug_handler]
+pub async fn handle_virtual_disk_migrate_level(
+    State(state): State<Arc<AppState>>,
+    axum::extract::Path(name): axum::extract::Path<String>,
+    headers: HeaderMap,
+    axum::extract::Json(payload): axum::extract::Json<MigrateRaidLevelRequest>,
+) -> Response {
+    let admin_username = match require_admin(&state, &headers).await {
+        Ok(u) => u,
+        Err(response) => return response,
+    };
+
+    // Shape gates first: an invalid target or a missing backup confirmation
+    // must answer before any scan or command touches the host.
+    let target = payload.target_level.trim().to_ascii_lowercase();
+    if !crate::disk::is_known_raid_level(&target) {
+        return ResponseHelper::json_error(format!(
+            "Unknown RAID level '{}': supported targets are raid0, raid1, raid5, raid6, raid10",
+            payload.target_level
+        ));
+    }
+    if !payload.backup_confirmed {
+        return ResponseHelper::json_error(
+            "Back up the array before changing its RAID level, then confirm the backup exists"
+                .to_string(),
+        );
+    }
+
+    match virtual_disk_type(&name).await {
+        Some(crate::pools::PoolType::Mdadm) => {}
+        Some(_) => {
+            return ResponseHelper::json_error(format!(
+                "Virtual disk '{}' is not an mdadm array — only mdadm arrays can change RAID level",
+                name
+            ))
+        }
+        None => return ResponseHelper::json_error(format!("Virtual disk '{}' not found", name)),
+    }
+
+    match DiskService::migrate_raid_level(&name, &target, true).await {
+        Ok(change) => {
+            crate::events::log_event_warn(format!(
+                "Admin '{}' started a RAID level change on '{}': {} -> {} ({} members, background reshape)",
+                admin_username,
+                name,
+                crate::disk::raid_level_label(&change.from),
+                crate::disk::raid_level_label(&change.to),
+                change.member_count
+            ));
+            ResponseHelper::json_success(serde_json::json!({
+                "message": format!(
+                    "Changing {} to {} — the array is reshaping in the background",
+                    crate::disk::raid_level_label(&change.from),
+                    crate::disk::raid_level_label(&change.to)
+                ),
+                "from_level": change.from,
+                "target_level": change.to,
+                "member_count": change.member_count,
+            }))
+        }
+        Err(e) => raid_level_error("Failed to change the RAID level", e),
+    }
+}
+
+/// The Btrfs snapshot/rollback errors that must not become a generic `400`:
+/// a legacy layout is a named capability refusal (`503`), a missing snapshot
+/// is a clean `404`-style `400`, and a permission escape is `403`.
+fn btrfs_error(prefix: &str, error: crate::snapshots::SnapError) -> Response {
+    use crate::snapshots::SnapError;
+    match error {
+        SnapError::Unsupported(message) => ResponseHelper::json_unavailable(message),
+        SnapError::NotFound(name) => {
+            ResponseHelper::json_error(format!("Snapshot '{name}' not found"))
+        }
+        SnapError::PermissionDenied => {
+            ResponseHelper::json_forbidden("That path is outside the pool".to_string())
+        }
+        other => ResponseHelper::json_error(format!("{prefix}: {other}")),
+    }
+}
+
+/// `GET /api/storage/virtual-disks/{name}/btrfs-layout` — reports legacy vs
+/// `@`/`@snapshots` and whether in-place rollback is available.
+#[axum_macros::debug_handler]
+pub async fn handle_btrfs_layout_status(
+    State(state): State<Arc<AppState>>,
+    axum::extract::Path(name): axum::extract::Path<String>,
+    headers: HeaderMap,
+) -> Response {
+    if let Err(response) = require_auth(&state, &headers).await {
+        return response;
+    }
+    match virtual_disk_type(&name).await {
+        Some(crate::pools::PoolType::Btrfs) => {}
+        Some(_) => {
+            return ResponseHelper::json_error(format!(
+                "Virtual disk '{}' is not a Btrfs pool",
+                name
+            ))
+        }
+        None => return ResponseHelper::json_error(format!("Virtual disk '{}' not found", name)),
+    }
+    let pool = name.clone();
+    match tokio::task::spawn_blocking(move || {
+        crate::snapshots::SnapshotService::btrfs_layout_status(&pool)
+    })
+    .await
+    {
+        Ok(Ok(status)) => ResponseHelper::json_success(status),
+        Ok(Err(e)) => btrfs_error("Failed to read the Btrfs layout", e),
+        Err(e) => ResponseHelper::json_error(format!("Layout task panicked: {e}")),
+    }
+}
+
+/// `POST /api/storage/virtual-disks/{name}/btrfs-layout` — explicit migration
+/// of a legacy pool to `@`/`@snapshots` (admin). Destructive-storage topology
+/// change: the UI confirms it and lists the affected pool.
+#[axum_macros::debug_handler]
+pub async fn handle_btrfs_layout_migrate(
+    State(state): State<Arc<AppState>>,
+    axum::extract::Path(name): axum::extract::Path<String>,
+    headers: HeaderMap,
+) -> Response {
+    let admin = match require_admin(&state, &headers).await {
+        Ok(admin) => admin,
+        Err(response) => return response,
+    };
+    match virtual_disk_type(&name).await {
+        Some(crate::pools::PoolType::Btrfs) => {}
+        Some(_) => {
+            return ResponseHelper::json_error(format!(
+                "Virtual disk '{}' is not a Btrfs pool",
+                name
+            ))
+        }
+        None => return ResponseHelper::json_error(format!("Virtual disk '{}' not found", name)),
+    }
+    let pool = name.clone();
+    match tokio::task::spawn_blocking(move || {
+        crate::snapshots::SnapshotService::migrate_btrfs_layout(&pool)
+    })
+    .await
+    {
+        Ok(Ok(status)) => {
+            crate::events::log_event_warn(format!(
+                "Admin '{}' migrated Btrfs pool '{}' to @/@snapshots",
+                admin, name
+            ));
+            ResponseHelper::json_success(status)
+        }
+        Ok(Err(e)) => btrfs_error("Failed to migrate the Btrfs layout", e),
+        Err(e) => ResponseHelper::json_error(format!("Migration task panicked: {e}")),
+    }
+}
+
+#[derive(serde::Deserialize)]
+pub struct BtrfsRollbackRequest {
+    pub snapshot: String,
+    /// Rollback rewrites the live subvolume; the admin must confirm it.
+    #[serde(default)]
+    pub confirm: bool,
+}
+
+/// `POST /api/storage/virtual-disks/{name}/btrfs-rollback` — in-place Btrfs
+/// rollback (`@` swapped for a snapshot, `@snapshots` kept mounted). Legacy
+/// pools answer `503` with the migration reason.
+#[axum_macros::debug_handler]
+pub async fn handle_btrfs_rollback(
+    State(state): State<Arc<AppState>>,
+    axum::extract::Path(name): axum::extract::Path<String>,
+    headers: HeaderMap,
+    axum::extract::Json(payload): axum::extract::Json<BtrfsRollbackRequest>,
+) -> Response {
+    let admin = match require_admin(&state, &headers).await {
+        Ok(admin) => admin,
+        Err(response) => return response,
+    };
+    if !payload.confirm {
+        return ResponseHelper::json_error(
+            "Rolling back replaces the live pool contents — confirm the rollback first".to_string(),
+        );
+    }
+    if !crate::snapshots::is_safe_snapshot_name(&payload.snapshot) {
+        return ResponseHelper::json_error("Invalid snapshot name".to_string());
+    }
+    match virtual_disk_type(&name).await {
+        Some(crate::pools::PoolType::Btrfs) => {}
+        Some(_) => {
+            return ResponseHelper::json_error(format!(
+                "Virtual disk '{}' is not a Btrfs pool",
+                name
+            ))
+        }
+        None => return ResponseHelper::json_error(format!("Virtual disk '{}' not found", name)),
+    }
+    let pool = name.clone();
+    let snapshot = payload.snapshot.clone();
+    match tokio::task::spawn_blocking(move || {
+        crate::snapshots::SnapshotService::rollback_btrfs_in_place(&pool, &snapshot)
+    })
+    .await
+    {
+        Ok(Ok(outcome)) => {
+            crate::events::log_event_warn(format!(
+                "Admin '{}' rolled Btrfs pool '{}' back to snapshot '{}' (previous state: {})",
+                admin, name, outcome.snapshot, outcome.previous_subvolume
+            ));
+            ResponseHelper::json_success(outcome)
+        }
+        Ok(Err(e)) => btrfs_error("Failed to roll the Btrfs pool back", e),
+        Err(e) => ResponseHelper::json_error(format!("Rollback task panicked: {e}")),
     }
 }
 

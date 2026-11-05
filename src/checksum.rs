@@ -222,7 +222,8 @@ where
     if !meta.is_file() {
         return Err(ChecksumError::NotAFile);
     }
-    let mut reader = std::io::BufReader::with_capacity(HASH_BLOCK_BYTES, std::fs::File::open(path)?);
+    let mut reader =
+        std::io::BufReader::with_capacity(HASH_BLOCK_BYTES, std::fs::File::open(path)?);
     let mut sink = Sink::new(algorithm);
     let mut block = vec![0u8; HASH_BLOCK_BYTES];
     let mut processed: u64 = 0;
@@ -246,7 +247,10 @@ where
 }
 
 /// Hash `path` without progress reporting (the inline path and the tests).
-pub fn hash_file(path: &Path, algorithm: ChecksumAlgorithm) -> Result<ChecksumOutcome, ChecksumError> {
+pub fn hash_file(
+    path: &Path,
+    algorithm: ChecksumAlgorithm,
+) -> Result<ChecksumOutcome, ChecksumError> {
     hash_file_with_progress(path, algorithm, |_| true)
 }
 
@@ -454,12 +458,16 @@ mod tests {
     fn test_sha256_matches_known_vectors() {
         let (_d, path) = temp_file(b"");
         assert_eq!(
-            hash_file(&path, ChecksumAlgorithm::Sha256).unwrap().checksum,
+            hash_file(&path, ChecksumAlgorithm::Sha256)
+                .unwrap()
+                .checksum,
             "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
         );
         let (_d, path) = temp_file(b"abc");
         assert_eq!(
-            hash_file(&path, ChecksumAlgorithm::Sha256).unwrap().checksum,
+            hash_file(&path, ChecksumAlgorithm::Sha256)
+                .unwrap()
+                .checksum,
             "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
         );
     }
@@ -479,12 +487,16 @@ mod tests {
     fn test_blake3_matches_known_vectors() {
         let (_d, path) = temp_file(b"abc");
         assert_eq!(
-            hash_file(&path, ChecksumAlgorithm::Blake3).unwrap().checksum,
+            hash_file(&path, ChecksumAlgorithm::Blake3)
+                .unwrap()
+                .checksum,
             "6437b3ac38465133ffb63b75273a8db548c558465d79db03fd359c6cd5bd9d85"
         );
         let (_d, path) = temp_file(b"");
         assert_eq!(
-            hash_file(&path, ChecksumAlgorithm::Blake3).unwrap().checksum,
+            hash_file(&path, ChecksumAlgorithm::Blake3)
+                .unwrap()
+                .checksum,
             "af1349b9f5f9a1a6a0404dea36dcc9499bcb25c9adc112b7cc9a93cae41f3262"
         );
     }
@@ -503,7 +515,10 @@ mod tests {
         })
         .expect("hash");
         assert_eq!(out.file_size, 200 * 1024);
-        assert!(seen.len() >= 2, "progress must be reported per block: {seen:?}");
+        assert!(
+            seen.len() >= 2,
+            "progress must be reported per block: {seen:?}"
+        );
         assert!(
             seen.windows(2).all(|w| w[0] < w[1]),
             "cumulative, never a delta: {seen:?}"
@@ -553,7 +568,10 @@ mod tests {
         // 15 minutes is the boundary: still readable just before, gone after.
         assert!(store.get("job-1", 1_000 + OUTCOME_TTL_SECS - 1).is_some());
         assert!(store.get("job-1", 1_000 + OUTCOME_TTL_SECS).is_none());
-        assert!(store.is_empty(), "an expired entry is dropped, not just hidden");
+        assert!(
+            store.is_empty(),
+            "an expired entry is dropped, not just hidden"
+        );
     }
 
     #[test]
@@ -624,7 +642,10 @@ mod tests {
         let out = hash_file_async(path, ChecksumAlgorithm::Blake3, counter.clone(), cancel)
             .await
             .expect("hash");
-        assert_eq!(counter.load(std::sync::atomic::Ordering::Relaxed), 100 * 1024);
+        assert_eq!(
+            counter.load(std::sync::atomic::Ordering::Relaxed),
+            100 * 1024
+        );
         assert_eq!(out.checksum.len(), 64);
     }
 }

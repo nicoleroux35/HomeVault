@@ -20,6 +20,11 @@
  *     (local monitoring only) or one configured LAN address — never `udp:*`,
  *     never all interfaces.
  *
+ *   Two access methods are supported: SNMPv2c with one generated read-only
+ *   community (default), or SNMPv3 with a dedicated user, SHA authentication
+ *   and AES privacy. The v3 passphrases are sealed (`hv1:`) before they touch
+ *   `snmp-agent.json`; the rendered file is mode 600 either way.
+ *
  * Dependencies:
  *   - serde, crate::utils::process (deadlines on every subprocess)
  *
@@ -54,6 +59,32 @@ pub const CONF_PATH: &str = "/etc/snmp/snmpd.conf.d/99-homevault-agent.conf";
 pub const MIN_COMMUNITY_LEN: usize = 8;
 pub const MAX_COMMUNITY_LEN: usize = 32;
 
+/// SNMPv3 passphrases: `snmpd` requires at least 8 characters; 64 keeps the
+/// rendered line readable and bounds what a secret can inject.
+pub const MIN_V3_SECRET_LEN: usize = 8;
+pub const MAX_V3_SECRET_LEN: usize = 64;
+
+/// The default dedicated v3 user. Never an account name the appliance uses
+/// for SSH or a share: an SNMP user is an SNMP-only identity.
+pub const DEFAULT_V3_USERNAME: &str = "homevault";
+
+/// Sealed-secret scopes. Distinct per secret so an authentication blob cannot
+/// be opened as a privacy blob (the AAD check fails instead of returning the
+/// wrong passphrase).
+const V3_AUTH_SCOPE: &str = "snmp-agent:v3-auth";
+const V3_PRIV_SCOPE: &str = "snmp-agent:v3-priv";
+
+/// The access method: a v2c community, or a v3 user with auth + privacy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum AgentVersion {
+    /// One read-only community string. The historical default.
+    #[default]
+    V2c,
+    /// SNMPv3, authentication SHA, privacy AES.
+    V3,
+}
+
 /// Where the agent listens.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -73,6 +104,12 @@ impl BindScope {
     }
 }
 
+impl Default for BindScope {
+    fn default() -> Self {
+        Self::default_scope()
+    }
+}
+
 /// The agent's configuration, as persisted and as rendered.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AgentConfig {
@@ -82,12 +119,26 @@ pub struct AgentConfig {
     /// The LAN address to bind to when `scope == Lan`. Required then, ignored
     /// otherwise (a stale address must not make a loopback agent unbootable).
     pub lan_address: Option<String>,
-    /// The read-only community. Generated on enable, never `public`.
+    /// The read-only community (v2c only). Generated on enable, never `public`.
     pub community: String,
     /// `sysLocation` — where the box physically is.
     pub location: String,
     /// `sysContact` — who to wake up.
     pub contact: String,
+    /// Which access method the agent serves.
+    #[serde(default)]
+    pub version: AgentVersion,
+    /// The dedicated SNMPv3 user (v3 only).
+    #[serde(default)]
+    pub v3_username: String,
+    /// The v3 authentication passphrase, in memory only. `skip`: a config is
+    /// never serialized as-is — persistence goes through
+    /// [`PersistedAgentConfig`], which seals both v3 secrets first.
+    #[serde(skip)]
+    pub v3_auth_secret: String,
+    /// The v3 privacy passphrase, sealed on the same path.
+    #[serde(skip)]
+    pub v3_priv_secret: String,
 }
 
 impl Default for AgentConfig {
@@ -99,12 +150,159 @@ impl Default for AgentConfig {
             community: String::new(),
             location: String::new(),
             contact: String::new(),
+            version: AgentVersion::default(),
+            v3_username: DEFAULT_V3_USERNAME.to_string(),
+            v3_auth_secret: String::new(),
+            v3_priv_secret: String::new(),
         }
     }
 }
 
+/// The on-disk shape: identical to [`AgentConfig`], except the two v3
+/// passphrases are `hv1:` sealed blobs. Keeping this a separate type is what
+/// stops a plaintext secret from being written by accident: `AgentConfig`
+/// skips both fields entirely during serialization.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PersistedAgentConfig {
+    pub enabled: bool,
+    #[serde(default)]
+    pub scope: BindScope,
+    #[serde(default)]
+    pub lan_address: Option<String>,
+    #[serde(default)]
+    pub community: String,
+    #[serde(default)]
+    pub location: String,
+    #[serde(default)]
+    pub contact: String,
+    #[serde(default)]
+    pub version: AgentVersion,
+    #[serde(default)]
+    pub v3_username: String,
+    /// Sealed authentication passphrase; empty when none is configured.
+    #[serde(default)]
+    pub v3_auth_secret: String,
+    /// Sealed privacy passphrase; empty when none is configured.
+    #[serde(default)]
+    pub v3_priv_secret: String,
+}
+
+fn seal_optional(scope: &str, value: &str) -> Result<String, String> {
+    if value.is_empty() {
+        Ok(String::new())
+    } else {
+        crate::storage::secret_box::seal(scope, value)
+            .map_err(|e| format!("could not seal the SNMPv3 secret: {e}"))
+    }
+}
+
+fn open_optional(scope: &str, value: &str) -> Result<String, String> {
+    if value.is_empty() {
+        Ok(String::new())
+    } else {
+        crate::storage::secret_box::open(scope, value).map_err(|e| {
+            format!(
+                "the stored SNMPv3 secret could not be opened ({e}) — re-enter the v3 passphrases"
+            )
+        })
+    }
+}
+
+#[cfg(test)]
+fn seal_optional_with_key(key: &[u8; 32], scope: &str, value: &str) -> Result<String, String> {
+    if value.is_empty() {
+        Ok(String::new())
+    } else {
+        crate::storage::secret_box::seal_with_key(key, scope, value)
+            .map_err(|e| format!("could not seal the SNMPv3 secret: {e}"))
+    }
+}
+
+#[cfg(test)]
+fn open_optional_with_key(key: &[u8; 32], scope: &str, value: &str) -> Result<String, String> {
+    if value.is_empty() {
+        Ok(String::new())
+    } else {
+        crate::storage::secret_box::open_with_key(key, scope, value).map_err(|e| {
+            format!(
+                "the stored SNMPv3 secret could not be opened ({e}) — re-enter the v3 passphrases"
+            )
+        })
+    }
+}
+
+impl PersistedAgentConfig {
+    /// Seal an in-memory config for `snmp-agent.json`.
+    pub fn from_config(config: &AgentConfig) -> Result<Self, String> {
+        Self::from_config_with(config, |scope, value| seal_optional(scope, value))
+    }
+
+    /// Open a stored config back into the runtime shape.
+    pub fn into_config(self) -> Result<AgentConfig, String> {
+        self.into_config_with(|scope, value| open_optional(scope, value))
+    }
+
+    /// The pure core of [`Self::from_config`]: the seal function is injected
+    /// so the unit tests exercise the shape without touching the appliance's
+    /// data directory.
+    fn from_config_with<F>(config: &AgentConfig, seal: F) -> Result<Self, String>
+    where
+        F: Fn(&str, &str) -> Result<String, String>,
+    {
+        Ok(Self {
+            enabled: config.enabled,
+            scope: config.scope,
+            lan_address: config.lan_address.clone(),
+            community: config.community.clone(),
+            location: config.location.clone(),
+            contact: config.contact.clone(),
+            version: config.version,
+            v3_username: config.v3_username.clone(),
+            v3_auth_secret: seal(V3_AUTH_SCOPE, &config.v3_auth_secret)?,
+            v3_priv_secret: seal(V3_PRIV_SCOPE, &config.v3_priv_secret)?,
+        })
+    }
+
+    /// The pure core of [`Self::into_config`] (see [`Self::from_config_with`]).
+    fn into_config_with<F>(self, open: F) -> Result<AgentConfig, String>
+    where
+        F: Fn(&str, &str) -> Result<String, String>,
+    {
+        Ok(AgentConfig {
+            enabled: self.enabled,
+            scope: self.scope,
+            lan_address: self.lan_address,
+            community: self.community,
+            location: self.location,
+            contact: self.contact,
+            version: self.version,
+            v3_username: if self.v3_username.trim().is_empty() {
+                DEFAULT_V3_USERNAME.to_string()
+            } else {
+                self.v3_username
+            },
+            v3_auth_secret: open(V3_AUTH_SCOPE, &self.v3_auth_secret)?,
+            v3_priv_secret: open(V3_PRIV_SCOPE, &self.v3_priv_secret)?,
+        })
+    }
+
+    /// Seal with an explicit key — used by the unit tests.
+    #[cfg(test)]
+    fn from_config_sealed(config: &AgentConfig, key: &[u8; 32]) -> Result<Self, String> {
+        Self::from_config_with(config, |scope, value| {
+            seal_optional_with_key(key, scope, value)
+        })
+    }
+
+    /// Open with an explicit key — used by the unit tests.
+    #[cfg(test)]
+    fn into_config_sealed(self, key: &[u8; 32]) -> Result<AgentConfig, String> {
+        self.into_config_with(|scope, value| open_optional_with_key(key, scope, value))
+    }
+}
+
 impl AgentConfig {
-    /// The config the agent would run with, without the secret.
+    /// The config the agent would run with, without any secret.
     pub fn redacted(&self) -> serde_json::Value {
         serde_json::json!({
             "enabled": self.enabled,
@@ -112,9 +310,13 @@ impl AgentConfig {
             "lan_address": self.lan_address,
             "location": self.location,
             "contact": self.contact,
-            // Never the community itself: this endpoint is what the screen
-            // reads on every visit.
+            "version": self.version,
+            "v3_username": self.v3_username,
+            // Never the community or the v3 passphrases themselves: this
+            // endpoint is what the screen reads on every visit.
             "has_community": !self.community.is_empty(),
+            "has_v3_auth_secret": !self.v3_auth_secret.is_empty(),
+            "has_v3_priv_secret": !self.v3_priv_secret.is_empty(),
         })
     }
 }
@@ -175,6 +377,80 @@ pub fn validate_community(community: &str) -> Result<(), ConfigError> {
     Ok(())
 }
 
+/// Is `username` a usable SNMPv3 user name?
+///
+/// `snmpd`'s `createUser` line is whitespace-separated: a space, a quote or a
+/// newline would turn the user name into extra directives. The alphabet is
+/// deliberately small and the name is never a shell account.
+pub fn validate_v3_username(username: &str) -> Result<(), ConfigError> {
+    let username = username.trim();
+    if username.is_empty() {
+        return Err(ConfigError(
+            "The SNMPv3 user name must not be empty".to_string(),
+        ));
+    }
+    if username.chars().count() > 32 {
+        return Err(ConfigError(
+            "The SNMPv3 user name must be at most 32 characters long".to_string(),
+        ));
+    }
+    if !username
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-' || c == '.')
+    {
+        return Err(ConfigError(
+            "The SNMPv3 user name may only contain letters, digits, '.', '-' and '_'".to_string(),
+        ));
+    }
+    if !username
+        .chars()
+        .next()
+        .map(|c| c.is_ascii_alphanumeric())
+        .unwrap_or(false)
+    {
+        return Err(ConfigError(
+            "The SNMPv3 user name must start with a letter or a digit".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+/// Is `secret` a usable SNMPv3 authentication/privacy passphrase?
+///
+/// The rendered directive puts the value between double quotes, so a quote, a
+/// backslash, whitespace or a control character is refused rather than escaped
+/// — the same conservative alphabet rule the community follows. `snmpd`
+/// itself requires at least 8 characters.
+pub fn validate_v3_secret(kind: &str, secret: &str) -> Result<(), ConfigError> {
+    let secret = secret.trim();
+    if secret.chars().count() < MIN_V3_SECRET_LEN {
+        return Err(ConfigError(format!(
+            "The SNMPv3 {kind} passphrase must be at least {MIN_V3_SECRET_LEN} characters long"
+        )));
+    }
+    if secret.chars().count() > MAX_V3_SECRET_LEN {
+        return Err(ConfigError(format!(
+            "The SNMPv3 {kind} passphrase must be at most {MAX_V3_SECRET_LEN} characters long"
+        )));
+    }
+    if secret
+        .chars()
+        .any(|c| !c.is_ascii_graphic() || c == '"' || c == '\\')
+    {
+        return Err(ConfigError(format!(
+            "The SNMPv3 {kind} passphrase cannot contain spaces, quotes, backslashes or control characters"
+        )));
+    }
+    Ok(())
+}
+
+/// A fresh v3 passphrase: 16 bytes of `/dev/urandom` as 32 hex characters, the
+/// same shape as the generated community (and for the same reason: no `#`,
+/// no quote, no whitespace).
+pub fn generate_v3_secret() -> Result<String, ConfigError> {
+    generate_community()
+}
+
 /// Is `address` an address an agent may bind to?
 ///
 /// Only a private, link-local or loopback IPv4 address is accepted: a public
@@ -226,17 +502,62 @@ pub fn validate_config(
             next.lan_address = None;
         }
 
-        let community = if next.community.trim().is_empty() {
-            if current.community.trim().is_empty() {
-                generate_community()?
-            } else {
-                current.community.clone()
+        match next.version {
+            AgentVersion::V2c => {
+                let community = if next.community.trim().is_empty() {
+                    if current.community.trim().is_empty() {
+                        generate_community()?
+                    } else {
+                        current.community.clone()
+                    }
+                } else {
+                    next.community.trim().to_string()
+                };
+                validate_community(&community)?;
+                next.community = community;
             }
-        } else {
-            next.community.trim().to_string()
-        };
-        validate_community(&community)?;
-        next.community = community;
+            AgentVersion::V3 => {
+                let username = if next.v3_username.trim().is_empty() {
+                    if current.v3_username.trim().is_empty() {
+                        DEFAULT_V3_USERNAME.to_string()
+                    } else {
+                        current.v3_username.clone()
+                    }
+                } else {
+                    next.v3_username.trim().to_string()
+                };
+                validate_v3_username(&username)?;
+                next.v3_username = username;
+
+                // An empty field keeps the stored passphrase, or generates one
+                // when there is none yet — the screen never round-trips a
+                // secret it cannot read back.
+                let auth = if next.v3_auth_secret.trim().is_empty() {
+                    if current.v3_auth_secret.trim().is_empty() {
+                        generate_v3_secret()?
+                    } else {
+                        current.v3_auth_secret.clone()
+                    }
+                } else {
+                    next.v3_auth_secret.trim().to_string()
+                };
+                validate_v3_secret("authentication", &auth)?;
+
+                let privacy = if next.v3_priv_secret.trim().is_empty() {
+                    if current.v3_priv_secret.trim().is_empty() {
+                        generate_v3_secret()?
+                    } else {
+                        current.v3_priv_secret.clone()
+                    }
+                } else {
+                    next.v3_priv_secret.trim().to_string()
+                };
+                validate_v3_secret("privacy", &privacy)?;
+
+                next.v3_auth_secret = auth;
+                next.v3_priv_secret = privacy;
+            }
+        }
 
         next.location = sanitize_text(&next.location, 128)?;
         next.contact = sanitize_text(&next.contact, 128)?;
@@ -245,6 +566,13 @@ pub fn validate_config(
         // the secret goes with it. A re-enable generates a fresh one unless
         // the screen supplied it.
         next.community = current.community.clone();
+        next.v3_username = if next.v3_username.trim().is_empty() {
+            current.v3_username.clone()
+        } else {
+            next.v3_username.trim().to_string()
+        };
+        next.v3_auth_secret = current.v3_auth_secret.clone();
+        next.v3_priv_secret = current.v3_priv_secret.clone();
         next.location = sanitize_text(&next.location, 128)?;
         next.contact = sanitize_text(&next.contact, 128)?;
     }
@@ -290,24 +618,59 @@ pub fn render_config(config: &AgentConfig) -> String {
     let mut s = String::new();
     s.push_str("# Written by HomeVault from the SNMP agent settings.\n");
     s.push_str("# Delete this file and restart snmpd to hand the agent back.\n");
-    s.push_str("# Read-only, SNMPv2c, no write community, no routing table.\n");
+    s.push_str(&match config.version {
+        AgentVersion::V2c => "# Read-only, SNMPv2c, no write community, no routing table.\n",
+        AgentVersion::V3 => {
+            "# Read-only, SNMPv3 (auth SHA, priv AES), no write user, no routing table.\n"
+        }
+    });
     s.push('\n');
     s.push_str(&agent_address_line(config));
-    s.push('\n');
-    s.push_str("# Read-only community. Never 'public'.\n");
-    if config.community.is_empty() {
-        // Defensive: a config must never be written without a community, but
-        // if one somehow is, the agent answers nobody rather than everybody.
-        s.push_str("# (no community configured — the agent answers no request)\n");
-    } else {
-        s.push_str(&format!("rocommunity {} default\n", config.community));
-    }
     s.push('\n');
     s.push_str("# What an SNMP reader can see: system, interfaces, storage.\n");
     s.push_str("view systemonly included .1.3.6.1.2.1.1\n");
     s.push_str("view systemonly included .1.3.6.1.2.1.2\n");
     s.push_str("view systemonly included .1.3.6.1.2.1.25.2\n");
     s.push_str("view systemonly excluded .1.3.6.1.2.1.2.2.1.4\n");
+    s.push('\n');
+    match config.version {
+        AgentVersion::V2c => {
+            s.push_str("# Read-only community. Never 'public'.\n");
+            if config.community.is_empty() {
+                // Defensive: a config must never be written without a
+                // community, but if one somehow is, the agent answers nobody
+                // rather than everybody.
+                s.push_str("# (no community configured — the agent answers no request)\n");
+            } else {
+                // `-V systemonly` is what actually applies the view above; a
+                // bare `rocommunity` would grant the default (full) view.
+                s.push_str(&format!(
+                    "rocommunity {} default -V systemonly\n",
+                    config.community
+                ));
+            }
+        }
+        AgentVersion::V3 => {
+            s.push_str("# Dedicated SNMPv3 user. Read-only: no `rwuser`.\n");
+            if config.v3_username.is_empty()
+                || config.v3_auth_secret.is_empty()
+                || config.v3_priv_secret.is_empty()
+            {
+                // Defensive: never emit a half-configured v3 user. The agent
+                // then answers no request instead of accepting a weak login.
+                s.push_str("# (no SNMPv3 credentials configured — the agent answers no request)\n");
+            } else {
+                s.push_str(&format!(
+                    "createUser {} SHA \"{}\" AES \"{}\"\n",
+                    config.v3_username, config.v3_auth_secret, config.v3_priv_secret
+                ));
+                s.push_str(&format!(
+                    "rouser {} authpriv systemonly\n",
+                    config.v3_username
+                ));
+            }
+        }
+    }
     s.push('\n');
     if !config.location.is_empty() {
         s.push_str(&format!("sysLocation {}\n", config.location));
@@ -442,7 +805,19 @@ mod tests {
             community: community.to_string(),
             location: "Rack, garage".to_string(),
             contact: "admin@example.local".to_string(),
+            version: AgentVersion::V2c,
+            v3_username: DEFAULT_V3_USERNAME.to_string(),
+            v3_auth_secret: String::new(),
+            v3_priv_secret: String::new(),
         }
+    }
+
+    fn v3_enabled(auth: &str, privacy: &str) -> AgentConfig {
+        let mut config = enabled("", BindScope::Loopback);
+        config.version = AgentVersion::V3;
+        config.v3_auth_secret = auth.to_string();
+        config.v3_priv_secret = privacy.to_string();
+        config
     }
 
     #[test]
@@ -538,8 +913,8 @@ mod tests {
             "{rendered}"
         );
         assert!(
-            rendered.contains("rocommunity 0123456789abcdef default"),
-            "{rendered}"
+            rendered.contains("rocommunity 0123456789abcdef default -V systemonly"),
+            "the declared view must actually be applied: {rendered}"
         );
         assert!(rendered.contains("sysLocation Rack, garage"), "{rendered}");
         // Never a write community, never the routing table, never `udp:*`.
@@ -584,6 +959,151 @@ mod tests {
         assert!(!text.contains("0123456789abcdef"), "{text}");
         assert_eq!(redacted["has_community"], serde_json::json!(true));
         assert_eq!(redacted["enabled"], serde_json::json!(true));
+    }
+
+    #[test]
+    fn test_v3_username_is_a_small_safe_alphabet() {
+        for good in ["homevault", "monitor_1", "nas-eu.2"] {
+            assert!(validate_v3_username(good).is_ok(), "{good}");
+        }
+        for bad in [
+            "",
+            "has space",
+            "quote\"d",
+            "line\nbreak",
+            "-leading-dash",
+            "user#1",
+            "é",
+            &"a".repeat(33),
+        ] {
+            assert!(
+                validate_v3_username(bad).is_err(),
+                "accepted the v3 user name {bad:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_v3_passphrases_are_bounded_and_cannot_inject_a_directive() {
+        assert!(validate_v3_secret("authentication", "short").is_err());
+        assert!(validate_v3_secret("authentication", &"a".repeat(MAX_V3_SECRET_LEN + 1)).is_err());
+        assert!(validate_v3_secret("authentication", &"a".repeat(MIN_V3_SECRET_LEN)).is_ok());
+        // The value sits between double quotes in `createUser`.
+        for bad in [
+            "has space",
+            "has\ttab",
+            "line\nbreak",
+            "quote\"d",
+            "back\\slash",
+            "ctrl\u{7}",
+        ] {
+            assert!(
+                validate_v3_secret("privacy", bad).is_err(),
+                "accepted the v3 passphrase {bad:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_v3_renders_a_dedicated_authpriv_user_limited_to_the_view() {
+        let config = v3_enabled("authpass123", "privpass456");
+        let rendered = render_config(&config);
+        assert!(
+            rendered.contains("createUser homevault SHA \"authpass123\" AES \"privpass456\""),
+            "{rendered}"
+        );
+        assert!(
+            rendered.contains("rouser homevault authpriv systemonly"),
+            "{rendered}"
+        );
+        // No v2c community, no write user, no full view.
+        assert!(!rendered.contains("rocommunity"), "{rendered}");
+        assert!(!rendered.contains("rwuser"), "{rendered}");
+    }
+
+    #[test]
+    fn test_v3_without_credentials_answers_nobody() {
+        let config = v3_enabled("", "");
+        let rendered = render_config(&config);
+        assert!(!rendered.contains("createUser"), "{rendered}");
+        assert!(!rendered.contains("rouser"), "{rendered}");
+        assert!(
+            rendered.contains("answers no request"),
+            "a half-configured v3 user must never be rendered: {rendered}"
+        );
+    }
+
+    #[test]
+    fn test_v3_enable_generates_and_keeps_both_passphrases() {
+        let current = AgentConfig::default();
+        let next = validate_config(v3_enabled("", ""), &current).expect("valid");
+        assert_eq!(next.version, AgentVersion::V3);
+        assert_eq!(next.v3_auth_secret.len(), 32);
+        assert_eq!(next.v3_priv_secret.len(), 32);
+        assert_ne!(next.v3_auth_secret, next.v3_priv_secret);
+
+        // A later save without passphrases keeps the ones in use.
+        let mut again = v3_enabled("", "");
+        again.location = "Attic".to_string();
+        let next2 = validate_config(again, &next).expect("valid");
+        assert_eq!(next2.v3_auth_secret, next.v3_auth_secret);
+        assert_eq!(next2.v3_priv_secret, next.v3_priv_secret);
+    }
+
+    #[test]
+    fn test_v3_secrets_are_sealed_at_rest_and_round_trip() {
+        const KEY: [u8; 32] = [9u8; 32];
+        let config = v3_enabled("authpass123", "privpass456");
+        let stored = PersistedAgentConfig::from_config_sealed(&config, &KEY).expect("sealed");
+        let json = serde_json::to_string(&stored).expect("json");
+        assert!(!json.contains("authpass123"), "{json}");
+        assert!(!json.contains("privpass456"), "{json}");
+        assert!(stored.v3_auth_secret.starts_with("hv1:"), "{json}");
+        assert!(stored.v3_priv_secret.starts_with("hv1:"), "{json}");
+
+        let reopened = stored.into_config_sealed(&KEY).expect("opened");
+        assert_eq!(reopened.v3_auth_secret, "authpass123");
+        assert_eq!(reopened.v3_priv_secret, "privpass456");
+        assert_eq!(reopened.v3_username, "homevault");
+    }
+
+    #[test]
+    fn test_v3_secrets_do_not_survive_a_scope_swap() {
+        const KEY: [u8; 32] = [9u8; 32];
+        let config = v3_enabled("authpass123", "privpass456");
+        let mut stored = PersistedAgentConfig::from_config_sealed(&config, &KEY).expect("sealed");
+        // The authentication blob is not a privacy blob: swapping them must
+        // fail authentication instead of handing back the wrong passphrase.
+        std::mem::swap(&mut stored.v3_auth_secret, &mut stored.v3_priv_secret);
+        assert!(
+            stored.into_config_sealed(&KEY).is_err(),
+            "a v3 secret must be bound to its own scope"
+        );
+    }
+
+    #[test]
+    fn test_v3_redacted_never_carries_a_passphrase() {
+        let config = v3_enabled("authpass123", "privpass456");
+        let redacted = config.redacted();
+        let text = redacted.to_string();
+        assert!(!text.contains("authpass123"), "{text}");
+        assert!(!text.contains("privpass456"), "{text}");
+        assert_eq!(redacted["version"], serde_json::json!("v3"));
+        assert_eq!(redacted["v3_username"], serde_json::json!("homevault"));
+        assert_eq!(redacted["has_v3_auth_secret"], serde_json::json!(true));
+        assert_eq!(redacted["has_v3_priv_secret"], serde_json::json!(true));
+    }
+
+    #[test]
+    fn test_an_old_config_without_v3_fields_still_loads() {
+        let json = r#"{"enabled":true,"scope":"loopback","lan_address":null,
+            "community":"0123456789abcdef","location":"","contact":""}"#;
+        let stored: PersistedAgentConfig = serde_json::from_str(json).expect("old config");
+        let config = stored.into_config().expect("opened");
+        assert_eq!(config.version, AgentVersion::V2c);
+        assert_eq!(config.v3_username, DEFAULT_V3_USERNAME);
+        assert!(config.v3_auth_secret.is_empty());
+        assert!(config.v3_priv_secret.is_empty());
     }
 
     #[test]

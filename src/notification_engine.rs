@@ -478,18 +478,34 @@ pub const WEBHOOK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(
 
 /// The one HTTP client used for outgoing webhooks.
 ///
-/// Built once so every alert reuses its connection pool, and bounded so a
+/// Cached so every alert reuses its connection pool, and bounded so a
 /// black-holed sink cannot pin the notification (and backup scheduling) task.
-pub fn webhook_client() -> &'static reqwest::Client {
-    static CLIENT: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
-    CLIENT.get_or_init(|| {
-        reqwest::Client::builder()
-            .timeout(WEBHOOK_TIMEOUT)
-            .connect_timeout(std::time::Duration::from_secs(5))
-            .user_agent(concat!("HomeVault/", env!("CARGO_PKG_VERSION")))
-            .build()
-            .unwrap_or_else(|_| reqwest::Client::new())
-    })
+/// The cache is keyed on the outbound-proxy setting, so saving a new proxy in
+/// Settings takes effect on the next alert instead of after a restart.
+pub fn webhook_client() -> Arc<reqwest::Client> {
+    type Cache = std::sync::Mutex<Option<(String, Arc<reqwest::Client>)>>;
+    static CACHE: std::sync::OnceLock<Cache> = std::sync::OnceLock::new();
+
+    let key = crate::proxy::cache_key();
+    let cache = CACHE.get_or_init(|| std::sync::Mutex::new(None));
+    let mut guard = cache.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some((cached_key, client)) = guard.as_ref() {
+        if *cached_key == key {
+            return client.clone();
+        }
+    }
+    let client = Arc::new(
+        crate::proxy::apply_loaded(
+            reqwest::Client::builder()
+                .timeout(WEBHOOK_TIMEOUT)
+                .connect_timeout(std::time::Duration::from_secs(5))
+                .user_agent(concat!("HomeVault/", env!("CARGO_PKG_VERSION"))),
+        )
+        .build()
+        .unwrap_or_else(|_| reqwest::Client::new()),
+    );
+    *guard = Some((key, client.clone()));
+    client
 }
 
 #[cfg(test)]
@@ -509,10 +525,9 @@ mod tests {
             "a webhook must not hold the scheduler task for half a minute"
         );
         // Same instance on every call: this is what makes the connection pool
-        // and the timeout apply to every alert.
-        let first = webhook_client() as *const reqwest::Client;
-        let second = webhook_client() as *const reqwest::Client;
-        assert_eq!(first, second);
+        // and the timeout apply to every alert (until the proxy setting moves,
+        // which deliberately invalidates the cache).
+        assert!(Arc::ptr_eq(&webhook_client(), &webhook_client()));
     }
 
     #[test]

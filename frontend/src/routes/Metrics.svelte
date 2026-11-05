@@ -28,15 +28,22 @@
   type Range = '1h' | '24h' | '7d';
   const RANGES: Range[] = ['1h', '24h', '7d'];
 
-  let range: Range = '1h';
-  let points: MetricsPoint[] = [];
-  let loading = true;
-  let loadError = false;
+  let range: Range = $state('1h');
+  let points: MetricsPoint[] = $state([]);
+  let loading = $state(true);
+  let loadError = $state(false);
   /** Bumped by every `load()`; only the newest ticket may write the screen. */
   let loadTicket = 0;
 
+  /** Retention is admin-editable; 8 is the server default (migration 080). */
+  const RETENTION_OPTIONS = [8, 30, 90];
+  let retentionDays = $state(8);
+  let retentionBusy = $state(false);
+  let retentionNotice = $state('');
+
   onMount(() => {
     load();
+    loadRetention();
     // Charts are aggregate data — refresh when the window regains
     // attention (same revalidate pattern as every other app) and keep a
     // slow 60 s ticker so the 1 h view visibly rolls.
@@ -76,6 +83,29 @@
     range = r;
     loading = true;
     load();
+  }
+
+  async function loadRetention() {
+    try {
+      const res = await api.get('/metrics/settings');
+      if (res.success && res.data) retentionDays = Number(res.data.retention_days ?? 8);
+    } catch {
+      // A read failure keeps the default; the select still works.
+    }
+  }
+
+  async function saveRetention() {
+    retentionBusy = true;
+    retentionNotice = '';
+    try {
+      const res = await api.put('/metrics/settings', { retention_days: Number(retentionDays) });
+      retentionNotice = res.success
+        ? $t('metrics.retention_saved')
+        : res.message || $t('metrics.retention_error');
+    } catch {
+      retentionNotice = $t('metrics.retention_error');
+    }
+    retentionBusy = false;
   }
 
   function formatTime(ts: number): string {
@@ -192,6 +222,28 @@
           {$t(`metrics.range_${r}`)}
         </button>
       {/each}
+    </div>
+    <div class="flex items-center gap-2">
+      <label for="metrics-retention" class="text-c-small text-[var(--hv-shell-text-2)]">
+        {$t('metrics.retention_label')}
+      </label>
+      <select
+        id="metrics-retention"
+        data-testid="metrics-retention"
+        class="h-9 rounded-lg border border-[var(--hv-shell-border)] bg-[var(--hv-shell-card)] px-2 text-c-base text-[var(--hv-shell-text-1)]"
+        bind:value={retentionDays}
+        onchange={saveRetention}
+        disabled={retentionBusy}
+        aria-label={$t('metrics.retention_label')}
+      >
+        {#if !RETENTION_OPTIONS.includes(retentionDays)}
+          <option value={retentionDays}>{retentionDays}</option>
+        {/if}
+        {#each RETENTION_OPTIONS as days (days)}
+          <option value={days}>{$t('metrics.retention_days', { days: String(days) })}</option>
+        {/each}
+      </select>
+      <span class="sr-only" role="status">{retentionNotice}</span>
     </div>
   {/snippet}
 

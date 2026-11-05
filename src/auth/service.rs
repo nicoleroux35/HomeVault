@@ -50,8 +50,9 @@ use super::models::{Session, User};
 use crate::storage::database::ADMIN_GROUP_NAME;
 use crate::storage::models::{ADMIN_ROLE_ID, PAM_PROVISIONED_HASH, USER_ROLE_ID};
 use crate::storage::{
-    Database, LoginAttemptRepository, PasswordHistoryRepository, PasswordRecoveryCodeRepository,
-    SessionRepository, User2faRepository, UserRepository,
+    is_expired, Database, LoginAttemptRepository, PasswordHistoryRepository,
+    PasswordPolicyRepository, PasswordRecoveryCodeRepository, SessionRepository, User2faRepository,
+    UserRepository,
 };
 use crate::utils::process::run_timed;
 use chrono::{Duration, Utc};
@@ -1097,6 +1098,52 @@ except Exception as e:
         Ok(())
     }
 
+    /// Current global expiry policy, in days (`0` = never).
+    pub async fn password_expiry_days(&self) -> Result<i64, AuthError> {
+        PasswordPolicyRepository::new(Arc::clone(&self.pool))
+            .get_expiry_days()
+            .await
+            .map_err(|e| AuthError::Database(e.to_string()))
+    }
+
+    /// At sign-in: if the stored policy has elapsed since the password was
+    /// set, flag the account so the existing `password_change_guard` forces a
+    /// change. Returns `true` when the flag was set by this call. A missing
+    /// timestamp falls back to `created_at` (see the repository), and a
+    /// policy of `0` is a no-op.
+    pub async fn enforce_password_expiry(&self, username: &str) -> Result<bool, AuthError> {
+        let repo = PasswordPolicyRepository::new(Arc::clone(&self.pool));
+        let days = repo
+            .get_expiry_days()
+            .await
+            .map_err(|e| AuthError::Database(e.to_string()))?;
+        if days <= 0 {
+            return Ok(false);
+        }
+        let changed_at = repo
+            .password_changed_at(username)
+            .await
+            .map_err(|e| AuthError::Database(e.to_string()))?;
+        let Some(changed_at) = changed_at else {
+            return Ok(false);
+        };
+        if !is_expired(changed_at, days, Utc::now()) {
+            return Ok(false);
+        }
+        let flagged = repo
+            .mark_must_change(username)
+            .await
+            .map_err(|e| AuthError::Database(e.to_string()))?;
+        if flagged {
+            tracing::info!(
+                username = %username,
+                days,
+                "Password expired; the account must change it at this sign-in"
+            );
+        }
+        Ok(flagged)
+    }
+
     pub async fn update_password(
         &self,
         username: &str,
@@ -1132,6 +1179,12 @@ except Exception as e:
         // means the owner picked it — which clears a pending requirement.
         updated_user.must_change_password = force_change;
         user_repo.update(&updated_user).await?;
+        // The expiry clock restarts on every password write, including an
+        // admin reset (`force_change = true`).
+        PasswordPolicyRepository::new(Arc::clone(&self.pool))
+            .touch_password_changed_at(username, Utc::now())
+            .await
+            .map_err(|e| AuthError::Database(e.to_string()))?;
 
         self.add_password_to_history(username, &old_hash).await?;
 
@@ -1610,6 +1663,10 @@ except Exception as e:
         // admin-imposed change is satisfied and the flag clears.
         user.must_change_password = false;
         user_repo.update(&user).await?;
+        PasswordPolicyRepository::new(Arc::clone(&self.pool))
+            .touch_password_changed_at(username, Utc::now())
+            .await
+            .map_err(|e| AuthError::Database(e.to_string()))?;
 
         self.add_password_to_history(username, &old_hash).await?;
 

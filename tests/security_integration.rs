@@ -79,7 +79,8 @@ use homevault::handlers::{
     firewall::{
         handle_firewall_default_policy, handle_firewall_disable, handle_firewall_enable,
         handle_firewall_enable_preview, handle_firewall_history, handle_firewall_rule_add,
-        handle_firewall_rule_delete, handle_firewall_status,
+        handle_firewall_rule_delete, handle_firewall_status, handle_geoip_apply,
+        handle_geoip_rule_delete, handle_geoip_rule_set, handle_geoip_status,
     },
     ransomware::{
         handle_ransomware_events_list, handle_ransomware_protected_path_add,
@@ -184,6 +185,15 @@ fn security_router(state: Arc<AppState>) -> Router {
             post(handle_firewall_default_policy),
         )
         .route("/api/firewall/history", get(handle_firewall_history))
+        .route(
+            "/api/firewall/geoip",
+            get(handle_geoip_status).post(handle_geoip_rule_set),
+        )
+        .route("/api/firewall/geoip/apply", post(handle_geoip_apply))
+        .route(
+            "/api/firewall/geoip/{country}",
+            delete(handle_geoip_rule_delete),
+        )
         .route(
             "/api/firewall/rules",
             post(handle_firewall_rule_add).delete(handle_firewall_rule_delete),
@@ -302,6 +312,7 @@ async fn test_all_reads_reject_missing_token() {
         "/api/firewall/status",
         "/api/firewall/enable/preview",
         "/api/firewall/history",
+        "/api/firewall/geoip",
         "/api/ransomware/status",
         "/api/ransomware/settings",
         "/api/ransomware/protected-paths",
@@ -404,6 +415,13 @@ async fn test_mutations_require_admin_reads_do_not() {
             "/api/firewall/rules",
             Some(json!({"port": "443"})),
         ),
+        (
+            Method::POST,
+            "/api/firewall/geoip",
+            Some(json!({"country": "FR", "action": "deny"})),
+        ),
+        (Method::POST, "/api/firewall/geoip/apply", None),
+        (Method::DELETE, "/api/firewall/geoip/FR", None),
     ];
     for (method, uri, body) in muts {
         let (status, resp) = send(&mut r, method.clone(), uri, Some(&token), body.clone()).await;
@@ -1193,6 +1211,99 @@ async fn test_firewall_rule_add_requires_a_port() {
             .contains("port"),
         "{body}"
     );
+}
+
+/// P1-14 — GeoIP validates country/action before touching the host, and a
+/// missing country database is a named `503` capability refusal, never a fake
+/// success. The status read still answers 200 with `database_present:false`
+/// so the card can explain what to install.
+#[tokio::test]
+async fn test_geoip_refuses_a_missing_database_and_bad_country() {
+    let (state, tmp, _g) = setup_state().await;
+    let previous = std::env::var("HOMEVAULT_GEOIP_DB").ok();
+    std::env::set_var("HOMEVAULT_GEOIP_DB", tmp.path().join("missing-geoip.json"));
+    create_test_user(&state, "admin-geo", "Passw0rd!123", 2).await;
+    let mut r = security_router(state);
+    let token = login(&mut r, "admin-geo", "Passw0rd!123").await;
+
+    let (status, body) = send(
+        &mut r,
+        Method::GET,
+        "/api/firewall/geoip",
+        Some(&token),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["data"]["database_present"], json!(false));
+    assert!(body["data"]["countries"].is_array());
+    assert!(body["data"]["database_path"].is_string());
+
+    let (status, body) = send(
+        &mut r,
+        Method::POST,
+        "/api/firewall/geoip",
+        Some(&token),
+        Some(json!({"country": "FRA", "action": "deny"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert!(
+        body["message"]
+            .as_str()
+            .unwrap_or("")
+            .contains("two-letter"),
+        "{body}"
+    );
+
+    let (status, body) = send(
+        &mut r,
+        Method::POST,
+        "/api/firewall/geoip",
+        Some(&token),
+        Some(json!({"country": "FR", "action": "reject"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert!(
+        body["message"]
+            .as_str()
+            .unwrap_or("")
+            .contains("allow or deny"),
+        "{body}"
+    );
+
+    let (status, body) = send(
+        &mut r,
+        Method::POST,
+        "/api/firewall/geoip",
+        Some(&token),
+        Some(json!({"country": "FR", "action": "deny"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{body}");
+    assert!(
+        body["message"]
+            .as_str()
+            .unwrap_or("")
+            .contains("GeoIP database is missing"),
+        "{body}"
+    );
+
+    let (status, body) = send(
+        &mut r,
+        Method::POST,
+        "/api/firewall/geoip/apply",
+        Some(&token),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{body}");
+
+    match previous {
+        Some(value) => std::env::set_var("HOMEVAULT_GEOIP_DB", value),
+        None => std::env::remove_var("HOMEVAULT_GEOIP_DB"),
+    }
 }
 
 #[tokio::test]

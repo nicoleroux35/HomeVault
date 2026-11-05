@@ -137,7 +137,10 @@ fn test_mixed_disk_sizes_uses_smallest() {
 
     // Should warn about wasted space
     assert!(!raid5.warnings.is_empty());
-    assert!(raid5.warnings.iter().any(|w| w.contains("Mixed disk sizes")));
+    assert!(raid5
+        .warnings
+        .iter()
+        .any(|w| w.contains("Mixed disk sizes")));
 }
 
 #[test]
@@ -199,7 +202,9 @@ fn test_recommendations_are_scored() {
     // is deliberately penalised below zero-equivalent (`score 5 - 30`), so a
     // zero is a real answer, not a missing score.
     assert!(!recs.is_empty(), "three disks must produce recommendations");
-    assert!(recs.iter().all(|r| r.score > 0 || r.redundancy == RedundancyLevel::None));
+    assert!(recs
+        .iter()
+        .all(|r| r.score > 0 || r.redundancy == RedundancyLevel::None));
 
     // Should be sorted by score descending
     for window in recs.windows(2) {
@@ -308,10 +313,7 @@ fn test_all_disks_in_use() {
 
 #[test]
 fn test_efficiency_calculation() {
-    let disks = vec![
-        make_disk("/dev/sda", 1000),
-        make_disk("/dev/sdb", 1000),
-    ];
+    let disks = vec![make_disk("/dev/sda", 1000), make_disk("/dev/sdb", 1000)];
 
     let recs = GuidedRedundancyService::recommend_layouts(&disks, RedundancyLevel::Single);
 
@@ -338,7 +340,13 @@ fn test_layout_includes_disk_list() {
     // Should list all disks
     assert_eq!(raid5.layout.groups.len(), 1);
     assert_eq!(raid5.layout.groups[0].disks.len(), 3);
-    assert!(raid5.layout.groups[0].disks.contains(&"/dev/sda".to_string()));
-    assert!(raid5.layout.groups[0].disks.contains(&"/dev/sdb".to_string()));
-    assert!(raid5.layout.groups[0].disks.contains(&"/dev/sdc".to_string()));
+    assert!(raid5.layout.groups[0]
+        .disks
+        .contains(&"/dev/sda".to_string()));
+    assert!(raid5.layout.groups[0]
+        .disks
+        .contains(&"/dev/sdb".to_string()));
+    assert!(raid5.layout.groups[0]
+        .disks
+        .contains(&"/dev/sdc".to_string()));
 }

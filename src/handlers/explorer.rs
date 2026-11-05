@@ -44,10 +44,10 @@ use futures_util::Stream;
 use serde::{Deserialize, Serialize};
 use std::io::Read;
 use std::path::PathBuf;
-use std::time::Duration;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll};
+use std::time::Duration;
 use tokio::io::AsyncWriteExt;
 use tokio::io::{AsyncReadExt, AsyncSeekExt, SeekFrom};
 
@@ -1973,10 +1973,7 @@ fn now_epoch() -> i64 {
 /// A row whose temp file has disappeared is deleted rather than returned: the
 /// chunk handler would otherwise answer "offset accepted" for a file that
 /// cannot be appended to. An expired row is removed the same way.
-async fn load_upload_session(
-    state: &Arc<AppState>,
-    session_id: &str,
-) -> Option<UploadSession> {
+async fn load_upload_session(state: &Arc<AppState>, session_id: &str) -> Option<UploadSession> {
     if let Some(session) = UPLOAD_SESSIONS.lock().get(session_id).cloned() {
         return Some(session);
     }
@@ -2104,7 +2101,9 @@ pub async fn handle_explorer_upload_session_start(
             let map = UPLOAD_SESSIONS.lock();
             (
                 map.len() as u64,
-                map.values().filter(|s| s.username == session.username).count() as u64,
+                map.values()
+                    .filter(|s| s.username == session.username)
+                    .count() as u64,
             )
         });
     if total_sessions >= MAX_UPLOAD_SESSIONS || user_sessions >= MAX_UPLOAD_SESSIONS_PER_USER {
@@ -2157,7 +2156,10 @@ pub async fn handle_explorer_upload_session_start(
     // Durable first (HV-UX-03): a session the client was told about must
     // survive a restart, so a failed insert refuses the slot instead of
     // handing out an id that only this process knows.
-    if let Err(e) = upload_session_repo(&state).save(&upload.stored(&session_id)).await {
+    if let Err(e) = upload_session_repo(&state)
+        .save(&upload.stored(&session_id))
+        .await
+    {
         let _ = tokio::fs::remove_file(&upload.tmp_path).await;
         return ResponseHelper::json_error(format!("Failed to open upload slot: {e}"));
     }
@@ -2532,7 +2534,11 @@ pub async fn handle_explorer_upload_complete(
             &session.username,
             crate::transfer_history::TransferOperation::Upload,
         )
-        .dest(format!("{}/{}", session.dir.trim_end_matches('/'), finished))
+        .dest(format!(
+            "{}/{}",
+            session.dir.trim_end_matches('/'),
+            finished
+        ))
         .bytes(total_bytes)
         .method("sha256")
         .verified(session.expected_sha256.is_some()),
@@ -2753,13 +2759,8 @@ pub async fn handle_explorer_copy(
     // `spawn_tracked_copy_job`) since a large tree can take a long time;
     // single files stay on the fast synchronous path.
     if path_is_dir(std::path::Path::new(&source)).await {
-        let (job_id, sse_url) = spawn_tracked_copy_job(
-            source,
-            destination,
-            username,
-            mode,
-            state.db.pool(),
-        );
+        let (job_id, sse_url) =
+            spawn_tracked_copy_job(source, destination, username, mode, state.db.pool());
         return ResponseHelper::json_success(serde_json::json!({
             "job_id": job_id,
             "sse_url": sse_url,
@@ -2914,13 +2915,8 @@ pub async fn handle_explorer_move(
         }
 
         tracing::warn!("Atomic directory move failed (cross-filesystem?), falling back to a tracked copy+delete job");
-        let (job_id, sse_url) = spawn_tracked_move_job(
-            source,
-            destination,
-            username,
-            mode,
-            state.db.pool(),
-        );
+        let (job_id, sse_url) =
+            spawn_tracked_move_job(source, destination, username, mode, state.db.pool());
         return ResponseHelper::json_success(serde_json::json!({
             "job_id": job_id,
             "sse_url": sse_url,
@@ -5719,7 +5715,6 @@ pub async fn handle_explorer_format(
     }
 }
 
-
 // ---------------------------------------------------------------------------
 // On-demand checksums (HV-INT-01)
 // ---------------------------------------------------------------------------
@@ -5956,17 +5951,16 @@ fn spawn_checksum_job(
             progress,
             cancel.clone(),
         )
-            .await
-            .and_then(|primary| {
-                let other = match &compare_for_hash {
-                    Some(other) => Some(
-                        crate::checksum::hash_file(other, algorithm)
-                            .map_err(|e| crate::checksum::ChecksumError::Io(std::io::Error::other(e.to_string())))?,
-                    ),
-                    None => None,
-                };
-                Ok((primary, other))
-            });
+        .await
+        .and_then(|primary| {
+            let other = match &compare_for_hash {
+                Some(other) => Some(crate::checksum::hash_file(other, algorithm).map_err(|e| {
+                    crate::checksum::ChecksumError::Io(std::io::Error::other(e.to_string()))
+                })?),
+                None => None,
+            };
+            Ok((primary, other))
+        });
         poll_handle.abort();
         crate::sse::PROGRESS_MANAGER.clear_cancel_hook(&handler_job_id);
 
@@ -6143,7 +6137,10 @@ pub struct ActiveUploadView {
 /// Read from the **database** (`upload_sessions`, migration 074) rather than
 /// the in-memory map: that is what makes the tray correct right after a
 /// restart, when the map is empty and the partial files are still on the pool.
-pub(crate) async fn active_upload_views(state: &Arc<AppState>, username: &str) -> Vec<ActiveUploadView> {
+pub(crate) async fn active_upload_views(
+    state: &Arc<AppState>,
+    username: &str,
+) -> Vec<ActiveUploadView> {
     let cutoff = now_epoch() - UPLOAD_SESSION_TTL_SECS;
     let rows = match upload_session_repo(state)
         .list_for_user(username, cutoff)

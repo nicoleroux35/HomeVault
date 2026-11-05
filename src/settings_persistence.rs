@@ -358,6 +358,9 @@ impl SettingsPersistence {
         // Dynamic DNS (data/ddns.json): same rule, the domain and the provider
         // token are settings.
         crate::ddns::clear_settings();
+        // Outbound proxy (data/proxy.json): a stale proxy would silently
+        // redirect every third-party call after a reset.
+        crate::proxy::clear_settings();
         Ok(())
     }
 }

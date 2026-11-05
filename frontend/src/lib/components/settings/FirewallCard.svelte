@@ -25,6 +25,8 @@
     FirewallRule,
     FirewallDefaultPolicy,
     FirewallHistoryEntry,
+    GeoIpStatus,
+    GeoIpCountryRule,
   } from '$lib/services/api';
   import { t } from '$lib/stores/i18n';
   import { IconX } from '@tabler/icons-svelte';
@@ -43,7 +45,7 @@
   let { class: klass = '' }: { class?: string } = $props();
 
   /** One dialog at a time, driven by a single focus-trapped overlay. */
-  type ModalKind = 'enable' | 'disable' | 'delete' | 'policy' | null;
+  type ModalKind = 'enable' | 'disable' | 'delete' | 'policy' | 'geoip' | null;
 
   let loading = $state(true);
   let available = $state(false);
@@ -63,6 +65,11 @@
   let previewAppPort = $state(8080);
   let previewWarnings = $state<string[]>([]);
   let deleteTarget = $state<FirewallRule | null>(null);
+  let geoip = $state<GeoIpStatus | null>(null);
+  let geoipCountry = $state('');
+  let geoipAction = $state<'allow' | 'deny'>('deny');
+  let geoipBusy = $state(false);
+  let geoipDeleteTarget = $state<GeoIpCountryRule | null>(null);
 
   let policyDirection = $state<'incoming' | 'outgoing'>('incoming');
   let policyValue = $state<'allow' | 'deny' | 'reject'>('deny');
@@ -100,6 +107,64 @@
     if (available) {
       await loadHistory();
     }
+    await loadGeoIp();
+  }
+
+  async function loadGeoIp() {
+    const res = await api.getGeoIpStatus();
+    if (res.success && res.data) {
+      geoip = res.data;
+    }
+  }
+
+  async function saveGeoIpRule() {
+    if (!geoipCountry.trim()) {
+      report('error', $t('firewall.geoip_country_required'));
+      return;
+    }
+    geoipBusy = true;
+    const res = await api.setGeoIpRule(geoipCountry.trim(), geoipAction);
+    geoipBusy = false;
+    if (!res.success) {
+      report('error', errorMessage(res));
+      return;
+    }
+    geoipCountry = '';
+    report('success', $t('firewall.geoip_saved'));
+    await loadGeoIp();
+  }
+
+  async function applyGeoIpRules() {
+    geoipBusy = true;
+    const res = await api.applyGeoIpRules();
+    geoipBusy = false;
+    if (!res.success) {
+      report('error', errorMessage(res));
+      return;
+    }
+    report('success', $t('firewall.geoip_applied'));
+    await loadGeoIp();
+  }
+
+  function askRemoveGeoIp(rule: GeoIpCountryRule) {
+    geoipDeleteTarget = rule;
+    modal = 'geoip';
+  }
+
+  async function handleRemoveGeoIp() {
+    if (!geoipDeleteTarget) return;
+    const country = geoipDeleteTarget.country;
+    geoipBusy = true;
+    const res = await api.removeGeoIpRule(country);
+    geoipBusy = false;
+    if (!res.success) {
+      report('error', errorMessage(res));
+      return;
+    }
+    geoipDeleteTarget = null;
+    closeModal();
+    report('success', $t('firewall.geoip_removed', { country }));
+    await loadGeoIp();
   }
 
   async function loadHistory() {
@@ -122,6 +187,7 @@
   function closeModal() {
     modal = null;
     deleteTarget = null;
+    geoipDeleteTarget = null;
     confirmChecked = false;
   }
 
@@ -377,6 +443,91 @@
       {/each}
     </div>
 
+    {#if geoip}
+      <div class={settingsRowStacked} data-testid="firewall-geoip">
+        <h3 class="fw-subheading">{$t('firewall.geoip_title')}</h3>
+        <p class={settingsHint}>{$t('firewall.geoip_subtitle')}</p>
+        {#if !geoip.ufw_available}
+          <p class="fw-warning">{$t('firewall.geoip_unavailable')}</p>
+        {:else if !geoip.database_present}
+          <p class="fw-warning" data-testid="firewall-geoip-missing">
+            {$t('firewall.geoip_db_missing', { path: geoip.database_path })}
+          </p>
+          {#if geoip.database_error}
+            <p class={settingsHint}>{geoip.database_error}</p>
+          {/if}
+        {:else}
+          <p class={settingsHint}>
+            {$t('firewall.geoip_summary', {
+              managed: String(geoip.managed_rules),
+              max: String(geoip.max_rules),
+            })}
+          </p>
+          <div class="fw-add-row">
+            <label class="sr-only" for="fw-geoip-country">{$t('firewall.geoip_country_label')}</label>
+            <input
+              id="fw-geoip-country"
+              class={cn(settingsInput, 'w-[90px] flex-none uppercase')}
+              type="text"
+              maxlength="2"
+              bind:value={geoipCountry}
+              placeholder={$t('firewall.geoip_country_placeholder')}
+              data-testid="firewall-geoip-country"
+            />
+            <label class="sr-only" for="fw-geoip-action">{$t('firewall.geoip_action_label')}</label>
+            <select id="fw-geoip-action" class={cn(settingsSelect, 'w-[110px] flex-none')} bind:value={geoipAction} data-testid="firewall-geoip-action">
+              <option value="deny">{$t('firewall.geoip_deny')}</option>
+              <option value="allow">{$t('firewall.geoip_allow')}</option>
+            </select>
+            <button
+              class={cn(settingsBtn, settingsBtnPrimary)}
+              onclick={saveGeoIpRule}
+              disabled={geoipBusy}
+              data-testid="firewall-geoip-add"
+            >
+              {$t('firewall.geoip_add')}
+            </button>
+            <button
+              class={cn(settingsBtn, settingsBtnGhost)}
+              onclick={applyGeoIpRules}
+              disabled={geoipBusy}
+              data-testid="firewall-geoip-apply"
+            >
+              {$t('firewall.geoip_apply')}
+            </button>
+          </div>
+          {#if geoip.countries.length === 0}
+            <p class={settingsHint} data-testid="firewall-geoip-empty">{$t('firewall.geoip_empty')}</p>
+          {:else}
+            {#each geoip.countries as rule (rule.country)}
+              <div class="fw-list-row" data-testid="firewall-geoip-{rule.country}">
+                <div class="fw-list-main">
+                  <span class="fw-rule-port">{rule.country}</span>
+                  <span
+                    class="settings-badge"
+                    class:settings-badge-success={rule.action === 'allow'}
+                    class:settings-badge-error={rule.action === 'deny'}
+                  >
+                    {rule.action}
+                  </span>
+                  <span class={settingsHint}>
+                    {$t('firewall.geoip_cidr_count', { count: String(rule.cidr_count) })}
+                  </span>
+                </div>
+                <button
+                  class={cn(settingsBtn, settingsBtnDanger)}
+                  onclick={() => askRemoveGeoIp(rule)}
+                  aria-label={$t('firewall.geoip_remove_aria', { country: rule.country })}
+                >
+                  {$t('firewall.remove')}
+                </button>
+              </div>
+            {/each}
+          {/if}
+        {/if}
+      </div>
+    {/if}
+
     {#if history.length > 0}
       <details class="fw-history">
         <summary>{$t('firewall.history')}</summary>
@@ -453,6 +604,8 @@
           <p>{$t('firewall.confirm_disable_warning')}</p>
         {:else if modal === 'delete'}
           <p>{$t('firewall.confirm_delete_warning', { rule: deleteTarget ? ruleLabel(deleteTarget) : '' })}</p>
+        {:else if modal === 'geoip'}
+          <p>{$t('firewall.geoip_confirm_remove', { country: geoipDeleteTarget?.country ?? '' })}</p>
         {:else}
           <p>{$t('firewall.default_policy_hint')}</p>
           <div class="fw-policy-form">
@@ -489,6 +642,10 @@
         {:else if modal === 'delete'}
           <button class={cn(settingsBtn, settingsBtnDanger)} onclick={handleDeleteRule} disabled={toggling}>
             {$t('firewall.confirm_delete')}
+          </button>
+        {:else if modal === 'geoip'}
+          <button class={cn(settingsBtn, settingsBtnDanger)} onclick={handleRemoveGeoIp} disabled={geoipBusy}>
+            {$t('firewall.geoip_confirm_remove_btn')}
           </button>
         {:else}
           <button class={cn(settingsBtn, settingsBtnPrimary)} onclick={handleSavePolicy} disabled={toggling}>

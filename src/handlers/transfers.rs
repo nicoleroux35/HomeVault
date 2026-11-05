@@ -339,7 +339,10 @@ mod tests {
     fn test_zone_for_kind_groups_the_tray() {
         assert_eq!(zone_for_kind("upload"), Some(TransferZone::Upload));
         assert_eq!(zone_for_kind("download"), Some(TransferZone::Download));
-        assert_eq!(zone_for_kind("download_torrent"), Some(TransferZone::Download));
+        assert_eq!(
+            zone_for_kind("download_torrent"),
+            Some(TransferZone::Download)
+        );
         assert_eq!(zone_for_kind("explorer_copy"), Some(TransferZone::Copy));
         assert_eq!(zone_for_kind("explorer_move"), Some(TransferZone::Copy));
         assert_eq!(zone_for_kind("explorer_checksum"), Some(TransferZone::Copy));
@@ -369,7 +372,10 @@ mod tests {
 
     #[test]
     fn test_label_from_message_takes_the_path_tail() {
-        assert_eq!(label_from_message("Copied /data/files/movie.mkv"), "movie.mkv");
+        assert_eq!(
+            label_from_message("Copied /data/files/movie.mkv"),
+            "movie.mkv"
+        );
         assert_eq!(label_from_message("/data/files/movie.mkv"), "movie.mkv");
         assert_eq!(label_from_message(""), "");
         assert_eq!(label_from_message("   "), "");

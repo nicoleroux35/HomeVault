@@ -420,6 +420,48 @@ async fn validation_rejects_bad_pool_cron_and_prefix() {
     assert_eq!(body["data"]["gfs_hourly"], 1024);
 }
 
+/// P1-12 — a share target is opt-in and must be complete. A half pair is a
+/// client mistake, refused before any share/pool read; the historical
+/// pool-wide body still creates a schedule with both fields `null`.
+#[tokio::test]
+async fn a_share_target_must_be_complete_and_pool_wide_stays_the_default() {
+    let (state, _tmp, _guard) = setup_state().await;
+    create_test_user(&state, "admin", "AdminPass123!", ADMIN_ROLE_ID).await;
+    let mut router = schedules_router(state);
+    let admin = login(&mut router, "admin", "AdminPass123!").await;
+
+    let mut half = valid_schedule();
+    half["share"] = json!("photos");
+    let (status, body) = send(
+        &mut router,
+        Method::POST,
+        "/api/snapshot-schedules",
+        Some(&admin),
+        Some(half),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert!(
+        body["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("both 'share' and 'share_type'"),
+        "{body}"
+    );
+
+    let (status, body) = send(
+        &mut router,
+        Method::POST,
+        "/api/snapshot-schedules",
+        Some(&admin),
+        Some(valid_schedule()),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(body["data"]["share"].is_null(), "{body}");
+    assert!(body["data"]["share_type"].is_null(), "{body}");
+}
+
 #[tokio::test]
 async fn pool_snapshot_list_validates_and_reports_unavailable_pools() {
     let (state, _tmp, _guard) = setup_state().await;
@@ -588,6 +630,8 @@ async fn a_failed_prune_is_a_failed_run_and_notifies_only_once() {
     let schedule = repo
         .create(
             "pool-prune-fails",
+            None,
+            None,
             "0 */4 * * *",
             "hv-auto",
             true,

@@ -636,7 +636,10 @@ mod tests {
             .filter(|key| key.starts_with("saml."))
             .cloned()
             .collect();
-        assert!(keys.len() >= 49, "the SAML panel ships 49 strings: {keys:?}");
+        assert!(
+            keys.len() >= 49,
+            "the SAML panel ships 49 strings: {keys:?}"
+        );
 
         for (code, map) in &maps {
             for key in &keys {
@@ -652,7 +655,9 @@ mod tests {
 
         for (code, map) in &maps {
             for (key, placeholders) in [("saml.footer_counts", ["%total%", "%local%"])] {
-                let value = map.get(key).unwrap_or_else(|| panic!("{key} missing from {code}.toml"));
+                let value = map
+                    .get(key)
+                    .unwrap_or_else(|| panic!("{key} missing from {code}.toml"));
                 for placeholder in placeholders {
                     assert!(
                         value.contains(placeholder),

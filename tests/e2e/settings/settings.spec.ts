@@ -1529,6 +1529,47 @@ test.describe('12 — Security', () => {
     const ls = await page.evaluate(() => JSON.stringify(localStorage));
     expect(ls).not.toMatch(/PRIVATE KEY|BEGIN CERTIFICATE/);
   });
+
+  test('12.7 — the password-expiry card saves the number of days', async ({ page }) => {
+    let payload: Record<string, unknown> | null = null;
+    await page.route('**/api/settings/password-policy', async (route) => {
+      if (route.request().method() === 'PUT') {
+        payload = route.request().postDataJSON();
+        await route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          body: JSON.stringify({
+            success: true,
+            data: { expiry_days: payload!['expiry_days'], max_expiry_days: 3650 }
+          })
+        });
+        return;
+      }
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          success: true,
+          data: { expiry_days: 0, max_expiry_days: 3650 }
+        })
+      });
+    });
+
+    await openSettings(page, admin);
+    await openCategory(page, 'security');
+    const card = set(page).locator('[data-testid="settings-card"]', {
+      hasText: /password expiry|expiration des mots|passwort-ablauf|caducidad/i
+    });
+    await expect(card).toBeVisible();
+
+    await card.locator('input[type="number"]').fill('30');
+    await card
+      .getByRole('button', { name: /save|enregistrer|speichern|guardar/i })
+      .click();
+
+    await expect.poll(() => payload).not.toBeNull();
+    expect(payload!['expiry_days']).toBe(30);
+  });
 });
 
 // ===========================================================================

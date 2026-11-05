@@ -161,12 +161,240 @@ pub const ARRAY_READY_TIMEOUT: Duration = Duration::from_secs(120);
 /// `clean`/`active` in well under a second).
 pub const ARRAY_READY_POLL: Duration = Duration::from_millis(500);
 
+/// Every mdadm RAID level the wizard can create. The level-change dialog also
+/// lists all of them so a refused target always carries its reason.
+const MDAADM_RAID_LEVELS: &[&str] = &["raid0", "raid1", "raid5", "raid6", "raid10"];
+
+/// Direct layer conversions mdadm documents in GROW MODE: "between RAID1 and
+/// RAID5, between RAID5 and RAID6, between RAID0, RAID4, and RAID5, and
+/// between RAID0 and RAID10 (in the near-2 mode)".
+///
+/// RAID4 is not offered by this appliance, so the matrix exposed here is the
+/// subset of that list whose two ends the wizard can create. Everything else
+/// is refused **with the reason** rather than attempted and failed by mdadm —
+/// notably RAID0 → RAID1 (different on-disk layout) and RAID0 → RAID6 (two
+/// steps, through RAID5).
+const RAID_LEVEL_MIGRATIONS: &[(&str, &str)] = &[
+    ("raid0", "raid5"),
+    ("raid0", "raid10"),
+    ("raid1", "raid5"),
+    ("raid5", "raid6"),
+    ("raid6", "raid5"),
+];
+
+/// One possible target for an in-place RAID level change.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct RaidLevelOption {
+    /// `raid0`, `raid1`, `raid5`, `raid6` or `raid10`.
+    pub level: String,
+    /// Whether `POST …/migrate-level` would accept this target right now.
+    pub allowed: bool,
+    /// Why the target is refused when `allowed` is false. `None` otherwise.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
+/// The current layout of an mdadm array plus every level it could be changed
+/// to. Returned by `GET /storage/virtual-disks/{name}/level-options` so the
+/// Storage UI can disable the impossible targets and show the reason instead of
+/// offering an action that will fail.
+#[derive(Debug, Clone, Serialize)]
+pub struct RaidLevelPlan {
+    pub current_level: String,
+    pub member_count: usize,
+    pub reshape_in_progress: bool,
+    pub options: Vec<RaidLevelOption>,
+}
+
+/// Result of a level change that was successfully started (the reshape runs in
+/// the background, so this is not the completion).
+#[derive(Debug, Clone, PartialEq)]
+pub struct RaidLevelChange {
+    pub from: String,
+    pub to: String,
+    pub member_count: usize,
+}
+
+/// Human label for a level token (`raid10` → `RAID 10`).
+pub fn raid_level_label(level: &str) -> String {
+    match level.strip_prefix("raid") {
+        Some(number) => format!("RAID {}", number.to_ascii_uppercase()),
+        None => level.to_ascii_uppercase(),
+    }
+}
+
+/// Whether a target level is one the level-change endpoint knows how to write.
+pub fn is_known_raid_level(level: &str) -> bool {
+    MDAADM_RAID_LEVELS.contains(&level)
+}
+
+/// Pure transition gate. `None` means the change may proceed; `Some(reason)`
+/// is the sentence the API and the UI show. `member_count` is the number of
+/// active member slots currently in the array, not including spares.
+pub fn raid_level_change_refusal(from: &str, to: &str, member_count: usize) -> Option<String> {
+    if !is_known_raid_level(to) {
+        return Some(format!(
+            "Unknown RAID level '{}': supported targets are {}",
+            to,
+            MDAADM_RAID_LEVELS.join(", ")
+        ));
+    }
+    if !is_known_raid_level(from) {
+        return Some(format!(
+            "The array's current level '{}' cannot be changed through HomeVault",
+            from
+        ));
+    }
+    if from == to {
+        return Some(format!("The array is already {}", raid_level_label(from)));
+    }
+    if !RAID_LEVEL_MIGRATIONS.contains(&(from, to)) {
+        let reason = match (from, to) {
+            ("raid0", "raid1") => {
+                "mdadm cannot convert RAID 0 to RAID 1 — the data layouts differ; create a mirror and copy the data instead"
+                    .to_string()
+            }
+            ("raid0", "raid6") => {
+                "mdadm has no direct RAID 0 → RAID 6 conversion — convert to RAID 5 first, then RAID 5 → RAID 6"
+                    .to_string()
+            }
+            ("raid1", "raid6") => {
+                "mdadm has no direct RAID 1 → RAID 6 conversion — convert to RAID 5 first, then RAID 5 → RAID 6"
+                    .to_string()
+            }
+            ("raid10", _) | (_, "raid10") => {
+                "mdadm only converts RAID 0 to RAID 10 (near-2); other RAID 10 changes are not supported".to_string()
+            }
+            _ => format!(
+                "mdadm does not support a direct {} → {} conversion",
+                raid_level_label(from),
+                raid_level_label(to)
+            ),
+        };
+        return Some(reason);
+    }
+
+    if to == "raid10" && member_count % 2 != 0 {
+        return Some(format!(
+            "RAID 10 needs an even number of member disks; this array has {}",
+            member_count
+        ));
+    }
+    let minimum = min_devices_for_level(to);
+    if member_count < minimum {
+        return Some(format!(
+            "{} needs at least {} member disks; this array has {} — add a disk first (Add disk)",
+            raid_level_label(to),
+            minimum,
+            member_count
+        ));
+    }
+    None
+}
+
+/// Builds the full option list for an array, current level included (as a
+/// refused option) so the UI can explain every line.
+pub fn raid_level_options(from: &str, member_count: usize) -> Vec<RaidLevelOption> {
+    MDAADM_RAID_LEVELS
+        .iter()
+        .map(|level| {
+            let reason = raid_level_change_refusal(from, level, member_count);
+            RaidLevelOption {
+                level: (*level).to_string(),
+                allowed: reason.is_none(),
+                reason,
+            }
+        })
+        .collect()
+}
+
+/// Parses the two lines of `mdadm --detail` the level-change path needs.
+/// Returns `(member_count, level)`; `None` when either line is missing.
+fn parse_mdadm_layout(detail: &str) -> Option<(usize, String)> {
+    let mut raid_devices: Option<usize> = None;
+    let mut level: Option<String> = None;
+    for line in detail.lines() {
+        let line = line.trim();
+        if let Some(rest) = line.strip_prefix("Raid Devices :") {
+            raid_devices = rest.trim().parse().ok();
+        }
+        if let Some(rest) = line.strip_prefix("Raid Level :") {
+            let value = rest.trim().to_ascii_lowercase();
+            if !value.is_empty() {
+                level = Some(value);
+            }
+        }
+    }
+    match (raid_devices, level) {
+        (Some(count), Some(level)) => Some((count, level)),
+        _ => None,
+    }
+}
+
+/// Whether `mdadm --detail` reports a reshape/sync already running. A second
+/// grow while the previous one is still rebuilding would make both slower and
+/// is not something mdadm supports safely.
+fn mdadm_reshape_in_progress(detail: &str) -> bool {
+    detail.lines().any(|line| {
+        let line = line.trim();
+        line.starts_with("Reshape Status :")
+            || line
+                .strip_prefix("State :")
+                .is_some_and(|state| state.contains("reshap"))
+    })
+}
+
+/// The off-array backup file mdadm requires for a level change. It must not
+/// live on the array being reshaped, so it is derived under
+/// `{DATA_DIRECTORY}/raid-backups/`; the slug strips every separator, `.` and
+/// `..`, so a hostile array name cannot escape that directory.
+fn raid_backup_path(data_directory: &Path, array: &str, stamp: u64) -> PathBuf {
+    let slug: String = array
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '-'
+            }
+        })
+        .take(48)
+        .collect();
+    let slug = slug.trim_matches('-');
+    let slug = if slug.is_empty() { "array" } else { slug };
+    data_directory
+        .join("raid-backups")
+        .join(format!("{slug}-{stamp}.bak"))
+}
+
+/// The mount point the kernel currently has for an array, or `None` when it
+/// is not mounted. Used to keep the level-change backup file **off** the array
+/// being reshaped: mdadm cannot restore an interrupted critical section from a
+/// file that was itself on the device it was rewriting.
+async fn array_mount_point(device: &str) -> Option<String> {
+    let output = bounded(
+        Command::new("findmnt").args(["-n", "-o", "TARGET", "--source", device]),
+        BLKID_TIMEOUT,
+    )
+    .await
+    .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .map(str::to_string)
+}
+
 /// Minimum device count per RAID level (mirror of the frontend's minDisks).
 fn min_devices_for_level(level: &str) -> usize {
     match level {
         "raid0" | "raid1" => 2,
         "raid5" => 3,
-        "raid6" | "raid10" => 4,
+        // raidz3 needs three parity disks plus at least one data disk.
+        "raid6" | "raid10" | "raidz3" => 4,
         _ => 2,
     }
 }
@@ -507,11 +735,15 @@ fn device_basename(path: &str) -> &str {
 /// to overwrite — ROADMAP 8).
 ///
 /// raid10 becomes one `mirror` group per device pair (a stripe of mirrors);
-/// every other level is a single vdev group.
+/// every other level is a single vdev group. `raidz3` is ZFS's triple-parity
+/// layout (three disks may fail). `spares` becomes one trailing `spare` group —
+/// zpool keeps those devices in reserve and automatically starts a resilver on
+/// one when a vdev disk fails.
 fn zfs_create_args(
     name: &str,
     raid_level: &str,
     devices: &[String],
+    spares: &[String],
     mount_point: &str,
 ) -> Vec<String> {
     let mut args: Vec<String> = vec!["zpool".into(), "create".into()];
@@ -535,6 +767,7 @@ fn zfs_create_args(
         "raid1" | "raid10" => "mirror",
         "raid5" => "raidz1",
         "raid6" => "raidz2",
+        "raidz3" => "raidz3",
         // raid0 is a plain stripe: no vdev keyword at all.
         _ => "",
     };
@@ -560,6 +793,11 @@ fn zfs_create_args(
         }
     } else {
         args.extend(devices.iter().map(device_path));
+    }
+
+    if !spares.is_empty() {
+        args.push("spare".to_string());
+        args.extend(spares.iter().map(device_path));
     }
     args
 }
@@ -2183,14 +2421,19 @@ impl DiskService {
     /// setfacl flow, xattr in the dnode).
     ///
     /// Level mapping: raid0 → stripe, raid1 → mirror, raid5 → raidz1,
-    /// raid6 → raidz2, and raid10 → **striped mirrors** (one `mirror` vdev
-    /// per device pair). This used to map raid10 → a single raidz3 — the
-    /// closest-capacity label on paper, but a completely different layout
-    /// (triple parity on all N disks instead of independent 2-disk mirrors).
+    /// raid6 → raidz2, raidz3 → RAID-Z3 (three parity disks), and raid10 →
+    /// **striped mirrors** (one `mirror` vdev per device pair). This used to
+    /// map raid10 → a single raidz3 — the closest-capacity label on paper, but
+    /// a completely different layout (triple parity on all N disks instead of
+    /// independent 2-disk mirrors).
+    ///
+    /// `spares` are whole disks attached as a ZFS `spare` group, so zpool can
+    /// start a resilver automatically when a member fails.
     async fn create_zfs_pool_from_devices(
         name: &str,
         raid_level: &str,
         devices: Vec<String>,
+        spares: Vec<String>,
     ) -> Result<(), DiskError> {
         if name.is_empty() || name.len() > 32 {
             return Err(DiskError::Parse(
@@ -2212,8 +2455,8 @@ impl DiskService {
             return Err(DiskError::Parse("ZFS requires at least 1 disk".to_string()));
         }
 
-        // Validate that all devices exist
-        for device in &devices {
+        // Validate that every member and spare exists.
+        for device in devices.iter().chain(spares.iter()) {
             let device_path = if device.starts_with("/dev/") {
                 device.clone()
             } else {
@@ -2230,6 +2473,7 @@ impl DiskService {
         // Map RAID level to ZFS layout.
         // raidz1: single parity (like raid5)
         // raidz2: double parity (like raid6)
+        // raidz3: triple parity (ZFS-only level)
         // mirror: 2-disk mirror (like raid1) / striped mirrors (like raid10)
         // (`zfs_create_args` owns the mapping so the argv is unit-testable.)
         if raid_level == "raid10" && devices.len() % 2 != 0 {
@@ -2263,7 +2507,7 @@ impl DiskService {
         // device with a ZFS signature, so the flag could only ever turn a
         // conflict into silent destruction. Pinned by
         // `test_zfs_create_args_*`.
-        let args = zfs_create_args(name, raid_level, &devices, &mount_point);
+        let args = zfs_create_args(name, raid_level, &devices, &spares, &mount_point);
 
         let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
         let output = sudo_timed(&arg_refs, ZPOOL_TIMEOUT).await?;
@@ -3101,17 +3345,7 @@ impl DiskService {
         )
         .await?;
         let detail_text = String::from_utf8_lossy(&detail.stdout).to_string();
-        let mut raid_devices: Option<usize> = None;
-        let mut level: Option<String> = None;
-        for line in detail_text.lines() {
-            if let Some(rest) = line.strip_prefix("Raid Devices :") {
-                raid_devices = rest.trim().parse().ok();
-            }
-            if let Some(rest) = line.strip_prefix("Raid Level :") {
-                level = Some(rest.trim().to_string());
-            }
-        }
-        let (Some(raid_devices), Some(level)) = (raid_devices, level) else {
+        let Some((raid_devices, level)) = parse_mdadm_layout(&detail_text) else {
             return Err(DiskError::Parse(format!(
                 "Could not read the layout of array '{}'",
                 name
@@ -3176,6 +3410,178 @@ impl DiskService {
         }
 
         Ok(())
+    }
+
+    /// Reads the array's current level, member count and every level it could
+    /// be changed to. `mdadm --detail` is the authority, exactly like
+    /// `grow_raid`: the persisted `raid_profile` in a pool scan is only a
+    /// display value and may lag one reshape behind.
+    pub async fn raid_level_plan(name: &str) -> Result<RaidLevelPlan, DiskError> {
+        let device = if name.starts_with("/dev/") {
+            name.to_string()
+        } else {
+            format!("/dev/md/{}", name)
+        };
+        if !std::path::Path::new(&device).exists() {
+            return Err(DiskError::DeviceNotFound(format!(
+                "RAID array {} does not exist",
+                name
+            )));
+        }
+
+        let detail = bounded(
+            Command::new("sudo")
+                .arg("mdadm")
+                .args(["--detail", &device]),
+            MDADM_TIMEOUT,
+        )
+        .await?;
+        if !detail.status.success() {
+            let stderr = String::from_utf8_lossy(&detail.stderr);
+            return Err(DiskError::CommandFailed {
+                command: format!("mdadm --detail {}", device),
+                stderr: friendly_tool_error("Reading the array", &stderr),
+            });
+        }
+
+        let detail_text = String::from_utf8_lossy(&detail.stdout).to_string();
+        let (member_count, current_level) = parse_mdadm_layout(&detail_text).ok_or_else(|| {
+            DiskError::Parse(format!("Could not read the layout of array '{}'", name))
+        })?;
+        let reshape_in_progress = mdadm_reshape_in_progress(&detail_text);
+        let mut options = raid_level_options(&current_level, member_count);
+        if reshape_in_progress {
+            for option in &mut options {
+                option.allowed = false;
+                option.reason = Some(
+                    "a reshape is already running on this array — wait for it to finish before changing the level"
+                        .to_string(),
+                );
+            }
+        }
+
+        Ok(RaidLevelPlan {
+            current_level,
+            member_count,
+            reshape_in_progress,
+            options,
+        })
+    }
+
+    /// Changes the RAID level of an existing mdadm array in place:
+    /// `mdadm --grow <dev> --level <n> --backup-file <off-array path>`.
+    ///
+    /// Two gates run **before** any command: the pure transition matrix (only
+    /// the conversions mdadm documents are attempted) and an explicit
+    /// `backup_confirmed` acknowledgement from the administrator. mdadm
+    /// requires the backup file for a level change because the first stripes
+    /// are rewritten in a critical section; the path is derived under
+    /// `{DATA_DIRECTORY}` and never on the array being reshaped.
+    pub async fn migrate_raid_level(
+        name: &str,
+        target_level: &str,
+        backup_confirmed: bool,
+    ) -> Result<RaidLevelChange, DiskError> {
+        if !backup_confirmed {
+            return Err(DiskError::Parse(
+                "Back up the array before changing its RAID level, then confirm the backup exists"
+                    .to_string(),
+            ));
+        }
+        if !is_known_raid_level(target_level) {
+            return Err(DiskError::Parse(format!(
+                "Unknown RAID level '{}': supported targets are {}",
+                target_level,
+                MDAADM_RAID_LEVELS.join(", ")
+            )));
+        }
+
+        let plan = Self::raid_level_plan(name).await?;
+        if plan.reshape_in_progress {
+            return Err(DiskError::Parse(
+                "A reshape is already running on this array — wait for it to finish before changing the level"
+                    .to_string(),
+            ));
+        }
+        if let Some(reason) =
+            raid_level_change_refusal(&plan.current_level, target_level, plan.member_count)
+        {
+            return Err(DiskError::Parse(reason));
+        }
+
+        let device = if name.starts_with("/dev/") {
+            name.to_string()
+        } else {
+            format!("/dev/md/{}", name)
+        };
+
+        // The backup file must exist on a filesystem that is not the array
+        // being reshaped. `DATA_DIRECTORY` is the appliance's own (system)
+        // volume; the array's mount point is under /mnt, so they differ.
+        let data_directory =
+            std::env::var("DATA_DIRECTORY").unwrap_or_else(|_| "/var/lib/homevault".to_string());
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let backup_file = raid_backup_path(Path::new(&data_directory), name, stamp);
+        if let Some(parent) = backup_file.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| {
+                DiskError::Parse(format!(
+                    "Could not create the RAID backup directory {}: {}",
+                    parent.display(),
+                    e
+                ))
+            })?;
+        }
+
+        // mdadm's backup file must live on another filesystem: it is what
+        // restores the critical section if the reshape is interrupted. When
+        // the appliance's data directory sits on this very array, refuse
+        // instead of writing a backup that cannot do its job.
+        if let Some(mount) = array_mount_point(&device).await {
+            let mount_path = Path::new(&mount);
+            let data_path = std::fs::canonicalize(Path::new(&data_directory))
+                .unwrap_or_else(|_| PathBuf::from(&data_directory));
+            if data_path.starts_with(mount_path) {
+                return Err(DiskError::Parse(format!(
+                    "The RAID backup directory {} is on the array being changed (mounted at {}) — configure a data directory on another filesystem first",
+                    data_path.display(),
+                    mount_path.display()
+                )));
+            }
+        }
+
+        let level_arg = format!("--level={}", target_level.trim_start_matches("raid"));
+        let backup_arg = format!("--backup-file={}", backup_file.display());
+        let grow = bounded(
+            Command::new("sudo")
+                .arg("mdadm")
+                .args(["--grow", &device, &level_arg, &backup_arg]),
+            MDADM_TIMEOUT,
+        )
+        .await?;
+        if !grow.status.success() {
+            let stderr = String::from_utf8_lossy(&grow.stderr);
+            // A partial backup file has no value once mdadm refused the
+            // change — do not leave it behind on the system volume.
+            let _ = std::fs::remove_file(&backup_file);
+            return Err(DiskError::CommandFailed {
+                command: format!(
+                    "mdadm --grow {} --level {} --backup-file {}",
+                    device,
+                    target_level,
+                    backup_file.display()
+                ),
+                stderr: friendly_tool_error("Changing the RAID level", &stderr),
+            });
+        }
+
+        Ok(RaidLevelChange {
+            from: plan.current_level,
+            to: target_level.to_string(),
+            member_count: plan.member_count,
+        })
     }
 
     /// Check SMART capabilities for a device via `smartctl -c`.
@@ -3420,13 +3826,15 @@ impl DiskService {
     ///
     /// Rules:
     ///   - `name`: 1-32 chars, alphanum/dash/underscore
-    ///   - `level`: raid0|raid1|raid5|raid6|raid10
+    ///   - `level`: raid0|raid1|raid5|raid6|raid10|raidz3
     ///   - `filesystem`: ext4|xfs|btrfs|zfs (the technology dispatch)
+    ///   - `raidz3`: ZFS only (triple parity, four-disk minimum)
     ///   - `members`: at least the level minimum — spares don't count
     ///   - `allow_missing`: only redundant mdadm levels, up to the level's
     ///     missing-slot budget, and the placeholder fill brings the total
     ///     exactly to the minimum (no exotic layouts)
-    ///   - `spares`: mdadm (ext4/xfs) only, never on raid0
+    ///   - `spares`: mdadm (ext4/xfs) hot spares or a ZFS `spare` vdev, never
+    ///     on raid0. Btrfs has no hot-spare concept and is refused.
     ///   - raid10 on mdadm/ZFS requires an even member count
     pub fn validate_virtual_disk_request(req: &VirtualDiskRequest) -> Result<(), DiskError> {
         if req.name.is_empty() || req.name.len() > 32 {
@@ -3445,7 +3853,7 @@ impl DiskService {
             ));
         }
 
-        let valid_levels = ["raid0", "raid1", "raid5", "raid6", "raid10"];
+        let valid_levels = ["raid0", "raid1", "raid5", "raid6", "raid10", "raidz3"];
         if !valid_levels.contains(&req.level.as_str()) {
             return Err(DiskError::Parse(format!(
                 "Invalid RAID level: {}",
@@ -3461,6 +3869,14 @@ impl DiskService {
                     other
                 )));
             }
+        }
+
+        // RAID-Z3 is a ZFS vdev layout, not an mdadm/Btrfs level. Refuse it
+        // before the device-count floor so the message names the real problem.
+        if req.level == "raidz3" && req.filesystem != "zfs" {
+            return Err(DiskError::Parse(
+                "RAID Z3 is a ZFS layout — choose the ZFS filesystem".to_string(),
+            ));
         }
 
         let min = min_devices_for_level(&req.level);
@@ -3496,14 +3912,30 @@ impl DiskService {
             }
         }
 
-        if req.filesystem == "zfs" || req.filesystem == "btrfs" {
-            if !req.spares.is_empty() || req.allow_missing {
+        if req.filesystem == "zfs" {
+            // ZFS supports a native `spare` vdev group; a missing-member
+            // create has no equivalent (zpool would need a placeholder it
+            // cannot carry), so that stays refused.
+            if req.allow_missing {
                 return Err(DiskError::Parse(
-                    "Native ZFS/Btrfs storage doesn't support hot spares or missing-device creates"
+                    "Native ZFS storage doesn't support missing-device creates — add every disk now"
                         .to_string(),
                 ));
             }
-        } else if !req.spares.is_empty() && req.level == "raid0" {
+        } else if req.filesystem == "btrfs" {
+            // Btrfs has no hot-spare device role: an extra disk is either a
+            // full member of the filesystem or nothing. Say so and name the
+            // alternatives instead of silently dropping the request.
+            if !req.spares.is_empty() || req.allow_missing {
+                return Err(DiskError::Parse(
+                    "Native Btrfs has no hot-spare or missing-device concept — \
+                     add the disk to the filesystem later, or keep it as a separate spare disk/pool"
+                        .to_string(),
+                ));
+            }
+        }
+
+        if !req.spares.is_empty() && req.level == "raid0" {
             return Err(DiskError::Parse(
                 "A RAID 0 array has no redundancy — hot spares are not supported".to_string(),
             ));
@@ -3601,8 +4033,13 @@ impl DiskService {
         match req.filesystem.as_str() {
             "zfs" => {
                 progress.report(15, &format!("Creating the ZFS pool '{}'", req.name));
-                Self::create_zfs_pool_from_devices(&req.name, &req.level, req.members.clone())
-                    .await?;
+                Self::create_zfs_pool_from_devices(
+                    &req.name,
+                    &req.level,
+                    req.members.clone(),
+                    req.spares.clone(),
+                )
+                .await?;
             }
             "btrfs" => {
                 progress.report(
@@ -3919,7 +4356,8 @@ mod tests {
     }
 
     #[test]
-    fn test_validate_rejects_spares_and_missing_on_native_pools() {
+    fn test_validate_accepts_zfs_spares_and_rejects_btrfs_spares() {
+        // P1-9: ZFS has a native `spare` vdev, so a spare disk is valid.
         let mut req = vreq(
             "tank",
             "raid6",
@@ -3927,8 +4365,41 @@ mod tests {
             "zfs",
         );
         req.spares = vec!["/dev/sdf".to_string()];
+        DiskService::validate_virtual_disk_request(&req).unwrap_or_else(|e| panic!("{e}"));
+
+        // raidz3 is a ZFS-only level, and it also accepts a spare.
+        let mut req = vreq(
+            "tank",
+            "raidz3",
+            &["/dev/sdb", "/dev/sdc", "/dev/sdd", "/dev/sde"],
+            "zfs",
+        );
+        req.spares = vec!["/dev/sdf".to_string()];
+        DiskService::validate_virtual_disk_request(&req).unwrap_or_else(|e| panic!("{e}"));
+
+        // ZFS still refuses a missing-member create (no placeholder concept).
+        let mut req = vreq(
+            "tank",
+            "raid6",
+            &["/dev/sdb", "/dev/sdc", "/dev/sdd", "/dev/sde"],
+            "zfs",
+        );
+        req.allow_missing = true;
         let err = DiskService::validate_virtual_disk_request(&req).unwrap_err();
-        assert!(matches!(err, DiskError::Parse(ref m) if m.contains("hot spares")));
+        assert!(matches!(err, DiskError::Parse(ref m) if m.contains("missing-device")));
+
+        // Btrfs has no hot-spare role: refuse with the alternative named.
+        let mut req = vreq(
+            "tank",
+            "raid6",
+            &["/dev/sdb", "/dev/sdc", "/dev/sdd", "/dev/sde"],
+            "btrfs",
+        );
+        req.spares = vec!["/dev/sdf".to_string()];
+        let err = DiskService::validate_virtual_disk_request(&req).unwrap_err();
+        assert!(
+            matches!(err, DiskError::Parse(ref m) if m.contains("Btrfs") && m.contains("spare"))
+        );
 
         let mut req = vreq(
             "tank",
@@ -3938,7 +4409,54 @@ mod tests {
         );
         req.allow_missing = true;
         let err = DiskService::validate_virtual_disk_request(&req).unwrap_err();
-        assert!(matches!(err, DiskError::Parse(ref m) if m.contains("hot spares")));
+        assert!(matches!(err, DiskError::Parse(ref m) if m.contains("missing-device")));
+    }
+
+    #[test]
+    fn test_validate_raidz3_is_zfs_only_and_needs_four_members() {
+        // ext4 cannot be asked for a ZFS vdev.
+        let req = vreq(
+            "tank",
+            "raidz3",
+            &["/dev/sdb", "/dev/sdc", "/dev/sdd", "/dev/sde"],
+            "ext4",
+        );
+        let err = DiskService::validate_virtual_disk_request(&req).unwrap_err();
+        assert!(matches!(err, DiskError::Parse(ref m) if m.contains("ZFS layout")));
+
+        // raidz3 needs three parity disks plus one data disk.
+        let req = vreq(
+            "tank",
+            "raidz3",
+            &["/dev/sdb", "/dev/sdc", "/dev/sdd"],
+            "zfs",
+        );
+        let err = DiskService::validate_virtual_disk_request(&req).unwrap_err();
+        assert!(matches!(err, DiskError::Parse(ref m) if m.contains("at least 4")));
+
+        // Spares don't count toward that minimum either.
+        let mut req = vreq(
+            "tank",
+            "raidz3",
+            &["/dev/sdb", "/dev/sdc", "/dev/sdd"],
+            "zfs",
+        );
+        req.spares = vec!["/dev/sde".to_string()];
+        let err = DiskService::validate_virtual_disk_request(&req).unwrap_err();
+        assert!(matches!(err, DiskError::Parse(ref m) if m.contains("spares don't count")));
+    }
+
+    #[test]
+    fn test_validate_refuses_spares_on_raid0_for_every_technology() {
+        for filesystem in ["ext4", "zfs"] {
+            let mut req = vreq("stripe", "raid0", &["/dev/sdb", "/dev/sdc"], filesystem);
+            req.spares = vec!["/dev/sdd".to_string()];
+            let err = DiskService::validate_virtual_disk_request(&req).unwrap_err();
+            assert!(
+                matches!(err, DiskError::Parse(ref m) if m.contains("hot spares")),
+                "{filesystem}: {err}"
+            );
+        }
     }
 
     #[test]
@@ -4837,7 +5355,13 @@ recommended polling time: \t (   5) minutes.
 
     fn zfs_args(level: &str, devices: &[&str]) -> Vec<String> {
         let devices: Vec<String> = devices.iter().map(|d| d.to_string()).collect();
-        zfs_create_args("hvpool", level, &devices, "/mnt/hvpool")
+        zfs_create_args("hvpool", level, &devices, &[], "/mnt/hvpool")
+    }
+
+    fn zfs_args_with_spares(level: &str, devices: &[&str], spares: &[&str]) -> Vec<String> {
+        let devices: Vec<String> = devices.iter().map(|d| d.to_string()).collect();
+        let spares: Vec<String> = spares.iter().map(|d| d.to_string()).collect();
+        zfs_create_args("hvpool", level, &devices, &spares, "/mnt/hvpool")
     }
 
     #[test]
@@ -4849,6 +5373,7 @@ recommended polling time: \t (   5) minutes.
             ("raid1", "mirror"),
             ("raid5", "raidz1"),
             ("raid6", "raidz2"),
+            ("raidz3", "raidz3"),
         ] {
             let args = zfs_args(level, &["/dev/sda", "/dev/sdb", "/dev/sdc"]);
             let name_at = args
@@ -4885,7 +5410,7 @@ recommended polling time: \t (   5) minutes.
     fn test_zfs_create_args_never_forces_creation() {
         // `-f` overwrites a pool signature the free-device gate already
         // refused — it must not come back (ROADMAP 8, matching 7.4).
-        for level in ["raid0", "raid1", "raid5", "raid6", "raid10"] {
+        for level in ["raid0", "raid1", "raid5", "raid6", "raid10", "raidz3"] {
             let args = zfs_args(level, &["/dev/sda", "/dev/sdb", "/dev/sdc", "/dev/sdd"]);
             assert!(
                 !args.iter().any(|a| a == "-f" || a == "--force"),
@@ -4920,6 +5445,193 @@ recommended polling time: \t (   5) minutes.
         // A bare device name still gets its `/dev/` prefix.
         let bare = zfs_args("raid1", &["sda", "sdb"]);
         assert!(bare.iter().any(|a| a == "/dev/sda"), "{bare:?}");
+    }
+
+    // -- P1-9: raidz3 and native ZFS hot spares ------------------------------
+
+    #[test]
+    fn test_zfs_create_args_maps_raidz3_to_a_triple_parity_vdev() {
+        let args = zfs_args("raidz3", &["/dev/sda", "/dev/sdb", "/dev/sdc", "/dev/sde"]);
+        let name_at = args.iter().position(|a| a == "hvpool").unwrap();
+        let vdev_at = args.iter().position(|a| a == "raidz3").unwrap();
+        assert!(name_at < vdev_at, "{args:?}");
+        // The four members follow the vdev keyword in order.
+        let tail: Vec<&str> = args
+            .iter()
+            .rev()
+            .take(4)
+            .rev()
+            .map(String::as_str)
+            .collect();
+        assert_eq!(
+            tail,
+            vec!["/dev/sda", "/dev/sdb", "/dev/sdc", "/dev/sde"],
+            "{args:?}"
+        );
+    }
+
+    #[test]
+    fn test_zfs_create_args_appends_spares_as_one_group_after_the_vdev() {
+        let args = zfs_args_with_spares(
+            "raid6",
+            &["/dev/sda", "/dev/sdb", "/dev/sdc", "/dev/sdd"],
+            &["/dev/sdf", "/dev/sdg"],
+        );
+        let spare_at = args
+            .iter()
+            .position(|a| a == "spare")
+            .expect("the spare keyword must be present");
+        // `spare` comes after every member, and all spare devices follow it.
+        let spare_tail: Vec<&str> = args[spare_at..].iter().map(String::as_str).collect();
+        assert_eq!(
+            spare_tail,
+            vec!["spare", "/dev/sdf", "/dev/sdg"],
+            "{args:?}"
+        );
+        assert!(
+            args[..spare_at]
+                .iter()
+                .all(|a| a != "/dev/sdf" && a != "/dev/sdg"),
+            "spare devices must not also be vdev members: {args:?}"
+        );
+
+        // A striped-mirror pool keeps the spare group outside the mirror
+        // groups. `zpool create tank mirror a b mirror c d spare e`.
+        let mirror = zfs_args_with_spares(
+            "raid10",
+            &["/dev/sda", "/dev/sdb", "/dev/sdc", "/dev/sdd"],
+            &["/dev/sde"],
+        );
+        let mirror_spare = mirror.iter().position(|a| a == "spare").unwrap();
+        let mirror_tail: Vec<&str> = mirror[mirror_spare..].iter().map(String::as_str).collect();
+        assert_eq!(mirror_tail, vec!["spare", "/dev/sde"], "{mirror:?}");
+        assert_eq!(
+            mirror[..mirror_spare]
+                .iter()
+                .filter(|a| a.as_str() == "mirror")
+                .count(),
+            2,
+            "{mirror:?}"
+        );
+    }
+
+    // -- P1-11: in-place RAID level migration --------------------------------
+
+    #[test]
+    fn test_raid_level_migration_matrix_is_the_documented_subset() {
+        // mdadm GROW MODE documents 1↔5, 5↔6, 0/4/5 and 0↔10. RAID4 is not
+        // offered by the wizard, so exactly these five pairs remain.
+        for (from, to) in [
+            ("raid0", "raid5"),
+            ("raid1", "raid5"),
+            ("raid5", "raid6"),
+            ("raid6", "raid5"),
+            ("raid0", "raid10"),
+        ] {
+            assert!(
+                raid_level_change_refusal(from, to, 6).is_none(),
+                "{from} -> {to} must be allowed"
+            );
+        }
+        assert_eq!(RAID_LEVEL_MIGRATIONS.len(), 5);
+    }
+
+    #[test]
+    fn test_raid_level_change_refuses_unsupported_pairs_with_the_reason() {
+        let raid0_to_1 = raid_level_change_refusal("raid0", "raid1", 4).unwrap();
+        assert!(raid0_to_1.contains("layouts differ"), "{raid0_to_1}");
+        let raid0_to_6 = raid_level_change_refusal("raid0", "raid6", 4).unwrap();
+        assert!(raid0_to_6.contains("RAID 5 first"), "{raid0_to_6}");
+        let raid1_to_6 = raid_level_change_refusal("raid1", "raid6", 4).unwrap();
+        assert!(raid1_to_6.contains("RAID 5 first"), "{raid1_to_6}");
+        let raid10_to_5 = raid_level_change_refusal("raid10", "raid5", 4).unwrap();
+        assert!(raid10_to_5.contains("RAID 10"), "{raid10_to_5}");
+        let same = raid_level_change_refusal("raid5", "raid5", 4).unwrap();
+        assert!(same.contains("already RAID 5"), "{same}");
+        let unknown = raid_level_change_refusal("raid5", "raid7", 4).unwrap();
+        assert!(unknown.contains("Unknown RAID level"), "{unknown}");
+    }
+
+    #[test]
+    fn test_raid_level_change_requires_the_target_minimum_disks() {
+        // raid1 → raid5 is a supported conversion, but only once a third
+        // member exists: mdadm cannot invent the parity disk.
+        let too_small = raid_level_change_refusal("raid1", "raid5", 2).unwrap();
+        assert!(too_small.contains("at least 3"), "{too_small}");
+        assert!(too_small.contains("add a disk first"), "{too_small}");
+        assert!(raid_level_change_refusal("raid1", "raid5", 3).is_none());
+
+        // raid5 → raid6 needs a fourth member.
+        let four = raid_level_change_refusal("raid5", "raid6", 3).unwrap();
+        assert!(four.contains("at least 4"), "{four}");
+        assert!(raid_level_change_refusal("raid5", "raid6", 4).is_none());
+
+        // RAID 10 is even-member only.
+        let odd = raid_level_change_refusal("raid0", "raid10", 5).unwrap();
+        assert!(odd.contains("even number"), "{odd}");
+    }
+
+    #[test]
+    fn test_raid_level_options_mark_every_level_and_explain_refusals() {
+        let options = raid_level_options("raid1", 3);
+        assert_eq!(options.len(), MDAADM_RAID_LEVELS.len());
+        let raid5 = options.iter().find(|o| o.level == "raid5").unwrap();
+        assert!(raid5.allowed);
+        assert!(raid5.reason.is_none());
+        let current = options.iter().find(|o| o.level == "raid1").unwrap();
+        assert!(!current.allowed);
+        assert!(current.reason.as_deref().unwrap().contains("already"));
+        let raid0 = options.iter().find(|o| o.level == "raid0").unwrap();
+        assert!(!raid0.allowed);
+        assert!(raid0.reason.is_some());
+
+        // Every refused target is explainable — never a silent `false`.
+        assert!(options.iter().all(|o| o.allowed || o.reason.is_some()));
+    }
+
+    #[test]
+    fn test_raid_backup_path_is_confined_and_deterministic() {
+        let root = Path::new("/var/lib/homevault");
+        let path = raid_backup_path(root, "md0", 1_760_000_000);
+        assert_eq!(
+            path,
+            PathBuf::from("/var/lib/homevault/raid-backups/md0-1760000000.bak")
+        );
+
+        // A hostile name cannot climb out of the backup directory.
+        let hostile = raid_backup_path(root, "../../etc/passwd", 1);
+        assert!(hostile.starts_with(root));
+        assert!(!hostile.to_string_lossy().contains(".."));
+        assert!(!hostile.to_string_lossy().contains("etc/passwd"));
+        // An all-separator name still gets a usable filename.
+        let empty = raid_backup_path(root, "../..", 2);
+        assert_eq!(
+            empty,
+            PathBuf::from("/var/lib/homevault/raid-backups/array-2.bak")
+        );
+    }
+
+    #[test]
+    fn test_parse_mdadm_layout_reads_the_level_count_and_reshape() {
+        let detail = "\
+/dev/md0:
+           Version : 1.2
+     Raid Level : raid1
+     Raid Devices : 2
+    Reshape Status : 42% complete
+";
+        assert_eq!(parse_mdadm_layout(detail), Some((2, "raid1".to_string())));
+        assert!(mdadm_reshape_in_progress(detail));
+
+        let idle = "\
+     Raid Level : raid5
+     Raid Devices : 4
+           State : clean
+";
+        assert_eq!(parse_mdadm_layout(idle), Some((4, "raid5".to_string())));
+        assert!(!mdadm_reshape_in_progress(idle));
+
+        assert_eq!(parse_mdadm_layout("no detail here"), None);
     }
 
     // -- ROADMAP X.2: no subprocess of this module runs unbounded ------------

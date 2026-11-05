@@ -98,7 +98,9 @@ fn test_validate_mac_format_valid() {
         let mut config = DhcpServerConfig::default();
         config.dhcp_enabled = true;
         config.confirmed = true;
-        config.reservations.insert(mac.to_string(), Ipv4Addr::new(192, 168, 1, 150));
+        config
+            .reservations
+            .insert(mac.to_string(), Ipv4Addr::new(192, 168, 1, 150));
 
         let result = DhcpServerService::validate_config(&config);
         assert!(result.is_ok(), "MAC {} should be valid", mac);
@@ -119,7 +121,9 @@ fn test_validate_mac_format_invalid() {
         let mut config = DhcpServerConfig::default();
         config.dhcp_enabled = true;
         config.confirmed = true;
-        config.reservations.insert(mac.to_string(), Ipv4Addr::new(192, 168, 1, 150));
+        config
+            .reservations
+            .insert(mac.to_string(), Ipv4Addr::new(192, 168, 1, 150));
 
         let result = DhcpServerService::validate_config(&config);
         assert!(result.is_err(), "MAC {} should be invalid", mac);
@@ -137,7 +141,7 @@ fn test_validate_reservation_in_range() {
     // Reservation inside range - OK
     config.reservations.insert(
         "aa:bb:cc:dd:ee:ff".to_string(),
-        Ipv4Addr::new(192, 168, 1, 150)
+        Ipv4Addr::new(192, 168, 1, 150),
     );
     assert!(DhcpServerService::validate_config(&config).is_ok());
 
@@ -145,7 +149,7 @@ fn test_validate_reservation_in_range() {
     config.reservations.clear();
     config.reservations.insert(
         "aa:bb:cc:dd:ee:ff".to_string(),
-        Ipv4Addr::new(192, 168, 1, 50)
+        Ipv4Addr::new(192, 168, 1, 50),
     );
     let result = DhcpServerService::validate_config(&config);
     assert!(result.is_err());

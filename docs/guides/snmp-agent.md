@@ -13,26 +13,38 @@ That card writes one file HomeVault owns
 (`/etc/snmp/snmpd.conf.d/99-homevault-agent.conf`) and drives the `snmpd`
 service; the distro's own `/etc/snmp/snmpd.conf` is never edited.
 
+Two access methods are offered:
+
+- **SNMPv2c** (default) — one generated read-only community.
+- **SNMPv3** — a dedicated user, **SHA** authentication and **AES** privacy
+  (`authPriv`). The passphrases are generated on enable unless the admin types
+  them, and are sealed with the appliance key before they reach
+  `snmp-agent.json`.
+
 Three rules are enforced in code, not just documented:
 
 1. **Never `public`.** The community is generated (16 bytes of `/dev/urandom`,
    rendered as 32 hex characters) and `public`/`private` are refused by name —
    they are the two strings every scanner tries first. A community must be 8–32
    characters, with no whitespace, quote, `#` or control character (any of
-   those would silently change the meaning of the `snmpd.conf` line).
+   those would silently change the meaning of the `snmpd.conf` line). The v3
+   user name is limited to letters, digits, `.`, `-` and `_`; each v3
+   passphrase is 8–64 printable characters, without whitespace, quotes,
+   backslashes or control characters (they sit between double quotes).
 2. **Never internet-facing.** The bind scope is either **loopback**
    (`agentaddress 127.0.0.1,[::1]` — only processes on the appliance itself) or
    **the local network** (`agentaddress udp:<address>:161` on *one* of the
    appliance's own private addresses). `0.0.0.0`, a public address and
    `udp:*` are all refused, so there is no configuration that publishes the
    agent.
-3. **Read-only and minimal.** The rendered file grants `rocommunity` only, no
-   write community, and a view limited to `system`, `interfaces` and `storage`
-   — the routing table is not reachable. The MAC-address column
-   (`ifPhysAddress`) is excluded from the interface view.
+3. **Read-only and minimal.** v2c renders `rocommunity … -V systemonly`; v3
+   renders `createUser … SHA … AES …` plus `rouser … authpriv systemonly`.
+   There is no write community and no `rwuser`. The view is limited to
+   `system`, `interfaces` and `storage` — the routing table is not reachable,
+   and the MAC-address column (`ifPhysAddress`) is excluded.
 
-Disabling removes the file (the secret goes with it) and stops **and**
-disables the unit, so a reboot cannot bring a stopped agent back.
+Disabling removes the file and stops **and** disables the unit, so a reboot
+cannot bring a stopped agent back.
 
 ## API
 
@@ -42,13 +54,21 @@ instead of showing a dead form.
 
 | Method | Path | Answers |
 |---|---|---|
-| GET | `/api/snmp/agent` | `{ enabled, scope, lan_address, location, contact, has_community, installed, serving, lan_candidates[] }` — **never the community itself** |
-| PUT | `/api/snmp/agent` | `{ enabled?, scope?, lan_address?, community?, location?, contact? }` → the same payload plus `message`. A field left out keeps its stored value; an empty `community` keeps the current one (or generates one when none is set) |
+| GET | `/api/snmp/agent` | `{ enabled, scope, lan_address, version, v3_username, location, contact, has_community, has_v3_auth_secret, has_v3_priv_secret, installed, serving, lan_candidates[] }` — **never a community or a passphrase** |
+| PUT | `/api/snmp/agent` | `{ enabled?, scope?, lan_address?, version?, community?, v3_username?, v3_auth_secret?, v3_priv_secret?, location?, contact? }` → the same payload plus `message`. A field left out keeps its stored value; an empty `community`/v3 passphrase keeps the current one (or generates one when none is set). `version` is `v2c` (default) or `v3` |
 
 The settings live in `snmp-agent.json` under the data directory, a **separate**
 key from `snmp.json` (the client's): enabling the appliance's own agent and
 pointing the client at a remote device are two unrelated features that happen
 to share the word "SNMP".
+
+A v3 passphrase is persisted as an `hv1:` AES-256-GCM blob, scoped separately
+for authentication and privacy (swapping the two fails authentication rather
+than handing back the wrong secret). It is never returned by the API and never
+written in plaintext outside the mode-600 drop-in the daemon reads. On a data
+directory restored on another machine the blobs cannot be opened: the API says
+so and asks for the passphrases to be re-entered instead of silently rendering
+a half-configured user.
 
 `PUT` validates before it writes anything, then applies to the host, and only
 persists once the host accepted the change. When the daemon step fails the
@@ -59,11 +79,13 @@ disagree silently, and the answer names which half failed.
 
 `frontend/src/lib/components/settings/SnmpAgentCard.svelte`, in the Monitoring
 group next to the SNMP *client* card. The switch comes first ("serve SNMP
-requests"); the scope, community, location and contact fields only appear once
-it is on — there is nothing to configure for a feature that answers nobody.
-The LAN address is a **select of the appliance's real addresses**, never a free
-text field. Saving reports through the toast, and a refusal shows the server's
-own sentence verbatim.
+requests"); the scope, version, credential, location and contact fields only
+appear once it is on — there is nothing to configure for a feature that answers
+nobody. The version selector swaps the credential block: v2c shows the
+community, v3 shows the dedicated user and the two passphrase fields. The LAN
+address is a **select of the appliance's real addresses**, never a free text
+field. Saving reports through the toast, and a refusal shows the server's own
+sentence verbatim.
 
 ## Privileges
 
@@ -89,9 +111,13 @@ control `sshd`).
   `public`.
 - The agent binds to loopback or to one private address — never a wildcard,
   never a public address.
-- Read-only only: no `rwcommunity`, no write view, no routing table.
-- The community is never returned by the API (`has_community` instead), and the
-  file it lives in is mode 600.
+- Read-only only: no `rwcommunity`, no `rwuser`, no write view, no routing
+  table.
+- v3 is fixed to SHA authentication + AES privacy with a dedicated user; a
+  half-configured user is never rendered (the file says it answers nobody).
+- Neither the community nor a v3 passphrase is returned by the API
+  (`has_community` / `has_v3_auth_secret` / `has_v3_priv_secret` instead); v3
+  passphrases are sealed at rest and the rendered file is mode 600.
 - `snmpd` missing is `503`, with the package named.
 - Every host call is bounded by a deadline (`utils::process::run_timed*`), so a
   wedged `systemctl` cannot pin a blocking thread.

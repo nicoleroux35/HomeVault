@@ -323,6 +323,27 @@ pub struct InstanceSource {
     pub protocol: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub alias: Option<String>,
+    /// `copy` only: `/1.0/instances/<source>`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
+    /// `copy` only: the snapshot of the source to copy from.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_snapshot: Option<String>,
+}
+
+impl InstanceSource {
+    /// Copy an existing instance (optionally from one of its snapshots).
+    ///
+    /// Incus copies the source's config and devices; the caller only supplies
+    /// the new name and, optionally, a profile override.
+    pub fn copy(source: &str, snapshot: Option<&str>) -> Self {
+        Self {
+            source_type: "copy".to_string(),
+            source: Some(format!("/1.0/instances/{}", enc(source))),
+            source_snapshot: snapshot.map(str::to_string),
+            ..Default::default()
+        }
+    }
 }
 
 #[derive(Serialize)]
@@ -1302,6 +1323,23 @@ mod tests {
     }
 
     #[test]
+    fn copy_source_points_at_the_source_instance_and_snapshot() {
+        let source = InstanceSource::copy("source-vm", Some("before-upgrade"));
+        let j = serde_json::to_value(&source).unwrap();
+        assert_eq!(j["type"], "copy");
+        assert_eq!(j["source"], "/1.0/instances/source-vm");
+        assert_eq!(j["source_snapshot"], "before-upgrade");
+        assert!(j.get("server").is_none());
+        assert!(j.get("protocol").is_none());
+        assert!(j.get("alias").is_none());
+
+        let current = InstanceSource::copy("source-vm", None);
+        let j = serde_json::to_value(&current).unwrap();
+        assert_eq!(j["source"], "/1.0/instances/source-vm");
+        assert!(j.get("source_snapshot").is_none());
+    }
+
+    #[test]
     fn create_body_serializes_to_incus_shape() {
         let body = CreateInstanceBody {
             name: "test".to_string(),
@@ -1311,6 +1349,7 @@ mod tests {
                 server: Some("https://images.linuxcontainers.org".to_string()),
                 protocol: Some("simplestreams".to_string()),
                 alias: Some("ubuntu/24.04/cloud".to_string()),
+                ..Default::default()
             },
             config: HashMap::from([("limits.cpu".to_string(), "2".to_string())]),
             devices: HashMap::new(),

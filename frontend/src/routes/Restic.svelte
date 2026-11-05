@@ -120,7 +120,25 @@
   let loadingSnapshots = $state(false);
   let loadingJobs = $state(false);
   let resticAvailable = $state(false);
+  let resticFuse = $state(false);
   let resticVersion = $state('');
+
+  interface ResticMountInfo {
+    id: string;
+    repo_id: string | null;
+    repo_name: string | null;
+    mount_point: string;
+    started_at: string;
+    active: boolean;
+  }
+  let resticMounts = $state<ResticMountInfo[]>([]);
+  let mounting = $state(false);
+  let mountNotice = $state<{ kind: 'ok' | 'error'; text: string } | null>(null);
+  let selectedMount = $derived(
+    selectedRepo
+      ? (resticMounts.find((m) => m.repo_id === selectedRepo!.id && m.active) ?? null)
+      : null,
+  );
 
   let activeView = $state<'repos' | 'repo-detail' | 'create-repo'>('repos');
   let activeRepoSection: 'snapshots' | 'jobs' | 'schedules' = $state('snapshots');
@@ -292,6 +310,7 @@
       loadSnapshots();
       loadJobs();
       loadSchedules();
+      loadMounts();
     } else {
       loadRepos();
       loadRetentionPolicies();
@@ -303,7 +322,7 @@
     (async () => {
       await checkResticAvailable();
       if (resticAvailable) {
-        await Promise.all([loadRepos(), loadRetentionPolicies(), loadReminders()]);
+        await Promise.all([loadRepos(), loadRetentionPolicies(), loadReminders(), loadMounts()]);
       }
       resticLoading = false;
     })();
@@ -328,6 +347,7 @@
       const resp = await api.resticAvailable();
       if (resp.success && resp.data) {
         resticAvailable = resp.data.available;
+        resticFuse = resp.data.fuse_available === true;
       }
       if (resticAvailable) {
         const vresp = await api.resticVersion();
@@ -361,7 +381,49 @@
     selectedRepo = repo;
     activeView = 'repo-detail';
     activeRepoSection = 'snapshots';
-    await Promise.all([loadSnapshots(), loadJobs(), loadSchedules()]);
+    mountNotice = null;
+    await Promise.all([loadSnapshots(), loadJobs(), loadSchedules(), loadMounts()]);
+  }
+
+  async function loadMounts() {
+    if (!resticAvailable) return;
+    try {
+      const resp = await api.resticMounts();
+      if (resp.success && Array.isArray(resp.data)) resticMounts = resp.data;
+    } catch {
+      resticMounts = [];
+    }
+  }
+
+  async function mountSelectedRepo() {
+    if (!selectedRepo) return;
+    mounting = true;
+    mountNotice = null;
+    const resp = await api.resticMountRepo(selectedRepo.id);
+    if (resp.success && resp.data) {
+      mountNotice = {
+        kind: 'ok',
+        text: $t('restic.mount_ok', { path: resp.data.mount_point }),
+      };
+      await loadMounts();
+    } else {
+      // A host without FUSE answers 503 with its reason; show it verbatim.
+      mountNotice = { kind: 'error', text: resp.message || $t('restic.mount_error') };
+    }
+    mounting = false;
+  }
+
+  async function unmountRepo(mount: ResticMountInfo) {
+    mounting = true;
+    mountNotice = null;
+    const resp = await api.resticUnmount(mount.id);
+    if (resp.success) {
+      mountNotice = { kind: 'ok', text: $t('restic.unmount_ok') };
+      await loadMounts();
+    } else {
+      mountNotice = { kind: 'error', text: resp.message || $t('restic.unmount_error') };
+    }
+    mounting = false;
   }
 
   async function loadSnapshots() {
@@ -926,6 +988,30 @@
         <Button variant="ghost" onclick={() => showForgetModal = true}>{$t('restic.forget')}</Button>
         <Button variant="danger" onclick={() => { if (selectedRepo) deleteRepo(selectedRepo); }}>{$t('restic.remove_config')}</Button>
       </div>
+
+      {#if resticAvailable}
+        <div class="flex flex-wrap items-center gap-2 mb-3" data-testid="restic-mount-row">
+          {#if resticFuse}
+            {#if selectedMount}
+              <span class="text-c-xs text-[var(--hv-shell-text-2)]">{$t('restic.mounted_at')}</span>
+              <code class="min-w-0 truncate rounded-md bg-[var(--hv-shell-fill)] px-2 py-1 text-c-xs text-[var(--hv-shell-text-strong)]" data-testid="restic-mount-point">{selectedMount.mount_point}</code>
+              <Button variant="ghost" data-testid="restic-unmount" onclick={() => selectedMount && unmountRepo(selectedMount)} disabled={mounting}>{$t('restic.unmount')}</Button>
+            {:else}
+              <Button variant="ghost" data-testid="restic-mount-browse" onclick={mountSelectedRepo} disabled={mounting}>
+                <IconFolderOpen size={15} />
+                <span>{$t('restic.browse_repo')}</span>
+              </Button>
+            {/if}
+          {:else}
+            <p class="m-0 text-c-xs text-[var(--hv-warning-text)]" data-testid="restic-fuse-missing">{$t('restic.fuse_missing')}</p>
+          {/if}
+        </div>
+        {#if mountNotice}
+          <div class="mb-3" data-testid="restic-mount-notice">
+            <Alert variant={mountNotice.kind === 'ok' ? 'success' : 'error'}>{mountNotice.text}</Alert>
+          </div>
+        {/if}
+      {/if}
 
       {#if activeRepoSection === 'snapshots'}
         {#if loadingSnapshots}

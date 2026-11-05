@@ -929,6 +929,46 @@ test.describe('5b — Firewall card with a mocked ufw', () => {
     await card.getByRole('button', { name: /add rule/i }).click();
     await expect(card.locator('.fw-feedback')).toContainText('not a number between 1 and 65535');
   });
+
+  test('5.15 — a GeoIP country is added through the mocked API', async ({ page }) => {
+    let posted: any = null;
+    await mockFirewall(page);
+    await page.route('**/api/firewall/geoip*', async (route) => {
+      const request = route.request();
+      if (request.method() === 'GET') {
+        await route.fulfill({
+          status: 200,
+          json: {
+            success: true,
+            data: {
+              available: true,
+              ufw_available: true,
+              database_present: true,
+              database_path: '/var/lib/homevault/data/geoip/countries.json',
+              database_error: null,
+              countries: [],
+              managed_rules: 0,
+              max_rules: 2048,
+            },
+          },
+        });
+        return;
+      }
+      if (request.url().endsWith('/api/firewall/geoip')) {
+        posted = request.postDataJSON();
+      }
+      await route.fulfill({ status: 200, json: { success: true, data: { applied: 1 } } });
+    });
+
+    await openSecurity(page, adminTokens);
+    const card = firewallCard(page);
+    const geoip = card.locator('[data-testid="firewall-geoip"]');
+    await expect(geoip).toBeVisible();
+    await geoip.locator('[data-testid="firewall-geoip-country"]').fill('FR');
+    await geoip.locator('[data-testid="firewall-geoip-action"]').selectOption('allow');
+    await geoip.locator('[data-testid="firewall-geoip-add"]').click();
+    await expect.poll(() => posted).toEqual({ country: 'FR', action: 'allow' });
+  });
 });
 
 // ===========================================================================

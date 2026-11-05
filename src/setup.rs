@@ -712,6 +712,10 @@ impl SetupService {
         // it must always go through one of these two instead).
         let mkdir = Self::resolve_bin("mkdir", "/usr/bin/mkdir");
         let rmdir = Self::resolve_bin("rmdir", "/usr/bin/rmdir");
+        // Btrfs layout migration / in-place rollback renames `@` and moves
+        // entries **inside the pool mount**; both paths stay under
+        // `/mnt/pools/` (see `grant` in `mount_grants`).
+        let mv = Self::resolve_bin("mv", "/usr/bin/mv");
         // `sudo tee` is how pools.rs/encryption.rs write /etc/fstab entries
         // (644 root:root, so a direct std::fs write also fails with EACCES)
         // — confirmed live this was silently swallowed by a bare `let _ =`
@@ -887,6 +891,7 @@ impl SetupService {
             umount: &umount_bin,
             mkdir: &mkdir,
             rmdir: &rmdir,
+            mv: &mv,
             tee: &tee,
         };
         let storage_pools = sudoers_line(&storage.pool_grants());
@@ -1294,6 +1299,7 @@ struct StorageBins<'a> {
     umount: &'a str,
     mkdir: &'a str,
     rmdir: &'a str,
+    mv: &'a str,
     tee: &'a str,
 }
 
@@ -1392,6 +1398,10 @@ impl StorageBins<'_> {
             grant(self.mount, "* /var/lib/homevault-sftp/*"),
             grant(self.rmdir, "/mnt/*"),
             grant(self.rmdir, "/var/lib/homevault-sftp/*"),
+            // Btrfs @/@snapshots migration and rollback rename subvolumes and
+            // move entries inside the pool root only.
+            grant(self.mv, "/mnt/pools/* /mnt/pools/*"),
+            grant(self.mv, "/mnt/raid/* /mnt/raid/*"),
             // `umount` also takes a device path (the kernel-side double check
             // in `delete_raid`), and unmounting is not a privilege escalation
             // by itself — the paths still stay inside the appliance's roots.
@@ -2204,6 +2214,7 @@ mod tests {
             umount: "/usr/bin/umount",
             mkdir: "/usr/bin/mkdir",
             rmdir: "/usr/bin/rmdir",
+            mv: "/usr/bin/mv",
             tee: "/usr/bin/tee",
         }
     }
@@ -2339,6 +2350,10 @@ mod tests {
         assert!(grants.contains(&"/usr/bin/mount * /var/lib/homevault-sftp/*".to_string()));
         assert!(grants.contains(&"/usr/bin/umount /mnt/*".to_string()));
         assert!(grants.contains(&"/usr/bin/umount /var/lib/homevault-sftp/*".to_string()));
+        // Btrfs layout migration/rollback: `mv` is confined to pool roots.
+        assert!(grants.contains(&"/usr/bin/mv /mnt/pools/* /mnt/pools/*".to_string()));
+        assert!(grants.contains(&"/usr/bin/mv /mnt/raid/* /mnt/raid/*".to_string()));
+        assert!(!grants.contains(&"/usr/bin/mv *".to_string()));
         // No unbounded `umount *` / `mount *` entry slipped in.
         assert!(!grants.iter().any(|g| g.ends_with("mount *")));
     }

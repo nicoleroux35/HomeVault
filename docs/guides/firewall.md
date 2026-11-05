@@ -170,12 +170,17 @@ refused without any process being spawned.
   disabled one), labelled add-rule form, a collapsible "Recent changes"
   list, and one focus-trapped confirmation dialog shared by enable / disable
   / remove / default policy. Every action reports its outcome in a
-  `role="status"` line; nothing fails silently any more.
+  `role="status"` line; nothing fails silently any more. The GeoIP block
+  adds the country-code/allow-deny form, the managed-country rows and an
+  Apply button; a missing database shows the exact path, and the remove
+  action uses the same confirmation dialog.
 - `frontend/src/lib/services/api.ts`: `getFirewallStatus`,
   `getFirewallEnablePreview`, `enableFirewall`, `disableFirewall`,
   `addFirewallRule`, `deleteFirewallRule`, `setFirewallDefaultPolicy`,
-  `getFirewallHistory`. Types `FirewallRule` (with `spec`),
-  `FirewallDefaultPolicy`, `FirewallHistoryEntry`.
+  `getFirewallHistory`, `getGeoIpStatus`, `setGeoIpRule`,
+  `removeGeoIpRule`, `applyGeoIpRules`. Types `FirewallRule` (with `spec`),
+  `FirewallDefaultPolicy`, `FirewallHistoryEntry`, `GeoIpStatus`,
+  `GeoIpCountryRule`.
 - Wired into `frontend/src/routes/Settings.svelte` as `<FirewallCard />`,
   after the "Privacy & Data" card.
 
@@ -198,7 +203,8 @@ refused without any process being spawned.
 All strings under `[firewall]` in `src/i18n/{en,fr,de,es}.toml`, including
 the confirm dialogs, `confirm_ssh_rule`/`confirm_app_rule` (`%port%`),
 `default_policy_summary` (`%incoming%`/`%outgoing%`),
-`confirm_delete_warning` (`%rule%`) and the `history_action_*` labels.
+`confirm_delete_warning` (`%rule%`), the `history_action_*` labels and the
+`geoip_*` strings (`%path%`, `%managed%`, `%max%`, `%count%`, `%country%`).
 
 ## Sudoers & installer
 
@@ -216,6 +222,42 @@ installed-check), `status *`, `show *`, `allow|deny|limit|reject *`,
 existing `install_optional` helper — non-fatal if declined;
 `ufw_available()` degrades the UI to "not installed" rather than
 erroring.
+
+## GeoIP country policy (P1-14, 2026-11-05)
+
+`src/geoip.rs` turns a manually maintained country database into **managed
+ufw rules**. It deliberately does not add a custom iptables chain: ufw's own
+`/etc/ufw/user.rules` is the persistence layer, so a rule installed here
+survives a reboot exactly like a hand-written one.
+
+- **Database** (`{DATA_DIRECTORY}/data/geoip/countries.json`, overridable with
+  `HOMEVAULT_GEOIP_DB`) maps ISO codes to CIDRs:
+  `{"FR": ["192.0.2.0/24"], "US": ["198.51.100.0/24"]}`. It is updated
+  manually; every network is parsed with `ipnetwork`, duplicate networks are
+  removed, and a country may hold at most 512 CIDRs. The global applied-rule
+  ceiling is **2048**.
+- **Policy** (`{DATA_DIRECTORY}/data/geoip/policy.json`) maps a country to
+  `allow` or `deny`. It is written atomically (temp file + rename) only after
+  the expanded plan passes the cap check, so a policy that cannot be applied
+  never replaces the one in force.
+- **Apply** reads `ufw show added`, deletes only rules whose comment starts
+  `hv-geoip:` (project-owned), then adds one source-only rule per CIDR:
+  `ufw allow|deny from <network> comment 'hv-geoip:<action>:<CC>'`. A failure
+  mid-apply removes the rules that run added and reports the error instead of
+  leaving a half-applied country.
+- **Capabilities:** no `ufw` → **`503`**; missing database → **`503`**
+  naming the path; unknown country or bad action/network → **`400`**. Every
+  privileged call is argv-only under `UFW_TIMEOUT` (30 s).
+- **Endpoints:** `GET /api/firewall/geoip` (auth) reports `available`,
+  `ufw_available`, `database_present`, `database_path`, `database_error`,
+  the selected countries and the managed-rule count. `POST` sets one
+  country and reconciles; `DELETE /api/firewall/geoip/{country}` removes it;
+  `POST /api/firewall/geoip/apply` reconciles after a manual database
+  refresh. Mutations are admin-only and event-logged.
+- **UI:** the Firewall card gains a GeoIP block — country code, allow/deny,
+  add, managed countries with their CIDR count/removal, and an Apply button.
+  A missing database is shown with its exact path rather than a generic
+  failure.
 
 ## The login-ban rule (2026-10-31, QW-05)
 

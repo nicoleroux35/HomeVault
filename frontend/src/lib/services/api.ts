@@ -1567,7 +1567,11 @@ class ApiClient {
     enabled?: boolean;
     scope?: 'loopback' | 'lan';
     lan_address?: string;
+    version?: 'v2c' | 'v3';
     community?: string;
+    v3_username?: string;
+    v3_auth_secret?: string;
+    v3_priv_secret?: string;
     location?: string;
     contact?: string;
   }) {
@@ -1766,6 +1770,24 @@ class ApiClient {
 
   async deleteNetworkVlan(name: string) {
     return this.delete(`/network/vlans/${encodeURIComponent(name)}`);
+  }
+
+  /** Saved static routes + whether `ip` is available. */
+  async getNetworkRoutes() {
+    return this.get('/network/routes', { ttl: 5000 });
+  }
+
+  async addNetworkRoute(data: {
+    destination: string;
+    via: string;
+    metric?: number;
+    interface: string;
+  }) {
+    return this.post('/network/routes', data);
+  }
+
+  async deleteNetworkRoute(data: { destination: string; interface: string }) {
+    return this.delete('/network/routes', data);
   }
 
   async scanWifiNetworks() {
@@ -1987,6 +2009,41 @@ class ApiClient {
     return this.get<{ snapshots: { name: string; created: string; used: number; referenced: number; auto: boolean }[] }>(
       `/snapshot-schedules/snapshots?pool=${encodeURIComponent(pool)}`,
       { cache: false },
+    );
+  }
+
+  // --- Per-share snapshots (P1-12) ---
+
+  async getShares() {
+    return this.get<{ name: string; share_type: string; path: string; enabled: boolean }[]>('/shares', {
+      cache: false,
+    });
+  }
+
+  async listShareSnapshots(name: string, shareType: string) {
+    return this.get<{
+      share: { name: string; share_type: string; path: string };
+      pool: string;
+      snapshots: { name: string; created: string; used: number; referenced: number; browse_path: string }[];
+    }>(`/shares/${encodeURIComponent(name)}/${encodeURIComponent(shareType)}/snapshots`, {
+      cache: false,
+    });
+  }
+
+  async createShareSnapshot(name: string, shareType: string) {
+    return this.post(`/shares/${encodeURIComponent(name)}/${encodeURIComponent(shareType)}/snapshots`, {});
+  }
+
+  async deleteShareSnapshot(name: string, shareType: string, snapshot: string) {
+    return this.delete(
+      `/shares/${encodeURIComponent(name)}/${encodeURIComponent(shareType)}/snapshots/${encodeURIComponent(snapshot)}`,
+    );
+  }
+
+  async restoreShareSnapshot(name: string, shareType: string, snapshot: string, path: string) {
+    return this.post(
+      `/shares/${encodeURIComponent(name)}/${encodeURIComponent(shareType)}/snapshots/${encodeURIComponent(snapshot)}/restore`,
+      { path, confirm: true },
     );
   }
 
@@ -2965,7 +3022,7 @@ class ApiClient {
     level: string;
     devices: string[];
     filesystem: string;
-    /** Extra disks attached as hot spares (mdadm techs only). */
+    /** Extra disks attached as hot spares (mdadm, or a ZFS `spare` vdev). */
     spares?: string[];
     /** Create raid1/5/6 with `missing` slots filling up to the level min. */
     allow_missing?: boolean;
@@ -2981,6 +3038,30 @@ class ApiClient {
   async growVirtualDisk(name: string, device: string) {
     const res = await this.post(`/storage/virtual-disks/${encodeURIComponent(name)}/grow`, {
       device
+    });
+    this.invalidateCache('/storage/virtual-disks');
+    return res;
+  }
+
+  /**
+   * Read an mdadm array's current RAID level and every target the server's
+   * transition matrix allows (each refusal carries its reason).
+   */
+  async getVirtualDiskLevelOptions(name: string) {
+    return this.get(`/storage/virtual-disks/${encodeURIComponent(name)}/level-options`, {
+      cache: false
+    });
+  }
+
+  /**
+   * Change an mdadm array's RAID level in place. `backupConfirmed` is the
+   * explicit acknowledgement the server requires; the reshape runs in the
+   * background — poll the scrub/sync status endpoint for progress.
+   */
+  async migrateVirtualDiskLevel(name: string, targetLevel: string, backupConfirmed: boolean) {
+    const res = await this.post(`/storage/virtual-disks/${encodeURIComponent(name)}/migrate-level`, {
+      target_level: targetLevel,
+      backup_confirmed: backupConfirmed
     });
     this.invalidateCache('/storage/virtual-disks');
     return res;
@@ -3009,6 +3090,30 @@ class ApiClient {
 
   async scrubVirtualDisk(name: string) {
     return this.post(`/storage/virtual-disks/${encodeURIComponent(name)}/scrub`, {});
+  }
+
+  /** Btrfs layout status: legacy vs @/@snapshots (P1-13). */
+  async getBtrfsLayout(name: string) {
+    return this.get(`/storage/virtual-disks/${encodeURIComponent(name)}/btrfs-layout`, {
+      cache: false
+    });
+  }
+
+  /** Explicit legacy → @/@snapshots migration (admin, destructive topology). */
+  async migrateBtrfsLayout(name: string) {
+    const res = await this.post(`/storage/virtual-disks/${encodeURIComponent(name)}/btrfs-layout`, {});
+    this.invalidateCache('/storage/virtual-disks');
+    return res;
+  }
+
+  /** In-place Btrfs rollback to one of the pool's snapshots (admin). */
+  async rollbackBtrfsSnapshot(name: string, snapshot: string) {
+    const res = await this.post(`/storage/virtual-disks/${encodeURIComponent(name)}/btrfs-rollback`, {
+      snapshot,
+      confirm: true
+    });
+    this.invalidateCache('/storage/virtual-disks');
+    return res;
   }
 
   /** Current scrub / consistency-check status of a virtual disk. */
@@ -3242,7 +3347,9 @@ class ApiClient {
   // ==============================================
 
   async resticAvailable() {
-    return this.get<{ available: boolean }>('/restic/available', { ttl: 60000 });
+    return this.get<{ available: boolean; fuse_available: boolean }>('/restic/available', {
+      ttl: 60000,
+    });
   }
 
   async resticVersion() {
@@ -3300,6 +3407,20 @@ class ApiClient {
   async resticRestorePlan(repoId: string, snapshotId: string, target: string) {
     const qs = `repo_id=${encodeURIComponent(repoId)}&snapshot_id=${encodeURIComponent(snapshotId)}&target=${encodeURIComponent(target)}`;
     return this.get(`/restic/restore-plan?${qs}`, { cache: false });
+  }
+
+  /** Mount a repository read-only for browsing (admin). */
+  async resticMountRepo(repoId: string) {
+    return this.post(`/restic/repos/${encodeURIComponent(repoId)}/mount`);
+  }
+
+  /** Browse mounts the kernel currently confirms. */
+  async resticMounts() {
+    return this.get<ResticMountInfo[]>('/restic/mounts', { cache: false });
+  }
+
+  async resticUnmount(id: string) {
+    return this.delete(`/restic/mounts/${encodeURIComponent(id)}`);
   }
 
   /** Repos with no successful backup in the last 7 days. */
@@ -3696,6 +3817,24 @@ class ApiClient {
     return this.get(`/firewall/history?limit=${limit}`, { cache: false });
   }
 
+  // --- GeoIP firewall policy (P1-14) ---
+
+  async getGeoIpStatus() {
+    return this.get<GeoIpStatus>('/firewall/geoip', { cache: false });
+  }
+
+  async setGeoIpRule(country: string, action: 'allow' | 'deny') {
+    return this.post('/firewall/geoip', { country, action });
+  }
+
+  async removeGeoIpRule(country: string) {
+    return this.delete(`/firewall/geoip/${encodeURIComponent(country)}`);
+  }
+
+  async applyGeoIpRules() {
+    return this.post('/firewall/geoip/apply', {});
+  }
+
   // --- Built-in HTTPS/TLS (admin-only; applies after a restart) ---
   async getTlsSettings() {
     return this.get('/settings/tls', { cache: false });
@@ -3762,9 +3901,18 @@ class ApiClient {
   /** `token` is write-only here too: `'set'` keeps, `''` clears. */
   async setDdnsSettings(data: {
     enabled: boolean;
-    provider: 'duckdns' | 'dynv6' | 'cloudflare' | 'custom';
+    provider:
+      | 'duckdns'
+      | 'dynv6'
+      | 'cloudflare'
+      | 'ovh'
+      | 'namecheap'
+      | 'desec'
+      | 'custom';
     hostname: string;
     token: string;
+    username: string;
+    domain: string;
     custom_update_url: string;
   }) {
     return this.put('/settings/ddns', data);
@@ -3772,6 +3920,21 @@ class ApiClient {
 
   async updateDdnsNow() {
     return this.post('/settings/ddns/update');
+  }
+
+  // --- Outbound HTTP(S) proxy (admin-only) ---
+
+  async getProxySettings() {
+    return this.get('/settings/proxy', { cache: false });
+  }
+
+  async setProxySettings(data: {
+    enabled: boolean;
+    http_proxy: string;
+    https_proxy: string;
+    no_proxy: string;
+  }) {
+    return this.put('/settings/proxy', data);
   }
 
   // --- Reachability advisor (admin-only, read-only) ---
@@ -4093,6 +4256,15 @@ interface ResticSnapshotInfo {
   tags: string[] | null;
 }
 
+interface ResticMountInfo {
+  id: string;
+  repo_id: string | null;
+  repo_name: string | null;
+  mount_point: string;
+  started_at: string;
+  active: boolean;
+}
+
 interface ResticStats {
   total_size: number;
   total_file_count: number;
@@ -4233,6 +4405,23 @@ export interface FirewallDefaultPolicy {
   routed: string;
 }
 
+export interface GeoIpCountryRule {
+  country: string;
+  action: 'allow' | 'deny';
+  cidr_count: number;
+}
+
+export interface GeoIpStatus {
+  available: boolean;
+  ufw_available: boolean;
+  database_present: boolean;
+  database_path: string;
+  database_error: string | null;
+  countries: GeoIpCountryRule[];
+  managed_rules: number;
+  max_rules: number;
+}
+
 export interface FirewallHistoryEntry {
   id: string;
   action: string;
@@ -4291,6 +4480,8 @@ export interface ScheduledTaskRun {
 export interface SnapshotSchedule {
   id: string;
   pool: string;
+  share: string | null;
+  share_type: string | null;
   enabled: boolean;
   cron: string;
   prefix: string;

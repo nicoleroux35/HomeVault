@@ -55,6 +55,7 @@ WebSocket is a nested router built by `src/handlers/vm.rs::create_vm_router`.
 | `vm/os-options` | GET | the curated catalogue — `OsOption[]` (works even if Incus is down) |
 | `vm/list` | GET | every instance with live status + IPv4 — `VmInfo[]` (one `recursion=2` call) |
 | `vm/create` | POST | `CreateVmRequest` → `{ name, status:"creating" }`; the image pull + first boot run as a tracked `vm_create` job |
+| `vm/{name}/clone` | POST | `{ name, snapshot?, profiles? }` → `{ name, source, snapshot, status }`; Incus copies the source config/devices, the clone stays stopped, and a wait that expires answers `status:"cloning"` + the operation id |
 | `vm/{name}` | GET | `VmDetail` (adds `login_user`, live memory/disk use, snapshots) |
 | `vm/{name}` | DELETE | stops the machine first if it is running, then deletes |
 | `vm/{name}/start` | PUT | waits for the operation (up to 40 s); a wait that expires answers `success:true` "still starting" + the operation id |
@@ -87,6 +88,17 @@ clamped). Then **exactly one of**:
   `secure_boot?` (default: on for Windows, off for Linux). Forces a VM,
   `source.type = none`, no cloud-init.
 
+**CloneVmRequest** — `name` (validated like `CreateVmRequest::name` and
+different from the source), `snapshot?` (one of the source's saved states;
+omitted copies the current state), `profiles?` (override the source profiles;
+omitted/empty keeps them). The request maps to Incus `source.type = "copy"` with
+`source = /1.0/instances/<source>` and `source_snapshot`; Incus copies the
+source's config and devices, and the clone is created **stopped**. The handler
+waits up to `CLONE_WAIT_SECS` (300 s): a completed copy answers
+`status:"cloned"`, an expired wait answers `status:"cloning"` with the Incus
+operation id (the instance is still being copied), and a real failure is the
+provider's own reason. A missing Incus daemon answers **`503`** and names it.
+
 **VmInfo** — `name`, `kind`, `status`
 (`running|stopped|starting|stopping|error|unknown`, normalised from the Incus
 status code), `running`, `cpu_cores`, `memory_mb`, `disk_gb`, `ipv4`, `os`
@@ -112,9 +124,11 @@ device).
 run in a spawned task that drives a `PROGRESS_MANAGER` `Custom("vm_create")`
 job (visible in the desktop activity taskbar) and, on failure, deletes the
 half-built instance so the name frees up. Every other lifecycle call
-(`start`/`stop`/`restart`/`delete`/`restore`/snapshot) **waits** for its Incus
-operation (`IncusService::wait_for_operation`, `GET /1.0/operations/{id}/wait`)
-so the UI never reports a state that has not actually happened.
+(`start`/`stop`/`restart`/`delete`/`restore`/snapshot/`clone`) **waits** for its
+Incus operation (`IncusService::wait_for_operation`,
+`GET /1.0/operations/{id}/wait`) so the UI never reports a state that has not
+actually happened. A clone uses `CLONE_WAIT_SECS` (300 s): its disk copy is
+bounded, unlike an image download.
 
 ### Timeouts, and what "still running" means
 
@@ -294,6 +308,9 @@ protocol as the Terminal app).
 
 - **Admin-only** on every endpoint, re-checked at the console WebSocket
   upgrade.
+- A missing Incus daemon is a **capability** failure: `incus_err` answers
+  `503` via `json_unavailable` (the message names Incus), never `400`; a
+  malformed request stays `400`. The clone endpoint follows the same rule.
 - Instance / snapshot / username names are validated server-side
   (`valid_instance_name` / `valid_snapshot_name` / `valid_unix_username`) —
   no path traversal, no shell metacharacters, length-bounded — before any
@@ -302,7 +319,7 @@ protocol as the Terminal app).
   brute-force window.
 - Incus errors are re-worded into plain sentences (`incus_err`); raw HTTP
   bodies, socket paths and stack traces never reach the client.
-- Console open/close, screen open/close, create/delete, start/stop/restart,
+- Console open/close, screen open/close, create/clone/delete, start/stop/restart,
   snapshot and restore are written to the application event log
   (`events::log_event`).
 - **ISO path** (`validate_local_iso`): admin-only endpoint, so the check is
@@ -398,7 +415,7 @@ protocol as the Terminal app).
   file pickers (`mode="file"`).
 - `frontend/src/lib/services/api.ts` — `getVm*` / `createVm` / `updateVmConfig`
   / `*VmSnapshot` / `getVmConsoleTicket` / `getVmScreenTicket`.
-- i18n: `src/i18n/*.toml` `[vm]` (126 keys, 4 locales at parity); `vm.os_*` /
+- i18n: `src/i18n/*.toml` `[vm]` (4 locales at parity); `vm.os_*` /
   `vm.status_*` / `vm.w_size_*` are dynamic lookups — see `docs/I18N.md`.
 
 ## Requirements

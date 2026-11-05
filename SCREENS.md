@@ -82,7 +82,7 @@ visible from 901px, icon only below that — the touch target stays
 | # | Application | Category | Description |
 |---|---|---|---|
 | 1 | Dashboard | System | Overview and real-time statistics |
-| 2 | Storage | Storage | Disks, virtual volumes, encryption, cache |
+| 2 | Storage | Storage | Disks, virtual volumes (grow/level change), encryption, cache |
 | 3 | RAID | Storage | Virtual disk creation (mdadm/ZFS/Btrfs) |
 | 4 | Explorer | Storage | Browsing of shared files |
 | 5 | Docker | System | Containers, images and application catalog |
@@ -104,7 +104,7 @@ visible from 901px, icon only below that — the touch target stays
 | 21 | Terminal | System | Full PTY terminal |
 | 22 | Settings | System | Server configuration |
 | 23 | My account | System | Personal profile and security |
-| 24 | Virtual Machines | System | VMs and containers via Incus — guided wizard, shell console, graphical screen, snapshots |
+| 24 | Virtual Machines | System | VMs and containers via Incus — guided wizard, shell console, graphical screen, snapshots, clone |
 | 25 | Scheduled Tasks | System | Generic cron engine — commands, pool snapshots, SMART self-tests, power actions, run history |
 | 26 | Metrics | Monitoring | Historical performance charts (CPU, memory, load, network, temperature) over 1 h / 24 h / 7 d |
 | 27 | Backup destination | Storage | Receive restic backups from another machine (append-only tenants, quotas) |
@@ -236,12 +236,22 @@ and in the Groups screen.
 
 ## 9. Storage
 
-**5 tabs:**
+**7 tabs:**
 
 ### Physical disks
 - Detailed disk cards: name, size, vendor, model, serial number, type, SMART status, temperature
 - Modal with a partition table and a pie chart
 - SMART tests (short/long/conveyance)
+
+### Virtual disks
+- mdadm/ZFS/Btrfs virtual disks with health, usage, member count and mount point
+- Verify/scrub and check status, rebuild, destroy (typed confirmation)
+- **Add disk** (grow an mdadm array) and **Change RAID level** (mdadm in-place
+  migration: only the allowed targets are selectable, each refused level shows
+  its reason, and the action waits for an explicit backup acknowledgement)
+- **Btrfs rollback layout**: reports legacy vs `@`/`@snapshots`, migrates an
+  existing pool after the pool name is typed; a migrated pool's snapshot list
+  gains **Roll back** (safety snapshot, `@` swap, previous subvolume kept)
 
 ### Partitions
 - List of all partitions with mount point, filesystem, size, used, available, percentage
@@ -260,15 +270,25 @@ and in the Groups screen.
 - Per-share cache mode
 - Move history
 
+### Snapshots
+- Scheduled snapshots per pool **or per share** with cron and GFS retention
+- Share schedules snapshot the dataset/subvolume that contains the share, list
+  only that backend's snapshots, and expose file-level restore (relative path
+  + overwrite confirmation)
+- Run now, delete, and last-run status/error; lock/break-glass protection for
+  pool snapshots
+
 ---
 
 ## 10. RAID
 
 **Features:**
 - RAID array list: name, level, status (healthy/degraded/failed), disk count, size/used/free
-- RAID creation (3-step wizard): type (0/1/5/6/10), disk selection, name + filesystem
+- RAID creation (3-step wizard): type (0/1/5/6/10/Z3), disk selection (with optional hot spares on mdadm and ZFS), name + filesystem; RAID Z3 is ZFS-only and pins the filesystem to ZFS
 - RAID array deletion
 - Rebuild of a degraded array: selection of the replacement disk
+- Growing an array and changing its RAID level in place are managed from
+  Storage → Virtual disks (the RAID app stays creation-only)
 
 ---
 
@@ -340,6 +360,7 @@ and in the Groups screen.
 - Connection summary: local IP, gateway, DNS, public IP
 - Diagnostics: gateway reachability, DNS test, Internet reachability, latency
 - Link aggregation and VLANs (bonds and 802.1Q devices): what exists, create a `bondN` (`802.3ad` with a note that the switch must be configured for it, or `active-backup`), create `<parent>.<vid>` with the id bounded to 1–4094, delete either one after a confirmation that names what the network loses. A change that would cut the administrator's own session is refused with the reason
+- Static routes: a card lists saved IPv4/IPv6 routes with destination, next hop, interface, metric and whether the kernel currently carries them; add a route (CIDR, next hop, interface, optional metric) or delete one after confirmation. Applied with `ip route replace`, read back from the kernel and persisted for reboot; a missing `ip` command is reported instead of offering a dead form
 
 ### WiFi
 - Network list: SSID, signal strength, frequency, channel, security
@@ -444,9 +465,9 @@ a failed mount detaches its loop device.
 
 ### Configuration tabs (7: the share list + 5 protocols + Rsync)
 - **Shares** — CRUD, service start/stop, status badges
-- **SMB** — workgroup, security mode, protocol version, guest access, advanced options, per-share recycle bin toggle (files deleted over the network are kept and shown in the Explorer's Trash), and per-share **Time Machine** (`vfs_fruit`, with an optional maximum size in GB; the share is advertised over Bonjour `_adisk._tcp` so macOS lists it without typing an address — AFP is not used)
-- **NFS** — networks, default access, version, root squash, custom options
-- **FTP** — port, passive ports, max clients, TLS, anonymous, chroot, welcome message
+- **SMB** — workgroup, security mode (*User* or *Share* only; domain/ADS is refused until winbind exists), protocol minimum (SMB2/SMB3; NT1 refused), guest access, **SMB Multichannel** toggle (off by default), advanced options, per-share recycle bin toggle (files deleted over the network are kept and shown in the Explorer's Trash), and per-share **Time Machine** (`vfs_fruit`, with an optional maximum size in GB; the share is advertised over Bonjour `_adisk._tcp` so macOS lists it without typing an address — AFP is not used)
+- **NFS** — networks (one client clause per line), default access, version (Auto or 3/4/4.2), root squash, custom options; the values are applied to `/etc/exports` on save, not merely persisted
+- **FTP** — port, passive ports, max clients, TLS, anonymous, chroot, welcome message, and an optional account whitelist (`/etc/vsftpd.user_list`)
 - **WebDAV** — port, path prefix, SSL, auth, compression, locking, allowed methods
 - **SFTP** — port, list of beneficiaries (user + shares + key state), user addition, public key addition, jail rebuild
 - **Rsync** — opt-in rsync daemon (enable, port, maximum connections, per-module confinement), one authenticated module per share (name, share picked from the existing shares only, comment, read-only, allowed accounts, enable), one rsync password per account (write-only, never displayed again), and the rsync-over-SSH alternative spelled out
@@ -572,6 +593,7 @@ The screen refreshes on tab switch, on window focus and every 45 s
 - Snapshot list: ID, timestamp, paths, hostname, tags
 - Navigation inside a snapshot's content
 - Restore with a target (FolderPicker), dry-run mode
+- **Browse repository** (`restic mount`, read-only FUSE): the mounted path plus an Unmount action; the action is replaced by a "FUSE unavailable" note when the host has no `/dev/fuse`
 
 #### Jobs
 - Job history: status, files, data, duration, errors
@@ -595,6 +617,7 @@ The screen refreshes on tab switch, on window focus and every 45 s
 - Presets: CPU count, memory, disk size
 - Initial connection identifier seeded via cloud-init (SHA-512 crypt hashed password)
 - Lifecycle: start, stop, restart, deletion (with operation wait)
+- Clone: duplicate a machine (optionally from a snapshot) with a new name; the clone stays stopped
 - Snapshots: creation, list, restore, deletion
 - Shell console (xterm) relayed over WebSocket
 - Graphical screen (noVNC) with a single-use 20 s ticket
@@ -679,14 +702,16 @@ The screen refreshes on tab switch, on window focus and every 45 s
 **8 categories in the sidebar** (grouped 2026-09-09 from 12 flat tabs, re-themed 2026-09-14 from the Figma mockup "Settings Screen"):
 
 1. **General** — Server name, language (EN/FR/ES/DE), time zone, automatic startup
-2. **Security** (7 merged cards):
+2. **Security** (merged cards):
    - **HTTPS / TLS** — Enablement of the built-in HTTPS listener (port, self-signed, provided certificate or an automatically issued one, HTTP→HTTPS redirect, certificate info, regeneration); applies after restart
    - **Certificate automation** — One public name, contact address, challenge (`http-01` / `dns-01`), DNS provider (`manual` / Cloudflare with a write-only token), status badge, issued/Renew, pending-record confirmation, "test port 80"
-   - **Dynamic DNS** — Provider (DuckDNS, dynv6, Cloudflare, custom HTTPS URL), host name, write-only token, the address the host would publish vs. the one recorded, last result and reason, "Update now"
+   - **Dynamic DNS** — Provider (DuckDNS, dynv6, Cloudflare, OVH DynHost, Namecheap, deSEC, custom HTTPS URL), host name, provider-specific DynHost username / registered domain fields, write-only token or password, the address the host would publish vs. the one recorded, last result and reason, "Update now"
+   - **Outbound proxy** — one switch, an optional HTTP and HTTPS proxy URL, a bypass list, and the effective exemptions (loopback is always added); applied to certificate renewal, dynamic DNS, update checks, alerts and Web Push
    - **Reachability** — read-only ordered checklist (HTTPS on, trusted certificate, automation, dynamic DNS, names agree, ports 443/80) with a fix under each failing check
    - **Antivirus (ClamAV)** — Status, scheduled scans, execution, history, threats, quarantine, definition updates
    - **Anti-Ransomware** — Enable/disable, honeypot, thresholds, auto-response mode, protected paths, history
-   - **Firewall (ufw)** — Enable/disable with preview, rules (port/protocol/action/source), protection of mandatory rules
+   - **Firewall (ufw)** — Enable/disable with preview, rules (port/protocol/action/source), protection of mandatory rules, and **GeoIP countries**: allow/deny a country from a manually maintained CIDR database, apply reconciles the managed rules, missing database/ufw shown explicitly
+   - **Password expiry** — global number of days before a password must be changed (`0` = never, 1–365); an expired account is limited to the change flow at its next sign-in
 3. **Appearance** — Wallpaper (15 presets)
 4. **Widgets** — Active monitors (the 11 real monitors, driven by `monitorStore` → `/api/monitor-layout`) + refresh interval (2/5/10/30/60 s, stored in the same blob) + Weather widget (Open-Meteo location, display fields) — Weather was moved out of Appearance on 2026-09-09
 5. **Notifications** — Email/SMTP server (server, port, credentials, TLS, send test) + alerts (threshold, channels) + webhook
@@ -694,7 +719,7 @@ The screen refreshes on tab switch, on window focus and every 45 s
 7. **Monitoring** (4 cards):
    - **UPS Monitoring** — UPS list: battery/runtime/voltage/load/status
    - **SNMP** — Community, version, system info, interfaces, storage queries
-   - **SNMP agent** — serve SNMP *from* this appliance: off by default, a generated read-only community (`public`/`private` refused), a scope of "this machine only" or "the local network" on one of the appliance's own private addresses, location and contact, and the live agent state; says which package to install when `snmpd` is absent
+   - **SNMP agent** — serve SNMP *from* this appliance: off by default, SNMPv2c with a generated read-only community (`public`/`private` refused) or SNMPv3 with a dedicated user, SHA authentication and AES privacy (passphrases stored encrypted, never shown again), a scope of "this machine only" or "the local network" on one of the appliance's own private addresses, location and contact, and the live agent state; says which package to install when `snmpd` is absent
    - **Full configuration backup** — one archive that can rebuild the box: the database snapshot (accounts, groups, shares, ACLs, quotas, settings), the exported settings and the generated service configs; optionally encrypted with a passphrase, with credentials left out by default (sessions, API tokens and private keys are removed). A restore is validated then **staged**, and applied at the next start, keeping the previous database as `homevault.db.pre-restore`
    - **Wake-on-LAN** — saved machines (name + network-card address): wake one now, or let a scheduled task wake it first; shows which interface a packet would leave through and says "sent, not confirmed" (only the machine itself can prove it woke)
    - **Connected clients** — who is connected right now over SMB / NFS / SFTP / FTP (not just the web UI): client address and host name, account, the share or export they hold, how many files are open, and the process evidence; each source says whether its collector answered and why not; a session can be disconnected (two clicks, and only for the protocols where a per-connection process exists — an NFS export is kernel-held and says so)
@@ -730,10 +755,13 @@ creation, not at run time.
 - Five chart cards: CPU, memory, load average, network throughput and max
   temperature
 - Range toggle group: 1 h / 24 h / 7 d
+- **History retention** select (8 / 30 / 90 days; admin-only write, 1–365
+  accepted by the API)
 - Empty state when the collector has not stored a sample yet
 
-**Invariants:** read-only (`require_auth`, same class as Dashboard); samples
-come from the one-minute collector only; empty buckets render a gap, never a
+**Invariants:** the charts are read-only (`require_auth`, same class as
+Dashboard) and samples come from the one-minute collector only; the single
+write path is the admin retention setting. Empty buckets render a gap, never a
 flat line at zero.
 
 ---

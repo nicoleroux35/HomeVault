@@ -222,6 +222,18 @@ test.describe('2 — Repos view', () => {
     expect(cards + empty).toBeGreaterThan(0);
   });
 
+  test('2.3 — a selected repository offers Browse or explains that FUSE is missing', async ({ page }) => {
+    await gotoBackup(page, adminTokens);
+    if (!(await resticAvailable(page))) test.skip(true, 'restic not installed');
+    const cards = win(page).locator('[data-testid="restic-repo-card"]');
+    if ((await cards.count()) === 0) test.skip(true, 'no repository configured');
+    await cards.first().click();
+    const browse = win(page).locator('[data-testid="restic-mount-browse"]');
+    const mounted = win(page).locator('[data-testid="restic-mount-point"]');
+    const missing = win(page).locator('[data-testid="restic-fuse-missing"]');
+    await expect(browse.or(mounted).or(missing)).toBeVisible({ timeout: 10_000 });
+  });
+
   test('2.2 — the create-repo form exposes name / url / password fields', async ({ page }) => {
     await gotoBackup(page, adminTokens);
     if (!(await resticAvailable(page))) test.skip(true, 'restic not installed');
@@ -286,6 +298,21 @@ test.describe('3 — Validation', () => {
     }
   });
 
+  test('3.7 — mounting an unknown repository is a clean 4xx, never a 500', async ({ page }) => {
+    await gotoBackup(page, adminTokens);
+    const mount = await api(page, adminTokens, 'POST', '/api/restic/repos/ghost/mount');
+    // 400 "Repository not found", or 503 when restic/FUSE is absent on this host.
+    expect([400, 503]).toContain(mount.http);
+
+    const list = await api(page, adminTokens, 'GET', '/api/restic/mounts');
+    expect(list.http).toBe(200);
+    expect(Array.isArray(list.data)).toBe(true);
+
+    // A mount id is a derived directory name, never a path.
+    const bad = await api(page, adminTokens, 'DELETE', '/api/restic/mounts/bad..id');
+    expect(bad.http).toBe(400);
+  });
+
   test('3.5 — retention policy create accepts a valid policy and round-trips', async ({ page }) => {
     await gotoBackup(page, adminTokens);
     const name = `e2e-pol-${Date.now().toString(36)}`;
@@ -338,6 +365,7 @@ test.describe('4 — Security', () => {
     for (const p of [
       '/api/restic/available',
       '/api/restic/repos',
+      '/api/restic/mounts',
       '/api/restic/schedules',
       '/api/restic/retention-policies',
     ]) {
@@ -417,6 +445,8 @@ test.describe('4 — Security', () => {
         ['post', '/api/restic/retention-policies', { name: 'x' }],
         ['post', '/api/restic/schedules', { repo_id: 'x', name: 'n', cron_expression: '0 3 * * *' }],
         ['post', '/api/restic/backup', { repo_id: 'x' }],
+        ['post', '/api/restic/repos/x/mount', undefined],
+        ['delete', '/api/restic/mounts/x', undefined],
       ] as const) {
         const r = await (ctx as any)[method](path, { headers: h, data });
         // 403 for authorization, never the 403 `password_change_required`

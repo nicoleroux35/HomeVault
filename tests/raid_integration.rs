@@ -27,6 +27,8 @@
 //!   POST   /api/storage/raid            (create a virtual disk — admin)
 //!   POST   /api/storage/raid/{name}/rebuild  (rebuild after a disk swap — admin)
 //!   POST   /api/storage/virtual-disks/{name}/grow  (grow the array — admin)
+//!   GET    /api/storage/virtual-disks/{name}/level-options (level plan — auth)
+//!   POST   /api/storage/virtual-disks/{name}/migrate-level (level change — admin)
 //!
 //! Fresh in-memory SQLite + all migrations per test, a minimal Axum router,
 //! `tower::ServiceExt` for HTTP-level testing — no real server.
@@ -63,7 +65,8 @@ use homevault::handlers::{
     auth::handle_login,
     storage::{
         handle_raid_arrays_list, handle_raid_available_devices, handle_raid_create,
-        handle_raid_rebuild, handle_virtual_disk_grow,
+        handle_raid_rebuild, handle_virtual_disk_grow, handle_virtual_disk_level_options,
+        handle_virtual_disk_migrate_level,
     },
     AppState,
 };
@@ -130,6 +133,14 @@ fn raid_router(state: Arc<AppState>) -> Router {
         .route(
             "/api/storage/virtual-disks/{name}/grow",
             post(handle_virtual_disk_grow),
+        )
+        .route(
+            "/api/storage/virtual-disks/{name}/level-options",
+            get(handle_virtual_disk_level_options),
+        )
+        .route(
+            "/api/storage/virtual-disks/{name}/migrate-level",
+            post(handle_virtual_disk_migrate_level),
         )
         .with_state(state)
 }
@@ -235,6 +246,11 @@ fn write_endpoints() -> Vec<(Method, &'static str, Option<Value>)> {
             "/api/storage/virtual-disks/hvtest/grow",
             Some(json!({"device": "/dev/hv-nonexistent-a"})),
         ),
+        (
+            Method::POST,
+            "/api/storage/virtual-disks/hvtest/migrate-level",
+            Some(json!({"target_level": "raid5", "backup_confirmed": true})),
+        ),
     ]
 }
 
@@ -298,6 +314,124 @@ async fn test_write_endpoints_reject_non_admin_session() {
             "{method} {uri} must be admin-only"
         );
     }
+}
+
+/// P1-9 — RAID-Z3 is a ZFS vdev, not an mdadm/Btrfs level; the API must say so
+/// at the shape gate, before the device gate or any command could run.
+#[tokio::test]
+async fn test_create_refuses_raidz3_on_a_non_zfs_filesystem() {
+    let (state, _tmp, _guard) = setup_state().await;
+    create_test_user(&state, "admin", "Password123!", 2).await;
+    let mut router = raid_router(state);
+    let token = login(&mut router, "admin", "Password123!").await;
+
+    for filesystem in ["ext4", "xfs", "btrfs"] {
+        let (status, body) = send(
+            &mut router,
+            Method::POST,
+            "/api/storage/raid",
+            Some(&token),
+            Some(json!({
+                "name": "hvz3",
+                "level": "raidz3",
+                "devices": [
+                    "/dev/hv-nonexistent-a",
+                    "/dev/hv-nonexistent-b",
+                    "/dev/hv-nonexistent-c",
+                    "/dev/hv-nonexistent-d",
+                ],
+                "filesystem": filesystem,
+            })),
+        )
+        .await;
+
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{filesystem}: {body}");
+        let message = body["message"].as_str().unwrap_or_default();
+        assert!(
+            message.contains("ZFS layout"),
+            "{filesystem} must name the real problem: {message}"
+        );
+        assert!(
+            body["data"]["job_id"].is_null(),
+            "{filesystem} must not start a job: {body}"
+        );
+    }
+}
+
+/// P1-9 — a ZFS `spare` group is accepted by the shape gate; with fake devices
+/// the request then stops at the device gate (a 400 naming the missing disk),
+/// which is the proof that the shape itself was accepted.
+#[tokio::test]
+async fn test_create_accepts_a_zfs_spare_group() {
+    let (state, _tmp, _guard) = setup_state().await;
+    create_test_user(&state, "admin", "Password123!", 2).await;
+    let mut router = raid_router(state);
+    let token = login(&mut router, "admin", "Password123!").await;
+
+    let (status, body) = send(
+        &mut router,
+        Method::POST,
+        "/api/storage/raid",
+        Some(&token),
+        Some(json!({
+            "name": "hvzfs",
+            "level": "raidz3",
+            "devices": [
+                "/dev/hv-nonexistent-a",
+                "/dev/hv-nonexistent-b",
+                "/dev/hv-nonexistent-c",
+                "/dev/hv-nonexistent-d",
+            ],
+            "spares": ["/dev/hv-nonexistent-e"],
+            "filesystem": "zfs",
+        })),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    let message = body["message"].as_str().unwrap_or_default();
+    assert!(
+        message.contains("does not exist"),
+        "the request must reach the device gate, not the shape gate: {message}"
+    );
+}
+
+/// P1-9 — Btrfs has no hot-spare role. The refusal must name the alternative
+/// (add the disk later, or keep it as a separate spare) rather than silently
+/// dropping the device.
+#[tokio::test]
+async fn test_create_refuses_btrfs_spares_with_the_alternative_named() {
+    let (state, _tmp, _guard) = setup_state().await;
+    create_test_user(&state, "admin", "Password123!", 2).await;
+    let mut router = raid_router(state);
+    let token = login(&mut router, "admin", "Password123!").await;
+
+    let (status, body) = send(
+        &mut router,
+        Method::POST,
+        "/api/storage/raid",
+        Some(&token),
+        Some(json!({
+            "name": "hvbtrfs",
+            "level": "raid10",
+            "devices": [
+                "/dev/hv-nonexistent-a",
+                "/dev/hv-nonexistent-b",
+                "/dev/hv-nonexistent-c",
+                "/dev/hv-nonexistent-d",
+            ],
+            "spares": ["/dev/hv-nonexistent-e"],
+            "filesystem": "btrfs",
+        })),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    let message = body["message"].as_str().unwrap_or_default();
+    assert!(
+        message.contains("Btrfs") && message.contains("separate spare"),
+        "the refusal must name the alternative: {message}"
+    );
 }
 
 /// ROADMAP 8 — the degraded-create policy is **one** table shared by the API
@@ -364,4 +498,82 @@ async fn test_create_refuses_a_degraded_create_the_level_cannot_support() {
             "{level} must not start a job: {body}"
         );
     }
+}
+
+/// P1-11 — a level change is gated by shape and backup confirmation **before**
+/// the host is scanned or `mdadm` runs. Invalid input therefore answers a clean
+/// `400` on a machine with no array at all, never a `500` and never a command.
+#[tokio::test]
+async fn test_level_change_refuses_invalid_input_before_any_command() {
+    let (state, _tmp, _guard) = setup_state().await;
+    create_test_user(&state, "admin", "Password123!", 2).await;
+    let mut router = raid_router(state);
+
+    // The plan is a read: no session is a 401 (the array does not exist, but
+    // the auth guard runs first).
+    let (status, _) = send(
+        &mut router,
+        Method::GET,
+        "/api/storage/virtual-disks/hvtest/level-options",
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+
+    let token = login(&mut router, "admin", "Password123!").await;
+
+    // Unknown target (raidz3 is a ZFS vdev, not an mdadm level).
+    let (status, body) = send(
+        &mut router,
+        Method::POST,
+        "/api/storage/virtual-disks/hvtest/migrate-level",
+        Some(&token),
+        Some(json!({"target_level": "raidz3", "backup_confirmed": true})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert!(
+        body["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("Unknown RAID level"),
+        "the refusal must name the unknown level: {body}"
+    );
+
+    // A valid target without the backup acknowledgement.
+    let (status, body) = send(
+        &mut router,
+        Method::POST,
+        "/api/storage/virtual-disks/hvtest/migrate-level",
+        Some(&token),
+        Some(json!({"target_level": "raid5", "backup_confirmed": false})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert!(
+        body["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("Back up"),
+        "the refusal must ask for a backup: {body}"
+    );
+
+    // Reading the plan of a missing array is a clean 400, never a 500.
+    let (status, body) = send(
+        &mut router,
+        Method::GET,
+        "/api/storage/virtual-disks/hvtest/level-options",
+        Some(&token),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert!(
+        body["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("not found"),
+        "the missing array must be named: {body}"
+    );
 }

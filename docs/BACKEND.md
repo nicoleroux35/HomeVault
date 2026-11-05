@@ -102,12 +102,16 @@ src/
                         filesystem hold (zfs hold / btrfs ro), break-glass
   snapshot_lock_scheduler.rs  Hourly release of lapsed locks (fails closed)
   network.rs vpn.rs …   Domain services
+  static_routes.rs      HomeVault-managed IPv4/IPv6 routes: validation, argv,
+                        apply/verify/rollback, JSON store, boot re-apply
   incus.rs              Incus REST client over its Unix socket (VMs + system
                         containers): list/create/lifecycle/snapshots, operation
                         waiting, OS catalogue, cloud-init builder, console WS
   mdns.rs               Avahi publishing — homevault.local + share discovery
                         (auto reconciler, spawned from web/mod.rs)
   settings_persistence.rs  SettingsPersistence (export/import; redacts smtp_password)
+  proxy.rs              Outbound HTTP(S) proxy settings + reqwest builder helper
+                        (loopback always exempt; data/proxy.json)
   i18n.rs               Translation engine, embeds src/i18n/*.toml at compile time
   middleware/           csrf, rate_limit, setup_guard, peer_addr, security_headers, logging
   sse/                  Server-sent-event progress stream (ProgressManager: last
@@ -334,7 +338,10 @@ a future non-root mode).
   [guides/docker.md](./guides/docker.md).
 - `api_contract.rs` + `handlers/meta.rs` + `middleware/contract.rs` implement
   the versioned client/server contract (`GET /api/meta`, `X-HomeVault-Contract`,
-  426 on mismatch). `release_notes.rs` holds the curated What's New highlights.
+  426 on mismatch). `openapi.rs` parses the same router sources and
+  `handlers/openapi.rs` serves the generated OpenAPI 3 document at
+  `GET /api/openapi.json` (admin only). `release_notes.rs` holds the curated
+  What's New highlights.
 
 ## i18n (`src/i18n.rs`)
 

@@ -175,6 +175,41 @@ the session-severing action above; the admin configures the bond (or the VLAN)
 through the normal per-interface card, from an interface that is not being
 moved.
 
+## Static routes (P1-7, 2026-11-05)
+
+`src/static_routes.rs` adds HomeVault-managed IPv4/IPv6 routes for networks
+that are reached through another gateway (a second router, a lab segment, a
+VPN subnet). The screen is the **Routes** card in the Ethernet tab.
+
+- **Validation** — `destination` must be a CIDR network with a non-zero
+  prefix (the default route belongs to the interface gateway), `via` must be a
+  unicast address of the same family, `interface` a plausible Linux name
+  (≤ 15 chars), and `metric` 0–65535. The destination is canonicalised
+  (`192.168.20.7/24` → `192.168.20.0/24`).
+- **Apply** — `sudo ip -4|-6 route replace <cidr> via <gw> dev <iface>
+  [metric N]` under `NET_WRITE_TIMEOUT`. The route is then read back with
+  `ip route show <cidr>`; only a line carrying both `via <gw>` and
+  `dev <iface>` counts.
+- **Rollback** — `ip route replace` is atomic: a refused command changes
+  nothing. If the read-back or the JSON save fails, the previous saved route
+  is re-applied (or the new one deleted when there was none), so the screen
+  never reports "saved" while the wire disagrees.
+- **Persistence** — successful routes are stored in
+  `{DATA_DIRECTORY}/data/static_routes.json`. At boot a background task waits
+  `BOOT_REAPPLY_DELAY` (20 s) for the interfaces, then re-applies the list;
+  failures are logged and the entries are **kept**, because a slow DHCP lease
+  is not a reason to forget the operator's routes.
+- **One route per destination** — saving a second route for the same CIDR
+  replaces the first, mirroring `ip route replace`. Deleting a saved route
+  whose kernel entry is already gone still removes the entry (a reboot before
+  the boot re-apply must not leave a row that can never be cleaned up).
+- **Capability** — `GET` reports `available: false` when the `ip` command is
+  missing; mutations answer **`503`** naming `iproute2 (ip)`. A malformed
+  request stays `400`.
+- **Never a shell** — every host command is an argv vector through
+  `run_timed`/`sudo`, and the parser never interpolates user input into a
+  script.
+
 ## Backend
 Router built by `src/handlers/network.rs::create_network_router` and nested at
 `/api/network` (`src/web/mod.rs:1069`).
@@ -201,6 +236,9 @@ unaffected: the Wi-Fi endpoints report the tool as unavailable.
 | `GET /network/vlans` | auth | VLAN devices, valid parents, `max_vid` |
 | `POST /network/vlans` | admin | `{ parent, vid }` → `<parent>.<vid>`; `vid` bounded to `1..=4094` |
 | `DELETE /network/vlans/{name}` | admin | deletes the VLAN and its persisted file |
+| `GET /network/routes` | auth | `{ available, routes[] }` — saved static routes with an `active` flag; `available: false` when `ip` is missing |
+| `POST /network/routes` | admin | `{ destination, via, metric?, interface }` — validated, `ip route replace`, read back, then persisted; one route per destination; `503` when `ip` is missing |
+| `DELETE /network/routes` | admin | `{ destination, interface }` — removes the saved route from the kernel and the store; `503` when `ip` is missing |
 | `GET /network/diagnostics` | auth | gateway/DNS/internet checks |
 | `GET /network/summary` | auth | connection summary |
 | `GET /network/public-ip` | auth | public IP (geo lookup) |

@@ -440,7 +440,10 @@ mod tests {
             TransferStatus::parse("completed"),
             Some(TransferStatus::Complete)
         );
-        assert_eq!(TransferStatus::parse("COMPLETE"), Some(TransferStatus::Complete));
+        assert_eq!(
+            TransferStatus::parse("COMPLETE"),
+            Some(TransferStatus::Complete)
+        );
         assert_eq!(
             TransferStatus::parse("canceled"),
             Some(TransferStatus::Cancelled)

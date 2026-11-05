@@ -70,14 +70,15 @@ use homevault::handlers::{
     auth::handle_login,
     restic::{
         handle_restic_available, handle_restic_backup_create, handle_restic_backup_jobs,
-        handle_restic_check, handle_restic_forget, handle_restic_prune, handle_restic_reminders,
-        handle_restic_repo_create, handle_restic_repo_delete, handle_restic_repo_get,
-        handle_restic_repo_update, handle_restic_repos_list, handle_restic_restore,
-        handle_restic_restore_plan, handle_restic_schedule_create, handle_restic_schedule_delete,
-        handle_restic_schedule_set_enabled, handle_restic_schedule_update,
-        handle_restic_schedules_list, handle_restic_snapshot_delete, handle_restic_snapshots_list,
-        handle_restic_stats, handle_restic_unlock, handle_restic_version,
-        handle_retention_policies_list, handle_retention_policy_create,
+        handle_restic_check, handle_restic_forget, handle_restic_mount_create,
+        handle_restic_mount_delete, handle_restic_mounts_list, handle_restic_prune,
+        handle_restic_reminders, handle_restic_repo_create, handle_restic_repo_delete,
+        handle_restic_repo_get, handle_restic_repo_update, handle_restic_repos_list,
+        handle_restic_restore, handle_restic_restore_plan, handle_restic_schedule_create,
+        handle_restic_schedule_delete, handle_restic_schedule_set_enabled,
+        handle_restic_schedule_update, handle_restic_schedules_list, handle_restic_snapshot_delete,
+        handle_restic_snapshots_list, handle_restic_stats, handle_restic_unlock,
+        handle_restic_version, handle_retention_policies_list, handle_retention_policy_create,
         handle_retention_policy_delete, handle_retention_policy_update,
     },
     AppState,
@@ -152,6 +153,15 @@ fn restic_router(state: Arc<AppState>) -> Router {
         )
         .route("/api/restic/repos/{id}/unlock", post(handle_restic_unlock))
         .route("/api/restic/repos/{id}/prune", post(handle_restic_prune))
+        .route(
+            "/api/restic/repos/{id}/mount",
+            post(handle_restic_mount_create),
+        )
+        .route("/api/restic/mounts", get(handle_restic_mounts_list))
+        .route(
+            "/api/restic/mounts/{id}",
+            delete(handle_restic_mount_delete),
+        )
         .route("/api/restic/backup", post(handle_restic_backup_create))
         .route("/api/restic/restore", post(handle_restic_restore))
         .route("/api/restic/restore-plan", get(handle_restic_restore_plan))
@@ -297,6 +307,7 @@ fn read_endpoints() -> Vec<(Method, &'static str)> {
         (Method::GET, "/api/restic/available"),
         (Method::GET, "/api/restic/version"),
         (Method::GET, "/api/restic/repos"),
+        (Method::GET, "/api/restic/mounts"),
         (Method::GET, "/api/restic/schedules"),
         (Method::GET, "/api/restic/retention-policies"),
     ]
@@ -317,6 +328,8 @@ fn mutation_endpoints() -> Vec<(Method, &'static str, Option<Value>)> {
             Some(json!({"name":"r2"})),
         ),
         (Method::DELETE, "/api/restic/repos/x", None),
+        (Method::POST, "/api/restic/repos/x/mount", None),
+        (Method::DELETE, "/api/restic/mounts/x", None),
         (
             Method::POST,
             "/api/restic/backup",
@@ -575,6 +588,65 @@ async fn test_repo_scoped_endpoints_report_unknown_repo() {
     .await;
     assert_eq!(s, StatusCode::OK);
     assert_eq!(body["data"].as_array().map(|a| a.len()), Some(0));
+}
+
+/// P1-10 — a repository browse mount is admin-only, derives its path from the
+/// repo id, and answers a named capability failure (503) when FUSE/the CLI is
+/// absent rather than pretending a mount exists.
+#[tokio::test]
+async fn test_mount_unknown_repo_is_a_clean_400_or_503() {
+    let (mut router, token, _tmp, _g) = admin_router().await;
+    let (status, body) = send(
+        &mut router,
+        Method::POST,
+        "/api/restic/repos/ghost/mount",
+        Some(&token),
+        None,
+    )
+    .await;
+    assert!(
+        status == StatusCode::BAD_REQUEST || status == StatusCode::SERVICE_UNAVAILABLE,
+        "expected 400 (unknown repo) or 503 (no FUSE/restic), got {status}: {body}"
+    );
+    assert_ne!(status, StatusCode::INTERNAL_SERVER_ERROR, "{body}");
+    let message = body["message"].as_str().unwrap_or_default();
+    if status == StatusCode::BAD_REQUEST {
+        assert!(message.contains("Repository not found"), "{message}");
+    } else {
+        assert!(
+            message.contains("FUSE") || message.contains("restic"),
+            "a 503 must name the missing capability: {message}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn test_mounts_list_is_an_array_and_mount_ids_cannot_traverse() {
+    let (mut router, token, _tmp, _g) = admin_router().await;
+    let (status, body) = send(
+        &mut router,
+        Method::GET,
+        "/api/restic/mounts",
+        Some(&token),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(body["data"].is_array(), "{body}");
+
+    // The id reaches a path join; a dot/dotdot or a slash must be refused
+    // before any host command runs.
+    for id in ["bad..id", "..", "a%2Fb"] {
+        let (status, _) = send(
+            &mut router,
+            Method::DELETE,
+            &format!("/api/restic/mounts/{id}"),
+            Some(&token),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{id}");
+    }
 }
 
 #[tokio::test]

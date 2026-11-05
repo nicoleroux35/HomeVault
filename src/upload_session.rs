@@ -160,7 +160,9 @@ impl UploadSessionRepository {
             expected_sha256: row.get("expected_sha256"),
             created_at: row.get("created_at"),
             last_chunk_at: row.get("last_chunk_at"),
-            speed_bps: row.get::<Option<i64>, _>("speed_bps").map(|b| b.max(0) as u64),
+            speed_bps: row
+                .get::<Option<i64>, _>("speed_bps")
+                .map(|b| b.max(0) as u64),
         }))
     }
 
@@ -182,8 +184,8 @@ impl UploadSessionRepository {
         .bind(now)
         .bind(speed_bps.map(|b| b as i64))
         .bind(session_id)
-            .execute(self.pool.as_ref())
-            .await?;
+        .execute(self.pool.as_ref())
+        .await?;
         Ok(())
     }
 
@@ -202,11 +204,7 @@ impl UploadSessionRepository {
     /// in-memory map: after a restart the map is empty while the durable
     /// sessions still hold temp files, and a cap that forgets them would let
     /// one account start twenty more on top.
-    pub async fn counts(
-        &self,
-        username: &str,
-        cutoff: i64,
-    ) -> Result<(u64, u64), sqlx::Error> {
+    pub async fn counts(&self, username: &str, cutoff: i64) -> Result<(u64, u64), sqlx::Error> {
         let total: i64 =
             sqlx::query_scalar("SELECT COUNT(*) FROM upload_sessions WHERE last_chunk_at > ?")
                 .bind(cutoff)
@@ -253,14 +251,19 @@ impl UploadSessionRepository {
                 expected_sha256: row.get("expected_sha256"),
                 created_at: row.get("created_at"),
                 last_chunk_at: row.get("last_chunk_at"),
-                speed_bps: row.get::<Option<i64>, _>("speed_bps").map(|b| b.max(0) as u64),
+                speed_bps: row
+                    .get::<Option<i64>, _>("speed_bps")
+                    .map(|b| b.max(0) as u64),
             })
             .collect())
     }
 
     /// Delete every session idle since before `cutoff` and return the removed
     /// rows, so the caller can unlink each temp file.
-    pub async fn prune_expired(&self, cutoff: i64) -> Result<Vec<StoredUploadSession>, sqlx::Error> {
+    pub async fn prune_expired(
+        &self,
+        cutoff: i64,
+    ) -> Result<Vec<StoredUploadSession>, sqlx::Error> {
         let rows = sqlx::query(
             "DELETE FROM upload_sessions WHERE last_chunk_at <= ?
              RETURNING session_id, username, dir_path, filename, tmp_path, offset, total_bytes,
@@ -283,7 +286,9 @@ impl UploadSessionRepository {
                 expected_sha256: row.get("expected_sha256"),
                 created_at: row.get("created_at"),
                 last_chunk_at: row.get("last_chunk_at"),
-                speed_bps: row.get::<Option<i64>, _>("speed_bps").map(|b| b.max(0) as u64),
+                speed_bps: row
+                    .get::<Option<i64>, _>("speed_bps")
+                    .map(|b| b.max(0) as u64),
             })
             .collect())
     }
@@ -314,8 +319,14 @@ mod tests {
     #[test]
     fn test_is_expired_is_idle_based() {
         let s = session(10, 100, 1_000);
-        assert!(!s.is_expired(1_000 + 1_799, 1_800), "still receiving chunks");
-        assert!(s.is_expired(1_000 + 1_800, 1_800), "the boundary is expired");
+        assert!(
+            !s.is_expired(1_000 + 1_799, 1_800),
+            "still receiving chunks"
+        );
+        assert!(
+            s.is_expired(1_000 + 1_800, 1_800),
+            "the boundary is expired"
+        );
         assert!(s.is_expired(99_999, 1_800));
     }
 

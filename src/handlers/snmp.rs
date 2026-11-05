@@ -25,7 +25,7 @@
 
 use crate::handlers::AppState;
 use crate::snmp::SnmpService;
-use crate::snmp_agent::{AgentConfig, BindScope};
+use crate::snmp_agent::{AgentConfig, AgentVersion, BindScope, PersistedAgentConfig};
 use crate::storage::json::JsonStorage;
 use crate::utils::ResponseHelper;
 use axum::{extract::Query, extract::State, http::HeaderMap, response::Response};
@@ -303,7 +303,7 @@ pub async fn handle_snmp_agent_get(
         return agent_missing();
     }
 
-    let (config, serving, candidates) = tokio::task::spawn_blocking(|| {
+    let loaded = tokio::task::spawn_blocking(|| {
         (
             load_agent_config(),
             crate::snmp_agent::is_serving(),
@@ -311,7 +311,12 @@ pub async fn handle_snmp_agent_get(
         )
     })
     .await
-    .unwrap_or_else(|_| (AgentConfig::default(), false, Vec::new()));
+    .unwrap_or_else(|e| (Err(format!("Internal error: {e}")), false, Vec::new()));
+
+    let (config, serving, candidates) = match loaded {
+        (Ok(config), serving, candidates) => (config, serving, candidates),
+        (Err(e), _, _) => return ResponseHelper::json_error(e),
+    };
 
     let mut payload = config.redacted();
     payload["installed"] = serde_json::json!(true);
@@ -331,9 +336,21 @@ pub struct AgentConfigRequest {
     pub scope: Option<String>,
     #[serde(default)]
     pub lan_address: Option<String>,
+    /// `"v2c"` (default) or `"v3"`.
+    #[serde(default)]
+    pub version: Option<String>,
     /// Empty or absent keeps the stored community (or generates one).
     #[serde(default)]
     pub community: Option<String>,
+    #[serde(default)]
+    pub v3_username: Option<String>,
+    /// Empty or absent keeps the stored authentication passphrase (or
+    /// generates one). Never returned by the API.
+    #[serde(default)]
+    pub v3_auth_secret: Option<String>,
+    /// Empty or absent keeps the stored privacy passphrase (or generates one).
+    #[serde(default)]
+    pub v3_priv_secret: Option<String>,
     #[serde(default)]
     pub location: Option<String>,
     #[serde(default)]
@@ -363,7 +380,10 @@ pub async fn handle_snmp_agent_update(
         return agent_missing();
     }
 
-    let previous = load_agent_config();
+    let previous = match load_agent_config() {
+        Ok(config) => config,
+        Err(e) => return ResponseHelper::json_error(e),
+    };
     let mut requested = previous.clone();
     if let Some(enabled) = req.enabled {
         requested.enabled = enabled;
@@ -382,8 +402,28 @@ pub async fn handle_snmp_agent_update(
     if let Some(address) = &req.lan_address {
         requested.lan_address = Some(address.clone());
     }
+    if let Some(version) = req.version.as_deref() {
+        requested.version = match version.trim().to_ascii_lowercase().as_str() {
+            "v2c" | "2c" => AgentVersion::V2c,
+            "v3" | "3" => AgentVersion::V3,
+            other => {
+                return ResponseHelper::json_error(format!(
+                    "Unknown SNMP version '{other}' — use 'v2c' or 'v3'"
+                ))
+            }
+        };
+    }
     if let Some(community) = &req.community {
         requested.community = community.clone();
+    }
+    if let Some(username) = &req.v3_username {
+        requested.v3_username = username.clone();
+    }
+    if let Some(secret) = &req.v3_auth_secret {
+        requested.v3_auth_secret = secret.clone();
+    }
+    if let Some(secret) = &req.v3_priv_secret {
+        requested.v3_priv_secret = secret.clone();
     }
     if let Some(location) = &req.location {
         requested.location = location.clone();
@@ -395,6 +435,13 @@ pub async fn handle_snmp_agent_update(
     let next = match validate_agent_config(requested, &previous) {
         Ok(next) => next,
         Err(e) => return ResponseHelper::json_error(e.0),
+    };
+
+    // Seal before anything touches the host: a storage failure must not leave
+    // a running agent whose passphrases were never written down.
+    let persisted = match PersistedAgentConfig::from_config(&next) {
+        Ok(persisted) => persisted,
+        Err(e) => return ResponseHelper::json_error(e),
     };
 
     let applied = next.clone();
@@ -416,7 +463,7 @@ pub async fn handle_snmp_agent_update(
         Err(e) => return ResponseHelper::json_error(format!("Internal error: {e}")),
     };
 
-    persist_agent_config(&next);
+    persist_agent_config(&persisted);
     crate::events::log_event(format!(
         "Admin '{}' {} the SNMP agent (scope: {:?}, state: {})",
         admin_username,
@@ -436,17 +483,24 @@ pub async fn handle_snmp_agent_update(
     ResponseHelper::json_success(payload)
 }
 
-/// Load the agent config from disk; a missing or unreadable file means "never
-/// configured", which is the safe default (off).
-fn load_agent_config() -> AgentConfig {
-    snmp_storage()
-        .load::<AgentConfig>(SNMP_AGENT_STORAGE_KEY)
-        .ok()
-        .flatten()
-        .unwrap_or_default()
+/// Load the agent config from disk; a missing file means "never configured",
+/// which is the safe default (off). A stored config whose v3 secrets can no
+/// longer be opened (a data directory restored on another machine) is an
+/// error the screen can act on — re-enter the passphrases — never a silent
+/// downgrade to "no v3 user".
+fn load_agent_config() -> Result<AgentConfig, String> {
+    let stored = snmp_storage()
+        .load::<PersistedAgentConfig>(SNMP_AGENT_STORAGE_KEY)
+        .map_err(|e| format!("could not read the SNMP agent settings: {e}"))?;
+    match stored {
+        Some(config) => config
+            .into_config()
+            .map_err(|e| format!("could not load the SNMP agent settings: {e}")),
+        None => Ok(AgentConfig::default()),
+    }
 }
 
-fn persist_agent_config(config: &AgentConfig) {
+fn persist_agent_config(config: &PersistedAgentConfig) {
     if let Err(e) = snmp_storage().save(SNMP_AGENT_STORAGE_KEY, config) {
         tracing::error!("Failed to persist the SNMP agent settings: {}", e);
     }

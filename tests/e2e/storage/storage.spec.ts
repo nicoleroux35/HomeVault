@@ -935,4 +935,324 @@ test.describe('14 — Scrub status & foreign-pool import', () => {
     expect([400, 401]).toContain(anon.status());
     await ctx.dispose();
   });
+
+  test('14.6 — a level change requires the backup acknowledgement before it is sent', async ({ page }) => {
+    // Fake one mdadm array; the test never asks the host to reshape anything.
+    await page.route('**/api/storage/virtual-disks', async (route) => {
+      if (route.request().method() !== 'GET') return route.continue();
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          success: true,
+          data: [
+            {
+              name: 'md0',
+              pool_type: 'Mdadm',
+              size_bytes: 4_000_000_000,
+              used_bytes: 1_000_000_000,
+              available_bytes: 3_000_000_000,
+              health: 'clean',
+              device_count: 3,
+              mount_point: '/mnt/md0',
+              raid_profile: 'raid1',
+            },
+          ],
+        }),
+      });
+    });
+    await page.route('**/api/storage/virtual-disks/md0/level-options', async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          success: true,
+          data: {
+            current_level: 'raid1',
+            member_count: 3,
+            reshape_in_progress: false,
+            options: [
+              { level: 'raid1', allowed: false, reason: 'The array is already RAID 1' },
+              {
+                level: 'raid5',
+                allowed: true,
+              },
+              {
+                level: 'raid6',
+                allowed: false,
+                reason: 'RAID 6 needs at least 4 member disks; this array has 3',
+              },
+            ],
+          },
+        }),
+      });
+    });
+    let posted: any = null;
+    await page.route('**/api/storage/virtual-disks/md0/migrate-level', async (route) => {
+      posted = route.request().postDataJSON();
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({ success: true, data: { message: 'started' } }),
+      });
+    });
+
+    await gotoStorage(page, adminTokens);
+    await switchTab(page, /virtual|virtuel|virtuell|virtual/i);
+    const card = win(page)
+      .locator('[data-testid="storage-vd-card"]')
+      .filter({ hasText: 'md0' })
+      .first();
+    await card.locator('button', { hasText: /level|niveau|nivel/i }).click();
+
+    const modal = page.locator('[data-testid="storage-level-modal"]');
+    await expect(modal).toBeVisible();
+    const confirm = page.locator('[data-testid="storage-level-confirm"]');
+    await expect(confirm).toBeDisabled();
+    await expect(page.locator('[data-testid="storage-level-reasons"]')).toContainText('RAID 6');
+
+    await page.locator('[data-testid="storage-level-backup"]').check();
+    await expect(confirm).toBeEnabled();
+    await confirm.click();
+
+    await expect.poll(() => posted).toEqual({ target_level: 'raid5', backup_confirmed: true });
+    await expect(modal).toHaveCount(0);
+  });
+
+  test('14.7 — an array with no allowed conversion shows the reason and cannot submit', async ({ page }) => {
+    await page.route('**/api/storage/virtual-disks', async (route) => {
+      if (route.request().method() !== 'GET') return route.continue();
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          success: true,
+          data: [
+            {
+              name: 'md1',
+              pool_type: 'Mdadm',
+              size_bytes: 4_000_000_000,
+              used_bytes: 1_000_000_000,
+              available_bytes: 3_000_000_000,
+              health: 'clean',
+              device_count: 3,
+              mount_point: '/mnt/md1',
+              raid_profile: 'raid5',
+            },
+          ],
+        }),
+      });
+    });
+    await page.route('**/api/storage/virtual-disks/md1/level-options', async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          success: true,
+          data: {
+            current_level: 'raid5',
+            member_count: 3,
+            reshape_in_progress: false,
+            options: [
+              { level: 'raid5', allowed: false, reason: 'The array is already RAID 5' },
+              {
+                level: 'raid6',
+                allowed: false,
+                reason: 'RAID 6 needs at least 4 member disks; this array has 3 — add a disk first',
+              },
+            ],
+          },
+        }),
+      });
+    });
+
+    await gotoStorage(page, adminTokens);
+    await switchTab(page, /virtual|virtuel|virtuell|virtual/i);
+    const card = win(page)
+      .locator('[data-testid="storage-vd-card"]')
+      .filter({ hasText: 'md1' })
+      .first();
+    await card.locator('button', { hasText: /level|niveau|nivel/i }).click();
+
+    const modal = page.locator('[data-testid="storage-level-modal"]');
+    await expect(modal).toBeVisible();
+    await expect(page.locator('[data-testid="storage-level-none"]')).toBeVisible();
+    await expect(page.locator('[data-testid="storage-level-reasons"]')).toContainText('at least 4');
+    await expect(page.locator('[data-testid="storage-level-confirm"]')).toBeDisabled();
+  });
+
+  test('14.8 — the Btrfs layout migration is confirmed with the pool name', async ({ page }) => {
+    let migrated = false;
+    await page.route('**/api/storage/virtual-disks', async (route) => {
+      if (route.request().method() !== 'GET') return route.continue();
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          success: true,
+          data: [
+            {
+              name: 'data',
+              pool_type: 'Btrfs',
+              size_bytes: 4_000_000_000,
+              used_bytes: 1_000_000_000,
+              available_bytes: 3_000_000_000,
+              health: 'clean',
+              device_count: 2,
+              mount_point: '/mnt/pools/data',
+              raid_profile: 'raid1',
+            },
+          ],
+        }),
+      });
+    });
+    await page.route('**/api/storage/virtual-disks/data/btrfs-layout', async (route) => {
+      if (route.request().method() === 'GET') {
+        await route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          body: JSON.stringify({
+            success: true,
+            data: {
+              pool: 'data',
+              mount_point: '/mnt/pools/data',
+              layout: 'legacy',
+              layout_name: 'legacy',
+              rollback_available: false,
+              migration_required: true,
+            },
+          }),
+        });
+      } else {
+        migrated = true;
+        await route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          body: JSON.stringify({ success: true, data: { layout: 'at' } }),
+        });
+      }
+    });
+
+    await gotoStorage(page, adminTokens);
+    await switchTab(page, /virtual|virtuel|virtuell|virtual/i);
+    const card = win(page)
+      .locator('[data-testid="storage-vd-card"]')
+      .filter({ hasText: 'data' })
+      .first();
+    await card.locator('button', { hasText: /layout/i }).click();
+
+    const dialog = page
+      .locator('[data-testid="confirm-dialog-message"]')
+      .locator('xpath=ancestor-or-self::*[@role="dialog"][1]');
+    await expect(dialog).toBeVisible();
+    await dialog.locator('[data-testid="confirm-dialog-typed"]').fill('data');
+    await dialog.locator('button:has-text("Confirm"), button:has-text("Confirmer")').first().click();
+
+    await expect.poll(() => migrated).toBe(true);
+  });
+
+  test('14.9 — an in-place Btrfs rollback requires the snapshot name', async ({ page }) => {
+    let rolledBack: any = null;
+    await page.route('**/api/storage/virtual-disks', async (route) => {
+      if (route.request().method() !== 'GET') return route.continue();
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          success: true,
+          data: [
+            {
+              name: 'data',
+              pool_type: 'Btrfs',
+              size_bytes: 4_000_000_000,
+              used_bytes: 1_000_000_000,
+              available_bytes: 3_000_000_000,
+              health: 'clean',
+              device_count: 2,
+              mount_point: '/mnt/pools/data',
+              raid_profile: 'raid1',
+            },
+          ],
+        }),
+      });
+    });
+    await page.route('**/api/snapshot-schedules', async (route) => {
+      if (route.request().method() !== 'GET') return route.continue();
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          success: true,
+          data: {
+            schedules: [
+              {
+                id: 'btrfs-sched',
+                pool: 'data',
+                share: null,
+                share_type: null,
+                enabled: true,
+                cron: '0 3 * * *',
+                prefix: 'hv-auto',
+                recursive: true,
+                gfs_hourly: 24,
+                gfs_daily: 7,
+                gfs_weekly: 4,
+                gfs_monthly: 12,
+                gfs_yearly: 1,
+                last_run_at: null,
+                last_status: null,
+                last_error: null,
+                next_run_at: null,
+              },
+            ],
+          },
+        }),
+      });
+    });
+    await page.route('**/api/snapshot-schedules/snapshots?pool=data', async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          success: true,
+          data: {
+            snapshots: [
+              { name: 'hv-auto-20261105-030000', created: '1760000000', used: 0, referenced: 0, auto: true },
+            ],
+          },
+        }),
+      });
+    });
+    await page.route('**/api/storage/virtual-disks/data/btrfs-rollback', async (route) => {
+      rolledBack = route.request().postDataJSON();
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({ success: true, data: { snapshot: 'hv-auto-20261105-030000' } }),
+      });
+    });
+
+    await gotoStorage(page, adminTokens);
+    await switchTab(page, /snapshot|instantan|momentaufnahme|instantánea/i);
+    const row = win(page)
+      .locator('[data-testid="snapshots-schedule"]')
+      .filter({ hasText: 'data' })
+      .first();
+    await row.locator('[data-testid^="snapshots-view-"]').click();
+    await win(page)
+      .locator('[data-testid="snapshots-btrfs-rollback-hv-auto-20261105-030000"]')
+      .click();
+
+    const dialog = page
+      .locator('[data-testid="confirm-dialog-message"]')
+      .locator('xpath=ancestor-or-self::*[@role="dialog"][1]');
+    await expect(dialog).toBeVisible();
+    await dialog.locator('[data-testid="confirm-dialog-typed"]').fill('hv-auto-20261105-030000');
+    await dialog.locator('button:has-text("Confirm"), button:has-text("Confirmer")').first().click();
+
+    await expect.poll(() => rolledBack).toEqual({
+      snapshot: 'hv-auto-20261105-030000',
+      confirm: true,
+    });
+  });
 });

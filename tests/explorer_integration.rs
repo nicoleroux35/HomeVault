@@ -77,9 +77,10 @@ use tower::{Service, ServiceExt};
 use homevault::auth::AuthService;
 use homevault::config::PathGuard;
 use homevault::handlers::explorer::{
-    handle_explorer_compress, handle_explorer_copy, handle_explorer_delete, handle_explorer_disks,
-    handle_explorer_download, handle_explorer_download_ticket, handle_explorer_eject,
-    handle_explorer_extract, handle_explorer_favorites_add, handle_explorer_favorites_list,
+    handle_explorer_checksum, handle_explorer_checksum_result, handle_explorer_compress,
+    handle_explorer_copy, handle_explorer_delete, handle_explorer_disks, handle_explorer_download,
+    handle_explorer_download_ticket, handle_explorer_eject, handle_explorer_extract,
+    handle_explorer_favorites_add, handle_explorer_favorites_list,
     handle_explorer_favorites_remove, handle_explorer_format, handle_explorer_history,
     handle_explorer_instant_copy_get, handle_explorer_instant_copy_update, handle_explorer_list,
     handle_explorer_mkdir, handle_explorer_move, handle_explorer_network_discovery,
@@ -92,12 +93,11 @@ use homevault::handlers::explorer::{
     handle_explorer_trash_policy_update, handle_explorer_trash_purge,
     handle_explorer_trash_purge_now, handle_explorer_trash_restore, handle_explorer_upload,
     handle_explorer_upload_chunk, handle_explorer_upload_complete,
-    handle_explorer_checksum, handle_explorer_checksum_result,
     handle_explorer_upload_session_abort, handle_explorer_upload_session_start,
     handle_explorer_watch, handle_explorer_watch_ticket,
 };
-use homevault::handlers::transfers::{handle_active_transfers, handle_transfer_history};
 use homevault::handlers::terminal_pty::PtyManager;
+use homevault::handlers::transfers::{handle_active_transfers, handle_transfer_history};
 use homevault::handlers::{auth::handle_login, AppState};
 use homevault::middleware::rate_limit::RateLimitState;
 use homevault::storage::{Database, WidgetRepository};
@@ -4129,10 +4129,7 @@ async fn test_checksum_accepts_every_supported_algorithm() {
     .await;
     assert_eq!(sha512["data"]["algorithm"], "sha512");
     assert_eq!(
-        sha512["data"]["checksum"]
-            .as_str()
-            .expect("digest")
-            .len(),
+        sha512["data"]["checksum"].as_str().expect("digest").len(),
         128
     );
 
@@ -4201,7 +4198,10 @@ async fn test_checksum_compare_with_reports_match_and_mismatch() {
     .await;
     assert_eq!(status, StatusCode::OK, "{same}");
     assert_eq!(same["data"]["match"], true);
-    assert_eq!(same["data"]["compare_with"]["checksum"], same["data"]["checksum"]);
+    assert_eq!(
+        same["data"]["compare_with"]["checksum"],
+        same["data"]["checksum"]
+    );
 
     let (status, different) = send(
         &mut r,
@@ -4253,7 +4253,10 @@ async fn test_checksum_async_job_result_is_readable_afterwards() {
         let (status, body) = send(
             &mut r,
             Method::GET,
-            &format!("/api/explorer/checksum/result?job_id={}", urlencode(&job_id)),
+            &format!(
+                "/api/explorer/checksum/result?job_id={}",
+                urlencode(&job_id)
+            ),
             Some(&token),
             None,
         )
@@ -4267,7 +4270,10 @@ async fn test_checksum_async_job_result_is_readable_afterwards() {
     assert_eq!(result["data"]["state"], "complete", "{result}");
     assert_eq!(result["data"]["file_size"], 300 * 1024);
     assert_eq!(
-        result["data"]["checksum"].as_str().unwrap_or_default().len(),
+        result["data"]["checksum"]
+            .as_str()
+            .unwrap_or_default()
+            .len(),
         64,
         "{result}"
     );
@@ -4602,7 +4608,10 @@ async fn test_active_transfers_lists_and_cancels_an_upload_session() {
         None,
     )
     .await;
-    assert!(idle["data"]["uploads"].as_array().unwrap().is_empty(), "{idle}");
+    assert!(
+        idle["data"]["uploads"].as_array().unwrap().is_empty(),
+        "{idle}"
+    );
     assert_eq!(idle["data"]["counts"]["uploads"], 0);
 }
 
@@ -4701,7 +4710,12 @@ async fn test_upload_session_with_a_missing_temp_file_is_discarded() {
          VALUES ('orphan-1', 'member', ?, 'gone.bin', ?, 0, 4, 'overwrite', NULL, ?, ?)",
     )
     .bind(h.root.to_string_lossy().to_string())
-    .bind(h.root.join(".gone.bin.hvupl-missing").to_string_lossy().to_string())
+    .bind(
+        h.root
+            .join(".gone.bin.hvupl-missing")
+            .to_string_lossy()
+            .to_string(),
+    )
     .bind(now)
     .bind(now)
     .execute(&*h.state.db.pool())
@@ -4716,12 +4730,11 @@ async fn test_upload_session_with_a_missing_temp_file_is_discarded() {
     )
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
-    let remaining: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM upload_sessions WHERE session_id = 'orphan-1'",
-    )
-    .fetch_one(&*h.state.db.pool())
-    .await
-    .expect("count");
+    let remaining: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM upload_sessions WHERE session_id = 'orphan-1'")
+            .fetch_one(&*h.state.db.pool())
+            .await
+            .expect("count");
     assert_eq!(remaining, 0, "the orphan row is swept");
 }
 

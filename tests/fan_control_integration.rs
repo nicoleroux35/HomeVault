@@ -1,6 +1,6 @@
 //! Integration tests for thermal/fan control
 
-use homevault::fan_control::{FanControlService, FanConfig, FanProfile};
+use homevault::fan_control::{FanConfig, FanControlService, FanProfile};
 use std::collections::HashMap;
 
 #[tokio::test]
@@ -12,13 +12,16 @@ async fn test_detect_channels() {
             println!("Found {} fan channels", channels.len());
             for channel in channels {
                 println!("  Channel: {} ({})", channel.id, channel.name);
-                println!("    PWM: {}, Mode: {}", channel.current_pwm, channel.current_mode);
+                println!(
+                    "    PWM: {}, Mode: {}",
+                    channel.current_pwm, channel.current_mode
+                );
                 println!("    Supports auto: {}", channel.supports_auto);
                 if let Some(temp) = channel.current_temp {
                     println!("    Temperature: {}°C", temp / 1000);
                 }
             }
-        },
+        }
         Err(e) => {
             println!("Could not detect channels: {}", e);
         }
@@ -39,20 +42,36 @@ async fn test_is_laptop() {
 #[test]
 fn test_calculate_duty_interpolation() {
     let curve = vec![
-        homevault::fan_control::CurvePoint { temp_c: 40, duty: 30 },
-        homevault::fan_control::CurvePoint { temp_c: 60, duty: 70 },
+        homevault::fan_control::CurvePoint {
+            temp_c: 40,
+            duty: 30,
+        },
+        homevault::fan_control::CurvePoint {
+            temp_c: 60,
+            duty: 70,
+        },
     ];
 
     // At 50°C (midpoint), should be around 50% duty
     let duty = FanControlService::calculate_duty(50, &curve, 0);
-    assert!(duty >= 48 && duty <= 52, "Duty at midpoint should be ~50%, got {}", duty);
+    assert!(
+        duty >= 48 && duty <= 52,
+        "Duty at midpoint should be ~50%, got {}",
+        duty
+    );
 }
 
 #[test]
 fn test_calculate_duty_below_curve() {
     let curve = vec![
-        homevault::fan_control::CurvePoint { temp_c: 40, duty: 30 },
-        homevault::fan_control::CurvePoint { temp_c: 60, duty: 70 },
+        homevault::fan_control::CurvePoint {
+            temp_c: 40,
+            duty: 30,
+        },
+        homevault::fan_control::CurvePoint {
+            temp_c: 60,
+            duty: 70,
+        },
     ];
 
     // Below curve minimum
@@ -63,8 +82,14 @@ fn test_calculate_duty_below_curve() {
 #[test]
 fn test_calculate_duty_above_curve() {
     let curve = vec![
-        homevault::fan_control::CurvePoint { temp_c: 40, duty: 30 },
-        homevault::fan_control::CurvePoint { temp_c: 60, duty: 70 },
+        homevault::fan_control::CurvePoint {
+            temp_c: 40,
+            duty: 30,
+        },
+        homevault::fan_control::CurvePoint {
+            temp_c: 60,
+            duty: 70,
+        },
     ];
 
     // Above curve maximum
@@ -76,21 +101,35 @@ fn test_calculate_duty_above_curve() {
 fn test_calculate_duty_enforces_minimum() {
     let curve = vec![
         homevault::fan_control::CurvePoint { temp_c: 0, duty: 5 },
-        homevault::fan_control::CurvePoint { temp_c: 40, duty: 10 },
+        homevault::fan_control::CurvePoint {
+            temp_c: 40,
+            duty: 10,
+        },
     ];
 
     let duty = FanControlService::calculate_duty(20, &curve, 0);
     // `MIN_SAFE_PWM` is 51 on the 0-255 scale; converting it to a duty
     // percentage needs u32 arithmetic (51 * 100 = 5100 overflows a u8).
     let min_duty = (51u32 * 100 / 255) as u8;
-    assert!(duty >= min_duty, "Duty should be at least {}, got {}", min_duty, duty);
+    assert!(
+        duty >= min_duty,
+        "Duty should be at least {}, got {}",
+        min_duty,
+        duty
+    );
 }
 
 #[test]
 fn test_calculate_duty_hysteresis() {
     let curve = vec![
-        homevault::fan_control::CurvePoint { temp_c: 40, duty: 30 },
-        homevault::fan_control::CurvePoint { temp_c: 60, duty: 70 },
+        homevault::fan_control::CurvePoint {
+            temp_c: 40,
+            duty: 30,
+        },
+        homevault::fan_control::CurvePoint {
+            temp_c: 60,
+            duty: 70,
+        },
     ];
 
     // Small change should keep previous
@@ -213,7 +252,9 @@ fn test_fan_config_channel_override() {
         temp_sensor: None,
     };
 
-    config.channel_overrides.insert("hwmon1_pwm1".to_string(), override_cfg);
+    config
+        .channel_overrides
+        .insert("hwmon1_pwm1".to_string(), override_cfg);
 
     // Channel should use its override
     assert_eq!(

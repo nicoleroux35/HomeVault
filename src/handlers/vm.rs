@@ -81,6 +81,9 @@ use tokio_tungstenite::tungstenite::Message as TMessage;
 const LIFECYCLE_WAIT_SECS: u64 = 40;
 /// Ceiling for a `create` job (first Ubuntu image pull on a slow line).
 const CREATE_WAIT_SECS: u64 = 900;
+/// Ceiling for a clone: Incus copies the source's disk, which can take a few
+/// minutes on a large VM but is still far below an image download.
+const CLONE_WAIT_SECS: u64 = 300;
 /// Console ticket lifetime — just long enough for the browser to open the WS.
 const TICKET_TTL: Duration = Duration::from_secs(20);
 /// Custom Incus config key where we stash the seeded login name so the detail
@@ -155,6 +158,20 @@ pub struct CreateVmRequest {
     /// Attach a virtual sound card (VMs only, ignored for containers).
     #[serde(default)]
     pub audio: Option<bool>,
+}
+
+/// `POST /api/vm/{name}/clone`.
+#[derive(Deserialize)]
+pub struct CloneVmRequest {
+    /// Name of the new machine (lower-case DNS-style, like create).
+    pub name: String,
+    /// Optional source snapshot to copy from; omitted copies the current
+    /// state of the source instance.
+    #[serde(default)]
+    pub snapshot: Option<String>,
+    /// Optional profile override. Omitted/empty keeps the source's profiles.
+    #[serde(default)]
+    pub profiles: Option<Vec<String>>,
 }
 
 fn default_kind() -> String {
@@ -674,9 +691,7 @@ pub async fn handle_vm_create(
                 instance_type: "virtual-machine".to_string(),
                 source: incus::InstanceSource {
                     source_type: "none".to_string(),
-                    server: None,
-                    protocol: None,
-                    alias: None,
+                    ..Default::default()
                 },
                 config,
                 devices,
@@ -776,6 +791,7 @@ pub async fn handle_vm_create(
                     server: Some("https://images.linuxcontainers.org".to_string()),
                     protocol: Some("simplestreams".to_string()),
                     alias: Some(os.alias.to_string()),
+                    ..Default::default()
                 },
                 config,
                 devices,
@@ -930,6 +946,144 @@ pub async fn handle_vm_create(
         "name": name,
         "status": "creating",
     }))
+}
+
+/// Build the Incus copy request for `POST /api/vm/{name}/clone`.
+///
+/// Kept pure so the exact wire shape (`source.type = "copy"`,
+/// `/1.0/instances/<source>`, optional `source_snapshot`) is unit-tested
+/// without a daemon. The source's config and devices are copied by Incus; the
+/// new machine stays stopped, so a clone never surprises the person by
+/// competing with the original for memory or an IP.
+fn clone_body(
+    source: &IncusInstance,
+    new_name: &str,
+    snapshot: Option<&str>,
+    profiles: Option<Vec<String>>,
+) -> incus::CreateInstanceBody {
+    let profiles = profiles
+        .filter(|list| !list.is_empty())
+        .unwrap_or_else(|| source.profiles.clone());
+    let profiles = if profiles.is_empty() {
+        vec!["default".to_string()]
+    } else {
+        profiles
+    };
+    incus::CreateInstanceBody {
+        name: new_name.to_string(),
+        instance_type: source.instance_type.clone(),
+        source: incus::InstanceSource::copy(&source.name, snapshot),
+        config: HashMap::new(),
+        devices: HashMap::new(),
+        profiles,
+        start: false,
+    }
+}
+
+/// POST /api/vm/{name}/clone
+///
+/// Duplicate a machine, optionally from one of its snapshots. Incus copies the
+/// source's config and devices; `profiles` overrides the source's profiles when
+/// supplied. The operation is awaited, and a timeout is reported as "still
+/// cloning" rather than a failure (the instance is fine, just slow).
+pub async fn handle_vm_clone(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(source): Path<String>,
+    Json(req): Json<CloneVmRequest>,
+) -> Response {
+    let admin = match require_admin(&state, &headers).await {
+        Ok(u) => u,
+        Err(e) => return e,
+    };
+
+    let new_name = req.name.trim().to_lowercase();
+    if !valid_instance_name(&new_name) {
+        return ResponseHelper::json_error(
+            "The new name must be 1–63 characters: lowercase letters, digits and dashes, starting and ending with a letter or digit.".to_string(),
+        );
+    }
+    if new_name == source {
+        return ResponseHelper::json_error(
+            "The clone needs a different name from the machine it is copied from.".to_string(),
+        );
+    }
+    let snapshot = req
+        .snapshot
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+    if let Some(snap) = snapshot {
+        if !valid_snapshot_name(snap) {
+            return ResponseHelper::json_error(
+                "The snapshot name may only contain letters, digits, dots, dashes and underscores."
+                    .to_string(),
+            );
+        }
+    }
+
+    let profiles = req.profiles.map(|list| {
+        list.into_iter()
+            .map(|p| p.trim().to_string())
+            .filter(|p| !p.is_empty())
+            .collect::<Vec<_>>()
+    });
+
+    // Refuse a name that is already taken before asking Incus to copy.
+    match IncusService::get_instance(&new_name).await {
+        Ok(_) => {
+            return ResponseHelper::json_error(format!(
+                "A machine called \"{}\" already exists.",
+                new_name
+            ))
+        }
+        Err(IncusError::InstanceNotFound(_)) => {}
+        Err(e) => return incus_err(e),
+    }
+
+    let source_instance = match IncusService::get_instance(&source).await {
+        Ok(i) => i,
+        Err(e) => return incus_err(e),
+    };
+    let body = clone_body(&source_instance, &new_name, snapshot, profiles);
+    let op = match IncusService::create_instance(&body).await {
+        Ok(op) => op,
+        Err(e) => return incus_err(e),
+    };
+
+    let outcome = if op.is_empty() {
+        Ok(WaitOutcome::Completed)
+    } else {
+        IncusService::wait_for_operation(&op, CLONE_WAIT_SECS).await
+    };
+    match outcome {
+        Ok(WaitOutcome::Completed) => {
+            crate::events::log_event(format!(
+                "VM '{}' cloned from '{}' by {}",
+                new_name, source, admin
+            ));
+            ResponseHelper::json_success(serde_json::json!({
+                "name": new_name,
+                "source": source,
+                "snapshot": snapshot,
+                "status": "cloned",
+            }))
+        }
+        Ok(WaitOutcome::StillRunning { operation_id }) => {
+            crate::events::log_event(format!(
+                "VM '{}' is being cloned from '{}' by {} (operation {})",
+                new_name, source, admin, operation_id
+            ));
+            ResponseHelper::json_success(serde_json::json!({
+                "name": new_name,
+                "source": source,
+                "snapshot": snapshot,
+                "status": "cloning",
+                "operation_id": operation_id,
+            }))
+        }
+        Err(e) => incus_err(e),
+    }
 }
 
 /// DELETE /api/vm/{name}
@@ -2457,8 +2611,8 @@ fn apply_audio_device(devices: &mut HashMap<String, serde_json::Value>, audio: b
 
 fn incus_err(e: IncusError) -> Response {
     match e {
-        IncusError::NotAvailable => ResponseHelper::json_error(
-            "Incus is not installed or not running on this server.".to_string(),
+        IncusError::NotAvailable => ResponseHelper::json_unavailable(
+            "Incus is not installed or not running on this server.",
         ),
         IncusError::InstanceNotFound(n) => {
             ResponseHelper::json_error(format!("The machine \"{}\" no longer exists.", n))
@@ -2490,6 +2644,51 @@ mod tests {
         let mut container = HashMap::new();
         apply_audio_device(&mut container, true, false);
         assert!(!container.contains_key("audio0"));
+    }
+
+    #[test]
+    fn test_clone_body_copies_the_source_and_stays_stopped() {
+        let source = IncusInstance {
+            name: "source-vm".to_string(),
+            instance_type: "virtual-machine".to_string(),
+            status: "Running".to_string(),
+            status_code: STATUS_RUNNING,
+            architecture: "x86_64".to_string(),
+            config: HashMap::new(),
+            devices: HashMap::new(),
+            expanded_devices: HashMap::new(),
+            profiles: vec!["default".to_string(), "gpu".to_string()],
+            created_at: String::new(),
+            state: None,
+            snapshots: None,
+        };
+
+        let body = clone_body(&source, "copy", Some("before-upgrade"), None);
+        let j = serde_json::to_value(&body).unwrap();
+        assert_eq!(j["type"], "virtual-machine");
+        assert_eq!(j["source"]["type"], "copy");
+        assert_eq!(j["source"]["source"], "/1.0/instances/source-vm");
+        assert_eq!(j["source"]["source_snapshot"], "before-upgrade");
+        assert_eq!(j["profiles"], serde_json::json!(["default", "gpu"]));
+        assert_eq!(j["start"], false);
+        // Incus copies config/devices from the source; the body must not send
+        // empty overrides that would wipe them.
+        assert!(j.get("config").is_none());
+        assert!(j.get("devices").is_none());
+
+        // A profile override wins; no snapshot omits the field entirely.
+        let body = clone_body(&source, "copy", None, Some(vec!["fast".to_string()]));
+        let j = serde_json::to_value(&body).unwrap();
+        assert_eq!(j["profiles"], serde_json::json!(["fast"]));
+        assert!(j["source"].get("source_snapshot").is_none());
+
+        // An empty source profile list falls back to the default profile.
+        let bare = IncusInstance {
+            profiles: Vec::new(),
+            ..source
+        };
+        let body = clone_body(&bare, "copy", None, None);
+        assert_eq!(body.profiles, vec!["default".to_string()]);
     }
 
     #[test]

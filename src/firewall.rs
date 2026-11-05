@@ -701,6 +701,29 @@ pub async fn delete_rule(spec: &str) -> Result<(), FirewallError> {
     Ok(())
 }
 
+/// A source-only rule (`allow|deny from <network> comment …`), used by the
+/// GeoIP manager: a country entry is an allow/deny for **every** service,
+/// exactly like [`ban_source`] but with a selectable action.
+pub async fn add_source_rule(
+    action: &str,
+    source: &str,
+    comment: &str,
+) -> Result<AddRuleOutcome, FirewallError> {
+    let action = validate_action(action)?;
+    let source = validate_source(source)?;
+    let comment = validate_comment(comment)?;
+    let output = run_ufw_checked(
+        &[&action, "from", &source, "comment", &comment],
+        "adding the source rule",
+    )
+    .await?;
+    if output.to_ascii_lowercase().contains("skipping") {
+        Ok(AddRuleOutcome::AlreadyPresent)
+    } else {
+        Ok(AddRuleOutcome::Added)
+    }
+}
+
 /// `ufw deny from <ip>` — block one address from **every** service.
 ///
 /// This is the shape a login ban needs: no port, because the point is that the

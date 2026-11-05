@@ -7,6 +7,12 @@ SPA's `ApiClient` (`frontend/src/lib/services/api.ts`) prefixes every call with
 > This file is a curated map, not generated — `CLAUDE.md`'s engineering
 > invariants are the current authority, with the per-feature detail in
 > `guides/`. Reconciled with them **2026-09-08**.
+>
+> A machine-readable **OpenAPI 3** document is generated from the same route
+> table (`GET /api/openapi.json`, administrator only). See
+> [OpenAPI 3](#openapi-3--openapijson-admin) below; when this curated map and
+> the generated document disagree about a *route*, the generated document wins
+> because it is read from the router itself.
 
 ## Conventions
 
@@ -309,9 +315,11 @@ an old client that still sends them is accepted and they are ignored. |
 | POST | `/settings/acme/issue` | admin | start an issuance in the background → `{started:true}`; `400` when disabled, invalid, a DNS record already waits, or a run is already going (never queued) |
 | POST | `/settings/acme/confirm` | admin | resume the pending manual DNS-01 run → `{started:true}`; `400` when nothing waits |
 | POST | `/settings/acme/test-challenge` | admin | publish a throwaway token and fetch it over plain HTTP at the domain → `{reachable, url, status?, error?}`; the port-80 check that happens before an authority fails an order |
-| GET | `/settings/ddns` | admin | dynamic DNS: `enabled`, `provider` (`duckdns`/`dynv6`/`cloudflare`/`custom`), `hostname`, `token` (write-only — `"set"` or `""`), `custom_update_url`, `status`, `last_ip`, `last_update`, `last_error`, plus the read-only `current_ip` and `providers[]` |
-| PUT | `/settings/ddns` | admin | save; validated only when `enabled` (a disabled form may be half-filled), token kept on `"set"`, recorded result cleared when the name or provider changes |
+| GET | `/settings/ddns` | admin | dynamic DNS: `enabled`, `provider` (`duckdns`/`dynv6`/`cloudflare`/`ovh`/`namecheap`/`desec`/`custom`), `hostname`, `token` (write-only — `"set"` or `""`), `username` (`ovh` DynHost login), `domain` (`namecheap` registered domain), `custom_update_url`, `status`, `last_ip`, `last_update`, `last_error`, plus the read-only `current_ip` and `providers[]` |
+| PUT | `/settings/ddns` | admin | save; validated only when `enabled` (a disabled form may be half-filled), token kept on `"set"`, recorded result cleared when the name, provider, OVH username or Namecheap domain changes |
 | POST | `/settings/ddns/update` | admin | send an update now regardless of the change check; `400` when disabled, with the provider's own reason on failure |
+| GET | `/settings/proxy` | admin | outbound HTTP(S) proxy: `enabled`, `http_proxy`, `https_proxy`, `no_proxy`, plus the read-only `effective_no_proxy` (the saved list **plus** loopback, link-local, RFC 1918, IPv6 ULA/link-local and `.local`), `supported_schemes` (`http`/`https`) and `requires_restart` (`false`) |
+| PUT | `/settings/proxy` | admin | save; `http://`/`https://` only, credentials in the URL refused, at least one URL required while enabled, a disabled entry may stay empty; applied to new outbound calls without a restart |
 | GET | `/settings/syslog` | admin | remote syslog forwarding: `enabled`, `protocol` (`udp`/`tcp`/`tls`), `host`, `port`, `format` (`rfc5424`/`rfc3164`), `facility` (0-23), `ca_pem` + `ca_set` (TLS only, pinned), `include_app_events`, the derived `status` (`disabled`/`idle`/`forwarding`/`degraded`), `last_sent_at`, `last_error`, and the live `queue` (`pending`, `enqueued`, `dropped`, `sent`, `failed`) |
 | PUT | `/settings/syslog` | admin | save; validation only while `enabled` (a disabled entry may stay half-filled). TLS requires a PEM CA. `status`/`last_error`/`last_sent_at` are server-owned and **ignored** on write; changing the destination clears the recorded outcome |
 | POST | `/settings/syslog/test` | admin | sends one real message now: `200` on success ("sent, check the collector" — UDP is fire-and-forget), `400` with the collector's own reason otherwise, and `400` while forwarding is disabled |
@@ -516,7 +524,7 @@ but reported as not enforced (with a `reason_code`), never as applied. See
 | GET | `/storage/removable` | auth | `handle_removable_disks_list` |
 | GET | `/storage/partitions` | auth | `handle_partitions_list` (`lsblk -l`) |
 | GET | `/storage/raid/devices` | auth | `handle_raid_available_devices` — candidate physical disks for the RAID creation wizard. **Every** non-system disk is listed; `inUse` is facts-based (partitions, filesystem, mount point, md/ZFS/Btrfs superblock, system disk), in-use rows carry a human `reason`, and every row reports SMART overall health (`smart_status`: `Healthy` / `Failed` / `Unknown`) |
-| POST | `/storage/raid` | admin | `handle_raid_create` — creates one virtual disk **as a tracked background job**: `{message, job_id}` immediately, milestones + completion/failure on the progress SSE of `job_id`. Body: `{ name, level (raid0|raid1|raid5|raid6|raid10), devices, filesystem (ext4|xfs|btrfs|zfs), spares? (mdadm hot spares), allow_missing? (degraded create, mdadm redundant levels only) }`. Gates answer 400 synchronously: pure request-shape validation, **server-side device gate** (every device must exist, not host the system disk, and be entirely free) and name-collision pre-check |
+| POST | `/storage/raid` | admin | `handle_raid_create` — creates one virtual disk **as a tracked background job**: `{message, job_id}` immediately, milestones + completion/failure on the progress SSE of `job_id`. Body: `{ name, level (raid0|raid1|raid5|raid6|raid10|raidz3), devices, filesystem (ext4|xfs|btrfs|zfs), spares? (mdadm `--spare-devices`, or a native ZFS `spare` vdev group; Btrfs refuses with an alternative), allow_missing? (degraded create, mdadm redundant levels only) }`. `raidz3` is ZFS-only (four-disk minimum); any other filesystem is a `400` naming the ZFS layout before the device gate. Gates answer 400 synchronously: pure request-shape validation, **server-side device gate** (every device must exist, not host the system disk, and be entirely free) and name-collision pre-check |
 | GET | `/storage/virtual-disks` | auth | `handle_virtual_disks_list` — **all** virtual disks (mdadm + ZFS + Btrfs) |
 | DELETE | `/storage/virtual-disks/{name}` | admin | `handle_virtual_disk_delete` — dispatches mdadm vs ZFS/Btrfs. mdadm: unmount failures abort the destroy before `mdadm --stop`/`--zero-superblock` |
 | POST | `/storage/virtual-disks/{name}/scrub` | admin | `handle_virtual_disk_scrub` — ZFS/Btrfs scrub, mdadm `sudo mdadm --action check` |
@@ -526,6 +534,11 @@ but reported as not enforced (with a `reason_code`), never as applied. See
 | GET | `/storage/raid` | auth | `handle_raid_arrays_list` — legacy; Storage's Virtual-disks tab is preferred |
 | POST | `/storage/raid/{name}/rebuild` | admin | `handle_raid_rebuild` — reused by Storage's Rebuild button; the optional `replacement_device` passes the same free-device gate as creation |
 | POST | `/storage/virtual-disks/{name}/grow` | admin | `handle_virtual_disk_grow` — mdadm only: `{ device }` (a free whole disk) → `mdadm --add` + `--grow --raid-devices N+1`; the reshape runs in the background (raid0/raid10 and non-mdadm technologies refused) |
+| GET | `/storage/virtual-disks/{name}/level-options` | auth | `handle_virtual_disk_level_options` — mdadm only: `{ current_level, member_count, reshape_in_progress, options[{ level, allowed, reason? }] }`; every refusal names its reason, all targets are listed |
+| POST | `/storage/virtual-disks/{name}/migrate-level` | admin | `handle_virtual_disk_migrate_level` — mdadm only: `{ target_level (raid0|raid1|raid5|raid6|raid10), backup_confirmed (must be true) }` → `mdadm --grow --level N --backup-file <{DATA_DIRECTORY}/raid-backups/…>`; only the documented transitions (0→5/10, 1→5, 5↔6), target minimum member count enforced, an already-running reshape refused; the reshape runs in the background. Missing `mdadm` → `503` |
+| GET | `/storage/virtual-disks/{name}/btrfs-layout` | auth | `handle_btrfs_layout_status` — Btrfs only: `{ pool, mount_point, layout (legacy|at), layout_name, rollback_available, migration_required }` |
+| POST | `/storage/virtual-disks/{name}/btrfs-layout` | admin | `handle_btrfs_layout_migrate` — explicit legacy → `@`/`@snapshots`: moves `.snapshots` to `@snapshots`, data into `@`, rewrites both fstab entries, remounts; serialized, failure restores the moved entries. Already migrated → `503`/`400` named |
+| POST | `/storage/virtual-disks/{name}/btrfs-rollback` | admin | `handle_btrfs_rollback` — `{ snapshot, confirm: true }`; legacy layout → `503` (`json_unavailable`) naming the migration; otherwise a `pre-rollback-*` safety snapshot, `@` swapped for the snapshot, previous `@before-rollback-*` kept, both subvolumes remounted; recovery path run on failure |
 | GET | `/storage/available-home-disks` | auth | `handle_available_home_disks` (valid session, not admin) |
 | GET | `/storage/disks/{name}/smart/capabilities` | auth | `handle_disk_smart_capabilities` — whether `smartctl` supports this disk |
 | GET | `/storage/disks/{name}/smart/test` | auth | `handle_disk_smart_test_status` — running self-test status |
@@ -659,6 +672,10 @@ and `handle_share_get` accepted any non-empty `X-Session-Token`; they now use
 | PUT | `/shares/{name}/{share_type}` | admin | `handle_share_update` |
 | PUT | `/shares/{name}/{share_type}/toggle/{enabled}` | admin | `handle_share_toggle` |
 | DELETE | `/shares/{name}/{share_type}` | admin | `handle_share_delete` |
+| GET | `/shares/{name}/{share_type}/snapshots` | auth | `handle_share_snapshots_list` — snapshots covering the share (ZFS dataset / Btrfs subvolume) with `browse_path`; `{ share, pool, snapshots[] }` |
+| POST | `/shares/{name}/{share_type}/snapshots` | admin | `handle_share_snapshot_create` — `{ name? }`; creates a recursive snapshot (`manual-YYYYMMDD-HHMMSS` by default), returns it with `browse_path` |
+| DELETE | `/shares/{name}/{share_type}/snapshots/{snapshot}` | admin | `handle_share_snapshot_delete` — deletes only that share backend's snapshot; unsafe names `400` |
+| POST | `/shares/{name}/{share_type}/snapshots/{snapshot}/restore` | admin | `handle_share_snapshot_restore` — `{ path (relative, no dot-dot or absolute path), confirm: true }`; restores a file/folder from the snapshot into the live share, atomic file copy, folder merge; `403` outside the share, unsupported Btrfs non-subvolume `503` |
 | GET/PUT | `/shares/smb\|nfs\|ftp\|webdav\|sftp/config` | admin | service config |
 | GET | `/shares/sftp/users` | admin | users with SFTP access + key status (separate `homevault-sftp.service`, see [Shares guide](./guides/shares.md)) |
 | PUT | `/shares/sftp/users/key` | admin | set a user's SFTP public key `{ username, public_key }` |
@@ -740,6 +757,9 @@ Read endpoints `auth`; config/state/WiFi mutations `admin`.
 | GET | `/network/vlans` | auth | `{ vlans[], parents[], max_vid: 4094 }` — parents are physical NICs and bonds |
 | POST | `/network/vlans` | admin | `{ parent, vid }` → creates `<parent>.<vid>`; `vid` is bounded to `1..=4094` (0 and 4095 are reserved) |
 | DELETE | `/network/vlans/{name}` | admin | deletes the VLAN and its persisted file |
+| GET | `/network/routes` | auth | `{ available, routes[] }` — saved static routes (`destination`, `via`, `metric`, `interface`, `active`); `available: false` when `ip` is missing |
+| POST | `/network/routes` | admin | `{ destination, via, metric?, interface }` — CIDR with non-zero prefix, same-family unicast next hop, name ≤ 15 chars, metric 0–65535; `sudo ip route replace` then read-back then JSON save; one route per destination; `400` malformed, `503` missing `ip` |
+| DELETE | `/network/routes` | admin | `{ destination, interface }` — removes the kernel route and the saved entry; an unknown pair is `400` |
 
 ## mDNS / Zeroconf — `mdns/*`
 
@@ -809,6 +829,9 @@ catalog, files, VMs, knowledge search, reboot). See
 | GET | `/restic/repos/{id}/jobs` | auth | backup job history |
 | POST | `/restic/repos/{id}/unlock` | admin | |
 | POST | `/restic/repos/{id}/prune` | admin | |
+| POST | `/restic/repos/{id}/mount` | admin | mount the repository read-only for browsing (`restic mount`); the mount point is derived under `{DATA_DIRECTORY}/restic-mounts`, never supplied by the request. Idempotent. `503` when `restic` or FUSE is missing |
+| GET | `/restic/mounts` | auth | browse mounts the kernel confirms (`ro,nosuid,nodev`) with `id`, `repo_id`, `repo_name`, `mount_point`, `started_at`, `active` |
+| DELETE | `/restic/mounts/{id}` | admin | unmount and stop the FUSE process; `400` for an id that is not a derived directory name |
 | POST | `/restic/backup` | admin | **starts** a backup and answers immediately: `{status:"running", job_id, backup_job_id}` (SSE progress, cancellable via `DELETE /progress/{job_id}`) |
 | GET | `/restic/reminders` | auth | backup reminders — per repo: `last_backup_at` + `days_since` + `stale`, so the UI can nag when a repository hasn't been backed up recently |
 | GET | `/restic/restore-plan` | admin | `?repo_id=&snapshot_id=&target=` — pre-flight space check `{ required_bytes, available_bytes, fits }` (snapshot restore size vs free space on the destination); the restore dialog debounces this before committing |
@@ -1234,6 +1257,7 @@ in `src/web/mod.rs`. Full detail in [Virtual Machines](./guides/vm.md).
 | GET | `/vm/os-options` | curated OS catalogue (`OsOption[]`); no Incus needed |
 | GET | `/vm/list` | `VmInfo[]` — status, IPv4, snapshot count (one `recursion=2` call) |
 | POST | `/vm/create` | `CreateVmRequest` → `{ name, status }`; image pull runs as a `vm_create` progress job |
+| POST | `/vm/{name}/clone` | `{ name, snapshot?, profiles? }` → `{ name, source, snapshot, status }`; Incus copies config/devices, the clone stays stopped; `status:"cloning"` + operation id if the 300 s wait expires; `503` when Incus is missing |
 | GET | `/vm/{name}` | `VmDetail` |
 | DELETE | `/vm/{name}` | stops first if running |
 | PUT | `/vm/{name}/start` \| `/stop` \| `/restart` | waits for the operation |
@@ -1374,6 +1398,51 @@ different value is rejected with **426 Upgrade Required** by
 allowed for legacy clients. See [ARCHITECTURE.md](./ARCHITECTURE.md) →
 "Versioned client/server contract".
 
+## OpenAPI 3 — `/openapi.json` (admin)
+
+| Method | Path | Auth | Handler |
+|--------|------|------|---------|
+| GET | `/openapi.json` | admin | `handle_openapi_json` — an OpenAPI **3.0.3** document |
+
+`src/openapi.rs` builds the document from the **router source itself**
+(`src/web/mod.rs` plus the `/api/network`, `/api/vpn`, `/api/rescue`,
+`/api/terminal` and `/api/vm` sub-routers). There is no second route table to
+maintain: a route added to `create_app` appears here on the next build, and a
+removed one disappears. The endpoint is `require_admin` — the document names
+every administrator-only operation, so it is not a public map of the
+appliance.
+
+The generated document declares:
+
+- the `sessionToken` (`X-Session-Token`) and `csrfToken` (`X-CSRF-Token`)
+  security schemes, the optional `X-HomeVault-Contract` parameter, and the
+  `x-homevault-contract-version` extension;
+- the standard `400` / `401` / `403` / `426` / `500` / `501` / `503` responses
+  (public operations omit `401`/`403`);
+- `security: []` on the public rows of this file, so a client can tell an
+  authentication flow from a session-only operation;
+- `x-homevault-auth: public|session` on every operation. Administrator-only
+  operations still advertise `session` because the administrator check is a
+  role decision inside the same session and answers `403`; see
+  `handlers/admin_guard.rs`.
+
+**Excluded on purpose:** WebSocket, server-sent-event, one-shot-ticket and
+binary upload/download transports are not JSON request/response endpoints.
+They are omitted from `paths` and listed in `x-homevault-excluded` with a
+reason, so an omission is never mistaken for a missing route. The exclusions
+live in `EXCLUDED_TRANSPORTS` (`src/openapi.rs`); a new transport must be added
+there (the unit tests fail if a ticket or terminal route leaks into `paths`).
+
+```bash
+curl -s -H "X-Session-Token: $TOKEN" https://nas.local/api/openapi.json | jq .
+```
+
+The document is cached once per process and serialized with sorted keys, so
+its bytes are stable across two reads (asserted by
+`tests/openapi_integration.rs`). Unlike the hand-curated sections of this
+file, the generated spec carries no request/response schemas: those remain
+documented per area below and in `guides/`.
+
 ## Antivirus (ClamAV) — `antivirus/*`
 
 Read endpoints `auth`; scan/settings mutations `admin`. See
@@ -1406,6 +1475,10 @@ state. See [Firewall](./guides/firewall.md).
 | POST | `/firewall/disable` | admin |
 | POST | `/firewall/default-policy` | admin |
 | POST/DELETE | `/firewall/rules` | admin |
+| GET | `/firewall/geoip` | auth | `handle_geoip_status` — `available`, `ufw_available`, `database_present`, `database_path`, `database_error`, `countries[]` (`country`, `action`, `cidr_count`), `managed_rules`, `max_rules` |
+| POST | `/firewall/geoip` | admin | `handle_geoip_rule_set` — `{ country (2-letter ISO), action (allow|deny) }`; expands the country's CIDRs and reconciles the managed `hv-geoip:*` ufw rules. Missing ufw/database → `503`; bad country/action/network → `400` |
+| DELETE | `/firewall/geoip/{country}` | admin | `handle_geoip_rule_delete` — removes the country policy and its managed rules |
+| POST | `/firewall/geoip/apply` | admin | `handle_geoip_apply` — reconciles the current policy after a manual database refresh; `503` when ufw or the database is missing |
 
 ## Anti-Ransomware — `ransomware/*`
 
@@ -1525,8 +1598,8 @@ frontend cards in Settings (`UpsCard.svelte`/`SnmpCard.svelte`) — see
 | GET | `/snmp/interfaces` | admin — `?iface=<name>` narrows the table (matched against `ifName`, case-insensitive) |
 | GET | `/snmp/storage` | admin |
 | GET/PUT | `/snmp/settings` | admin — `version` is `1` or `2c`; `3` answers `400` because the card does not collect v3 credentials |
-| GET | `/snmp/agent` | admin — the appliance's **own** agent: `{ enabled, scope, lan_address, location, contact, has_community, installed, serving, lan_candidates[] }`. The community is never returned. **`503`** when `snmpd` is not installed (capability, not a bad request) |
-| PUT | `/snmp/agent` | admin — `{ enabled?, scope?, lan_address?, community?, location?, contact? }` → the same payload. `scope` is `loopback` (127.0.0.1 only) or `lan` (one of the appliance's private addresses — `0.0.0.0` and public addresses are `400`). `public`/`private` communities are `400`; an empty `community` keeps the stored one or generates a 32-hex one. Validated before anything is written, applied to the host, persisted only once the host accepted it; a failed daemon step re-applies the previous configuration and names the failure. See [`guides/snmp-agent.md`](./guides/snmp-agent.md) |
+| GET | `/snmp/agent` | admin — the appliance's **own** agent: `{ enabled, scope, lan_address, version, v3_username, location, contact, has_community, has_v3_auth_secret, has_v3_priv_secret, installed, serving, lan_candidates[] }`. Neither the community nor a v3 passphrase is ever returned. **`503`** when `snmpd` is not installed (capability, not a bad request) |
+| PUT | `/snmp/agent` | admin — `{ enabled?, scope?, lan_address?, version?, community?, v3_username?, v3_auth_secret?, v3_priv_secret?, location?, contact? }` → the same payload. `scope` is `loopback` (127.0.0.1 only) or `lan` (one of the appliance's private addresses — `0.0.0.0` and public addresses are `400`). `version` is `v2c` (default) or `v3` (`authPriv`: SHA authentication, AES privacy). `public`/`private` communities are `400`; an empty `community` or v3 passphrase keeps the stored one or generates a 32-hex one. v3 passphrases are sealed at rest (`hv1:`) and never echoed back. Validated before anything is written, applied to the host, persisted only once the host accepted it; a failed daemon step re-applies the previous configuration and names the failure. See [`guides/snmp-agent.md`](./guides/snmp-agent.md) |
 
 ## DHCP / TFTP / PXE server — `network/dhcp-server/*`
 
@@ -1821,7 +1894,7 @@ Cron-driven pool snapshots with GFS retention. See
 | Method | Path | Auth | Handler |
 |--------|------|------|---------|
 | GET | `/snapshot-schedules` | admin | `handle_snapshot_schedules_list` |
-| POST | `/snapshot-schedules` | admin | `handle_snapshot_schedule_create` — `{ pool, cron, prefix, recursive, gfs_hourly..yearly, enabled }` |
+| POST | `/snapshot-schedules` | admin | `handle_snapshot_schedule_create` — `{ pool, share?, share_type?, cron, prefix, recursive, gfs_hourly..yearly, enabled }`; `share` + `share_type` are supplied together (per-share target, P1-12) or both omitted (pool-wide) |
 | PUT | `/snapshot-schedules/{id}` | admin | `handle_snapshot_schedule_update` |
 | DELETE | `/snapshot-schedules/{id}` | admin | `handle_snapshot_schedule_delete` — snapshots are kept |
 | POST | `/snapshot-schedules/{id}/run` | admin | `handle_snapshot_schedule_run_now` — create + GFS prune now |

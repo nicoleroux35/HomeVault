@@ -55,7 +55,7 @@ use crate::handlers::AppState;
 use crate::storage::FirewallRepository;
 use crate::utils::ResponseHelper;
 use axum::{
-    extract::{Query, State},
+    extract::{Path, Query, State},
     http::HeaderMap,
     response::Response,
     Json,
@@ -81,6 +81,108 @@ fn error_response(error: FirewallError, context: &str) -> Response {
         FirewallError::InvalidInput(message) => ResponseHelper::json_error(message),
         FirewallError::Unavailable(message) => ResponseHelper::json_error(message),
         other => ResponseHelper::json_error(format!("{}: {}", context, other)),
+    }
+}
+
+/// GeoIP capability errors: a missing ufw or a missing country database is a
+/// host capability (`503`), not bad input. Bad country/action stays `400`.
+fn geoip_error(error: FirewallError) -> Response {
+    match error {
+        FirewallError::Unavailable(message) => ResponseHelper::json_unavailable(message),
+        FirewallError::InvalidInput(message) => ResponseHelper::json_error(message),
+        other => ResponseHelper::json_error(format!("GeoIP: {other}")),
+    }
+}
+
+/// `GET /api/firewall/geoip` — database availability + selected countries.
+pub async fn handle_geoip_status(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Response {
+    if let Err(response) = require_auth(&state, &headers).await {
+        return response;
+    }
+    ResponseHelper::json_success(crate::geoip::status().await)
+}
+
+#[derive(Deserialize)]
+pub struct GeoIpRuleRequest {
+    pub country: String,
+    pub action: String,
+}
+
+/// `POST /api/firewall/geoip` — add/replace one country and reconcile ufw.
+pub async fn handle_geoip_rule_set(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(req): Json<GeoIpRuleRequest>,
+) -> Response {
+    let admin = match require_admin(&state, &headers).await {
+        Ok(admin) => admin,
+        Err(response) => return response,
+    };
+    // Shape validation first, before touching ufw or even the database.
+    let country = match crate::geoip::validate_country_code(&req.country) {
+        Ok(c) => c,
+        Err(e) => return geoip_error(e),
+    };
+    let action = match crate::geoip::validate_geoip_action(&req.action) {
+        Ok(a) => a,
+        Err(e) => return geoip_error(e),
+    };
+    match crate::geoip::set_rule(&country, &action).await {
+        Ok(result) => {
+            crate::events::log_event_warn(format!(
+                "Admin '{}' set GeoIP {} for {} ({} managed rules)",
+                admin, action, country, result.applied
+            ));
+            ResponseHelper::json_success(result)
+        }
+        Err(e) => geoip_error(e),
+    }
+}
+
+/// `DELETE /api/firewall/geoip/{country}` — remove one country and reconcile.
+pub async fn handle_geoip_rule_delete(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(country): Path<String>,
+) -> Response {
+    let admin = match require_admin(&state, &headers).await {
+        Ok(admin) => admin,
+        Err(response) => return response,
+    };
+    match crate::geoip::remove_rule(&country).await {
+        Ok(result) => {
+            crate::events::log_event_warn(format!(
+                "Admin '{}' removed GeoIP policy for '{}' ({} managed rules remain)",
+                admin, country, result.applied
+            ));
+            ResponseHelper::json_success(result)
+        }
+        Err(e) => geoip_error(e),
+    }
+}
+
+/// `POST /api/firewall/geoip/apply` — reconcile without changing the policy
+/// (used after a manual database refresh).
+pub async fn handle_geoip_apply(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Response {
+    let admin = match require_admin(&state, &headers).await {
+        Ok(admin) => admin,
+        Err(response) => return response,
+    };
+    match crate::geoip::apply().await {
+        Ok(result) => {
+            crate::events::log_event_warn(format!(
+                "Admin '{}' applied the GeoIP firewall policy ({} rules, {} removed)",
+                admin, result.applied, result.removed
+            ));
+            ResponseHelper::json_success(result)
+        }
+        Err(e) => geoip_error(e),
     }
 }
 

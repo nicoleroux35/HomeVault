@@ -404,7 +404,7 @@ Test before saving: the panel tries the form as typed, saving nothing, and for a
         FeatureDoc {
             id: "snmp-agent".to_string(),
             title: "SNMP agent".to_string(),
-            content: r##"The SNMP agent lets a monitoring tool on the local network read this appliance's interfaces and disk usage. It is off by default: nothing answers an SNMP request until an administrator enables it under Settings, Monitoring, SNMP agent. The read-only community is generated on enable (32 characters) and never "public" or "private"; a custom one must be 8 to 32 characters with no spaces, quotes or "#". The agent binds either to this machine only (127.0.0.1) or to one of the appliance's own private addresses for the local network - never to a wildcard and never to a public address, so SNMP is never published to the internet. It answers read-only queries only, limited to the system, interface and storage groups. Disabling stops and disables the service and deletes the configuration file. If the snmpd package is not installed the settings card says so instead of showing an unusable form. This is separate from the SNMP client feature, which queries other devices."##.to_string(),
+            content: r##"The SNMP agent lets a monitoring tool on the local network read this appliance's interfaces and disk usage. It is off by default: nothing answers an SNMP request until an administrator enables it under Settings, Monitoring, SNMP agent. It can answer over SNMPv2c, with a read-only community generated on enable (32 characters, never "public" or "private"; a custom one must be 8 to 32 characters with no spaces, quotes or "#"), or over SNMPv3 with a dedicated user, SHA authentication and AES privacy. The v3 user name uses letters, digits, dot, dash and underscore; each passphrase is at least 8 characters and is stored encrypted, never shown again, and only replaces the stored one when a new value is typed. The agent binds either to this machine only (127.0.0.1) or to one of the appliance's own private addresses for the local network - never to a wildcard and never to a public address, so SNMP is never published to the internet. It answers read-only queries only, limited to the system, interface and storage groups, with no write access. Disabling stops and disables the service and deletes the configuration file. If the snmpd package is not installed the settings card says so instead of showing an unusable form. This is separate from the SNMP client feature, which queries other devices."##.to_string(),
         },
         FeatureDoc {
             id: "file-tags".to_string(),
@@ -463,6 +463,7 @@ RAID levels: RAID0 (stripe), RAID1 (mirror), RAID5 (parity), RAID6 (double parit
 - The login account is seeded into the machine automatically via cloud-init; the password is stored only as a SHA-512 hash, never in plain text
 - Optional sound card for a virtual machine
 - VM lifecycle: create, start, stop, restart, delete (long operations are awaited so status is always accurate; image downloads run as a tracked background job)
+- Clone a machine under a new name, optionally from one of its saved states; Incus copies its configuration and disks, and the clone starts stopped so it never competes with the original
 - Live status, IPv4 address, CPU/memory/disk and snapshot count for every machine
 - Change CPU or memory after creation
 - Saved states (snapshots): create, roll back, delete
@@ -479,6 +480,7 @@ RAID levels: RAID0 (stripe), RAID1 (mirror), RAID5 (parity), RAID6 (double parit
 - Manual and scheduled backups
 - Backup verification
 - Restore from snapshots, with a pre-flight check of the space the restore will need
+- Browse a whole repository read-only: it is mounted through FUSE at a path derived from the repository, snapshots can be opened in the file explorer, and an Unmount action closes it. A host without FUSE says so instead of offering the action
 - Reminders when a repository has not been backed up for a while
 - Retention policies (keep last N, daily, weekly, monthly)
 - Backup scheduling with cron expressions
@@ -610,6 +612,7 @@ runs only when you click "Run now" — there is no automatic schedule yet."#.to_
 - Interface enable/disable
 - Link aggregation: combine physical network cards into a bond in 802.3ad (LACP, the switch must be configured for it) or active-backup mode (no switch support needed), and add more cards to a live bond later
 - VLANs: create eth0.42-style tagged interfaces on a network card or on a bond, with ids from 1 to 4094
+- Static routes: send another network's traffic through a gateway on this machine, with an optional metric; routes are applied to the kernel, read back, saved, and restored after a reboot. The default route itself is configured with the interface, not here
 - Bonds and VLANs get their address through the same per-interface configuration card as a physical card; only physical network cards can join a bond or carry a VLAN, and a change that would cut the administrator's own connection is refused with the reason
 
 DNS updates preserve existing search/domains. IPv6 nameservers are appended."#.to_string(),
@@ -714,6 +717,9 @@ Security: protected-device blocklist prevents operating on the boot disk. Path t
 - Notifications: alert thresholds
 - AI Assistant: model selection, Ollama configuration
 - Update: check for updates manually or on schedule
+- Outbound proxy: route internet calls (certificates, dynamic DNS, update
+  checks, alerts, Web Push) through an HTTP or HTTPS proxy, with a bypass list
+  that always includes local addresses; proxy credentials are not accepted
 
 Settings are exported/imported as JSON (SMTP passwords redacted in export). The AI model setting persists across restarts."#.to_string(),
         },
@@ -867,6 +873,7 @@ This is best-effort protection against a behaviour pattern, not a guarantee: a s
 - An anti-lockout guard: the rule that keeps the SSH port open and the rule that keeps the HomeVault web port open cannot be removed, so a remote administrator cannot cut off their own access. Enabling the firewall additionally asks for an explicit confirmation.
 - Every change made from HomeVault — enabling, disabling, adding or removing a rule — is written to an audit log that records who made it and when.
 - What the host is actually enforcing is always read live from ufw; the rules are not mirrored in HomeVault's database, so the screen cannot drift away from reality.
+- GeoIP countries: allow or block every service for a country from a manually maintained network list. Each country's networks become firewall rules tagged as HomeVault-managed; applying replaces the previous set, so refreshing the list cannot leave an old country open or closed. A missing country database or a host without ufw is reported with the exact path or missing package instead of pretending the policy was applied. Removing a country deletes its managed rules.
 
 It is the Firewall card in Settings."#.to_string(),
         },
@@ -890,13 +897,13 @@ Scoped to standalone devices on purpose: RAID arrays belong to the RAID wizard, 
             title: "RAID — virtual disk creation".to_string(),
             content: r#"A creation-only wizard that turns several physical disks into one "virtual disk" with redundancy.
 
-- Levels offered: RAID 0 (stripe), RAID 1 (mirror), RAID 5 (single parity), RAID 6 (double parity) and RAID 10 (mirror plus stripe).
+- Levels offered: RAID 0 (stripe), RAID 1 (mirror), RAID 5 (single parity), RAID 6 (double parity), RAID 10 (mirror plus stripe) and RAID Z3 (ZFS triple parity, tolerates three disk failures). RAID Z3 is ZFS-only: choosing it pins the filesystem to ZFS and the other filesystems are disabled with the reason shown.
 - Targets: a Linux mdadm array, a ZFS pool, or a native Btrfs volume.
 - Three steps: choose the disks, choose the level and the target, then confirm. A diagram shows the usable capacity and the redundancy each level buys, and the recap lists exactly what will be created; disks of unequal sizes are flagged with the raw capacity their difference wastes.
-- Every candidate disk is listed: free disks can be selected, disks already in use stay visible with a short reason why (partitions, a filesystem, a mount, another array) and their S.M.A.R.T. health. Extra checked disks can be attached as hot spares on redundant mdadm levels, and an mdadm mirror/RAID 5/RAID 6 can be created deliberately degraded (a slot reserved for a disk added later, up to two missing on RAID 6).
+- Every candidate disk is listed: free disks can be selected, disks already in use stay visible with a short reason why (partitions, a filesystem, a mount, another array) and their S.M.A.R.T. health. Extra checked disks can be attached as hot spares on redundant mdadm levels and on ZFS (a native spare group that ZFS uses automatically when a member fails). Btrfs has no hot-spare role and says so instead of silently dropping the disk. An mdadm mirror/RAID 5/RAID 6 can be created deliberately degraded (a slot reserved for a disk added later, up to two missing on RAID 6); ZFS does not support a missing-disk create.
 - Creation runs in the background as a tracked job: the wizard shows live milestones (array creation, resync, formatting, mounting) and the result appears in Storage when done.
 
-This screen only creates. Listing the arrays, verifying or scrubbing them, rebuilding a degraded one, growing an mdadm array onto an extra disk ("Add disk" in Storage), and destroying them all live in the Storage app's "Virtual disks" tab, which is the single place a virtual disk is managed once it exists. Array health is also surfaced by the dashboard Health screen's RAID check and its notifications."#.to_string(),
+This screen only creates. Listing the arrays, verifying or scrubbing them, rebuilding a degraded one, growing an mdadm array onto an extra disk ("Add disk" in Storage), changing an mdadm array's RAID level in place ("Change RAID level" in Storage), and destroying them all live in the Storage app's "Virtual disks" tab, which is the single place a virtual disk is managed once it exists. A level change offers only the conversions the RAID tool supports — RAID 0 to RAID 5 or RAID 10, RAID 1 to RAID 5, and RAID 5 to RAID 6 or back — and explains why each other level is not available. The array must already have enough member disks for the new level, and an administrator must confirm that a backup exists before the action starts; the conversion then runs in the background and Storage's status check follows it. Changing the level rewrites the array in place, so the server should not be stopped until the reshape finishes. Array health is also surfaced by the dashboard Health screen's RAID check and its notifications."#.to_string(),
         },
         FeatureDoc {
             id: "snapshots".to_string(),
@@ -907,11 +914,12 @@ Where snapshots are used:
 - The File Explorer can browse the snapshots that cover a folder (read-only, on ZFS), so an older version of a file can be copied back out without rolling anything back.
 - Backups lists the snapshots of a repository.
 - A virtual machine can take a snapshot and be restored to it.
-- Storage's Snapshots tab manages scheduled snapshots: each schedule takes a snapshot of a pool on a cron and applies GFS (grandfather-father-son) retention — keep the newest N hourly, daily, weekly, monthly and yearly generations. Pruning only ever deletes snapshots carrying the schedule's own prefix (default hv-auto-); manual and backup snapshots are never touched. Schedules are admin-only.
+- Storage's Snapshots tab manages scheduled snapshots: each schedule takes a snapshot on a cron and applies GFS (grandfather-father-son) retention — keep the newest N hourly, daily, weekly, monthly and yearly generations. A schedule can cover a whole pool or one share. A share schedule snapshots the dataset or subvolume that contains the share, applies its retention there, and keeps only that backend's snapshots in view, so each folder can have its own policy. Pruning only ever deletes snapshots carrying the schedule's own prefix (default hv-auto-); manual and backup snapshots are never touched. Schedules are admin-only.
+- A share's snapshot list has a Restore action: enter a path relative to the share, confirm that existing files there will be overwritten, and that one file or folder is copied back from the snapshot. Paths outside the share, parent-directory escapes and absolute paths are refused; a folder is merged and a file is replaced atomically. The read-only snapshot path is also shown so an administrator can browse it in the File Explorer and copy files out by hand.
 
 Rolling a pool back is destructive — everything written since the snapshot is lost — so it is restricted to administrators and confirmed explicitly. Restoring a virtual machine is an administrator action as well.
 
-One documented limitation: rolling back the default mounted subvolume of a Btrfs pool is not supported. It returns a clear error rather than appearing to succeed and doing nothing."#.to_string(),
+Btrfs pools can also be rolled back in place, without recreating the pool. New Btrfs pools use a layout with the live data in one subvolume and the snapshots in another; an existing pool can be migrated to it explicitly from Storage after typing the pool name, because the migration briefly unmounts the pool and moves its files. Until that migration, a rollback on an old Btrfs pool is refused with an explanation instead of doing something unsafe. A rollback first takes a safety snapshot, swaps the live subvolume for the chosen snapshot, and keeps the previous live state on the pool so it can be recovered manually. The operation cannot be undone from the interface, so the snapshot name must be typed to confirm it; ZFS rollback and Btrfs rollback now behave the same way."#.to_string(),
         },
         FeatureDoc {
             id: "cache".to_string(),
@@ -1149,7 +1157,7 @@ This is what lets a user type homevault.local in a browser or a file manager ins
             title: "Dynamic DNS".to_string(),
             content: r#"Keeps a public name pointed at the address the ISP currently hands out, so a certificate stays valid and a bookmark keeps working.
 
-- Supported providers: DuckDNS, dynv6, Cloudflare (an A record managed through its API), and any service that accepts an update URL with the address in it.
+- Supported providers: DuckDNS, dynv6, Cloudflare (an A record managed through its API), OVHcloud DynHost (a login plus DynHost password), Namecheap (a host name plus its registered domain and DDNS password), deSEC (an API token), and any service that accepts an update URL with the address in it.
 - The worker looks at the address every five minutes and contacts the provider only when it actually changed — a home connection must not hammer a free service.
 - The address is detected without contacting anyone: a UDP socket is connected to a public resolver and the kernel's chosen source address is read. Nothing is sent.
 - The provider credential is write-only from the API's point of view and never travels in a URL when the provider offers a header.

@@ -1,6 +1,6 @@
 //! Integration tests for USB one-touch copy
 
-use homevault::usb_copy::{UsbCopyProfile, UsbCopyService, CopyStatus};
+use homevault::usb_copy::{CopyStatus, UsbCopyProfile, UsbCopyService};
 use std::time::SystemTime;
 
 #[tokio::test]
@@ -15,7 +15,7 @@ async fn test_list_devices() {
             for dev in devices {
                 println!("  Device: {} (UUID: {:?})", dev.device, dev.uuid);
             }
-        },
+        }
         Err(e) => {
             // lsblk not available or permission issue
             println!("Could not list devices: {}", e);
@@ -109,7 +109,12 @@ fn test_validate_destination_forbidden_paths() {
 
 #[test]
 fn test_validate_destination_allows_safe_paths() {
-    let safe_paths = ["/mnt/usb", "/srv/backup", "/home/user/photos", "/media/data"];
+    let safe_paths = [
+        "/mnt/usb",
+        "/srv/backup",
+        "/home/user/photos",
+        "/media/data",
+    ];
 
     for path in &safe_paths {
         let mut profile = make_test_profile();
@@ -243,8 +248,12 @@ async fn test_count_files_with_files() {
     let temp_dir = tempdir().unwrap();
 
     // Create some test files
-    fs::write(temp_dir.path().join("file1.txt"), "test").await.unwrap();
-    fs::write(temp_dir.path().join("file2.txt"), "test").await.unwrap();
+    fs::write(temp_dir.path().join("file1.txt"), "test")
+        .await
+        .unwrap();
+    fs::write(temp_dir.path().join("file2.txt"), "test")
+        .await
+        .unwrap();
 
     let count = UsbCopyService::count_files(temp_dir.path()).await.unwrap();
 
@@ -262,7 +271,9 @@ async fn test_count_files_with_subdirectories() {
     let sub_dir = temp_dir.path().join("subdir");
     fs::create_dir(&sub_dir).await.unwrap();
     fs::write(sub_dir.join("file1.txt"), "test").await.unwrap();
-    fs::write(temp_dir.path().join("file2.txt"), "test").await.unwrap();
+    fs::write(temp_dir.path().join("file2.txt"), "test")
+        .await
+        .unwrap();
 
     let count = UsbCopyService::count_files(temp_dir.path()).await.unwrap();
 
