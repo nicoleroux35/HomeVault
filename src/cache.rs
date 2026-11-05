@@ -692,6 +692,50 @@ impl CacheService {
                         dst
                     );
                 }
+                // Post-transfer proof (tasklist P1-25): a dry run with
+                // checksums lists anything that differs. The source still
+                // exists here, so both sides can be compared; when
+                // `--remove-source-files` was used there is nothing left to
+                // compare against.
+                if !remove_source {
+                    let mut verify: Vec<String> = vec![
+                        "-a".to_string(),
+                        "--checksum".to_string(),
+                        "--dry-run".to_string(),
+                        "--itemize-changes".to_string(),
+                    ];
+                    for ex in excludes {
+                        verify.push(format!("--exclude={}", ex));
+                    }
+                    verify.push(src_slash.clone());
+                    verify.push(dst_slash.clone());
+                    match run_command(Command::new("rsync").args(&verify), CACHE_RSYNC_TIMEOUT) {
+                        Ok(out) if out.status.success() => {
+                            let differences = String::from_utf8_lossy(&out.stdout);
+                            if !differences.trim().is_empty() {
+                                tracing::warn!(
+                                    "rsync verification found differences after {} -> {}: {}",
+                                    src,
+                                    dst,
+                                    differences.lines().take(20).collect::<Vec<_>>().join("; ")
+                                );
+                            }
+                        }
+                        Ok(out) => tracing::warn!(
+                            "rsync verification failed after {} -> {} (exit {}): {}",
+                            src,
+                            dst,
+                            out.status.code().unwrap_or(-1),
+                            String::from_utf8_lossy(&out.stderr).trim()
+                        ),
+                        Err(e) => tracing::warn!(
+                            "rsync verification could not run after {} -> {}: {}",
+                            src,
+                            dst,
+                            e
+                        ),
+                    }
+                }
                 Ok(parse_rsync_stats(&stdout))
             }
             Ok(out) => {

@@ -2249,8 +2249,14 @@ impl DiskService {
                 // them: writing them after a fallback could leave an entry
                 // that fails to mount on the next boot.
                 let fstab_options = match quota_options.filter(|_| mounted_with_quota) {
-                    Some(opts) => format!("defaults,nofail,{opts}"),
-                    None => "defaults,nofail".to_string(),
+                    Some(opts) => format!(
+                        "defaults,nofail,{opts},{}",
+                        crate::btrfs_maintenance::FSTAB_SYSTEMD_OPTIONS
+                    ),
+                    None => format!(
+                        "defaults,nofail,{}",
+                        crate::btrfs_maintenance::FSTAB_SYSTEMD_OPTIONS
+                    ),
                 };
                 let fstab_line = format!(
                     "UUID={} {} {} {} 0 2",

@@ -498,6 +498,45 @@ async fn test_validation_refuses_unsafe_or_incoherent_input() {
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
+async fn test_backstore_write_policy_round_trip_and_validation() {
+    let h = setup().await;
+    let (mut router, admin, _member) = signed_in(&h).await;
+
+    let mut body = backstore_body(&h, "direct-store");
+    body["write_policy"] = json!("direct");
+    body["emulate_fua"] = json!(false);
+    body["unmap"] = json!(false);
+    let store_id = create_backstore(&mut router, &admin, body).await;
+
+    let (status, payload) = send(
+        &mut router,
+        Method::GET,
+        "/api/storage/iscsi",
+        Some(&admin),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{payload}");
+    let store = &payload["data"]["backstores"][0];
+    assert_eq!(store["id"], json!(store_id));
+    assert_eq!(store["write_policy"], json!("direct"));
+    assert_eq!(store["emulate_fua"], json!(false));
+    assert_eq!(store["unmap"], json!(false));
+
+    let mut bad = backstore_body(&h, "bad-policy");
+    bad["write_policy"] = json!("writeback");
+    let (status, _) = send(
+        &mut router,
+        Method::POST,
+        "/api/storage/iscsi/backstores",
+        Some(&admin),
+        Some(bad),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
 async fn test_backstore_and_target_round_trip_keeps_chap_sealed() {
     let h = setup().await;
     let (mut router, admin, _member) = signed_in(&h).await;

@@ -1826,7 +1826,7 @@ pub async fn handle_sync(
         Err(e) => return Json(ApiResponse::error(&e)),
     };
 
-    execute_sync(&admin_username, &req).await
+    execute_sync(&state, &admin_username, &req).await
 }
 
 /// What one `rclone sync` run actually did.
@@ -1864,6 +1864,32 @@ impl SyncOutcome {
 
 /// Shared core of [`handle_sync`], [`handle_run_sync_job`] and the scheduler:
 /// validates the pair of paths and runs the `rclone sync` subprocess.
+/// Record one rclone sync in the Explorer's audit trail. A dry run cannot be
+/// verified (no bytes moved), so it is recorded as not verified rather than
+/// as a false success.
+async fn record_sync_history(
+    pool: Arc<sqlx::SqlitePool>,
+    username: &str,
+    req: &SyncRequest,
+    outcome: &SyncOutcome,
+) {
+    let mut record = crate::transfer_history::NewTransfer::complete(
+        username,
+        crate::transfer_history::TransferOperation::Copy,
+    );
+    record.source_path = Some(req.source.clone());
+    record.dest_path = Some(req.destination.clone());
+    record.method = Some("rclone-check".to_string());
+    record.verified = sync_verified(outcome.ok, req.dry_run);
+    record.status = if outcome.ok {
+        crate::transfer_history::TransferStatus::Complete
+    } else {
+        crate::transfer_history::TransferStatus::Failed
+    };
+    record.error_message = (!outcome.ok).then(|| outcome.message.clone());
+    crate::transfer_history::record_transfer(pool, record).await;
+}
+
 async fn run_sync_core(admin_username: &str, req: &SyncRequest) -> SyncOutcome {
     let mut args = vec!["sync".to_string()];
 
@@ -1883,8 +1909,8 @@ async fn run_sync_core(admin_username: &str, req: &SyncRequest) -> SyncOutcome {
         return SyncOutcome::failed("Destination is required");
     }
 
-    args.push(source);
-    args.push(dest);
+    args.push(source.clone());
+    args.push(dest.clone());
 
     if req.delete {
         args.push("--delete".to_string());
@@ -1904,6 +1930,18 @@ async fn run_sync_core(admin_username: &str, req: &SyncRequest) -> SyncOutcome {
             args.push(exclude.clone());
         }
     }
+
+    // Integrity and resilience (tasklist P1-25): compare checksums instead of
+    // size+mtime, and let a flaky remote recover instead of failing the job.
+    args.push("--checksum".to_string());
+    args.push("--retries".to_string());
+    args.push("3".to_string());
+    args.push("--low-level-retries".to_string());
+    args.push("10".to_string());
+    args.push("--timeout".to_string());
+    args.push("5m".to_string());
+    args.push("--contimeout".to_string());
+    args.push("1m".to_string());
 
     // Add progress output
     args.push("--progress".to_string());
@@ -1926,12 +1964,39 @@ async fn run_sync_core(admin_username: &str, req: &SyncRequest) -> SyncOutcome {
             let stderr = String::from_utf8_lossy(&output.stderr);
 
             if output.status.success() {
-                crate::sse::PROGRESS_MANAGER.complete_job(&job, "Sync complete");
-                crate::events::log_event(format!(
-                    "Admin '{}' ran a sync from '{}' to '{}'",
-                    admin_username, req.source, req.destination
-                ));
-                SyncOutcome::ok(&stdout)
+                // `rclone sync` exiting 0 only means the transfers it planned
+                // succeeded. A second pass reads both sides and proves the
+                // destination really matches, which is the promise a backup
+                // makes.
+                let check = run_timed_async_result(
+                    rclone_command().args(rclone_check_args(&source, &dest, req.dry_run)),
+                    RCLONE_TRANSFER_TIMEOUT,
+                )
+                .await;
+                match check {
+                    Ok(check) if check.status.success() => {
+                        crate::sse::PROGRESS_MANAGER
+                            .complete_job(&job, "Sync complete and verified");
+                        crate::events::log_event(format!(
+                            "Admin '{}' ran a sync from '{}' to '{}' (verified)",
+                            admin_username, req.source, req.destination
+                        ));
+                        SyncOutcome::ok(&stdout)
+                    }
+                    Ok(check) => {
+                        let reason = String::from_utf8_lossy(&check.stderr).trim().to_string();
+                        crate::sse::PROGRESS_MANAGER.fail_job(&job, &reason);
+                        SyncOutcome::failed(format!(
+                            "Sync finished but the checksum comparison found differences: {reason}"
+                        ))
+                    }
+                    Err(e) => {
+                        crate::sse::PROGRESS_MANAGER.fail_job(&job, &e.to_string());
+                        SyncOutcome::failed(format!(
+                            "Sync finished but verification could not run: {e}"
+                        ))
+                    }
+                }
             } else {
                 crate::sse::PROGRESS_MANAGER.fail_job(&job, &stderr);
                 SyncOutcome::failed(format!("Sync failed: {}", stderr.trim()))
@@ -1946,6 +2011,29 @@ async fn run_sync_core(admin_username: &str, req: &SyncRequest) -> SyncOutcome {
             SyncOutcome::failed(format!("Sync failed: {e}"))
         }
     }
+}
+
+/// The argv for the post-sync proof. `--one-way` is correct for a backup: the
+/// destination must contain everything from the source (and `--delete` is
+/// what removes extras, already handled by `sync`). A dry run performs no
+/// copy, so a check would be meaningless.
+pub fn rclone_check_args(source: &str, destination: &str, dry_run: bool) -> Vec<String> {
+    if dry_run {
+        return Vec::new();
+    }
+    vec![
+        "check".to_string(),
+        source.to_string(),
+        destination.to_string(),
+        "--one-way".to_string(),
+        "--checksum".to_string(),
+    ]
+}
+
+/// Whether a finished run may be recorded as "verified". A dry run performs
+/// no copy, so there is nothing to prove.
+pub fn sync_verified(ok: bool, dry_run: bool) -> bool {
+    ok && !dry_run
 }
 
 /// The `SyncRequest` a stored job executes.
@@ -1965,8 +2053,13 @@ fn request_for(job: &SyncJob) -> SyncRequest {
 }
 
 /// [`execute_sync`]'s HTTP shell: the shared core plus the JSON envelope.
-async fn execute_sync(admin_username: &str, req: &SyncRequest) -> Json<ApiResponse<String>> {
+async fn execute_sync(
+    state: &AppStateArc,
+    admin_username: &str,
+    req: &SyncRequest,
+) -> Json<ApiResponse<String>> {
     let outcome = run_sync_core(admin_username, req).await;
+    record_sync_history(state.db.pool(), admin_username, req, &outcome).await;
     if outcome.ok {
         Json(ApiResponse::success(outcome.message))
     } else {
@@ -2180,7 +2273,9 @@ async fn run_saved_job(
         "Admin '{}' — {} sync job '{}' ({} -> {})",
         actor, trigger, job.name, job.source, job.destination
     ));
-    let outcome = run_sync_core(actor, &request_for(job)).await;
+    let request = request_for(job);
+    let outcome = run_sync_core(actor, &request).await;
+    record_sync_history(state.db.pool(), actor, &request, &outcome).await;
 
     // The state is written **by the server**, whichever path started the run,
     // and the next due time is recomputed from the moment the run finished.
@@ -2453,8 +2548,8 @@ pub async fn handle_copy(
         return Json(ApiResponse::error("Destination is required"));
     }
 
-    args.push(source);
-    args.push(dest);
+    args.push(source.clone());
+    args.push(dest.clone());
 
     if req.delete {
         args.push("--delete".to_string());
@@ -2467,6 +2562,18 @@ pub async fn handle_copy(
     if req.interactive {
         args.push("--interactive".to_string());
     }
+
+    // Integrity and resilience (tasklist P1-25): compare checksums instead of
+    // size+mtime, and let a flaky remote recover instead of failing the job.
+    args.push("--checksum".to_string());
+    args.push("--retries".to_string());
+    args.push("3".to_string());
+    args.push("--low-level-retries".to_string());
+    args.push("10".to_string());
+    args.push("--timeout".to_string());
+    args.push("5m".to_string());
+    args.push("--contimeout".to_string());
+    args.push("1m".to_string());
 
     // Add progress output
     args.push("--progress".to_string());
@@ -3225,6 +3332,18 @@ gdrive: /mnt/rclone/vault2 fuse.rclone rw 0 0
     }
 
     // -- deadlines (16.1) ---------------------------------------------
+
+    #[test]
+    fn a_dry_run_is_never_recorded_as_verified() {
+        assert!(sync_verified(true, false));
+        assert!(!sync_verified(true, true));
+        assert!(!sync_verified(false, false));
+        assert!(rclone_check_args("a", "b", true).is_empty());
+        assert_eq!(
+            rclone_check_args("a", "b", false),
+            vec!["check", "a", "b", "--one-way", "--checksum"]
+        );
+    }
 
     #[test]
     fn test_rclone_deadlines_are_bounded_and_ordered() {

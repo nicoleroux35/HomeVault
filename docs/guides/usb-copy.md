@@ -57,9 +57,13 @@ devices. Creating, editing, deleting a rule and starting a copy are
 
 1. Resolve the device's mount point; mount it through `udisksctl` when it is
    not already mounted.
-2. Copy `source_path` (a folder inside the device) into `destination_path` (an
-   absolute path on the appliance).
-3. When `verify_checksums` is on, hash every copied file and compare.
+2. Copy `source_path` — a folder **or a single file** inside the device — into
+   `destination_path` (an absolute path on the appliance). A single file keeps
+   its own name under the destination folder.
+3. When `verify_checksums` is on, read every copied file back and compare a
+   **SHA-256** of source and destination (same size is not enough), collecting
+   every mismatch into one error. A mismatch fails the copy; the caller never
+   sees `Success`.
 4. When `auto_eject` is on, unmount and power the device off — safe to unplug
    immediately.
 
@@ -80,7 +84,7 @@ changes between reboots.
 
 | Suite | What it covers |
 |-------|----------------|
-| `src/usb_copy.rs` (`#[cfg(test)]`) | profile validation, destination must be absolute, UUID matching |
+| `src/usb_copy.rs` (`#[cfg(test)]`) | profile validation, destination must be absolute, UUID matching, SHA-256 verification (identical tree, same-size different bytes, size mismatch, missing file, single-file source), file counting |
 | `tests/usb_copy_integration.rs` | device listing and the validation surface |
 | `tests/phase4_auth_integration.rs` | `401` without a session, `403` for a member on every mutation, admin never refused |
 | `frontend/src/routes/UsbCopy.svelte` | covered by `npm run check` |

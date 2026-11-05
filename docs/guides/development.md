@@ -60,6 +60,11 @@ Read by the running binary (not by `dev-instance.sh`):
 | `LOG_LEVEL` | tracing filter (default `info`) |
 | `HOMEVAULT_SETUP_ALLOW_REMOTE` | `1`/`true`/`yes` lifts the **local-network** check on the first-run bootstrap routes — the same-origin and rate-limit checks still apply (see `setup-wizard.md`) |
 | `HOMEVAULT_TRUSTED_PROXIES` | comma-separated IPs whose `X-Forwarded-For` / `X-Real-IP` are believed for the client IP used by the login throttle and the audit history. A **loopback** peer is always trusted (a reverse proxy on this host); every other peer's headers are ignored (see `auth.md`) |
+| `HOMEVAULT_SQLITE_FULL_SYNC` | `1`/`true`/`yes`/`full` makes every metadata commit durable (`PRAGMA synchronous=FULL`) instead of the default `NORMAL`; one fsync per write transaction, so slower writes buy crash safety (P2-14) |
+| `HOMEVAULT_REQUIRE_PINNED_IMAGES` | `1`/`true`/`yes`/`on` refuses to install a catalog app whose rendered compose file contains an image without `@sha256:<64 hex>`; off by default (P1-27) |
+| `HOMEVAULT_BTRFS_MAINTENANCE` | `0`/`false`/`no`/`off` disables the built-in conditional balance + weekly TRIM loop; on by default (P1-22) |
+| `HOMEVAULT_WEEKLY_HEALTH_REPORT` | `0`/`false`/`no`/`off` disables the weekly aggregated health notification; on by default (P2-12) |
+| `HOMEVAULT_WITNESS_URL` / `HOMEVAULT_WITNESS_NODE` / `HOMEVAULT_WITNESS_TOKEN` / `HOMEVAULT_WITNESS_TTL` | third-site replication witness: base URL, this node's lease name, optional bearer token and lease TTL (10–86 400 s, default 60). Unset = no witness (P2-15) |
 
 ## Versioned client/server contract
 

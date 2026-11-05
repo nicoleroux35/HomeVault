@@ -124,6 +124,26 @@ fn health_router(state: Arc<AppState>) -> Router {
     Router::new()
         .route("/api/auth/login", post(handle_login))
         .route("/api/health", get(handle_health_endpoint))
+        .route(
+            "/api/health/disk-health",
+            get(homevault::handlers::disk_health::handle_disk_findings),
+        )
+        .route(
+            "/api/health/disk-health/samples",
+            get(homevault::handlers::disk_health::handle_disk_samples),
+        )
+        .route(
+            "/api/health/disk-health/sample",
+            post(homevault::handlers::disk_health::handle_disk_sample),
+        )
+        .route(
+            "/api/health/disk-health/prediction",
+            get(homevault::handlers::disk_health::handle_disk_prediction),
+        )
+        .route(
+            "/api/health/disk-health/predictions",
+            get(homevault::handlers::disk_health::handle_disk_predictions),
+        )
         .with_state(state)
 }
 
@@ -580,4 +600,135 @@ async fn test_a_slow_host_probe_is_waited_out_not_dropped() {
         elapsed >= std::time::Duration::from_millis(200),
         "the shim was never actually waited for ({elapsed:?}) — the probe skipped it"
     );
+}
+
+#[tokio::test]
+async fn disk_health_findings_require_a_session_and_start_empty() {
+    let (state, _tmp, _guard) = setup_state().await;
+    create_test_user(&state, "u", "Password123!", 1).await;
+    let mut router = health_router(state.clone());
+
+    let (status, _) = send(
+        &mut router,
+        Method::GET,
+        "/api/health/disk-health",
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+
+    let token = login(&mut router, "u", "Password123!").await;
+    let (status, body) = send(
+        &mut router,
+        Method::GET,
+        "/api/health/disk-health",
+        Some(&token),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(body["success"].as_bool().unwrap_or(false));
+    assert_eq!(body["data"].as_array().map(Vec::len), Some(0));
+}
+
+#[tokio::test]
+async fn disk_health_samples_validate_the_serial_and_accept_an_empty_history() {
+    let (state, _tmp, _guard) = setup_state().await;
+    create_test_user(&state, "u", "Password123!", 1).await;
+    let mut router = health_router(state.clone());
+    let token = login(&mut router, "u", "Password123!").await;
+
+    let (status, body) = send(
+        &mut router,
+        Method::GET,
+        "/api/health/disk-health/samples?serial=",
+        Some(&token),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+
+    let (status, body) = send(
+        &mut router,
+        Method::GET,
+        "/api/health/disk-health/samples?serial=SERIAL1&limit=10",
+        Some(&token),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["data"].as_array().map(Vec::len), Some(0));
+}
+
+#[tokio::test]
+async fn disk_health_predictions_require_a_session_and_start_empty() {
+    let (state, _tmp, _guard) = setup_state().await;
+    create_test_user(&state, "u", "Password123!", 1).await;
+    let mut router = health_router(state.clone());
+
+    let (status, _) = send(
+        &mut router,
+        Method::GET,
+        "/api/health/disk-health/predictions",
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+
+    let token = login(&mut router, "u", "Password123!").await;
+    let (status, body) = send(
+        &mut router,
+        Method::GET,
+        "/api/health/disk-health/predictions",
+        Some(&token),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["data"].as_array().map(Vec::len), Some(0));
+
+    // The per-serial endpoint still validates its input.
+    let (status, _) = send(
+        &mut router,
+        Method::GET,
+        "/api/health/disk-health/prediction?serial=",
+        Some(&token),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn disk_health_sample_is_admin_only() {
+    let (state, _tmp, _guard) = setup_state().await;
+    create_test_user(&state, "u", "Password123!", 1).await;
+    create_test_user(&state, "admin", "Password123!", 2).await;
+    let mut router = health_router(state.clone());
+
+    let member = login(&mut router, "u", "Password123!").await;
+    let (status, _) = send(
+        &mut router,
+        Method::POST,
+        "/api/health/disk-health/sample",
+        Some(&member),
+        Some(json!({})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+
+    // The admin call reaches the sampler; an empty/unsupported host may
+    // answer 200 with zero disks, but never a 403 and never a fake finding.
+    let admin = login(&mut router, "admin", "Password123!").await;
+    let (status, body) = send(
+        &mut router,
+        Method::POST,
+        "/api/health/disk-health/sample",
+        Some(&admin),
+        Some(json!({})),
+    )
+    .await;
+    assert_ne!(status, StatusCode::FORBIDDEN, "{body}");
 }

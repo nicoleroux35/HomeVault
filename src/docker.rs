@@ -1041,6 +1041,10 @@ impl DockerService {
     /// Pull a Docker image from the configured registry.
     pub fn pull_image(image: &str, tag: &str) -> Result<(), DockerError> {
         let reference = format!("{}:{}", image, tag);
+        // A malformed `@sha256:` is a supply-chain error, not a Docker error:
+        // refuse it before the daemon tries to resolve a different image.
+        crate::supply_chain::validate_image_reference(&reference)
+            .map_err(DockerError::CommandFailed)?;
         let output = run_docker(&["pull", &reference], LONG_TIMEOUT)?;
 
         if !output.status.success() {

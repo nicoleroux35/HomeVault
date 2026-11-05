@@ -316,6 +316,23 @@ impl ScheduledTaskRepository {
         Ok(())
     }
 
+    /// The newest run of any task of `task_type`, across all tasks. Used by
+    /// the weekly report to answer "when did restic last check?" without
+    /// knowing a task id.
+    pub async fn last_run_for_type(
+        &self,
+        task_type: &str,
+    ) -> Result<Option<ScheduledTaskRun>, sqlx::Error> {
+        sqlx::query_as::<_, ScheduledTaskRun>(
+            "SELECT r.id, r.task_id, r.status, r.started_at, r.finished_at, r.output \
+             FROM scheduled_task_runs r JOIN scheduled_tasks t ON t.id = r.task_id \
+             WHERE t.task_type = ? ORDER BY r.started_at DESC LIMIT 1",
+        )
+        .bind(task_type)
+        .fetch_optional(self.pool.as_ref())
+        .await
+    }
+
     pub async fn list_runs(
         &self,
         task_id: &str,

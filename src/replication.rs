@@ -269,12 +269,6 @@ pub fn validate_job(job: &ReplicationJob) -> Result<(), String> {
             return Err("the SSH port must be between 1 and 65535".to_string());
         }
     }
-    if backend == ReplicationBackend::Btrfs && kind == DestinationKind::Ssh {
-        return Err(
-            "replicating Btrfs snapshots over SSH is not supported yet — use a local destination or an SSH account on a ZFS host"
-                .to_string(),
-        );
-    }
     if job.source_dataset == job.destination_dataset && kind == DestinationKind::Local {
         return Err("the destination dataset must differ from the source".to_string());
     }
@@ -477,12 +471,23 @@ pub fn build_plan(
             }
             send.push(source_path.to_string());
             stages.push(send);
-            stages.push(vec![
-                "sudo".to_string(),
-                "btrfs".to_string(),
-                "receive".to_string(),
-                destination_path.to_string(),
-            ]);
+            let mut receive = match kind {
+                DestinationKind::Local => vec![
+                    "sudo".to_string(),
+                    "btrfs".to_string(),
+                    "receive".to_string(),
+                ],
+                DestinationKind::Ssh => {
+                    let mut cmd = ssh_prefix(job)
+                        .ok_or_else(|| "the SSH destination is incomplete".to_string())?;
+                    cmd.push("sudo".to_string());
+                    cmd.push("btrfs".to_string());
+                    cmd.push("receive".to_string());
+                    cmd
+                }
+            };
+            receive.push(destination_path.to_string());
+            stages.push(receive);
         }
     }
 
@@ -571,8 +576,19 @@ pub fn destination_list_command(job: &ReplicationJob) -> Option<Vec<String>> {
             "-o".to_string(),
             job.destination_dataset.clone(),
         ]),
-        // Rejected by `validate_job`; never reached.
-        (ReplicationBackend::Btrfs, DestinationKind::Ssh) => None,
+        (ReplicationBackend::Btrfs, DestinationKind::Ssh) => {
+            let mut cmd = ssh_prefix(job)?;
+            cmd.extend([
+                "sudo".to_string(),
+                "btrfs".to_string(),
+                "subvolume".to_string(),
+                "list".to_string(),
+                "-s".to_string(),
+                "-o".to_string(),
+                job.destination_dataset.clone(),
+            ]);
+            Some(cmd)
+        }
     }
 }
 
@@ -607,7 +623,84 @@ pub fn destination_delete_command(job: &ReplicationJob, snapshot: &str) -> Optio
             "delete".to_string(),
             format!("{}/{}", job.destination_dataset, bare_of(snapshot)),
         ]),
-        (ReplicationBackend::Btrfs, DestinationKind::Ssh) => None,
+        (ReplicationBackend::Btrfs, DestinationKind::Ssh) => {
+            let mut cmd = ssh_prefix(job)?;
+            cmd.extend([
+                "sudo".to_string(),
+                "btrfs".to_string(),
+                "subvolume".to_string(),
+                "delete".to_string(),
+                format!("{}/{}", job.destination_dataset, bare_of(snapshot)),
+            ]);
+            Some(cmd)
+        }
+    }
+}
+
+/// The common `ssh` prefix a remote command runs behind.
+fn ssh_prefix(job: &ReplicationJob) -> Option<Vec<String>> {
+    Some(vec![
+        "ssh".to_string(),
+        "-p".to_string(),
+        job.destination_port.to_string(),
+        "-o".to_string(),
+        "BatchMode=yes".to_string(),
+        "-o".to_string(),
+        "ConnectTimeout=15".to_string(),
+        "-o".to_string(),
+        "StrictHostKeyChecking=accept-new".to_string(),
+        job.ssh_target()?,
+    ])
+}
+
+/// After a successful transfer, prove the destination is readable and is the
+/// snapshot that was just sent. ZFS returns its checksum property; Btrfs
+/// proves the subvolume exists with `subvolume show`.
+pub fn destination_verify_command(job: &ReplicationJob) -> Option<Vec<String>> {
+    let backend = job.backend_kind()?;
+    let kind = job.destination()?;
+    match (backend, kind) {
+        (ReplicationBackend::Zfs, DestinationKind::Local) => Some(vec![
+            "sudo".to_string(),
+            "zfs".to_string(),
+            "get".to_string(),
+            "-H".to_string(),
+            "-o".to_string(),
+            "value".to_string(),
+            "checksum".to_string(),
+            job.destination_dataset.clone(),
+        ]),
+        (ReplicationBackend::Zfs, DestinationKind::Ssh) => {
+            let mut cmd = ssh_prefix(job)?;
+            cmd.extend([
+                "zfs".to_string(),
+                "get".to_string(),
+                "-H".to_string(),
+                "-o".to_string(),
+                "value".to_string(),
+                "checksum".to_string(),
+                job.destination_dataset.clone(),
+            ]);
+            Some(cmd)
+        }
+        (ReplicationBackend::Btrfs, DestinationKind::Local) => Some(vec![
+            "sudo".to_string(),
+            "btrfs".to_string(),
+            "subvolume".to_string(),
+            "show".to_string(),
+            job.destination_dataset.clone(),
+        ]),
+        (ReplicationBackend::Btrfs, DestinationKind::Ssh) => {
+            let mut cmd = ssh_prefix(job)?;
+            cmd.extend([
+                "sudo".to_string(),
+                "btrfs".to_string(),
+                "subvolume".to_string(),
+                "show".to_string(),
+                job.destination_dataset.clone(),
+            ]);
+            Some(cmd)
+        }
     }
 }
 
@@ -797,10 +890,11 @@ mod tests {
         zero_keep.keep_last = 0;
         assert!(validate_job(&zero_keep).is_err());
 
-        // Btrfs over SSH is refused rather than half-working.
+        // Btrfs over SSH is supported since P1-26: send locally, receive on
+        // the remote host through `ssh … sudo btrfs receive`.
         let mut btrfs_ssh = ssh_job();
         btrfs_ssh.backend = "btrfs".to_string();
-        assert!(validate_job(&btrfs_ssh).is_err());
+        assert!(validate_job(&btrfs_ssh).is_ok());
 
         // A bad port, interval and cap are refused.
         let mut bad_port = ssh_job();

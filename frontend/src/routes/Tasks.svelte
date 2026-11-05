@@ -40,7 +40,7 @@
   import { groupTimezones, timezoneIsListed, SERVER_TIMEZONE, type TimezoneGroup } from '$lib/utils/timezones';
   import { IconClock, IconPlus, IconPlayerPlay, IconHistory, IconTrash } from '@tabler/icons-svelte';
 
-  type TaskType = 'command' | 'snapshot' | 'smart_test' | 'power';
+  type TaskType = 'command' | 'snapshot' | 'smart_test' | 'scrub' | 'restic_check' | 'power';
 
   interface TaskForm {
     id: string | null;
@@ -59,6 +59,11 @@
     // smart_test
     device: string;
     test_type: string;
+    // scrub
+    pool_type: string;
+    // restic_check
+    repo_id: string;
+    subset: string;
     // power
     action: string;
   }
@@ -76,6 +81,9 @@
     recursive: false,
     device: '',
     test_type: 'short',
+    pool_type: 'zfs',
+    repo_id: '',
+    subset: '10%',
     action: 'reboot',
   };
 
@@ -89,6 +97,8 @@
   const TASK_TYPES: { id: TaskType; label: string }[] = [
     { id: 'snapshot', label: 'tasks.type_snapshot' },
     { id: 'smart_test', label: 'tasks.type_smart_test' },
+    { id: 'scrub', label: 'tasks.type_scrub' },
+    { id: 'restic_check', label: 'tasks.type_restic_check' },
     { id: 'power', label: 'tasks.type_power' },
     { id: 'command', label: 'tasks.type_command' },
   ];
@@ -184,6 +194,9 @@
       recursive: payload.recursive === true,
       device: String(payload.device ?? ''),
       test_type: String(payload.test_type ?? 'short'),
+      pool_type: String(payload.pool_type ?? 'zfs'),
+      repo_id: String(payload.repo_id ?? ''),
+      subset: String(payload.subset ?? '10%'),
       action: String(payload.action ?? 'reboot'),
     };
     formError = '';
@@ -233,6 +246,10 @@
         return { pool: form.pool.trim(), recursive: form.recursive };
       case 'smart_test':
         return { device: form.device.trim(), test_type: form.test_type };
+      case 'scrub':
+        return { pool: form.pool.trim(), pool_type: form.pool_type };
+      case 'restic_check':
+        return { repo_id: form.repo_id.trim(), subset: form.subset.trim() || '10%' };
       case 'power':
         return { action: form.action };
     }
@@ -599,6 +616,20 @@
         bind:value={form.test_type}
         options={SMART_TYPES.map((s) => ({ value: s, label: $t(`tasks.smart_${s}`) }))}
       />
+    {:else if form.task_type === 'scrub'}
+      <Input label={$t('tasks.field_scrub_pool')} id="taskScrubPool" bind:value={form.pool} placeholder="tank/data" helper={$t('tasks.field_scrub_pool_help')} />
+      <Select
+        label={$t('tasks.field_scrub_kind')}
+        bind:value={form.pool_type}
+        options={[
+          { value: 'zfs', label: $t('tasks.scrub_zfs') },
+          { value: 'btrfs', label: $t('tasks.scrub_btrfs') },
+          { value: 'mdadm', label: $t('tasks.scrub_mdadm') },
+        ]}
+      />
+    {:else if form.task_type === 'restic_check'}
+      <Input label={$t('tasks.field_repo_id')} id="taskRepoId" bind:value={form.repo_id} placeholder="repository id" helper={$t('tasks.field_repo_id_help')} />
+      <Input label={$t('tasks.field_read_data_subset')} id="taskSubset" bind:value={form.subset} placeholder="10%" helper={$t('tasks.field_read_data_subset_help')} />
     {:else if form.task_type === 'power'}
       <Select
         label={$t('tasks.field_action')}

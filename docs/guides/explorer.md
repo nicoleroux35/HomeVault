@@ -1206,6 +1206,20 @@ progress, the resumable-upload durability, the checksum endpoint and the history
 so the assistant can answer "how do I verify a copy?" from the same facts as this
 guide.
 
+## Large-download digest and chunk checksums (P1-24, 2026-11-05)
+
+- **Downloads** — a file at or below 64 MiB (`DIGEST_THRESHOLD`) is hashed
+  automatically. A larger file is hashed only when the client adds
+  `?digest=true`, so a routine multi-gigabyte download is not read twice.
+  When present, the SHA-256 travels in `Repr-Digest` and `Content-Digest`
+  (RFC 9530, base64-encoded) so a client or proxy can prove what it received.
+- **Uploads** — a chunk request may carry `X-Chunk-Sha256` (64 hex
+  characters). The chunk is written to its temporary file and hashed before
+  commit; a mismatch answers `422`, deletes the temporary chunk and leaves
+  the previous bytes intact. A malformed header is refused before any write.
+  The check is optional so older clients keep working, but the Explorer
+  uploader sends it.
+
 ## Related
 
 - [Storage](./storage.md), [Shares](./shares.md), [API Contract](../API.md)

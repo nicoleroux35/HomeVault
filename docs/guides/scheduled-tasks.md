@@ -40,7 +40,20 @@ Request body (create/update): `name`, `task_type`, `cron`, `payload`,
 | `command` | `{"command": "/abs/path", "args": [...]}` | runs the program (no shell), 30 min timeout |
 | `snapshot` | `{"pool": "...", "recursive": false}` | creates `hv-auto-YYYYMMDD-HHMMSS` |
 | `smart_test` | `{"device": "sda", "test_type": "short\|long\|conveyance\|offline"}` | `smartctl -t` |
+| `scrub` | `{"pool": "tank/data", "pool_type": "zfs\|btrfs\|mdadm"}` | data-consistency check (`zpool scrub`, `btrfs scrub`, `mdadm --action check`) |
+| `restic_check` | `{"repo_id": "…", "subset": "10%"}` | `restic check --read-data-subset=…` (empty subset = `10%`) |
 | `power` | `{"action": "reboot\|shutdown\|suspend"}` | host power action (`src/power.rs`) |
+
+A `scrub` task goes through `src/scrub.rs`: one scrub at a time across the
+whole process (the same lock is taken by the post-unclean-shutdown pass), the
+same 30 s start deadline, and the mdadm device derived from the pool name
+(`md0` → `/dev/md/md0`). A degraded pool is skipped by the automatic
+post-crash pass; a scheduled task runs what the administrator asked for.
+
+A `restic_check` task retries a failed command up to three times (5 s, then
+30 s) before marking the run failed; repository findings are not retried. A
+failure also raises `backup.jobs` so it appears beside a failed backup, not
+only in the task history.
 
 ## Timezones (ROADMAP 12.2)
 

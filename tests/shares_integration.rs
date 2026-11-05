@@ -162,6 +162,14 @@ fn shares_router(state: Arc<AppState>) -> Router {
         // per-protocol service config
         .route("/api/shares/smb/config", get(handle_smb_config_get))
         .route("/api/shares/smb/config", put(handle_smb_config_update))
+        .route(
+            "/api/shares/smb/domain/join",
+            post(homevault::handlers::shares::handle_smb_domain_join),
+        )
+        .route(
+            "/api/shares/smb/domain/leave",
+            post(homevault::handlers::shares::handle_smb_domain_leave),
+        )
         .route("/api/shares/smb/recycle", get(handle_smb_recycle_list))
         .route(
             "/api/shares/{name}/smb/recycle",
@@ -1303,4 +1311,46 @@ async fn test_webdav_config_default_is_closed_and_bindable() {
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["data"]["require_auth"], json!(true), "{body}");
     assert_ne!(body["data"]["port"], json!(0), "{body}");
+}
+
+#[tokio::test]
+async fn domain_join_and_leave_are_admin_only() {
+    let (state, _tmp, _g) = setup_state().await;
+    create_test_user(&state, "member1", "Passw0rd!123", 1).await;
+    let mut r = shares_router(state);
+
+    for uri in [
+        "/api/shares/smb/domain/join",
+        "/api/shares/smb/domain/leave",
+    ] {
+        let (status, _) = send(
+            &mut r,
+            Method::POST,
+            uri,
+            None,
+            Some(json!({
+                "username": "Administrator",
+                "password": "secret"
+            })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED, "{uri}");
+
+        let member = login(&mut r, "member1", "Passw0rd!123").await;
+        let (status, _) = send(
+            &mut r,
+            Method::POST,
+            uri,
+            Some(&member),
+            Some(json!({
+                "username": "Administrator",
+                "password": "secret"
+            })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{uri}");
+    }
+
+    // The admin path is not exercised here: it would run `net ads` against the
+    // host. The argv/stdin shape and the missing-winbind refusal are unit-tested.
 }
