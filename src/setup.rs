@@ -705,6 +705,11 @@ impl SetupService {
         let btrfs = Self::resolve_bin("btrfs", "/usr/bin/btrfs");
         let cryptsetup = Self::resolve_bin("cryptsetup", "/usr/sbin/cryptsetup");
         let blkid = Self::resolve_bin("blkid", "/usr/sbin/blkid");
+        // Boot-time storage recovery (`src/storage/recovery.rs`): `dumpe2fs -h`
+        // tells us whether an ext4 volume was cleanly unmounted, and
+        // `e2fsck -p` is the non-interactive "preen" repair — never `-y`.
+        let e2fsck = Self::resolve_bin("e2fsck", "/sbin/e2fsck");
+        let dumpe2fs = Self::resolve_bin("dumpe2fs", "/sbin/dumpe2fs");
         // Pool/encrypted-volume mount points live under /mnt, which is
         // root-owned — `sudo mkdir`/`rmdir` are needed for the same reason
         // as everything else above (std::fs::create_dir_all runs as the
@@ -887,6 +892,8 @@ impl SetupService {
             mkfs_exfat: &mkfs_exfat,
             wipefs: &wipefs,
             cryptsetup: &cryptsetup,
+            e2fsck: &e2fsck,
+            dumpe2fs: &dumpe2fs,
             mount: &mount_bin,
             umount: &umount_bin,
             mkdir: &mkdir,
@@ -1092,7 +1099,7 @@ homevault ALL=(root) NOPASSWD: {systemctl} start docker, {systemctl} enable dock
 # files rather than the whole `tee` binary. The two `rm -f` grants exist only
 # to retire the legacy generated WebDAV service, and are scoped to those two
 # exact paths.
-homevault ALL=(root) NOPASSWD: {tee} {smb_conf}, {tee} -a {smb_conf}, {tee} {vsftpd_conf}, {tee} {exports}, {tee} -a {exports}, {exportfs} -ra, {rm} -f {webdav_py}, {rm} -f {webdav_service}
+homevault ALL=(root) NOPASSWD: {tee} {smb_conf}, {tee} {smb_conf}.bak, {tee} -a {smb_conf}, {tee} {vsftpd_conf}, {tee} {vsftpd_conf}.bak, {tee} {exports}, {tee} {exports}.bak, {tee} -a {exports}, {exportfs} -ra, {rm} -f {webdav_py}, {rm} -f {webdav_service}
 
 # SFTP — see the comment above where `groupadd`/`useradd`/`usermod_sftp`/
 # `gpasswd` are resolved for why these are scoped to exact arguments.
@@ -1295,6 +1302,8 @@ struct StorageBins<'a> {
     mkfs_exfat: &'a str,
     wipefs: &'a str,
     cryptsetup: &'a str,
+    e2fsck: &'a str,
+    dumpe2fs: &'a str,
     mount: &'a str,
     umount: &'a str,
     mkdir: &'a str,
@@ -1346,8 +1355,18 @@ impl StorageBins<'_> {
             grant(self.btrfs, "send *"),
             grant(self.btrfs, "receive *"),
             grant(self.btrfs, "property *"),
+            // Boot-time recovery (`src/storage/recovery.rs`): rescan the
+            // members, then repair a damaged superblock. `rescue
+            // super-recover` only rewrites the superblock from a valid
+            // backup copy — it never touches file data.
+            grant(self.btrfs, "device scan"),
+            grant(self.btrfs, "device stats *"),
+            grant(self.btrfs, "rescue super-recover -y *"),
             // Read-only UUID lookup (`-s UUID -o value <device>`).
             grant(self.blkid, "-s UUID -o value *"),
+            // ext4 clean-unmount probe and preen repair, device-confined.
+            grant(self.dumpe2fs, "-h /dev/*"),
+            grant(self.e2fsck, "-p /dev/*"),
         ]
     }
 
@@ -1396,6 +1415,9 @@ impl StorageBins<'_> {
             grant(self.mount, "* /media/*"),
             grant(self.mount, "* /run/media/*"),
             grant(self.mount, "* /var/lib/homevault-sftp/*"),
+            // Replaying an existing `/etc/fstab` entry by mount point
+            // (`mount /mnt/raid/data`), used by the boot recovery pass.
+            grant(self.mount, "/mnt/*"),
             grant(self.rmdir, "/mnt/*"),
             grant(self.rmdir, "/var/lib/homevault-sftp/*"),
             // Btrfs @/@snapshots migration and rollback rename subvolumes and
@@ -1418,6 +1440,10 @@ impl StorageBins<'_> {
         vec![
             grant(self.tee, "/etc/fstab"),
             grant(self.tee, "/etc/mdadm/mdadm.conf"),
+            // RAID resync speed (src/raid_stability.rs): the two sysctls are
+            // plain root-owned files with no writable API.
+            grant(self.tee, "/proc/sys/dev/raid/speed_limit_min"),
+            grant(self.tee, "/proc/sys/dev/raid/speed_limit_max"),
         ]
     }
 }
@@ -1536,6 +1562,9 @@ impl HostBins<'_> {
             grant(self.mdadm, "--grow *"),
             grant(self.mdadm, "--action *"),
             grant(self.mdadm, "--action=*"),
+            // Boot recovery: assemble every array the kernel/fstab knows
+            // about after an unclean shutdown, before the mount retry.
+            grant(self.mdadm, "--assemble --scan"),
         ]
     }
 
@@ -2210,6 +2239,8 @@ mod tests {
             mkfs_exfat: "/usr/sbin/mkfs.exfat",
             wipefs: "/usr/sbin/wipefs",
             cryptsetup: "/usr/sbin/cryptsetup",
+            e2fsck: "/sbin/e2fsck",
+            dumpe2fs: "/sbin/dumpe2fs",
             mount: "/usr/bin/mount",
             umount: "/usr/bin/umount",
             mkdir: "/usr/bin/mkdir",
@@ -2371,13 +2402,15 @@ mod tests {
     }
 
     #[test]
-    fn test_storage_tee_is_confined_to_the_two_persisted_files() {
+    fn test_storage_tee_is_confined_to_the_persisted_files() {
         let grants = storage_bins().config_grants();
         assert_eq!(
             grants,
             vec![
                 "/usr/bin/tee /etc/fstab".to_string(),
                 "/usr/bin/tee /etc/mdadm/mdadm.conf".to_string(),
+                "/usr/bin/tee /proc/sys/dev/raid/speed_limit_min".to_string(),
+                "/usr/bin/tee /proc/sys/dev/raid/speed_limit_max".to_string(),
             ],
             "the Storage tee grant must not be able to write any other file"
         );

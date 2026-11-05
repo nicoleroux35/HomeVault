@@ -193,7 +193,36 @@
   let lockError = '';
   let lockBusyId = 0;
   let lockForm = { pool: '', snapshot: '', days: 30, reason: '' };
-  let activeTab: 'disks' | 'virtual' | 'partitions' | 'removable' | 'encryption' | 'cache' | 'snapshots' = 'disks';
+  let activeTab: 'disks' | 'virtual' | 'partitions' | 'removable' | 'encryption' | 'cache' | 'snapshots' | 'compression' = 'disks';
+
+  // ── Btrfs compression policies (P2-11) ──
+  interface BtrfsPolicy {
+    path: string;
+    level: string;
+    defrag: boolean;
+    last_applied_at: string | null;
+  }
+  let btrfsPolicies: BtrfsPolicy[] = [];
+  let btrfsPolicyPath = '';
+  let btrfsPolicyLevel = 'zstd:3';
+  let btrfsPolicyDefrag = true;
+  let btrfsPolicyBusy = false;
+  let btrfsPolicyError = '';
+
+  // ── Snapshot quiescence hooks (P2-13) ──
+  interface QuiescenceHook {
+    id: string;
+    name: string;
+    pre: string[];
+    post: string[];
+    enabled: boolean;
+  }
+  let quiescenceHooks: QuiescenceHook[] = [];
+  let hookName = '';
+  let hookPre = '';
+  let hookPost = '';
+  let hookBusy = false;
+  let hookError = '';
 
   interface VirtualDisk {
     name: string;
@@ -720,6 +749,111 @@
     const r = await api.getImportablePools();
     importableLoading = false;
     if (r.success && Array.isArray(r.data)) importablePools = r.data;
+  }
+
+  async function loadBtrfsPolicies() {
+    const r = await api.btrfsPolicies();
+    if (r.success && Array.isArray(r.data)) {
+      btrfsPolicies = r.data;
+      btrfsPolicyError = '';
+    } else {
+      btrfsPolicyError = r.message || r.error || $t('storage.btrfs.load_failed');
+    }
+  }
+
+  async function saveBtrfsPolicyForm() {
+    if (!btrfsPolicyPath.trim()) {
+      btrfsPolicyError = $t('storage.btrfs.path_required');
+      return;
+    }
+    btrfsPolicyBusy = true;
+    const r = await api.saveBtrfsPolicy(
+      btrfsPolicyPath.trim(),
+      btrfsPolicyLevel,
+      btrfsPolicyDefrag,
+    );
+    btrfsPolicyBusy = false;
+    if (r.success) {
+      btrfsPolicyPath = '';
+      btrfsPolicyError = '';
+      await loadBtrfsPolicies();
+    } else {
+      btrfsPolicyError = r.message || r.error || $t('storage.btrfs.save_failed');
+    }
+  }
+
+  async function applyBtrfsPolicy(path: string) {
+    btrfsPolicyBusy = true;
+    const r = await api.applyBtrfsPolicy(path);
+    btrfsPolicyBusy = false;
+    if (r.success) {
+      dlg.notify($t('storage.btrfs.applied', { path }));
+      await loadBtrfsPolicies();
+    } else {
+      btrfsPolicyError = r.message || r.error || $t('storage.btrfs.apply_failed');
+    }
+  }
+
+  async function removeBtrfsPolicy(path: string) {
+    if (!(await dlg.ask($t('storage.btrfs.delete_confirm', { path })))) return;
+    const r = await api.deleteBtrfsPolicy(path);
+    if (r.success) {
+      await loadBtrfsPolicies();
+    } else {
+      btrfsPolicyError = r.message || r.error || $t('storage.btrfs.delete_failed');
+    }
+  }
+
+  async function loadQuiescenceHooks() {
+    const r = await api.snapshotHooks();
+    if (r.success && Array.isArray(r.data)) {
+      quiescenceHooks = r.data;
+      hookError = '';
+    } else {
+      hookError = r.message || r.error || $t('storage.quiescence.load_failed');
+    }
+  }
+
+  function splitArgv(value: string): string[] {
+    return value.trim().split(/\s+/).filter(Boolean);
+  }
+
+  async function createQuiescenceHook() {
+    if (!hookName.trim() || !hookPre.trim()) {
+      hookError = $t('storage.quiescence.required');
+      return;
+    }
+    hookBusy = true;
+    const r = await api.createSnapshotHook(hookName.trim(), splitArgv(hookPre), splitArgv(hookPost));
+    hookBusy = false;
+    if (r.success) {
+      hookName = '';
+      hookPre = '';
+      hookPost = '';
+      hookError = '';
+      await loadQuiescenceHooks();
+    } else {
+      hookError = r.message || r.error || $t('storage.quiescence.save_failed');
+    }
+  }
+
+  async function toggleQuiescenceHook(hook: QuiescenceHook) {
+    const r = await api.updateSnapshotHook(hook.id, hook.name, hook.pre, hook.post, !hook.enabled);
+    if (r.success) {
+      await loadQuiescenceHooks();
+    } else {
+      hookError = r.message || r.error || $t('storage.quiescence.save_failed');
+    }
+  }
+
+  async function deleteQuiescenceHook(hook: QuiescenceHook) {
+    if (!(await dlg.ask($t('storage.quiescence.delete_confirm', { name: hook.name })))) return;
+    const r = await api.deleteSnapshotHook(hook.id);
+    if (r.success) {
+      await loadQuiescenceHooks();
+    } else {
+      hookError = r.message || r.error || $t('storage.quiescence.delete_failed');
+    }
   }
 
   function openImportModal(pool: ImportablePool) {
@@ -1368,10 +1502,11 @@
     { id: 'removable', label: $t('storage.tab_removable'), icon: IconUsb, count: removable.length },
     { id: 'encryption', label: $t('encryption.tab'), icon: IconLock, count: encryptedVolumes.length },
     { id: 'cache', label: $t('cache.tab'), icon: IconBolt, count: cacheShares.length || undefined },
-    { id: 'snapshots', label: $t('storage.tabs.snapshots'), icon: IconCamera, count: snapshotSchedules.length || undefined }
+    { id: 'snapshots', label: $t('storage.tabs.snapshots'), icon: IconCamera, count: snapshotSchedules.length || undefined },
+    { id: 'compression', label: $t('storage.btrfs.tab'), icon: IconDatabase, count: btrfsPolicies.length || undefined }
   ]}
   bind:activeTab
-  onTabChange={(id) => { if (id === 'snapshots') { loadSnapshotSchedules(); loadSnapshotLocks(); } }}
+  onTabChange={(id) => { if (id === 'snapshots') { loadSnapshotSchedules(); loadSnapshotLocks(); loadQuiescenceHooks(); } if (id === 'compression') loadBtrfsPolicies(); }}
   footerMode="status"
 >
   {#snippet icon()}
@@ -1861,6 +1996,59 @@
             </div>
           {/if}
 
+          <!-- Quiescence hooks (P2-13): a configured database/VM pre/post
+               command turns a crash-consistent snapshot into an
+               application-consistent one; a failing hook only downgrades. -->
+          <div data-testid="snapshots-quiescence" class="px-5 py-4 rounded-2xl bg-[var(--hv-shell-card)] border border-[var(--hv-shell-border)] shadow-[var(--hv-shell-shadow-card)] flex flex-col gap-3">
+            <div>
+              <h3 class="m-0 text-c-card-title font-semibold text-[var(--hv-shell-text-strong)]">{$t('storage.quiescence.title')}</h3>
+              <p class="m-0 mt-1 text-xs text-[var(--hv-shell-text-2)] leading-relaxed">{$t('storage.quiescence.desc')}</p>
+            </div>
+            {#if hookError}
+              <Alert variant="error">{hookError}</Alert>
+            {/if}
+            <div class="flex flex-wrap items-end gap-2">
+              <label class="flex flex-col gap-1 text-xs text-[var(--hv-shell-text-2)]">
+                {$t('storage.quiescence.name')}
+                <input class="px-3 py-2 rounded-lg border border-[var(--hv-shell-border)] bg-[var(--hv-shell-bg)] text-c-base text-[var(--hv-shell-text-strong)]" bind:value={hookName} placeholder="postgres" data-testid="quiescence-hook-name" />
+              </label>
+              <label class="flex flex-col gap-1 text-xs text-[var(--hv-shell-text-2)] min-w-[220px]">
+                {$t('storage.quiescence.pre')}
+                <input class="px-3 py-2 rounded-lg border border-[var(--hv-shell-border)] bg-[var(--hv-shell-bg)] text-c-base text-[var(--hv-shell-text-strong)]" bind:value={hookPre} placeholder="/usr/bin/pg_start_backup" data-testid="quiescence-hook-pre" />
+              </label>
+              <label class="flex flex-col gap-1 text-xs text-[var(--hv-shell-text-2)] min-w-[220px]">
+                {$t('storage.quiescence.post')}
+                <input class="px-3 py-2 rounded-lg border border-[var(--hv-shell-border)] bg-[var(--hv-shell-bg)] text-c-base text-[var(--hv-shell-text-strong)]" bind:value={hookPost} placeholder="/usr/bin/pg_stop_backup" data-testid="quiescence-hook-post" />
+              </label>
+              <Button variant="primary" onclick={createQuiescenceHook} disabled={hookBusy} data-testid="quiescence-hook-add">
+                {$t('storage.quiescence.add')}
+              </Button>
+            </div>
+            {#if quiescenceHooks.length === 0}
+              <p class="m-0 text-xs text-[var(--hv-shell-text-2)]">{$t('storage.quiescence.empty')}</p>
+            {:else}
+              <ul class="m-0 p-0 list-none flex flex-col gap-2">
+                {#each quiescenceHooks as hook (hook.id)}
+                  <li class="flex items-center justify-between gap-2 flex-wrap text-c-base" data-testid="quiescence-hook">
+                    <span class="min-w-0">
+                      <strong class="text-[var(--hv-shell-text-strong)]">{hook.name}</strong>
+                      <span class="ml-2 text-xs text-[var(--hv-shell-text-2)] font-mono truncate">{hook.pre.join(' ')}</span>
+                      {#if !hook.enabled}<span class="ml-2 text-xs text-[var(--hv-warning)]">{$t('storage.quiescence.disabled')}</span>{/if}
+                    </span>
+                    <span class="flex items-center gap-1">
+                      <Button variant="ghost" size="sm" onclick={() => toggleQuiescenceHook(hook)} data-testid="quiescence-hook-toggle">
+                        {hook.enabled ? $t('storage.quiescence.disable') : $t('storage.quiescence.enable')}
+                      </Button>
+                      <Button variant="ghost" size="sm" onclick={() => deleteQuiescenceHook(hook)} data-testid="quiescence-hook-delete">
+                        <IconTrash size={15} stroke={1.9} /> {$t('storage.quiescence.delete')}
+                      </Button>
+                    </span>
+                  </li>
+                {/each}
+              </ul>
+            {/if}
+          </div>
+
           <!-- Immutable snapshots (P2.5): the locks are enforced by the
                filesystem, not by this screen, so a lock is never a promise
                the appliance cannot keep. -->
@@ -1904,6 +2092,77 @@
               </ul>
             {/if}
           </div>
+        </div>
+      {:else if activeTab === 'compression'}
+        <div data-testid="storage-btrfs-policies" class="flex flex-col gap-4 max-w-[900px]">
+          <div>
+            <p class="m-0 text-c-label text-[var(--hv-shell-text)]">{$t('storage.btrfs.heading')}</p>
+            <p class="m-0 mt-1 text-xs text-[var(--hv-shell-text-2)]">{$t('storage.btrfs.desc')}</p>
+          </div>
+
+          {#if btrfsPolicyError}
+            <Alert variant="error">{btrfsPolicyError}</Alert>
+          {/if}
+
+          <div class="px-5 py-4 rounded-2xl bg-[var(--hv-shell-card)] border border-[var(--hv-shell-border)] shadow-[var(--hv-shell-shadow-card)] flex flex-wrap items-end gap-3">
+            <label class="flex flex-col gap-1 text-xs text-[var(--hv-shell-text-2)]">
+              {$t('storage.btrfs.path')}
+              <input
+                class="px-3 py-2 rounded-lg border border-[var(--hv-shell-border)] bg-[var(--hv-shell-bg)] text-c-base text-[var(--hv-shell-text-strong)] min-w-[260px]"
+                bind:value={btrfsPolicyPath}
+                placeholder="/mnt/pools/photos"
+                data-testid="btrfs-policy-path"
+              />
+            </label>
+            <label class="flex flex-col gap-1 text-xs text-[var(--hv-shell-text-2)]">
+              {$t('storage.btrfs.level')}
+              <select
+                class="px-3 py-2 rounded-lg border border-[var(--hv-shell-border)] bg-[var(--hv-shell-bg)] text-c-base text-[var(--hv-shell-text-strong)]"
+                bind:value={btrfsPolicyLevel}
+                data-testid="btrfs-policy-level"
+              >
+                {#each ['zstd:1','zstd:2','zstd:3','zstd:4','zstd:5','zstd:6','zstd:7','zstd:8','zstd:9','zstd:10','zstd:11','zstd:12','zstd:13','zstd:14','zstd:15','none'] as lvl (lvl)}
+                  <option value={lvl}>{lvl}</option>
+                {/each}
+              </select>
+            </label>
+            <label class="flex items-center gap-2 pb-2 text-xs text-[var(--hv-shell-text-2)]">
+              <input type="checkbox" class="w-4 h-4 accent-[var(--hv-primary)]" bind:checked={btrfsPolicyDefrag} />
+              {$t('storage.btrfs.defrag')}
+            </label>
+            <Button variant="primary" onclick={saveBtrfsPolicyForm} disabled={btrfsPolicyBusy} data-testid="btrfs-policy-save">
+              {$t('storage.btrfs.save')}
+            </Button>
+          </div>
+
+          {#if btrfsPolicies.length === 0}
+            <EmptyState data-testid="btrfs-policy-empty" title={$t('storage.btrfs.empty')} description={$t('storage.btrfs.empty_desc')} />
+          {:else}
+            <div class="flex flex-col gap-3">
+              {#each btrfsPolicies as policy (policy.path)}
+                <div data-testid="btrfs-policy" class="px-5 py-4 rounded-2xl bg-[var(--hv-shell-card)] border border-[var(--hv-shell-border)] shadow-[var(--hv-shell-shadow-card)]">
+                  <div class="flex items-start justify-between gap-3 flex-wrap">
+                    <div class="flex flex-col gap-1 min-w-0">
+                      <span class="font-mono text-c-card-title font-semibold text-[var(--hv-shell-text-strong)] truncate">{policy.path}</span>
+                      <span class="text-xs text-[var(--hv-shell-text-2)]">
+                        <strong>{policy.level}</strong> ·
+                        {policy.defrag ? $t('storage.btrfs.defrag') : $t('storage.btrfs.defrag_off')} ·
+                        {$t('storage.btrfs.last_applied')}: {policy.last_applied_at ? new Date(policy.last_applied_at).toLocaleString() : '—'}
+                      </span>
+                    </div>
+                    <div class="flex items-center gap-1">
+                      <Button variant="secondary" size="sm" onclick={() => applyBtrfsPolicy(policy.path)} disabled={btrfsPolicyBusy} data-testid="btrfs-policy-apply">
+                        <IconPlayerPlay size={15} stroke={1.9} /> {$t('storage.btrfs.apply')}
+                      </Button>
+                      <Button variant="ghost" size="sm" onclick={() => removeBtrfsPolicy(policy.path)} data-testid="btrfs-policy-delete">
+                        <IconTrash size={15} stroke={1.9} /> {$t('storage.btrfs.delete')}
+                      </Button>
+                    </div>
+                  </div>
+                </div>
+              {/each}
+            </div>
+          {/if}
         </div>
       {/if}
     </div>

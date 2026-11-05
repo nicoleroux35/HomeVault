@@ -341,6 +341,40 @@ readiness for this app (ROADMAP 8):
   group per pair for raid10) is unit-tested through `zfs_create_args`; what is
   not proven is zpool's own reaction on a host that holds an exported pool.
 
+## Resync speed, monitor and spares (P1-21, 2026-11-05)
+
+`src/raid_stability.rs` owns the reliability half of RAID management:
+
+- **Speed profiles** — `low` (1 000–25 000 kB/s), `balanced`
+  (5 000–100 000) and `fast` (25 000–500 000). `apply_speed_profile` writes
+  `/proc/sys/dev/raid/speed_limit_min` and `_max` through `sudo tee`; `mdadm`
+  has no API for these. A write failure is returned to the caller, never
+  swallowed. No endpoint or UI calls it yet, so HomeVault never changes the
+  host's limits on its own.
+- **Event parsing** — `parse_monitor_event` reads the line
+  `md/array <event> <device>` that `mdadm --monitor --program` would emit
+  (`Fail`, `DegradedArray`, `SpareActive`, `RebuildStarted`,
+  `RebuildFinished`); `event_severity` maps the ones worth notifying.
+- **Degradation detection** — `poll_once` lists the arrays, compares each
+  one's state with the previous pass (`degraded_transitions`) and raises a
+  notification when an array loses redundancy. The web process spawns
+  `run_monitor_loop` at startup (2 min delay, then every 5 min).
+- **Spare choice** — `pick_spare` picks a candidate that is not already a
+  member and not excluded; `spare_suggestion` turns it into the sentence
+  appended to a degradation notification, or says explicitly when no free
+  disk exists. The actual `mdadm --add` stays a human action in Storage
+  (choosing a replacement changes the machine's inventory), so the spare is
+  *proposed*, never taken silently.
+
+## Foreign mdadm import (P1-23, 2026-11-05)
+
+`list_importable_mdadm_pools` runs `mdadm --examine --scan`, parses the
+`ARRAY … UUID=…` lines and drops arrays whose `/dev/md*` name is already
+assembled (`assembled_md_names`). Importing runs `mdadm --assemble --scan`
+and then verifies the result with `mdadm --detail`; a name or UUID that did
+not appear is a failure, not a silent success. This is the "online assemble"
+path: the existing superblocks are used, nothing is recreated or formatted.
+
 ## Related
 
 - [Storage](./storage.md), [Snapshots](./snapshots.md), [Rescue](./rescue.md),

@@ -419,6 +419,29 @@ query value, so a call site reads like the URL it builds.
   (image names, required env vars, volume paths) as reviewed-but-not-executed
   until the first real install on a networked host.
 
+## Supply-chain checks (P1-27, 2026-11-05)
+
+`src/supply_chain.rs` provides the primitives:
+
+- `validate_image_reference` runs before every `docker pull`. A malformed
+  `@sha256:` suffix is a refusal at the HomeVault layer, not a daemon error,
+  so a reference cannot silently resolve to a different manifest.
+- `is_sha256_digest` / `pinned_digest` / `is_pinned` distinguish a mutable tag
+  from a digest-pinned reference.
+- `sha256_digest`, `verify_ed25519` and `verify_artifact` verify a signed
+  catalog/update: the signature covers the exact bytes on disk, and a missing
+  signature or key is a refusal, never an implicit "trusted".
+
+**Reserve:** the catalog manifest is not yet required to be digest-pinned or
+signed, and no Ed25519 public key is configured in this build. The validation
+above prevents a malformed digest from being sent to Docker; full pinning and
+signature enforcement remain a follow-up.
+
+`HOMEVAULT_REQUIRE_PINNED_IMAGES=1|true|yes|on` turns the pinning check on for
+catalog installs: every `image:` in the rendered compose file must use
+`@sha256:<64 hex>`, otherwise the install is refused with the list of unpinned
+images. It is off by default because the built-in catalog still uses tags.
+
 ## Related
 
 - [Cloud Sync](./cloud-sync.md), [API Contract](../API.md)

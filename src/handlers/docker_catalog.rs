@@ -531,6 +531,17 @@ pub async fn install_catalog_app(
         }
     };
 
+    if let Err(e) = crate::supply_chain::enforce_pinned_images(
+        &rendered,
+        crate::supply_chain::require_pinned_images(
+            std::env::var("HOMEVAULT_REQUIRE_PINNED_IMAGES")
+                .ok()
+                .as_deref(),
+        ),
+    ) {
+        return Err(format!("Refusing to install {}: {e}", app.manifest.name));
+    }
+
     if let Err(e) = tokio::fs::create_dir_all(&data_dir).await {
         return Err(format!("Failed to create data directory: {}", e));
     }

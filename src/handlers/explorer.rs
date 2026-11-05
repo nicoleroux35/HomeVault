@@ -402,6 +402,19 @@ pub(crate) fn file_response_headers(
         );
     }
     if let Some(d) = digest {
+        // RFC 9530 digest fields travel as base64, not hex — alongside the
+        // historical hex header so existing clients keep working.
+        if let Ok(bytes) = (0..d.len())
+            .step_by(2)
+            .map(|i| u8::from_str_radix(d.get(i..i + 2).unwrap_or(""), 16))
+            .collect::<Result<Vec<u8>, _>>()
+        {
+            use base64::Engine as _;
+            let encoded = base64::engine::general_purpose::STANDARD.encode(bytes);
+            builder = builder
+                .header("Repr-Digest", format!("sha-256=:{encoded}:"))
+                .header("Content-Digest", format!("sha-256=:{encoded}:"));
+        }
         builder = builder.header("X-Content-Sha256", d);
     }
     builder
@@ -923,6 +936,10 @@ pub struct ExplorerDownloadQuery {
     /// the session token itself (that would leak into access logs). Minted by
     /// `POST /api/explorer/download-ticket`.
     pub ticket: Option<String>,
+    /// Ask for a SHA-256 of the whole file even when it is larger than
+    /// [`DIGEST_THRESHOLD`]. Absent keeps the cheap default (no second read).
+    #[serde(default)]
+    pub digest: Option<bool>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1471,9 +1488,12 @@ pub async fn handle_explorer_download(
     }
     crate::transfer_quota::record_usage(state.db.pool(), &download_quotas, send_len, false).await;
 
-    // 5. Optional integrity digest (small files only — avoids a second full
-    //    read of a huge file just to hash it).
-    let digest = if total <= DIGEST_THRESHOLD {
+    // 5. Optional integrity digest. Small files stay automatic; a large file
+    //    is read a second time only when the caller explicitly asks
+    //    (`?digest=true`), so a routine multi-gigabyte download is not
+    //    doubled.
+    let want_digest = params.digest.unwrap_or(false) || total <= DIGEST_THRESHOLD;
+    let digest = if want_digest {
         file_sha256(&file_path).await
     } else {
         None
@@ -2257,9 +2277,38 @@ pub async fn handle_explorer_upload_chunk(
     }
     drop(_guard);
 
+    let expected_sha256 = headers
+        .get("x-chunk-sha256")
+        .and_then(|h| h.to_str().ok())
+        .map(|v| v.trim().to_ascii_lowercase())
+        .filter(|v| !v.is_empty());
+    if let Some(expected) = &expected_sha256 {
+        if expected.len() != 64 || !expected.chars().all(|c| c.is_ascii_hexdigit()) {
+            return ResponseHelper::json_error(
+                "X-Chunk-Sha256 must be a 64-character hex SHA-256".to_string(),
+            );
+        }
+    }
+
     let tmp_path = session.tmp_path.clone();
-    let written = stream_chunk_to_file(body, &tmp_path, params.offset, cap).await;
+    let written = stream_chunk_to_file(
+        body,
+        &tmp_path,
+        params.offset,
+        cap,
+        expected_sha256.as_deref(),
+    )
+    .await;
     match written {
+        Ok(ChunkWrite::ChecksumMismatch) => (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            axum::Json(serde_json::json!({
+                "success": false,
+                "offset": params.offset,
+                "message": "The chunk SHA-256 does not match; nothing was committed. Resume at the previous offset."
+            })),
+        )
+            .into_response(),
         Ok(ChunkWrite::Done(n)) => {
             if n == 0 && session.total_bytes > 0 {
                 return ResponseHelper::json_error("Empty chunk".to_string());
@@ -2323,6 +2372,8 @@ enum ChunkWrite {
     /// The body was longer than the cap; the file holds **cap** bytes but the
     /// caller must not advance the session offset.
     OverCap,
+    /// The optional `X-Chunk-Sha256` did not match; the file was rolled back.
+    ChecksumMismatch,
 }
 
 /// Streams `body` into `tmp_path` at `offset`, stopping at `cap` bytes.
@@ -2336,9 +2387,13 @@ async fn stream_chunk_to_file(
     tmp_path: &std::path::Path,
     offset: u64,
     cap: u64,
+    expected_sha256: Option<&str>,
 ) -> std::io::Result<ChunkWrite> {
     use futures_util::StreamExt as _;
+    use sha2::{Digest as _, Sha256};
     use tokio::io::AsyncWriteExt as _;
+
+    let mut hasher = Sha256::new();
 
     let mut file = tokio::fs::OpenOptions::new()
         .write(true)
@@ -2361,9 +2416,24 @@ async fn stream_chunk_to_file(
             let _ = file.set_len(offset).await;
             return Err(e);
         }
+        hasher.update(&frame);
         written += frame.len() as u64;
     }
     file.flush().await?;
+    if let Some(expected) = expected_sha256 {
+        let actual = hasher
+            .finalize()
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect::<String>();
+        if actual != expected {
+            // The bytes never become part of the file: the session offset
+            // stays where it was, so the client can resend the chunk.
+            file.set_len(offset).await?;
+            file.flush().await?;
+            return Ok(ChunkWrite::ChecksumMismatch);
+        }
+    }
     Ok(ChunkWrite::Done(written))
 }
 
@@ -6981,7 +7051,9 @@ Path = stage/inside/link\nFolder = -\nAttributes =  lrwxrwxrwx\n\n";
             Ok(axum::body::Bytes::from_static(b"cc")),
         ];
         let body = axum::body::Body::from_stream(futures_util::stream::iter(frames));
-        let outcome = stream_chunk_to_file(body, &path, 0, 1024).await.unwrap();
+        let outcome = stream_chunk_to_file(body, &path, 0, 1024, None)
+            .await
+            .unwrap();
         assert_eq!(outcome, ChunkWrite::Done(10));
         assert_eq!(std::fs::read(&path).unwrap(), b"aaaabbbbcc");
     }
@@ -7000,7 +7072,7 @@ Path = stage/inside/link\nFolder = -\nAttributes =  lrwxrwxrwx\n\n";
             Ok(axum::body::Bytes::from_static(b"5678")),
         ];
         let body = axum::body::Body::from_stream(futures_util::stream::iter(frames));
-        let outcome = stream_chunk_to_file(body, &path, 4, 6).await.unwrap();
+        let outcome = stream_chunk_to_file(body, &path, 4, 6, None).await.unwrap();
         assert_eq!(outcome, ChunkWrite::OverCap);
         assert_eq!(
             std::fs::read(&path).unwrap(),
@@ -7021,9 +7093,35 @@ Path = stage/inside/link\nFolder = -\nAttributes =  lrwxrwxrwx\n\n";
         let body = axum::body::Body::from_stream(futures_util::stream::iter(Vec::<
             Result<axum::body::Bytes, std::io::Error>,
         >::new()));
-        let outcome = stream_chunk_to_file(body, &path, 1, 1024).await.unwrap();
+        let outcome = stream_chunk_to_file(body, &path, 1, 1024, None)
+            .await
+            .unwrap();
         assert_eq!(outcome, ChunkWrite::Done(0));
         assert_eq!(std::fs::read(&path).unwrap(), b"X");
+    }
+
+    /// A chunk whose SHA-256 does not match is rolled back and never
+    /// advances the resume offset.
+    #[tokio::test]
+    async fn a_corrupt_chunk_is_rejected_before_it_is_committed() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("part.bin");
+        std::fs::write(&path, b"GOOD").unwrap();
+
+        let frames: Vec<Result<axum::body::Bytes, std::io::Error>> =
+            vec![Ok(axum::body::Bytes::from_static(b"bad"))];
+        let body = axum::body::Body::from_stream(futures_util::stream::iter(frames));
+        let outcome = stream_chunk_to_file(
+            body,
+            &path,
+            4,
+            1024,
+            Some("0000000000000000000000000000000000000000000000000000000000000000"),
+        )
+        .await
+        .unwrap();
+        assert_eq!(outcome, ChunkWrite::ChecksumMismatch);
+        assert_eq!(std::fs::read(&path).unwrap(), b"GOOD");
     }
 
     /// The per-request ceiling is what bounds this route's memory, and it must

@@ -371,6 +371,51 @@ pub async fn handle_smb_config_update(
     }
 }
 
+/// Body for an AD domain join/leave.
+#[derive(Debug, serde::Deserialize)]
+pub struct DomainCredentials {
+    pub username: String,
+    pub password: String,
+}
+
+/// `POST /api/shares/smb/domain/join` — join Active Directory (admin).
+pub async fn handle_smb_domain_join(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    axum::extract::Json(req): axum::extract::Json<DomainCredentials>,
+) -> Response {
+    if let Err(resp) = crate::handlers::admin_guard::require_admin(&state, &headers).await {
+        return resp;
+    }
+    match run_share_op("join AD domain", move || {
+        crate::shares::join_domain(&req.username, &req.password)
+    })
+    .await
+    {
+        Ok(message) => ResponseHelper::json_success(message),
+        Err(e) => ResponseHelper::json_error(format!("Domain join failed: {e}")),
+    }
+}
+
+/// `POST /api/shares/smb/domain/leave` — leave Active Directory (admin).
+pub async fn handle_smb_domain_leave(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    axum::extract::Json(req): axum::extract::Json<DomainCredentials>,
+) -> Response {
+    if let Err(resp) = crate::handlers::admin_guard::require_admin(&state, &headers).await {
+        return resp;
+    }
+    match run_share_op("leave AD domain", move || {
+        crate::shares::leave_domain(&req.username, &req.password)
+    })
+    .await
+    {
+        Ok(message) => ResponseHelper::json_success(message),
+        Err(e) => ResponseHelper::json_error(format!("Domain leave failed: {e}")),
+    }
+}
+
 /// Body for the per-share recycle-bin toggle.
 #[derive(Debug, serde::Deserialize)]
 pub struct RecycleToggleRequest {

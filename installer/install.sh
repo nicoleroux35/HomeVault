@@ -1697,6 +1697,12 @@ WorkingDirectory=$INSTALL_DIR
 ExecStart=$INSTALL_DIR/homevault
 Restart=on-failure
 RestartSec=5
+# Stability policy (tasklist P1-28): bound the shutdown, stop a crash loop
+# from hammering the host, and make an OOM kill visible. Keep these in sync
+# with src/system_stability.rs::SERVICE_HARDENING.
+LimitNOFILE=65536
+TimeoutStopSec=30
+OOMPolicy=stop
 Environment="PORT=$PORT"
 Environment="DATA_DIRECTORY=$DATA_DIR"
 # Built-in HTTPS is opt-in (Settings > Security > HTTPS/TLS, or set
@@ -1729,7 +1735,35 @@ TasksMax=1024
 [Install]
 WantedBy=multi-user.target
 EOF
+mkdir -p /etc/systemd/system/homevault.service.d
+cat > /etc/systemd/system/homevault.service.d/10-stability.conf <<'EOF'
+[Unit]
+StartLimitIntervalSec=60
+StartLimitBurst=5
+EOF
 ok "System service unit written to $SERVICE_FILE"
+
+# Kernel stability (tasklist P1-28): a panic reboots instead of wedging, and
+# the dirty page cache is capped so a power cut loses less. Values are shared
+# with src/system_stability.rs::SYSCTL_LINES.
+mkdir -p /etc/sysctl.d
+cat > /etc/sysctl.d/99-homevault.conf <<'EOF'
+kernel.panic = 10
+kernel.panic_on_oops = 1
+vm.dirty_background_ratio = 5
+vm.dirty_ratio = 10
+EOF
+sysctl --system &> /dev/null || true
+
+# Monitoring ownership (tasklist P1-28): HomeVault samples SMART and polls
+# mdadm itself. Enabling smartd/mdmonitor as well produces duplicate alerts and
+# duplicate wake-ups. Do not disable an existing service behind the admin's
+# back — say it once, loudly, and let them choose.
+for unit in smartd mdmonitor; do
+    if command -v systemctl >/dev/null 2>&1 && systemctl is-enabled --quiet "$unit" 2>/dev/null; then
+        warn "$unit is enabled but HomeVault already monitors that subsystem; disable one of them to avoid duplicate alerts"
+    fi
+done
 
 # Optional: turn on built-in HTTPS with a self-signed certificate. Opt-in and
 # only offered on a fresh install; can also be toggled later from

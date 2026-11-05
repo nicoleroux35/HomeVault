@@ -539,6 +539,13 @@ but reported as not enforced (with a `reason_code`), never as applied. See
 | GET | `/storage/virtual-disks/{name}/btrfs-layout` | auth | `handle_btrfs_layout_status` — Btrfs only: `{ pool, mount_point, layout (legacy|at), layout_name, rollback_available, migration_required }` |
 | POST | `/storage/virtual-disks/{name}/btrfs-layout` | admin | `handle_btrfs_layout_migrate` — explicit legacy → `@`/`@snapshots`: moves `.snapshots` to `@snapshots`, data into `@`, rewrites both fstab entries, remounts; serialized, failure restores the moved entries. Already migrated → `503`/`400` named |
 | POST | `/storage/virtual-disks/{name}/btrfs-rollback` | admin | `handle_btrfs_rollback` — `{ snapshot, confirm: true }`; legacy layout → `503` (`json_unavailable`) naming the migration; otherwise a `pre-rollback-*` safety snapshot, `@` swapped for the snapshot, previous `@before-rollback-*` kept, both subvolumes remounted; recovery path run on failure |
+| GET | `/storage/btrfs/policies` | auth | per-path compression policies (`path`, `level`, `defrag`, `last_applied_at`) |
+| PUT | `/storage/btrfs/policies` | admin | `{ path, level ("zstd:1"…"zstd:15"|"none"), defrag }`; absolute directory, no `..`, never under `.snapshots` |
+| DELETE | `/storage/btrfs/policies?path=…` | admin | remove one policy |
+| POST | `/storage/btrfs/policies/apply` | admin | `{ path }` — defragment + set `chattr +c`/`-c` now; the daily loop also applies a due (monthly) policy |
+| GET | `/storage/zfs/volumes` | auth | `zfs list -H -p -t volume`; each volume carries `saturated` at ≥90 % used |
+| POST | `/storage/zfs/volumes` | admin | `{ name, size_bytes, thin? }` — thin adds `-s` + `refreservation=none`; name/size validated before `zfs create` |
+| DELETE | `/storage/zfs/volumes/{*name}` | admin | `zfs destroy <dataset>` |
 | GET | `/storage/available-home-disks` | auth | `handle_available_home_disks` (valid session, not admin) |
 | GET | `/storage/disks/{name}/smart/capabilities` | auth | `handle_disk_smart_capabilities` — whether `smartctl` supports this disk |
 | GET | `/storage/disks/{name}/smart/test` | auth | `handle_disk_smart_test_status` — running self-test status |
@@ -677,6 +684,8 @@ and `handle_share_get` accepted any non-empty `X-Session-Token`; they now use
 | DELETE | `/shares/{name}/{share_type}/snapshots/{snapshot}` | admin | `handle_share_snapshot_delete` — deletes only that share backend's snapshot; unsafe names `400` |
 | POST | `/shares/{name}/{share_type}/snapshots/{snapshot}/restore` | admin | `handle_share_snapshot_restore` — `{ path (relative, no dot-dot or absolute path), confirm: true }`; restores a file/folder from the snapshot into the live share, atomic file copy, folder merge; `403` outside the share, unsupported Btrfs non-subvolume `503` |
 | GET/PUT | `/shares/smb\|nfs\|ftp\|webdav\|sftp/config` | admin | service config |
+| POST | `/shares/smb/domain/join` | admin | `{username, password}` → `net ads join -U <username>`; password on stdin, never stored; refuses when winbind is absent |
+| POST | `/shares/smb/domain/leave` | admin | `{username, password}` → `net ads leave -U <username>` |
 | GET | `/shares/sftp/users` | admin | users with SFTP access + key status (separate `homevault-sftp.service`, see [Shares guide](./guides/shares.md)) |
 | PUT | `/shares/sftp/users/key` | admin | set a user's SFTP public key `{ username, public_key }` |
 | POST | `/shares/sftp/rebuild` | admin | reconcile SFTP jails against current ACL grants |
@@ -719,7 +728,8 @@ is a `400` naming the field:
 - `options` (NFS): whitespace-free tokens, no `( ) , # " '`, ≤ 16 entries —
   they are written as `path *(opt1,opt2)`.
 - SMB global config: one-line `workgroup` (≤ 15), `security_mode` ∈
-  {`user`,`share`,`domain`,`server`,`ads`}, octal `create_mask`/`directory_mask`.
+  {`user`,`share`,`ads`} (`server` refused), `realm` required for `ads`,
+  `idmap_range` `low-high`, octal `create_mask`/`directory_mask`.
 - FTP config: single-line `welcome_message`, non-zero ports, `passive_ports` =
   `min` or `min-max` with min < max, `max_clients` ≥ 1.
 
@@ -1900,6 +1910,21 @@ Cron-driven pool snapshots with GFS retention. See
 | POST | `/snapshot-schedules/{id}/run` | admin | `handle_snapshot_schedule_run_now` — create + GFS prune now |
 | GET | `/snapshot-schedules/snapshots?pool=` | auth | `handle_snapshot_pool_list` — pool snapshots, `auto` tags the schedules' own prefix |
 
+### Quiescence hooks (P2-13)
+
+| Method | Path | Auth | Notes |
+|---|---|---|---|
+| GET | `/storage/snapshot-hooks` | auth | `[{ id, name, pre[], post[], enabled }]` |
+| POST | `/storage/snapshot-hooks` | admin | `{ name, pre[], post[], enabled? }`; argv vectors, no shell |
+| PUT | `/storage/snapshot-hooks/{id}` | admin | replace name/argv/enabled |
+| DELETE | `/storage/snapshot-hooks/{id}` | admin | remove |
+
+Each enabled hook runs its `pre` argv before a scheduled snapshot and its
+`post` argv after it (reverse order). A failing pre-hook downgrades the run to
+`crash-consistent` with the reason; it never aborts the snapshot. Executables
+must be absolute paths, each command has at most 32 arguments and a 60 s
+deadline.
+
 - `GET …/snapshots` is a **read** (`require_auth`): it only lists names.
   Everything that mutates or destroys stays `require_admin`.
 - **409 Conflict** — `POST`/`PUT` when another schedule already owns the
@@ -1971,12 +1996,19 @@ Scheduled `zfs send`/`btrfs send` to another dataset (local or over SSH). See
 | PUT/DELETE | `/replication/{id}` | **admin** | update / delete (existing copies stay on the destination) |
 | GET | `/replication/{id}/preview` | auth | `handle_replication_preview` — the exact next-run pipeline, a dry run |
 | POST | `/replication/{id}/run` | **admin** | `handle_replication_run_now` |
+| GET | `/replication/witness` | auth | configured flag, node and current witness lease |
+| POST | `/replication/witness` | **admin** | acquire/renew the lease (`HOMEVAULT_WITNESS_*`) |
 
 - Validation refuses: a name over 64 characters or with control characters, a
-  dataset containing `@` (the job creates its own snapshots), Btrfs over SSH,
-  a local destination equal to the source, an interval other than 0 or
+  dataset containing `@` (the job creates its own snapshots), a local
+  destination equal to the source, an interval other than 0 or
   5–43200 minutes, `keep_last` outside 1–365, and a bandwidth cap above
-  10 000 000 kB/s.
+  10 000 000 kB/s. Btrfs over SSH is supported (P1-26): the send runs locally
+  and `ssh … sudo btrfs receive` runs on the destination.
+- After a successful transfer the scheduler proves the destination
+  (`destination_verify_command`): a ZFS `checksum` property or a Btrfs
+  `subvolume show`, locally or over SSH. A failed transfer is retried three
+  times with exponential backoff before the run is failed.
 - A run is single-flight per job (`run_job` holds a process-wide registry): a
   second `run` answers `success:false` instead of interleaving two sends of the
   same dataset. A missing `zfs`/`ssh` binary is refused up front for the backend
@@ -1997,6 +2029,21 @@ single broken dependency can never blank the payload. Returns
 `{ success, data: { checks[], overall_status, cpu_usage, memory_usage } }` —
 note the field names are `checks`/`overall_status`, not `metrics`/`overall`.
 See [Health](./guides/health.md).
+
+## Disk-health endpoints
+
+| Method | Path | Auth | Notes |
+|---|---|---|---|
+| GET | `/api/health/disk-health` | session | active findings, worst first (`disk_health_findings`) |
+| GET | `/api/health/disk-health/samples` | session | `?serial=…&limit=…` (cap 5 000) |
+| GET | `/api/health/disk-health/prediction` | session | `?serial=…` — least-squares trend for attrs 5/187/188/194/197/198 (needs ≥5 samples) |
+| GET | `/api/health/disk-health/predictions` | session | trends for every sampled disk (`[{ serial, trends[] }]`); no trend under 5 samples |
+| POST | `/api/health/disk-health/sample` | admin | run one S.M.A.R.T./I/O sample now |
+
+Samples live in `disk_health_samples`; findings are deduplicated by
+`fingerprint = serial:attribute:condition` and raise `health.disk_smart` once
+when they first appear. See [Health](./guides/health.md) → "Disk health
+history".
 
 ## Related docs
 

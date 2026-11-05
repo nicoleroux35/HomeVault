@@ -1,7 +1,6 @@
 //! Integration tests for USB one-touch copy
 
-use homevault::usb_copy::{CopyStatus, UsbCopyProfile, UsbCopyService};
-use std::time::SystemTime;
+use homevault::usb_copy::{UsbCopyProfile, UsbCopyService};
 
 #[tokio::test]
 async fn test_list_devices() {
@@ -278,6 +277,21 @@ async fn test_count_files_with_subdirectories() {
     let count = UsbCopyService::count_files(temp_dir.path()).await.unwrap();
 
     assert_eq!(count, 2);
+}
+
+#[tokio::test]
+async fn test_verify_copy_rejects_a_corrupted_destination() {
+    use std::fs;
+    let dir = tempfile::tempdir().unwrap();
+    let src = dir.path().join("src.bin");
+    let dst = dir.path().join("dst.bin");
+    fs::write(&src, b"the-original-bytes").unwrap();
+    fs::write(&dst, b"the-corruptd-bytes").unwrap();
+
+    let error = UsbCopyService::verify_copy(&src, &dst)
+        .await
+        .expect_err("same length is not the same content");
+    assert!(error.contains("checksum"), "{error}");
 }
 
 fn make_test_profile() -> UsbCopyProfile {

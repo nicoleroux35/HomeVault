@@ -356,6 +356,31 @@ this one.
 so the screen renders what the server recorded rather than assuming `200` meant
 "it worked".
 
+## Final verification (P1-25, 2026-11-05)
+
+`rclone sync` exiting 0 only means the transfers it planned succeeded. Every
+run now:
+
+- passes `--checksum` (compare content, not size + mtime) and the resilience
+  flags `--retries 3`, `--low-level-retries 10`, `--timeout 5m`,
+  `--contimeout 1m`;
+- after success, runs `rclone check <src> <dst> --one-way --checksum`
+  (`rclone_check_args`). A difference, or a check that cannot run, turns the
+  run into a failure — the job is never recorded as "OK" on the strength of
+  the copy alone. A `--dry-run` request skips the check, which would be
+  meaningless.
+
+The cache tier's `rsync` mover applies the same rule (`src/cache.rs`): after a
+successful copy it runs `rsync -a --checksum --dry-run --itemize-changes`
+between source and destination and logs any difference. When
+`--remove-source-files` was used the source is gone, so no comparison is
+possible and none is claimed.
+
+**Audit trail.** Each rclone sync (button or scheduled job) writes a
+`transfer_history` row with operation `copy`, method `rclone-check`,
+`verified = true` only when the post-sync check passed on a non-dry run, and
+the failure message when it did not. A dry run is never marked verified.
+
 ## Related
 
 - [Explorer](./explorer.md), [Docker](./docker.md), [API Contract](../API.md)

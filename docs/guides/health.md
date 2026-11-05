@@ -305,6 +305,39 @@ permission bits, `ShareQuotaRepository`, `SnapshotScheduleRepository`,
 host-side probes (certificate files, SMB config, `stat` on each share path,
 pool scan, the `sudo ufw --version` probe) run inside one `spawn_blocking`.
 
+## Disk health history (P0-8, 2026-11-05)
+
+`src/disk_health.rs` samples the watched S.M.A.R.T. attributes once a day
+(`disk_health_scheduler`, at most one sample per 20 hours) and stores one row
+per attribute in `disk_health_samples`. The watched set is reallocated
+sectors (5), pending/offline sectors (197/198), reported uncorrectable (187),
+command timeout (188), UDMA CRC (199), SSD wear (177/231), temperature
+(190/194) and power-on hours (9).
+
+A sample is compared with the previous value and a worsening condition becomes
+a **finding** in `disk_health_findings`, deduplicated by
+`serial:attribute:condition`. A persistent condition updates `last_seen`; it
+does not re-notify every day. Thresholds: reallocated +5, any increase of
+187/197/198, wear ≤ 10 %, temperature ≥ 55 °C on **three consecutive
+samples**, `smartctl -H` FAILED. A single hot sample is noise and does not
+raise a finding. Findings raise the `health.disk_smart` notification event.
+
+The same pass adds system-wide findings: storage I/O errors from
+`journalctl -k` over 24 h, `btrfs device stats`, `zpool status -x`, and the
+`mdadm --detail` mismatch counter. All commands carry a 20 s deadline.
+
+Endpoints:
+
+| Endpoint | Auth | Notes |
+|---|---|---|
+| `GET /api/health/disk-health` | session | active findings, worst first |
+| `GET /api/health/disk-health/samples?serial=…&limit=…` | session | per-disk history (cap 5 000) |
+| `POST /api/health/disk-health/sample` | admin | run one sample now |
+
+The Health screen adds a **Disk health history** card (findings list +
+**Sample now** for admins). The card reads the endpoint on mount and on app
+focus, so a fixed finding disappears on the next sample without a restart.
+
 ## Invariants
 
 - `/health` requires a session (a past audit found dashboard endpoints open).
@@ -331,6 +364,42 @@ pool scan, the `sudo ufw --version` probe) run inside one `spawn_blocking`.
   report shape, the "fix it and the finding disappears on the next run"
   criterion and the no-secret payload; `src/security_advisor.rs`'s unit tests
   pin each check in both directions.
+
+## Failure prediction (P2-10, 2026-11-05)
+
+`GET /api/health/disk-health/prediction?serial=…` (session) fits an ordinary
+least-squares line to the stored samples of attributes **5, 187, 188, 194,
+197 and 198** and returns, per attribute, the slope per day, `r_squared`, and
+(when the slope is positive and the fit is not flat) `days_remaining` with a
+residual-based low/high interval.
+
+- At least **5 samples** are required (`MIN_POINTS`); fewer is noise, and the
+  endpoint returns no trend for that attribute rather than a fabricated one.
+- Thresholds: 5 → 10, 187/188/197/198 → 1, 194 → 60 °C.
+- This is a linear trend, not ML. It tells an admin "this counter is heading
+  for its threshold"; it does not decide that the disk is failing.
+- `GET /api/health/disk-health/predictions` returns the same trends for every
+  sampled disk, and the Health screen's **Failure prediction** card renders
+  them (attribute, estimated days, fit quality). A disk with fewer than five
+  samples simply has no trend.
+
+## Weekly health report (P2-12, 2026-11-05)
+
+`src/health_report.rs` sends one aggregated notification per week
+(`health.storage`, deduplicated by the notification engine):
+
+- active disk findings and how many are critical;
+- the newest S.M.A.R.T. sample timestamp across all disks;
+- free space per mounted pool;
+- a pending/interrupted scrub, when the marker exists;
+- the last `restic check` result.
+
+The report is generated at most weekly (`state/weekly-health-report` holds the
+last send) and the scheduler checks every 6 h after a 15 min startup delay.
+**Every missing measurement renders as `unknown`, never as `OK`** — a report
+that cannot read a fact says so. The `restic check` slot reads the newest
+`restic_check` task run (status + finish time). Set
+`HOMEVAULT_WEEKLY_HEALTH_REPORT=0|false|no|off` to disable the report.
 
 ## Related
 

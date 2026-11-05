@@ -191,6 +191,35 @@ fn storage_router(state: Arc<AppState>) -> Router {
             get(handle_importable_pools_list),
         )
         .route("/api/storage/import-pool", post(handle_import_pool))
+        .route(
+            "/api/storage/btrfs/policies",
+            get(homevault::handlers::btrfs_maintenance::handle_policies_list)
+                .put(homevault::handlers::btrfs_maintenance::handle_policy_upsert)
+                .delete(homevault::handlers::btrfs_maintenance::handle_policy_delete),
+        )
+        .route(
+            "/api/storage/btrfs/policies/apply",
+            post(homevault::handlers::btrfs_maintenance::handle_policy_apply),
+        )
+        .route(
+            "/api/storage/snapshot-hooks",
+            get(homevault::handlers::snapshot_quiescence::handle_hooks_list)
+                .post(homevault::handlers::snapshot_quiescence::handle_hook_create),
+        )
+        .route(
+            "/api/storage/snapshot-hooks/{id}",
+            axum::routing::put(homevault::handlers::snapshot_quiescence::handle_hook_update)
+                .delete(homevault::handlers::snapshot_quiescence::handle_hook_delete),
+        )
+        .route(
+            "/api/storage/zfs/volumes",
+            get(homevault::handlers::zfs_volumes::handle_volumes_list)
+                .post(homevault::handlers::zfs_volumes::handle_volume_create),
+        )
+        .route(
+            "/api/storage/zfs/volumes/{*name}",
+            axum::routing::delete(homevault::handlers::zfs_volumes::handle_volume_delete),
+        )
         .route("/api/cache/settings", get(handle_cache_settings_get))
         .route("/api/cache/settings", put(handle_cache_settings_update))
         .route("/api/cache/pools", get(handle_cache_pools_get))
@@ -1183,4 +1212,202 @@ async fn test_cache_pools_get_returns_an_array_even_with_no_pools() {
     .await;
     assert_eq!(status, StatusCode::OK);
     assert!(body["data"].is_array());
+}
+
+#[tokio::test]
+async fn btrfs_compression_policies_validate_and_round_trip() {
+    let (mut router, token, tmp, _guard) = admin_router().await;
+    let share = tmp.path().join("photos");
+    std::fs::create_dir_all(&share).expect("share dir");
+    let path = share.to_string_lossy().to_string();
+
+    let (status, _) = send(
+        &mut router,
+        Method::GET,
+        "/api/storage/btrfs/policies",
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+
+    let (status, body) = send(
+        &mut router,
+        Method::PUT,
+        "/api/storage/btrfs/policies",
+        Some(&token),
+        Some(json!({ "path": path, "level": "zstd:16", "defrag": false })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+
+    let (status, body) = send(
+        &mut router,
+        Method::PUT,
+        "/api/storage/btrfs/policies",
+        Some(&token),
+        Some(json!({ "path": path, "level": "zstd:3", "defrag": false })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["data"]["level"], "zstd:3");
+    assert_eq!(body["data"]["defrag"], false);
+
+    let (status, body) = send(
+        &mut router,
+        Method::GET,
+        "/api/storage/btrfs/policies",
+        Some(&token),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["data"].as_array().map(Vec::len), Some(1));
+
+    let (status, body) = send(
+        &mut router,
+        Method::DELETE,
+        &format!("/api/storage/btrfs/policies?path={path}"),
+        Some(&token),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    let (status, body) = send(
+        &mut router,
+        Method::GET,
+        "/api/storage/btrfs/policies",
+        Some(&token),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["data"].as_array().map(Vec::len), Some(0));
+}
+
+#[tokio::test]
+async fn snapshot_quiescence_hooks_validate_and_round_trip() {
+    let (mut router, token, _tmp, _guard) = admin_router().await;
+
+    let (status, _) = send(
+        &mut router,
+        Method::GET,
+        "/api/storage/snapshot-hooks",
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+
+    // A relative executable is refused: hooks never resolve through PATH.
+    let (status, body) = send(
+        &mut router,
+        Method::POST,
+        "/api/storage/snapshot-hooks",
+        Some(&token),
+        Some(json!({ "name": "pg", "pre": ["pg_start"], "post": [] })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+
+    let (status, body) = send(
+        &mut router,
+        Method::POST,
+        "/api/storage/snapshot-hooks",
+        Some(&token),
+        Some(json!({
+            "name": "pg",
+            "pre": ["/bin/true"],
+            "post": ["/bin/true"],
+            "enabled": true
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let id = body["data"]["id"].as_str().expect("hook id").to_string();
+    assert_eq!(body["data"]["pre"][0], "/bin/true");
+
+    let (status, body) = send(
+        &mut router,
+        Method::GET,
+        "/api/storage/snapshot-hooks",
+        Some(&token),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["data"].as_array().map(Vec::len), Some(1));
+
+    let (status, body) = send(
+        &mut router,
+        Method::PUT,
+        &format!("/api/storage/snapshot-hooks/{id}"),
+        Some(&token),
+        Some(json!({
+            "name": "pg",
+            "pre": ["/bin/true"],
+            "post": [],
+            "enabled": false
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["data"]["enabled"], false);
+
+    let (status, body) = send(
+        &mut router,
+        Method::DELETE,
+        &format!("/api/storage/snapshot-hooks/{id}"),
+        Some(&token),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    let (status, body) = send(
+        &mut router,
+        Method::GET,
+        "/api/storage/snapshot-hooks",
+        Some(&token),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["data"].as_array().map(Vec::len), Some(0));
+}
+
+#[tokio::test]
+async fn zfs_volumes_validate_before_touching_the_host() {
+    let (mut router, token, _tmp, _guard) = admin_router().await;
+
+    let (status, _) = send(
+        &mut router,
+        Method::GET,
+        "/api/storage/zfs/volumes",
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+
+    let (status, body) = send(
+        &mut router,
+        Method::POST,
+        "/api/storage/zfs/volumes",
+        Some(&token),
+        Some(json!({ "name": "../etc", "size_bytes": 1073741824, "thin": true })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+
+    let (status, body) = send(
+        &mut router,
+        Method::POST,
+        "/api/storage/zfs/volumes",
+        Some(&token),
+        Some(json!({ "name": "tank/data", "size_bytes": 1, "thin": true })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
 }

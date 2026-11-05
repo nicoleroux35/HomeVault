@@ -62,6 +62,27 @@ for a different screen (Settings → Power).
 - The single privilege path is `sudo systemctl <verb>`; the bare `shutdown`
   binary is neither called nor granted. See [Power](./power.md).
 
+## System stability hardening (P1-28, 2026-11-05)
+
+`installer/install.sh` writes the unit and kernel policy; `src/system_stability.rs`
+keeps the values and the pure policy functions:
+
+- **Unit** — `LimitNOFILE=65536`, `TimeoutStopSec=30`,
+  `StartLimitIntervalSec=60`, `StartLimitBurst=5`, `OOMPolicy=stop`. The stop
+  timeout bounds a graceful shutdown (the clean-shutdown marker is written
+  last); the start limits stop a crash loop from hammering the host; an OOM
+  kill becomes visible instead of leaving a half-dead process.
+- **Kernel** — `/etc/sysctl.d/99-homevault.conf` sets `kernel.panic=10`,
+  `kernel.panic_on_oops=1`, `vm.dirty_background_ratio=5` and
+  `vm.dirty_ratio=10`: reboot after a panic instead of wedging, and bound the
+  dirty page cache so a power cut loses less.
+- **Advisory helpers** — `write_cache_warning` warns when a disk write cache is
+  enabled without a UPS (a power cut can lose acknowledged writes), and
+  `duplicate_monitor_warning` warns when both `smartd`/`mdmonitor` and
+  HomeVault's own samplers are active. The installer checks `systemctl
+  is-enabled` for `smartd`/`mdmonitor` and prints the same warning; the two
+  helpers are not yet surfaced in the UI.
+
 ## Related
 
 - [Settings](./settings.md), [Power](./power.md), [API Contract](../API.md)

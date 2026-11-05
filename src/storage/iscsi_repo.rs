@@ -64,7 +64,7 @@ impl IscsiRepository {
     pub async fn list_backstores(&self) -> Result<Vec<IscsiBackstore>, DbError> {
         Ok(sqlx::query_as::<_, IscsiBackstore>(
             "SELECT b.id, b.name, b.kind, b.path, b.size_bytes, b.readonly, \
-             b.created_at, b.updated_at, \
+             b.write_policy, b.emulate_fua, b.unmap, b.created_at, b.updated_at, \
              (SELECT COUNT(*) FROM iscsi_luns l WHERE l.backstore_id = b.id) AS lun_count \
              FROM iscsi_backstores b ORDER BY b.name COLLATE NOCASE",
         )
@@ -75,7 +75,7 @@ impl IscsiRepository {
     pub async fn find_backstore(&self, id: i64) -> Result<Option<IscsiBackstore>, DbError> {
         Ok(sqlx::query_as::<_, IscsiBackstore>(
             "SELECT b.id, b.name, b.kind, b.path, b.size_bytes, b.readonly, \
-             b.created_at, b.updated_at, \
+             b.write_policy, b.emulate_fua, b.unmap, b.created_at, b.updated_at, \
              (SELECT COUNT(*) FROM iscsi_luns l WHERE l.backstore_id = b.id) AS lun_count \
              FROM iscsi_backstores b WHERE b.id = ?",
         )
@@ -117,6 +117,24 @@ impl IscsiRepository {
         Ok(row.is_some())
     }
 
+    /// Force a backstore read-only without touching any other field. The
+    /// low-space guard uses this so a concurrent UI edit cannot be lost.
+    pub async fn set_backstore_readonly(&self, id: i64, readonly: bool) -> Result<(), DbError> {
+        let now = Utc::now().to_rfc3339();
+        let result =
+            sqlx::query("UPDATE iscsi_backstores SET readonly = ?, updated_at = ? WHERE id = ?")
+                .bind(readonly)
+                .bind(&now)
+                .bind(id)
+                .execute(self.pool.as_ref())
+                .await?;
+        if result.rows_affected() == 0 {
+            return Err(DbError::NotFound);
+        }
+        Ok(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
     pub async fn create_backstore(
         &self,
         name: &str,
@@ -124,18 +142,25 @@ impl IscsiRepository {
         path: &str,
         size_bytes: i64,
         readonly: bool,
+        write_policy: &str,
+        emulate_fua: bool,
+        unmap: bool,
     ) -> Result<IscsiBackstore, DbError> {
         let now = Utc::now().to_rfc3339();
         let result = sqlx::query(
             "INSERT INTO iscsi_backstores \
-             (name, kind, path, size_bytes, readonly, created_at, updated_at) \
-             VALUES (?, ?, ?, ?, ?, ?, ?)",
+             (name, kind, path, size_bytes, readonly, write_policy, emulate_fua, unmap, \
+              created_at, updated_at) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(name)
         .bind(kind)
         .bind(path)
         .bind(size_bytes)
         .bind(readonly)
+        .bind(write_policy)
+        .bind(emulate_fua)
+        .bind(unmap)
         .bind(&now)
         .bind(&now)
         .execute(self.pool.as_ref())
@@ -145,6 +170,7 @@ impl IscsiRepository {
             .ok_or(DbError::NotFound)
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub async fn update_backstore(
         &self,
         id: i64,
@@ -153,17 +179,24 @@ impl IscsiRepository {
         path: &str,
         size_bytes: i64,
         readonly: bool,
+        write_policy: &str,
+        emulate_fua: bool,
+        unmap: bool,
     ) -> Result<IscsiBackstore, DbError> {
         let now = Utc::now().to_rfc3339();
         let result = sqlx::query(
             "UPDATE iscsi_backstores SET name = ?, kind = ?, path = ?, size_bytes = ?, \
-             readonly = ?, updated_at = ? WHERE id = ?",
+             readonly = ?, write_policy = ?, emulate_fua = ?, unmap = ?, updated_at = ? \
+             WHERE id = ?",
         )
         .bind(name)
         .bind(kind)
         .bind(path)
         .bind(size_bytes)
         .bind(readonly)
+        .bind(write_policy)
+        .bind(emulate_fua)
+        .bind(unmap)
         .bind(&now)
         .bind(id)
         .execute(self.pool.as_ref())

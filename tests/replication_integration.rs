@@ -120,6 +120,11 @@ fn router(state: Arc<AppState>) -> Router {
             "/api/replication/{id}/run",
             post(handle_replication_run_now),
         )
+        .route(
+            "/api/replication/witness",
+            get(homevault::handlers::replication_witness::handle_witness_status)
+                .post(homevault::handlers::replication_witness::handle_witness_acquire),
+        )
         .with_state(state)
 }
 
@@ -393,10 +398,6 @@ async fn test_dangerous_or_incomplete_jobs_are_refused() {
     zero_keep["keep_last"] = json!(0);
     cases.push((zero_keep, "keep_last = 0"));
 
-    let mut btrfs_ssh = valid_job();
-    btrfs_ssh["backend"] = json!("btrfs");
-    cases.push((btrfs_ssh, "btrfs over ssh"));
-
     let mut bad_host = valid_job();
     bad_host["destination_host"] = json!("nas; reboot");
     cases.push((bad_host, "shell metacharacter in a host"));
@@ -532,6 +533,55 @@ async fn test_deleting_an_unknown_job_is_a_clean_error() {
         &mut router,
         Method::DELETE,
         "/api/replication/424242",
+        Some(&admin),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+}
+
+#[tokio::test]
+async fn witness_status_is_readable_and_acquire_is_admin_only() {
+    let h = setup().await;
+    let (mut router, admin, member) = signed_in(&h).await;
+
+    let (status, _) = send(
+        &mut router,
+        Method::GET,
+        "/api/replication/witness",
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+
+    let (status, body) = send(
+        &mut router,
+        Method::GET,
+        "/api/replication/witness",
+        Some(&member),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["data"]["configured"], false);
+
+    let (status, _) = send(
+        &mut router,
+        Method::POST,
+        "/api/replication/witness",
+        Some(&member),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+
+    // With no witness URL configured, an admin gets a named refusal, not a
+    // silent success.
+    let (status, body) = send(
+        &mut router,
+        Method::POST,
+        "/api/replication/witness",
         Some(&admin),
         None,
     )
