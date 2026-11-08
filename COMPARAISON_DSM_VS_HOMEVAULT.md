@@ -39,6 +39,7 @@ qu'elle listait sont **désormais livrés** et ne doivent plus être comptés :
 | Table d'audit | ✅ **livrée le 2026‑11‑08** (P1‑18 : table, API, export, source Journal, rétention 90 j ; filtres structurés UI restants) |
 | Signature + atomicité de mise à jour | 🟡 **installeur livré le 2026‑11‑08** (P2‑8 partiel : déclenchement UI restant) |
 | Isolation d'exécution | 🟡 **installeur livré le 2026‑11‑08** (P2‑7 partiel : systemd durci + AppArmor opt‑in ; validation terrain/enforce restante) |
+| Restauration bare‑metal | 🟡 **drill non destructif livré le 2026‑11‑08** (P2‑9 partiel : snapshot DB + archive config + état backup vérifiés ; test de reconstruction VM restant) |
 
 **Ce que la revue du 2026‑11‑08 ajoute.** Le diagnostic de ce document reste
 juste : les vrais manques sont la **confiance** (mise à jour, isolation, audit,
@@ -178,7 +179,14 @@ bloquante depuis `events::log_event`, champs structurés pour
 l'authentification (acteur/action/IP), API admin `GET /api/audit` +
 `/api/audit/export` (CSV/JSON), source `audit` dans le Journal et purge à
 90 jours. Restent les filtres structurés dans l'UI Journal (l'API les porte
-déjà). P2‑9 (restauration bare‑metal) reste ouvert.
+déjà). P2‑9 est **livré côté drill** : `src/restore_drill.rs` vérifie le dernier
+snapshot DB (copie temporaire, ouverture en lecture seule,
+`PRAGMA integrity_check`, comptage tables/utilisateurs), décode la dernière
+archive de configuration (checksums, passphrase si chiffrée) et rapporte le
+dernier job restic. Verdict *Ready to restore* seulement si les deux moitiés
+sont vérifiées ; API `GET/POST /api/settings/backup/restore-drill`, bouton
+**Verify restore** dans Settings, rapport persisté. Reste le test de
+reconstruction complète sur VM.
 
 ### 3.2 À recadrer — bon objectif, mauvais périmètre
 
@@ -228,8 +236,8 @@ PHP 8.1/Redis 4.0.
 2. **Les vrais écarts restants sont peu nombreux mais structurants** : chaîne de
    mise à jour (installeur livré, UI restante), isolation d'exécution (livrée,
    enforcement AppArmor à valider), audit requêtable (**livré**), restauration
-   bare‑metal (ouverte) — c'est‑à‑dire la **confiance** plus que les
-   fonctionnalités.
+   bare‑metal (drill livré, test VM restant) — c'est‑à‑dire la **confiance**
+   plus que les fonctionnalités.
 3. **Le plus gros écart « visible pour l'utilisateur » est le média** : photos,
    vidéo, musique passent aujourd'hui par le catalogue Docker, sans binding sur
    un partage ni sauvegarde associée. Le chantier P1 est donc une **intégration
@@ -266,6 +274,11 @@ PHP 8.1/Redis 4.0.
   `systemd-analyze security` imprimé par l'installeur
 - **Signature/atomicité** : `hv_load_manifest`, `hv_swap_binary`,
   `hv_rollback_binary` dans `installer/install.sh` (P2‑8)
+- **Restauration** : `src/restore_drill.rs` (copie temporaire du snapshot DB,
+  `PRAGMA integrity_check` en lecture seule, décodage de l'archive config,
+  état du dernier job restic), `src/handlers/restore_drill.rs`
+  (`/api/settings/backup/restore-drill`) et le bouton *Verify restore* dans
+  Settings (P2‑9)
 - Catalogue : `catalog/*/homevault-app.toml` (15 apps)
 - Apps catalogue **non liées aux partages** : le compose ne binde que
   `/srv/apps/<app>` (`src/app_catalog/mod.rs:261-270`) — d'où le chantier
@@ -426,5 +439,30 @@ cette mesure.
   `SCREENS.md`, `PRIVACY.md` (RoPA ligne 16), FeatureDoc `journal`.
 
 **Reste sur P1‑18** : filtres structurés (acteur/action/date) dans l'UI
-Journal — l'API les porte déjà. Les autres P0 gardent leur ordre : P2‑9
-restauration bare‑metal.
+Journal — l'API les porte déjà.
+
+**P2‑9 — restauration bare‑metal (drill livré, test VM restant).**
+
+- `src/restore_drill.rs` : copie le dernier `data/backups/*.db` dans un
+  répertoire temporaire, l'ouvre **en lecture seule**, vérifie l'en-tête SQLite
+  puis `PRAGMA integrity_check` et compte tables/utilisateurs. Décode la
+  dernière archive `data/config-backups/*.hvbak` (checksums par entrée ;
+  archive chiffrée → passphrase requise) et rapporte le dernier job restic.
+  Ne touche jamais à la base live et supprime sa copie temporaire.
+- Verdict **Ready to restore** seulement si le snapshot DB et l'archive de
+  configuration sont tous deux vérifiés ; un job restic ancien/échoué/absent
+  est un avertissement, pas un blocage (réplication/snapshots peuvent couvrir).
+- API admin `GET/POST /api/settings/backup/restore-drill` (en-tête optionnel
+  `x-backup-passphrase`), bouton **Verify restore** dans Settings → System →
+  Database snapshots, rapport persisté dans `data/restore-drill.json`.
+- Runbook mis à jour : `docs/guides/disaster-recovery.md` (drill + répétition
+  trimestrielle + périmètre).
+- Tests écrits mais **non exécutés** : 4 unitaires (`src/restore_drill.rs`),
+  5 d'intégration (`tests/restore_drill_integration.rs`), E2E Settings 8.6.
+- Docs : `docs/guides/disaster-recovery.md`, `docs/API.md`, `SCREENS.md`,
+  FeatureDocs `disaster-recovery` et `settings`.
+
+**Reste sur P2‑9** : le test de reconstruction complète sur une VM jetable
+(boot, installation, restauration DB + configuration + données, vérification)
+et, si la cible le justifie, une image système équivalente à `md0`. C'est le
+prochain chantier de l'ordre, avant les P1.

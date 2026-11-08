@@ -29,7 +29,7 @@
  * =============================================================================
  */
 
-import type { ApiResponse, DbBackupEntry, DbBackupStatus, LoginRequest, LoginResponse, SetupAdminRequest, SetupStatus } from '$lib/types/api';
+import type { ApiResponse, DbBackupEntry, DbBackupStatus, LoginRequest, LoginResponse, RestoreDrillReport, SetupAdminRequest, SetupStatus } from '$lib/types/api';
 import type {
   DockerAppStore,
   DockerAppUpdateStatus,
@@ -1527,6 +1527,37 @@ class ApiClient {
 
   async saveDbBackupSettings(intervalHours: number, retain: number): Promise<ApiResponse<DbBackupStatus>> {
     return this.put<DbBackupStatus>('/settings/backup/db', { interval_hours: intervalHours, retain: retain });
+  }
+
+  /** Reads the last non-destructive restore drill (P2-9). */
+  async getRestoreDrill(): Promise<ApiResponse<{ report: RestoreDrillReport | null }>> {
+    return this.get<{ report: RestoreDrillReport | null }>('/settings/backup/restore-drill', { cache: false });
+  }
+
+  /**
+   * Runs the restore drill. The optional passphrase only verifies an encrypted
+   * configuration archive and travels in a header, never a URL.
+   */
+  async runRestoreDrill(passphrase?: string): Promise<ApiResponse<{ report: RestoreDrillReport; warning?: string }>> {
+    try {
+      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+      const token = localStorage.getItem('session-token');
+      if (token) headers['x-session-token'] = token;
+      const csrf = localStorage.getItem('csrf-token');
+      if (csrf) headers['x-csrf-token'] = csrf;
+      if (passphrase) headers['x-backup-passphrase'] = passphrase;
+      const response = await fetch(`${this.baseUrl}/settings/backup/restore-drill`, {
+        method: 'POST',
+        headers,
+        body: '{}',
+      });
+      return await this.parseResponse<{ report: RestoreDrillReport; warning?: string }>(response);
+    } catch (error) {
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : 'Network error',
+      };
+    }
   }
 
   // SNMP

@@ -103,6 +103,7 @@ pub mod reachability;
 pub mod release_notes;
 pub mod replication;
 pub mod replication_scheduler;
+pub mod restore_drill;
 pub mod rescue;
 pub mod restic;
 pub mod restic_scheduler;

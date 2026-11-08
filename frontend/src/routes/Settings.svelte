@@ -23,7 +23,7 @@
   import { onMount } from 'svelte';
   import { get } from 'svelte/store';
   import { api } from '$lib/services/api';
-  import type { DbBackupStatus } from '$lib/types/api';
+  import type { DbBackupStatus, RestoreDrillReport } from '$lib/types/api';
   import { notificationsStore } from '$lib/stores/notifications';
   import { isAdmin } from '$lib/stores/auth';
   import { wallpaperStore, BUNDLED_WALLPAPERS } from '$lib/stores/wallpaper';
@@ -201,6 +201,13 @@
   let dbBackupError = '';
   let dbBackupInterval = 24;
   let dbBackupRetain = 7;
+
+  // P2-9 — non-destructive restore drill. The passphrase is only for an
+  // encrypted configuration archive and never leaves the request header.
+  let restoreDrill: RestoreDrillReport | null = null;
+  let restoreDrillBusy = false;
+  let restoreDrillError = '';
+  let restoreDrillPassphrase = '';
 
   // Data management (export/import/reset)
   let exportingSettings = false;
@@ -388,6 +395,7 @@
       loadNotificationEvents(),
       loadPower(),
       loadDbBackup(),
+      loadRestoreDrill(),
       loadTimezones()
     ]);
     // After a save flushes the AI group, keep the display model in step.
@@ -641,6 +649,38 @@
       dbBackupError = translate('settings.db_backup_failed');
     } finally {
       dbBackupBusy = false;
+    }
+  }
+
+  async function loadRestoreDrill() {
+    try {
+      const res = await api.getRestoreDrill();
+      if (res.success && res.data) {
+        restoreDrill = res.data.report;
+      }
+    } catch {
+      /* the card simply shows "no verification yet" */
+    }
+  }
+
+  async function handleRestoreDrill() {
+    restoreDrillBusy = true;
+    restoreDrillError = '';
+    try {
+      const res = await api.runRestoreDrill(restoreDrillPassphrase || undefined);
+      if (res.success && res.data?.report) {
+        restoreDrill = res.data.report;
+        restoreDrillPassphrase = '';
+        if (res.data.warning) {
+          restoreDrillError = res.data.warning;
+        }
+      } else {
+        restoreDrillError = res.message || translate('settings.restore_drill_failed');
+      }
+    } catch {
+      restoreDrillError = translate('settings.restore_drill_failed');
+    } finally {
+      restoreDrillBusy = false;
     }
   }
 
@@ -1748,6 +1788,73 @@
                 </ul>
               {:else}
                 <p class={settingsRowHint}>{$t('settings.db_backup_empty')}</p>
+              {/if}
+            </div>
+
+            <!-- P2-9: non-destructive restore drill. Proves the recovery chain
+                 without touching the live database or configuration. -->
+            <div class={cn(settingsRowStacked, 'settings-field-full')} data-testid="restore-drill">
+              <span class={settingsRowLabel}>{$t('settings.restore_drill_title')}</span>
+              <p class={settingsRowHint}>{$t('settings.restore_drill_hint')}</p>
+              <div class="mt-2 flex flex-wrap items-end gap-2">
+                <div class="flex flex-col gap-1">
+                  <label class="text-xs text-[var(--hv-settings-label)]" for="restoreDrillPassphrase">{$t('settings.restore_drill_passphrase')}</label>
+                  <input
+                    id="restoreDrillPassphrase"
+                    type="password"
+                    autocomplete="off"
+                    class={cn(settingsInput, 'max-w-[260px]')}
+                    bind:value={restoreDrillPassphrase}
+                    disabled={restoreDrillBusy}
+                  />
+                </div>
+                <button
+                  class={cn(settingsBtn, settingsBtnGhost)}
+                  onclick={handleRestoreDrill}
+                  disabled={restoreDrillBusy}
+                  data-testid="restore-drill-run"
+                >
+                  {restoreDrillBusy ? $t('settings.restore_drill_running') : $t('settings.restore_drill_run')}
+                </button>
+              </div>
+              {#if restoreDrill}
+                <div class="mt-2 rounded-md border border-[var(--hv-settings-hairline)] px-3 py-2 text-sm" role="status" data-testid="restore-drill-result">
+                  <p
+                    class="m-0 font-semibold {restoreDrill.ready ? 'text-[var(--hv-success)]' : 'text-[var(--hv-warning)]'}"
+                    data-testid="restore-drill-verdict"
+                  >
+                    {restoreDrill.ready ? $t('settings.restore_drill_ready') : $t('settings.restore_drill_not_ready')}
+                  </p>
+                  <ul class="m-0 mt-1 flex list-none flex-col gap-0.5 p-0 text-xs">
+                    {#each [
+                      { check: restoreDrill.database, key: 'settings.restore_drill_database' },
+                      { check: restoreDrill.config, key: 'settings.restore_drill_config' },
+                      { check: restoreDrill.data_backup, key: 'settings.restore_drill_data' }
+                    ] as row}
+                      <li class="flex gap-2">
+                        <span class="min-w-[7rem] font-semibold text-[var(--hv-settings-title)]">{$t(row.key)}</span>
+                        <span class="text-[var(--hv-settings-label)]">
+                          {row.check.ok ? (row.check.verified ? $t('settings.restore_drill_ok') : $t('settings.restore_drill_partial')) : $t('settings.restore_drill_failed_short')} — {row.check.detail}
+                        </span>
+                      </li>
+                    {/each}
+                  </ul>
+                  {#if restoreDrill.warnings.length > 0}
+                    <ul class="m-0 mt-1 list-none p-0 text-xs text-[var(--hv-warning)]">
+                      {#each restoreDrill.warnings as warning}
+                        <li>{warning}</li>
+                      {/each}
+                    </ul>
+                  {/if}
+                  <p class="m-0 mt-1 text-xs text-[var(--hv-settings-label)]">
+                    {$t('settings.restore_drill_last', { date: formatBackupDate(restoreDrill.finished_at) })}
+                  </p>
+                </div>
+              {:else}
+                <p class={settingsRowHint} data-testid="restore-drill-never">{$t('settings.restore_drill_never')}</p>
+              {/if}
+              {#if restoreDrillError}
+                <p class="m-0 mt-1 text-xs text-[var(--hv-error)]" role="alert" data-testid="restore-drill-error">{restoreDrillError}</p>
               {/if}
             </div>
 

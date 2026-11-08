@@ -129,7 +129,7 @@ justifie.
 | **P2-6** | WORM par fichier — **rejeté pour la cible** (les snapshots immuables suffisent) | P2 | M/L | Immuabilité légale |
 | **P2-7** | Isolation d'exécution (systemd durci + profils AppArmor) — **priorité**, installeur livré 2026‑11‑08 (enforce/terrain restants) | P2 | L | Défense en profondeur |
 | **P2-8** | Mise à jour signée + atomique + rollback — **priorité**, installeur livré 2026‑11‑08 (UI restante) | P2 | L/XL | Intégrité de la chaîne |
-| **P2-9** | Réparation/restauration bare‑metal testée — **priorité, runbook + VM d'abord** | P2 | L | Reprise après sinistre |
+| **P2-9** | Réparation/restauration bare‑metal testée — **priorité**, drill non destructif livré 2026‑11‑08 (test VM restant) | P2 | L | Reprise après sinistre |
 | **P2-10** | Prédiction de panne disque par régression SMART (pas de ML) ✅ | P2 | M | Anticiper le remplacement |
 | **P2-11** | Compression/défragmentation Btrfs (hors dédup P2-4) ✅ | P2 | M | Espace et perf |
 | **P2-12** | Rapport de santé hebdomadaire (scrub, SMART, I/O, backups) ✅ | P2 | S/M | Visibilité sans surveillance |
@@ -195,7 +195,7 @@ justifie.
 >
 > Les P0 sont fonctionnellement terminés. Après la revue de valeur du
 > 2026‑11‑06 (ci-dessous), la suite prioritaire est **P2-7 (enforce/terrain),
-> P2-8 (UI), P1-18 (filtres UI), P2-9 (runbook), P1-16**, puis les finitions
+> P2-8 (UI), P1-18 (filtres UI), P2-9 (test VM), P1-16**, puis les finitions
 > P1-27/P1-28.
 > Les autres items sont gelés ou rejetés pour la cible actuelle.
 
@@ -216,7 +216,7 @@ panne majeur.
 
 | Décision | Items | Justification |
 |---|---|---|
-| **Priorité** | **P2-7** isolation d’exécution (**installeur livré 2026‑11‑08**, enforce/terrain restants), **P2-8** mises à jour signées/atomiques (**installeur livré 2026‑11‑08**, UI restante), **P1-18** table d’audit (**livrée 2026‑11‑08**, filtres UI restants), **P2-9** restauration bare-metal (runbook + test VM) | Sécurité, intégrité de la chaîne et reprise après sinistre : gains réels, sans dépendance externe. |
+| **Priorité** | **P2-7** isolation d’exécution (**installeur livré 2026‑11‑08**, enforce/terrain restants), **P2-8** mises à jour signées/atomiques (**installeur livré 2026‑11‑08**, UI restante), **P1-18** table d’audit (**livrée 2026‑11‑08**, filtres UI restants), **P2-9** restauration bare-metal (**drill livré 2026‑11‑08**, test VM restant) | Sécurité, intégrité de la chaîne et reprise après sinistre : gains réels, sans dépendance externe. |
 | **À faire, plus tard** | **P1-16** OAuth2 e-mail | Gmail/Microsoft retirent les mots de passe applicatifs ; les alertes peuvent cesser de partir. Coût modéré. |
 | **Finitions seulement** | **P1-27** signature du catalogue (pas de pinning obligatoire), **P1-28** avertissement installateur (pas de carte UI), **P1-21** suggestion de spare (pas d’ajout auto) | Le cœur est déjà livré ; le reste ajoute du risque ou peu de valeur. |
 | **Gelé au stade partiel** | **P2-1** SMB AD, **P2-2** NFS Kerberos, **P2-3** thin provisioning, **P2-4** déduplication, **P2-15** witness | Utiles seulement en entreprise/multi-site ou après benchmark ; ne pas investir sans cible explicite. |
@@ -248,8 +248,10 @@ panne majeur.
   non-régression (HomeVault utilise `sudo`, donc l’isolation doit être mesurée,
   pas supposée). Restent l’enforce AppArmor + la passe terrain pour P2-7, et le
   déclenchement UI + la clé de production pour P2-8.
-- **P2-9 : runbook d’abord.** Une restauration testée sur VM vaut mieux qu’une
-  usine à gaz d’images système.
+- **P2-9 : runbook + drill d’abord (livrés le 2026‑11‑08).** Le drill vérifie
+  le snapshot DB et l'archive de configuration sans toucher aux données ; reste
+  le test de reconstruction complète sur VM, qui vaut mieux qu’une usine à gaz
+  d’images système.
 
 ---
 
@@ -1741,13 +1743,30 @@ atomiquement (staging + smoke test `--version` + rename), conserve
 **Reste** : déclenchement depuis l'UI (le bouton « Check for Updates » ne fait
 que vérifier) et publication de la clé publique de production.
 
-### [ ] P2-9 — Réparation / restauration bare‑metal · L
+### [~] P2-9 — Réparation / restauration bare‑metal · L
 
 **Décision 2026‑11‑06 : priorité, runbook d’abord.** Une restauration testée
 sur VM vaut mieux qu’une usine à gaz d’images système.
 
 Équivalent minimal de `md0`/rootbackup : image système restaurable, vérification
 d'intégrité, procédure testée sur VM. Aujourd'hui : runbook + restic.
+
+**Livré 2026‑11‑08 (drill non destructif).** `src/restore_drill.rs` vérifie la
+chaîne de reprise locale sans toucher aux données : copie du dernier snapshot
+`data/backups/*.db` dans un répertoire temporaire, ouverture **en lecture
+seule**, `PRAGMA integrity_check`, comptage des tables/utilisateurs ;
+décodage de la dernière archive `data/config-backups/*.hvbak` avec vérification
+des checksums (archive chiffrée → passphrase requise) ; état du dernier job
+restic. Verdict **Ready to restore** seulement si les deux moitiés sont
+vérifiées. API `GET/POST /api/settings/backup/restore-drill` et bouton
+**Verify restore** dans Settings → System → Database snapshots ; rapport
+persisté dans `data/restore-drill.json`. Runbook mis à jour
+(`docs/guides/disaster-recovery.md`). Tests : 4 unitaires
+(`src/restore_drill.rs`), 5 d'intégration
+(`tests/restore_drill_integration.rs`), E2E Settings 8.6 — écrits, non
+exécutés. **Reste** : le test de reconstruction complète sur VM (boot d'une VM
+jetable, installation, restauration DB + config + données, vérification) et,
+si la cible le justifie, une image système équivalente à `md0`.
 
 ### [x] P2-10 — Prédiction de panne disque par régression SMART · M
 
@@ -2003,7 +2022,7 @@ Shares, docs et `TESTING.md` à jour.
 - [~] P2-2 NFSv4/Kerberos (gelé au partiel : flavor + validation keytab)
 - [~] P2-7 isolation d'exécution — installeur livré 2026‑11‑08, enforce/terrain restants
 - [~] P2-8 mises à jour signées — installeur livré 2026‑11‑08, déclenchement UI restant
-- [ ] P2-9 restauration bare-metal — **priorité, runbook + VM**
+- [~] P2-9 restauration bare-metal — drill livré 2026‑11‑08, test VM restant
 - [~] P2-3 thin (gelé au support zvol ; overcommit rejeté)
 - [~] P2-4 déduplication (design conservé ; exécution gelée)
 - [-] P2-5 KMIP (rejeté pour la cible)
@@ -2083,7 +2102,7 @@ Shares, docs et `TESTING.md` à jour.
   de P0-7, `x-systemd.*`, température sur 3 échantillons, backoff et
   notification `backup.jobs` sont livrés). Après la **revue de valeur du
   2026‑11‑06**, les prochains chantiers ouverts sont **P2-7 (enforce +
-  terrain), P2-8 (UI), P1-18 (filtres UI), P2-9 (runbook), P1-16**, puis les finitions
+  terrain), P2-8 (UI), P1-18 (filtres UI), P2-9 (test VM), P1-16**, puis les finitions
   P1-27/P1-28 ; les autres items sont gelés ou rejetés.
 - **Tests** : `cargo check --lib`, `cargo test --lib --no-run` et les
   `--no-run` de `replication_integration`, `iscsi_integration`,

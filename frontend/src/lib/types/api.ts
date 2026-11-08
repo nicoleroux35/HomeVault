@@ -116,6 +116,26 @@ export interface DbBackupStatus {
   directory: string;
 }
 
+/** One line of the non-destructive restore drill (P2-9). */
+export interface RestoreDrillCheck {
+  name: string;
+  source: string | null;
+  ok: boolean;
+  verified: boolean;
+  detail: string;
+}
+
+/** Result of `POST /settings/backup/restore-drill`. */
+export interface RestoreDrillReport {
+  started_at: string;
+  finished_at: string;
+  ready: boolean;
+  database: RestoreDrillCheck;
+  config: RestoreDrillCheck;
+  data_backup: RestoreDrillCheck;
+  warnings: string[];
+}
+
 export interface User {
   username: string;
   is_admin: boolean;

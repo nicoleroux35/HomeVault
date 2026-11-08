@@ -400,7 +400,7 @@ Test before saving: the panel tries the form as typed, saving nothing, and for a
         FeatureDoc {
             id: "disaster-recovery".to_string(),
             title: "Disaster recovery".to_string(),
-            content: r#"Disaster recovery is the plan for getting your data back, and each kind of copy answers a different question. Snapshots undo a mistake — a deleted folder, an overwritten file — but they live on the same disk, so they disappear with the pool. Replication keeps a second copy on another disk or another machine, and a backup received from another computer is a copy of that computer's data. Configuration backup covers accounts, groups, shares, permissions, quotas and settings, not data: restoring it makes the appliance behave as before, then you restore the data on top. A real rebuild is: install HomeVault, restore the configuration archive, then re-attach the data from the pool itself, from a replica, or with a restic restore — and finally re-issue what was tied to the old machine, such as the certificate, share links, tokens and passkeys. Restores are worth rehearsing: restore one folder to a scratch location and compare a checksum, and run the integrity check on each backup destination, so you know the backups are good before you need them."#.to_string(),
+            content: r#"Disaster recovery is the plan for getting your data back, and each kind of copy answers a different question. Snapshots undo a mistake — a deleted folder, an overwritten file — but they live on the same disk, so they disappear with the pool. Replication keeps a second copy on another disk or another machine, and a backup received from another computer is a copy of that computer's data. Configuration backup covers accounts, groups, shares, permissions, quotas and settings, not data: restoring it makes the appliance behave as before, then you restore the data on top. A real rebuild is: install HomeVault, restore the configuration archive, then re-attach the data from the pool itself, from a replica, or with a restic restore — and finally re-issue what was tied to the old machine, such as the certificate, share links, tokens and passkeys. Restores are worth rehearsing: restore one folder to a scratch location and compare a checksum, and run the integrity check on each backup destination, so you know the backups are good before you need them. Settings also has a Verify restore drill: without touching the live data it copies the newest database snapshot and checks it with the database's own integrity check, decodes the newest configuration archive and verifies every entry, and reports the most recent data backup. It answers whether the appliance is ready to restore, and an encrypted configuration archive is only fully verified when its passphrase is entered."#.to_string(),
         },
         FeatureDoc {
             id: "snmp-agent".to_string(),
@@ -716,6 +716,10 @@ Security: protected-device blocklist prevents operating on the boot disk. Path t
 - Email: SMTP configuration for notifications
 - Notifications: alert thresholds
 - AI Assistant: model selection, Ollama configuration
+- Database snapshots: automatic self-contained snapshots of the appliance
+  database, their retention, take one now, and a non-destructive Verify restore
+  drill that checks the newest snapshot with the database integrity check,
+  decodes the newest configuration archive, and reports the last data backup
 - Update: check for updates manually or on schedule; a system update verifies a
   signed release manifest, swaps the program atomically, keeps the previous
   version, and rolls back automatically if the new build does not become ready.

@@ -8,6 +8,20 @@ follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **Non-destructive restore drill (2026-11-08, P2-9).** Settings → System →
+  Database snapshots now has **Verify restore**: it copies the newest DB
+  snapshot to a temporary directory, opens it read-only and runs SQLite's
+  `PRAGMA integrity_check`, decodes the newest configuration archive with
+  per-entry checksum verification (an encrypted archive needs its passphrase),
+  and reports the newest restic job. The verdict is "Ready to restore" only
+  when both the snapshot and the archive are fully verified; the report is
+  saved to `data/restore-drill.json` and exposed by
+  `GET/POST /api/settings/backup/restore-drill`. The drill never attaches the
+  live database and never writes to the data directory. Tests:
+  `src/restore_drill.rs` (4 unit), `tests/restore_drill_integration.rs` (5),
+  Settings E2E 8.6 (written, not run). Docs:
+  `docs/guides/disaster-recovery.md`.
+
 - **Queryable audit trail (2026-11-08, P1-18).** Every application event
   written through `events::log_event` / `log_event_warn` is now also persisted
   in the `audit_log` table (migration 086) through a bounded background

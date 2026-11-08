@@ -105,6 +105,7 @@ pub mod rclone;
 pub mod reachability;
 pub mod replication;
 pub mod rescue;
+pub mod restore_drill;
 pub mod resource_shares;
 pub mod restic;
 pub mod reverse_proxy;

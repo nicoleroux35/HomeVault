@@ -99,20 +99,50 @@ watchdog pass.
    before the appliance goes back on the network, and the firewall rules should
    match what the appliance was doing.
 
+## Automated restore drill (P2-9, 2026-11-08)
+
+Settings → System → Database snapshots carries **Verify restore**. The drill is
+non-destructive: it never attaches the live database, never writes to the data
+directory, and removes its temporary copy when it finishes.
+
+1. Copies the newest `data/backups/*.db` snapshot into a temporary directory,
+   opens it **read-only**, runs `PRAGMA integrity_check`, and counts the
+   application tables and users. A file without SQLite's header is refused as
+   "not a readable SQLite database" before it is opened.
+2. Decodes the newest `data/config-backups/*.hvbak` archive. Every entry is
+   checksum-verified; an **encrypted** archive is only fully verified when its
+   passphrase is supplied (the field on the card, sent as a request header and
+   never stored).
+3. Reports the newest restic backup job. A job older than seven days, a failed
+   job, or no job at all is a **warning**: replication or immutable snapshots
+   may still cover the data, but the drill says it cannot prove it.
+
+The verdict is **Ready to restore** only when the database snapshot and the
+configuration archive are both present and fully verified. The result is saved
+to `data/restore-drill.json`, so the card shows the last run after a restart.
+API: `GET/POST /api/settings/backup/restore-drill` (admin; optional
+`x-backup-passphrase` header).
+
+This proves the **local recovery chain**. It does not prove that the data
+volumes themselves are on a surviving medium — that is the restic/replication
+check, and the quarterly rehearsal below.
+
 ## Rehearsing it
 
 A restore is a skill, not a document. Once a quarter:
 
-1. Pick one replication job and one restic repository.
-2. Restore a **single folder** to a scratch location on the appliance, and
+1. Run **Verify restore** (above) and confirm the verdict is *Ready to
+   restore*.
+2. Pick one replication job and one restic repository.
+3. Restore a **single folder** to a scratch location on the appliance, and
    compare a checksum with the live copy (`sha256sum`).
-3. Run **Check now** on each backup-destination tenant.
-4. Confirm the configuration archive you would restore is recent — a backup
+4. Run **Check now** on each backup-destination tenant.
+5. Confirm the configuration archive you would restore is recent — a backup
    nobody opens is a backup nobody knows is broken.
 
-Write down what you verified and when. `restic check` passing and a hash
-matching are the two facts that turn "I think we have backups" into "we have
-backups".
+Write down what you verified and when. `restic check` passing, the drill saying
+*Ready to restore*, and a hash matching are the facts that turn "I think we have
+backups" into "we have backups".
 
 ## What this runbook deliberately does not promise
 
@@ -122,9 +152,11 @@ backups".
   you trust; use a LUKS-encrypted target if it is not.
 - **A configuration restore does not restore data**, and does not re-create
   users' SSH keys, passkeys or API tokens tied to the old host.
-- **No automated test restore of the whole appliance exists.** Per-tenant restic
-  verification runs daily, and replication reports its last outcome; a full
-  rebuild is rehearsed manually, above.
+- **The automated drill does not boot a VM.** It proves the local database
+  snapshot and configuration archive are restorable, and reports the last
+  data-backup job; a full rebuild on new hardware is still rehearsed manually,
+  above. Per-tenant restic verification runs daily and replication reports its
+  last outcome.
 
 ## Related
 

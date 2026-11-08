@@ -1325,6 +1325,26 @@ test.describe('8 — Updates', () => {
       await expect(row).toContainText(/v\d+\.\d+/);
     }
   });
+
+  test('8.6 — the restore drill runs and reports a verdict', async ({ page }) => {
+    await openSettings(page, admin);
+    await openCategory(page, 'system');
+    const run = set(page).locator('[data-testid="restore-drill-run"]');
+    await expect(run).toBeVisible();
+    const [response] = await Promise.all([
+      page.waitForResponse(
+        (r) =>
+          r.url().includes('/api/settings/backup/restore-drill') &&
+          r.request().method() === 'POST',
+        { timeout: 20_000 },
+      ),
+      run.click(),
+    ]);
+    expect(response.status()).toBe(200);
+    await expect(set(page).locator('[data-testid="restore-drill-verdict"]')).toHaveText(
+      /^(Ready to restore|Not ready to restore)$/,
+    );
+  });
 });
 
 // ===========================================================================

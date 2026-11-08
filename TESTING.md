@@ -1,5 +1,18 @@
 # HomeVault — Test tracking
 
+## P2-9 non-destructive restore drill — 2026-11-08 (not run)
+
+> **Instruction followed: no test command was executed for this change.**
+> Static checks passed: `cargo check --lib`, `cargo check --tests`,
+> `cd frontend && npm run check` and `npm run build`.
+
+| Coverage | Added / changed |
+|---|---|
+| Unit (`src/restore_drill.rs`) | **+4** — the ready verdict requires both halves verified; newest-file selection (mtime/name tie-break); empty directory; missing checks are never ready |
+| Integration (`tests/restore_drill_integration.rs`) | **new suite, 5 tests** — admin gate; a real `VACUUM INTO` snapshot + valid archive reports ready and the report persists; a corrupt DB snapshot is detected (bad header); a corrupt archive is detected; an encrypted archive is unverified without its passphrase and verified with it |
+| E2E (`tests/e2e/settings/settings.spec.ts`) | **+1** — 8.6 Verify restore POSTs the drill and renders the Ready / Not ready verdict |
+| Docs | `docs/guides/disaster-recovery.md` (drill + rehearsal + scope), `docs/API.md`, `SCREENS.md`, `CHANGELOG.md`, RAG FeatureDocs (`disaster-recovery`, `settings`), `HOMEVAULT_TASKLIST_A_FAIRE.md` (P2-9), `COMPARAISON_DSM_VS_HOMEVAULT.md` |
+
 ## P1-18 queryable audit trail — 2026-11-08 (not run)
 
 > **Instruction followed: no test command was executed for this change.**

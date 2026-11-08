@@ -703,6 +703,13 @@ pub fn create_app(state: AppStateArc) -> Router {
             "/api/settings/backup/db/now",
             post(crate::handlers::db_backup::handle_db_backup_now),
         )
+        // P2-9: non-destructive restore drill. GET reads the last report; POST
+        // runs it against a temporary copy of the newest snapshots.
+        .route(
+            "/api/settings/backup/restore-drill",
+            get(crate::handlers::restore_drill::handle_restore_drill_get)
+                .post(crate::handlers::restore_drill::handle_restore_drill_run),
+        )
         .route(
             "/api/settings/tls/regenerate",
             post(crate::handlers::tls::handle_tls_regenerate),
