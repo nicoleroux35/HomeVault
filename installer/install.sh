@@ -746,6 +746,9 @@ render_service_unit() {
 [Unit]
 Description=HomeVault Server
 After=network.target
+# P1-28: a crash loop must not spin forever.
+StartLimitIntervalSec=60
+StartLimitBurst=5
 
 [Service]
 Type=simple
@@ -757,6 +760,12 @@ WorkingDirectory=$INSTALL_DIR
 ExecStart=$INSTALL_DIR/homevault
 Restart=on-failure
 RestartSec=5
+# P1-28: the appliance serves many concurrent shares/backups; the default
+# 1024-descriptor limit is too low. OOMPolicy=stop makes an OOM kill visible
+# instead of leaving a half-alive unit.
+LimitNOFILE=65536
+TimeoutStopSec=30
+OOMPolicy=stop
 # A custom privileged PORT (e.g. 80) must still bind when the unit is not
 # root; harmless for the root deployment.
 AmbientCapabilities=CAP_NET_BIND_SERVICE
@@ -1486,6 +1495,10 @@ else
 fi
 
 install_optional aria2 "aria2 (multi-protocol downloader)"
+# WS-Discovery makes the appliance appear in Windows Explorer without typing a
+# path. Optional: when the package is unavailable the Shares card says so and
+# SMB itself keeps working.
+install_optional wsdd2 "wsdd2 (Windows network discovery)"
 # `pv` is the bandwidth limiter of the snapshot-replication pipeline
 # (Backup → Replication: `zfs send | pv -L <rate> | …`). Without it a job
 # still replicates, it just runs unthrottled and the UI says so.

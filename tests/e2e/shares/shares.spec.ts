@@ -605,6 +605,24 @@ test.describe('4 — All user interactions', () => {
     expect(payload!['protocol_version']).toBe('SMB3');
   });
 
+  test('4.9b — SMB offers Windows network discovery and reports its state', async ({ page }) => {
+    await gotoShares(page, adminTokens);
+    await switchTab(page, 'SMB');
+    await win(page).locator('[data-testid="shares-mode-btn"]').nth(1).click();
+
+    const form = win(page).locator('[data-testid="shares-config"] [data-testid="shares-form"]');
+    await expect(form).toContainText(
+      /Windows network discovery|Découverte réseau Windows|Detección de red de Windows|Windows-Netzwerkerkennung/,
+    );
+    const hint = win(page).locator('[data-testid="ws-discovery-hint"]');
+    await expect(hint).toBeVisible();
+    // Either the daemon is available (explanation) or it is not installed
+    // (named package) — never an empty or raw-key sentence.
+    await expect(hint).toHaveText(
+      /Discovery only|wsdd2 is not installed|Découverte uniquement|wsdd2 n'est pas installé|Solo detección|wsdd2 no está instalado|Nur Erkennung|wsdd2 ist nicht installiert/,
+    );
+  });
+
   test('4.10 — FTP advanced sends the account whitelist as a list', async ({ page }) => {
     let payload: Record<string, unknown> | null = null;
     await page.route('**/api/shares/ftp/config', async (route) => {

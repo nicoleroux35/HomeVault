@@ -36,6 +36,7 @@ pub mod syslog_forward;
 pub mod vpn;
 pub mod web;
 pub mod wol;
+pub mod ws_discovery;
 
 /// System modules
 pub mod acl;

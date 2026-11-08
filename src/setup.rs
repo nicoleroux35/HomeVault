@@ -1138,7 +1138,7 @@ homevault ALL=(root) NOPASSWD: {findmnt} --verify --fstab, {update_initramfs} -u
 # (see the comment above where `systemctl` is resolved for why). WebDAV is
 # served in-process; the only WebDAV systemctl call left is the one-shot
 # `disable --now` that retires the legacy generated unit.
-homevault ALL=(root) NOPASSWD: {systemctl} reload smbd, {systemctl} start smbd, {systemctl} stop smbd, {systemctl} restart smbd, {systemctl} reload vsftpd, {systemctl} start vsftpd, {systemctl} stop vsftpd, {systemctl} restart vsftpd, {systemctl} start nfs-server, {systemctl} stop nfs-server, {systemctl} restart nfs-server, {systemctl} start homevault-sftp, {systemctl} stop homevault-sftp, {systemctl} restart homevault-sftp, {systemctl} enable homevault-sftp, {systemctl} disable --now homevault-webdav, {systemctl} daemon-reload
+homevault ALL=(root) NOPASSWD: {systemctl} reload smbd, {systemctl} start smbd, {systemctl} stop smbd, {systemctl} restart smbd, {systemctl} reload vsftpd, {systemctl} start vsftpd, {systemctl} stop vsftpd, {systemctl} restart vsftpd, {systemctl} start nfs-server, {systemctl} stop nfs-server, {systemctl} restart nfs-server, {systemctl} start homevault-sftp, {systemctl} stop homevault-sftp, {systemctl} restart homevault-sftp, {systemctl} enable homevault-sftp, {systemctl} disable --now homevault-webdav, {systemctl} enable homevault-wsdd, {systemctl} start homevault-wsdd, {systemctl} stop homevault-wsdd, {systemctl} restart homevault-wsdd, {systemctl} disable --now homevault-wsdd, {systemctl} daemon-reload
 
 # Local SNMP agent (src/snmp_agent.rs, phase B4) — scoped to our own drop-in
 # and to the snmpd unit only, never a bare `tee`/`systemctl`. The config file
@@ -1157,7 +1157,7 @@ homevault ALL=(root) NOPASSWD: {systemctl} start docker, {systemctl} enable dock
 # files rather than the whole `tee` binary. The two `rm -f` grants exist only
 # to retire the legacy generated WebDAV service, and are scoped to those two
 # exact paths.
-homevault ALL=(root) NOPASSWD: {tee} {smb_conf}, {tee} -a {smb_conf}, {tee} {vsftpd_conf}, {tee} {exports}, {tee} -a {exports}, {exportfs} -ra, {rm} -f {webdav_py}, {rm} -f {webdav_service}
+homevault ALL=(root) NOPASSWD: {tee} {smb_conf}, {tee} -a {smb_conf}, {tee} {vsftpd_conf}, {tee} {exports}, {tee} -a {exports}, {tee} /etc/systemd/system/homevault-wsdd.service, {exportfs} -ra, {rm} -f {webdav_py}, {rm} -f {webdav_service}, {rm} -f /etc/systemd/system/homevault-wsdd.service
 
 # Filesystem ownership, permissions and POSIX ACLs on the trees HomeVault
 # manages (user home folders, pools and shares). These calls used to work

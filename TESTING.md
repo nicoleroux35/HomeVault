@@ -1,5 +1,19 @@
 # HomeVault — Test tracking
 
+## P1 SMB WS-Discovery — 2026-11-08 (not run)
+
+> **Instruction followed: no test command was executed for this change.**
+> Static checks passed: `cargo check --lib`, `cargo check --tests`,
+> `cd frontend && npm run check` and `npm run build`.
+
+| Coverage | Added / changed |
+|---|---|
+| Unit (`src/ws_discovery.rs`) | **+6** — NetBIOS sanitization/truncation/fallback, workgroup fallback, unit body carries name/workgroup/sandbox, a newline cannot create a second directive |
+| Unit (`src/shares.rs`) | **+1** — a legacy `smb.json` without `ws_discovery` defaults on |
+| Integration (`tests/shares_integration.rs`) | **+1** — `test_ws_discovery_status_requires_admin` (401 / 403 / 200 + the four status fields) |
+| E2E (`tests/e2e/shares/shares.spec.ts`) | **+1** — 4.9b the SMB card offers the toggle and names the real state (available explanation or the missing package) |
+| Docs | `docs/guides/shares.md`, `docs/API.md`, `SCREENS.md`, `CHANGELOG.md`, RAG `shares` FeatureDoc, `HOMEVAULT_TASKLIST_A_FAIRE.md` (P1-29), `COMPARAISON_DSM_VS_HOMEVAULT.md` |
+
 ## P2-9 non-destructive restore drill — 2026-11-08 (not run)
 
 > **Instruction followed: no test command was executed for this change.**

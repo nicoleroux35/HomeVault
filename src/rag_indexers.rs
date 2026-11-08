@@ -564,7 +564,10 @@ requires a session."#.to_string(),
             id: "shares".to_string(),
             title: "File Sharing (SMB, SFTP, FTP, WebDAV)".to_string(),
             content: r#"Share directories over multiple protocols:
-- SMB/CIFS: Windows-compatible file sharing
+- SMB/CIFS: Windows-compatible file sharing, with an optional Windows network
+  discovery switch that makes the appliance appear in Explorer without typing
+  its address (discovery only; it exposes no share or file, and the card says
+  when the discovery helper is not installed)
 - SFTP: SSH-based file transfer with jail (chroot)
 - FTP: Traditional file transfer
 - WebDAV: HTTP-based file access, served by HomeVault itself (in-process Rust server on its own port)

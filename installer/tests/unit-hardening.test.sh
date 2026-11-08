@@ -53,6 +53,8 @@ has "unit: exec start" "$ROOT_UNIT" "ExecStart=/opt/homevault/homevault"
 has "unit: bind privileged ports" "$ROOT_UNIT" "AmbientCapabilities=CAP_NET_BIND_SERVICE"
 has "unit: restart policy" "$ROOT_UNIT" "Restart=on-failure"
 has "unit: memory ceiling" "$ROOT_UNIT" "MemoryMax=2G"
+has "unit: file descriptor limit" "$ROOT_UNIT" "LimitNOFILE=65536"
+has "unit: crash-loop guard" "$ROOT_UNIT" "StartLimitBurst=5"
 
 # --- unit: hardening present ----------------------------------------------
 has "hardening: ProtectSystem" "$ROOT_UNIT" "ProtectSystem=true"

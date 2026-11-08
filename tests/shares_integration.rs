@@ -96,7 +96,7 @@ use homevault::handlers::{
         handle_share_update, handle_shares_list, handle_smb_config_get, handle_smb_config_update,
         handle_smb_domain_join, handle_smb_domain_leave, handle_smb_previous_versions_list,
         handle_smb_previous_versions_set, handle_smb_recycle_list, handle_smb_recycle_set,
-        handle_webdav_config_get, handle_webdav_config_update,
+        handle_webdav_config_get, handle_webdav_config_update, handle_ws_discovery_status,
     },
     AppState,
 };
@@ -177,6 +177,7 @@ fn shares_router(state: Arc<AppState>) -> Router {
         // per-protocol service config
         .route("/api/shares/smb/config", get(handle_smb_config_get))
         .route("/api/shares/smb/config", put(handle_smb_config_update))
+        .route("/api/shares/ws-discovery", get(handle_ws_discovery_status))
         .route("/api/shares/smb/recycle", get(handle_smb_recycle_list))
         .route(
             "/api/shares/{name}/smb/recycle",
@@ -1192,6 +1193,59 @@ async fn test_update_share_rejects_injected_path_and_comment() {
         assert_eq!(status, StatusCode::BAD_REQUEST, "{body}: {resp}");
         assert_eq!(resp["success"], json!(false), "{body}: {resp}");
     }
+}
+
+/// P1: the WS-Discovery status is admin-only and always names the real state.
+/// The daemon may or may not be installed on the test host; the shape is the
+/// contract, not a particular boolean.
+#[tokio::test]
+async fn test_ws_discovery_status_requires_admin() {
+    let (state, _tmp, _guard) = setup_state().await;
+    create_test_user(&state, "admin1", "Password123!", 2).await;
+    create_test_user(&state, "user1", "Password123!", 1).await;
+    let mut router = shares_router(state);
+    let admin = login(&mut router, "admin1", "Password123!").await;
+    let user = login(&mut router, "user1", "Password123!").await;
+
+    let (status, _) = send(
+        &mut router,
+        Method::GET,
+        "/api/shares/ws-discovery",
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+
+    let (status, _) = send(
+        &mut router,
+        Method::GET,
+        "/api/shares/ws-discovery",
+        Some(&user),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+
+    let (status, body) = send(
+        &mut router,
+        Method::GET,
+        "/api/shares/ws-discovery",
+        Some(&admin),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(body["data"]["available"].is_boolean());
+    assert!(body["data"]["enabled"].is_boolean());
+    assert!(body["data"]["running"].is_boolean());
+    assert!(
+        body["data"]["detail"]
+            .as_str()
+            .map(|detail| !detail.is_empty())
+            .unwrap_or(false),
+        "the card needs a sentence, not an empty detail"
+    );
 }
 
 #[tokio::test]

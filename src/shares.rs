@@ -213,10 +213,21 @@ pub struct SmbConfig {
     /// Winbind idmap range (`idmap config * : range`), e.g. `10000-999999`.
     #[serde(default = "default_idmap_range")]
     pub idmap_range: String,
+    /// Advertise this appliance to Windows Explorer through WS-Discovery
+    /// (`wsdd2`). Not a Samba directive: it is applied by
+    /// `crate::ws_discovery`, so `smb_global_params` deliberately ignores it.
+    /// On by default, like DSM's Windows network discovery; harmless when
+    /// `wsdd2` is not installed (the status card says so).
+    #[serde(default = "default_ws_discovery")]
+    pub ws_discovery: bool,
 }
 
 fn default_idmap_range() -> String {
     "10000-999999".to_string()
+}
+
+fn default_ws_discovery() -> bool {
+    true
 }
 
 impl Default for SmbConfig {
@@ -232,6 +243,7 @@ impl Default for SmbConfig {
             multichannel: false,
             realm: String::new(),
             idmap_range: default_idmap_range(),
+            ws_discovery: true,
         }
     }
 }
@@ -819,6 +831,8 @@ fn smb_global_params(config: &SmbConfig) -> Vec<String> {
         multichannel,
         realm,
         idmap_range,
+        // Deliberately not a `smb.conf` key: it is applied by `ws_discovery`.
+        ws_discovery: _,
     } = config;
 
     let mut params = vec![
@@ -4360,6 +4374,7 @@ mod tests {
             multichannel: true,
             realm: String::new(),
             idmap_range: "10000-999999".to_string(),
+            ws_discovery: true,
         };
         let rendered = smb_global_params(&config).join("\n");
         for expected in [
@@ -4399,6 +4414,24 @@ mod tests {
         }"#;
         let config: SmbConfig = serde_json::from_str(json).expect("old config must still load");
         assert!(!config.multichannel);
+    }
+
+    #[test]
+    fn test_smb_config_ws_discovery_defaults_on_for_a_legacy_file() {
+        // A pre-2026-11-08 smb.json has no `ws_discovery` key. The default is
+        // on (DSM's Windows network discovery); the daemon is only started
+        // when wsdd2 is installed, and the Shares card reports the real state.
+        let json = r#"{
+            "workgroup": "WORKGROUP",
+            "security_mode": "user",
+            "protocol_version": "SMB3",
+            "allow_guest": false,
+            "create_mask": "0755",
+            "directory_mask": "0755",
+            "additional_params": []
+        }"#;
+        let config: SmbConfig = serde_json::from_str(json).expect("old config must still load");
+        assert!(config.ws_discovery);
     }
 
     #[test]

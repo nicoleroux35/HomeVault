@@ -126,6 +126,8 @@
     multichannel: boolean;
     realm?: string;
     idmap_range?: string;
+    /** P1 — advertise the appliance to Windows Explorer via WS-Discovery. */
+    ws_discovery: boolean;
   }
 
   interface NfsConfig {
@@ -242,9 +244,10 @@
    * must degrade to one field showing a default, never blank the whole tab
    * (`allow_guest: undefined` used to break the guest switch's binding).
    */
-  const SMB_CONFIG_DEFAULTS: SmbConfig = { workgroup: 'WORKGROUP', security_mode: 'user', protocol_version: 'SMB3', allow_guest: false, create_mask: '0755', directory_mask: '0755', additional_params: [], multichannel: false, realm: '', idmap_range: '10000-999999' };
+  const SMB_CONFIG_DEFAULTS: SmbConfig = { workgroup: 'WORKGROUP', security_mode: 'user', protocol_version: 'SMB3', allow_guest: false, create_mask: '0755', directory_mask: '0755', additional_params: [], multichannel: false, realm: '', idmap_range: '10000-999999', ws_discovery: true };
 
   let smbConfig: SmbConfig = $state({ ...SMB_CONFIG_DEFAULTS });
+  let wsDiscoveryStatus = $state<{ available: boolean; enabled: boolean; running: boolean; detail: string } | null>(null);
   let smbRecycle = $state<Record<string, boolean>>({});
   let recycleSaving = $state<string | null>(null);
   let smbPreviousVersions = $state<Record<string, boolean>>({});
@@ -470,6 +473,8 @@
     configLoading = true;
     const resp = await api.get('/shares/smb/config');
     if (resp.success && resp.data) smbConfig = { ...SMB_CONFIG_DEFAULTS, ...resp.data };
+    const wsDiscovery = await api.get('/shares/ws-discovery');
+    if (wsDiscovery.success && wsDiscovery.data) wsDiscoveryStatus = wsDiscovery.data;
     const recycle = await api.get('/shares/smb/recycle');
     if (recycle.success && recycle.data) smbRecycle = recycle.data;
     const previous = await api.getSmbPreviousVersions();
@@ -1235,6 +1240,15 @@
             <label class={field}><span class={fieldLabel}>{$t('shares.version')}</span><select class={inp} bind:value={smbConfig.protocol_version}><option value="SMB2">SMB2</option><option value="SMB3">SMB3</option></select></label>
             {@render toggleField($t('shares.multichannel'), smbConfig.multichannel, (v) => (smbConfig.multichannel = v))}
             <p class="m-0 text-c-small text-[var(--hv-shell-text-muted)]">{$t('shares.multichannel_hint')}</p>
+            <!-- P1: discovery-only WS-Discovery, so Windows Explorer lists the
+                 appliance without a typed path. No share or file is exposed. -->
+            {@render toggleField($t('shares.ws_discovery'), smbConfig.ws_discovery, (v) => (smbConfig.ws_discovery = v))}
+            <p class="m-0 text-c-small text-[var(--hv-shell-text-muted)]" data-testid="ws-discovery-hint">
+              {wsDiscoveryStatus?.available ? $t('shares.ws_discovery_hint') : $t('shares.ws_discovery_unavailable')}
+            </p>
+            {#if wsDiscoveryStatus && wsDiscoveryStatus.available && !wsDiscoveryStatus.running}
+              <p class="m-0 text-c-small text-[var(--hv-shell-text-muted)]" data-testid="ws-discovery-detail">{wsDiscoveryStatus.detail}</p>
+            {/if}
             <p class="m-0 text-c-small text-[var(--hv-shell-text-muted)]">{$t('shares.smb_domain_note')}</p>
             <label class={field}><span class={fieldLabel}>{$t('shares.create_mask')}</span><input class={inp} bind:value={smbConfig.create_mask} /></label>
             <label class={field}><span class={fieldLabel}>{$t('shares.directory_mask')}</span><input class={inp} bind:value={smbConfig.directory_mask} /></label>

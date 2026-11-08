@@ -822,14 +822,46 @@ pub async fn handle_smb_config_update(
         return resp;
     }
 
+    let ws_discovery = req.ws_discovery;
+    let workgroup = req.workgroup.clone();
     match run_share_op("save SMB config", move || {
         SharesService::save_smb_config(&req)
     })
     .await
     {
-        Ok(_) => ResponseHelper::json_success("SMB config updated".to_string()),
+        Ok(_) => {
+            // WS-Discovery is a HomeVault setting, not a smb.conf directive.
+            // Best-effort: a missing wsdd2 must not turn a valid SMB save into
+            // an error; the card reads the reason from its status endpoint.
+            match tokio::task::spawn_blocking(move || {
+                crate::ws_discovery::apply(ws_discovery, &workgroup)
+            })
+            .await
+            {
+                Ok(Ok(())) => {}
+                Ok(Err(e)) => {
+                    tracing::warn!("Windows network discovery could not be applied: {}", e)
+                }
+                Err(e) => tracing::warn!("Windows network discovery task failed: {}", e),
+            }
+            ResponseHelper::json_success("SMB config updated".to_string())
+        }
         Err(e) => ResponseHelper::json_error(format!("Failed to save SMB config: {}", e)),
     }
+}
+
+/// `GET /api/shares/ws-discovery` — status of the Windows discovery daemon.
+///
+/// Read-only and admin-only: the daemon only advertises the appliance's name
+/// and workgroup, never a share or a file.
+pub async fn handle_ws_discovery_status(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Response {
+    if let Err(resp) = crate::handlers::admin_guard::require_admin(&state, &headers).await {
+        return resp;
+    }
+    ResponseHelper::json_success(crate::ws_discovery::status())
 }
 
 /// Body for the per-share recycle-bin toggle.

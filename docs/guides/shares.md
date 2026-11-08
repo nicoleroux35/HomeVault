@@ -185,6 +185,29 @@ without rendering it is a compile error**, and the tests
 `test_smb_config_deserializes_without_multichannel` keeps old `smb.json` files
 loadable (`#[serde(default)]`).
 
+### Windows network discovery (WS-Discovery, 2026-11-08)
+
+`ws_discovery` is a boolean in `SmbConfig` (default **on**, like DSM's Windows
+network discovery) but it is **not** a `smb.conf` directive: `smb_global_params`
+deliberately ignores it. The setting is applied by `src/ws_discovery.rs` through
+`wsdd2` (`/usr/sbin/wsdd2`), which only advertises the appliance's NetBIOS name
+and workgroup — no share or file is exposed.
+
+- `apply(enabled, workgroup)` writes `/etc/systemd/system/homevault-wsdd.service`
+  (sanitized host/workgroup, `DynamicUser=yes`, `NoNewPrivileges`,
+  `ProtectSystem=strict`, a narrow `RestrictAddressFamilies`), then
+  `daemon-reload`, `enable` and `restart`. Turning it off disables the unit and
+  removes it.
+- The SMB save path calls it **best-effort**: a host without `wsdd2` still saves
+  SMB, and the card reports the reason (`GET /shares/ws-discovery`).
+- The unit is reconciled once at startup when the saved config has it on.
+- `wsdd2` is installed by the installer as an optional package and listed in
+  `dependencies.rs`; the card says "wsdd2 is not installed" rather than showing
+  a switch that cannot work.
+- Tests: `src/ws_discovery.rs` unit tests (NetBIOS sanitization/truncation, unit
+  body, injection), `tests/shares_integration.rs`
+  (`test_ws_discovery_status_requires_admin`), E2E Shares 4.9b.
+
 ### Blocking work is off the async runtime (2026-10-21)
 
 `SharesService` is entirely synchronous (file IO + `sudo`

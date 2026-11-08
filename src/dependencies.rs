@@ -590,6 +590,15 @@ fn specs() -> Vec<DependencySpec> {
             check_running: Some(running_smbd),
         },
         DependencySpec {
+            name: "wsdd2",
+            package: "wsdd2",
+            category: "Shares",
+            required: false,
+            used_by: "Windows network discovery (WS-Discovery)",
+            check_installed: crate::ws_discovery::available,
+            check_running: None,
+        },
+        DependencySpec {
             name: "exportfs",
             package: "nfs-kernel-server",
             category: "Shares",

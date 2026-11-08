@@ -8,6 +8,18 @@ follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **Windows network discovery (2026-11-08, P1).** The SMB card gained a
+  **Windows network discovery** toggle (on by default). It is applied by a new
+  `homevault-wsdd.service` running `wsdd2`, which advertises only the NetBIOS
+  name and workgroup — no share or file. The unit is sandboxed (`DynamicUser`,
+  `NoNewPrivileges`, `ProtectSystem=strict`, a narrow address-family set);
+  turning it off disables and removes it. `GET /api/shares/ws-discovery`
+  reports available/enabled/running with a sentence, and the card says
+  "wsdd2 is not installed" instead of hiding a broken switch. The installer
+  ships `wsdd2` as an optional package. Tests: 6 unit in
+  `src/ws_discovery.rs`, 1 in `src/shares.rs`, 1 integration in
+  `tests/shares_integration.rs`, E2E Shares 4.9b (written, not run).
+
 - **Non-destructive restore drill (2026-11-08, P2-9).** Settings → System →
   Database snapshots now has **Verify restore**: it copies the newest DB
   snapshot to a temporary directory, opens it read-only and runs SQLite's

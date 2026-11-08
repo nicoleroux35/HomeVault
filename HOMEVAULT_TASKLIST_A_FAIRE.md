@@ -121,6 +121,7 @@ justifie.
 | **P1-26** | Réplication : Btrfs over SSH + vérification destination ✅ | P1 | M/L | Parité ZFS et copie distante prouvée |
 | **P1-27** | Chaîne d'approvisionnement : images Docker par digest + signature du catalogue — **partiel assumé** (signature à finir ; pinning obligatoire rejeté) | P1 | M | Pas d'image/catalogue substitué |
 | **P1-28** | Stabilité système : `LimitNOFILE`, `sysctl`, `smartd`/`mdmonitor`, write cache + UPS — **partiel assumé** (avertissement installateur suffit ; carte UI rejetée) | P1 | S/M | Moins de coupures évitables |
+| **P1-29** | SMB WS-Discovery (découverte Windows) — livré 2026‑11‑08 | P1 | S | Découverte sans config |
 | **P2-1** | SMB AD/Kerberos complet (winbind, realm, idmap, keytab) — **gelé au partiel** (config ADS + join/leave ; DC réel seulement si cible entreprise) | P2 | L | Entreprise Windows |
 | **P2-2** | NFSv4 + Kerberos (`sec=krb5`) — **gelé au partiel** (flavor + validation keytab ; KDC réel seulement si cible entreprise) | P2 | L | Entreprise Unix |
 | **P2-3** | Thin provisioning — **gelé au partiel** (zvols ZFS thin/thick ; overcommit/LVM rejetés) | P2 | L | Sur‑allocation |
@@ -1608,6 +1609,23 @@ l'UI.*
   en double.
 - Avertir si le write cache d'un disque est actif sans UPS.
 - Tests : `systemd-analyze verify`, parsing `hdparm -W`, non‑régression.
+
+### [x] P1-29 — SMB WS-Discovery · S
+
+**Livré 2026‑11‑08.** `SmbConfig` gagne `ws_discovery` (défaut **on**, comme la
+découverte réseau Windows de DSM). `src/ws_discovery.rs` écrit
+`/etc/systemd/system/homevault-wsdd.service` et pilote `wsdd2` (nom NetBIOS et
+workgroup sanitizés, `DynamicUser`, `NoNewPrivileges`, `ProtectSystem=strict`,
+familles d'adresses étroites) ; désactiver supprime l'unité. L'enregistrement
+SMB applique le réglage en best-effort, et un reconcile au démarrage le
+rétablit. `GET /api/shares/ws-discovery` expose
+`available/enabled/running/detail` ; la carte SMB affiche « wsdd2 is not
+installed » plutôt qu'un interrupteur mort. Installateur : `wsdd2` en paquet
+optionnel ; `dependencies.rs` le liste. Tests : 6 unitaires
+(`src/ws_discovery.rs`), 1 (`src/shares.rs`), 1 d'intégration
+(`tests/shares_integration.rs`), E2E Shares 4.9b — écrits, non exécutés.
+Docs : `docs/guides/shares.md`, `docs/API.md`, `SCREENS.md`, FeatureDoc
+`shares`.
 
 ---
 

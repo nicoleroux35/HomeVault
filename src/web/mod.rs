@@ -305,6 +305,7 @@ use crate::handlers::{
         handle_smb_previous_versions_list, handle_smb_previous_versions_set,
         handle_smb_recycle_list, handle_smb_recycle_set, handle_smb_time_machine_list,
         handle_smb_time_machine_set, handle_webdav_config_get, handle_webdav_config_update,
+        handle_ws_discovery_status,
     },
     shortcuts::handle_fetch_metadata,
     snapshot_locks::{
@@ -1896,6 +1897,12 @@ pub fn create_app(state: AppStateArc) -> Router {
         )
         .route("/api/shares/smb/config", get(handle_smb_config_get))
         .route("/api/shares/smb/config", put(handle_smb_config_update))
+        // WS-Discovery status (P1): discovery-only daemon managed by the SMB
+        // settings; the toggle itself travels in the SmbConfig payload.
+        .route(
+            "/api/shares/ws-discovery",
+            get(handle_ws_discovery_status),
+        )
         .route("/api/shares/smb/domain/join", post(handle_smb_domain_join))
         .route(
             "/api/shares/smb/domain/leave",
@@ -2827,6 +2834,19 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     tracing::info!(
         "Core services ready (widgets, path guard, rate limiter, terminal manager, downloader)"
     );
+
+    // P1: reconcile Windows network discovery with the saved SMB settings.
+    // Best-effort — a missing wsdd2 or a host without systemd must never delay
+    // or fail startup; the Shares card reports the real state.
+    tokio::task::spawn_blocking(|| match crate::shares::SharesService::get_smb_config() {
+        Ok(config) if config.ws_discovery => {
+            if let Err(e) = crate::ws_discovery::apply(true, &config.workgroup) {
+                tracing::debug!("Windows network discovery not started: {}", e);
+            }
+        }
+        Ok(_) => {}
+        Err(e) => tracing::debug!("SMB config unavailable for WS-Discovery: {}", e),
+    });
 
     // Background schedulers — a `tokio::spawn` call itself can't fail, so
     // (unlike the checks above) there's no meaningful per-task success/error

@@ -697,6 +697,7 @@ and `handle_share_get` accepted any non-empty `X-Session-Token`; they now use
 | DELETE | `/shares/{name}/{share_type}/snapshots/{snapshot}` | admin | `handle_share_snapshot_delete` — deletes only that share backend's snapshot; unsafe names `400` |
 | POST | `/shares/{name}/{share_type}/snapshots/{snapshot}/restore` | admin | `handle_share_snapshot_restore` — `{ path (relative, no dot-dot or absolute path), confirm: true }`; restores a file/folder from the snapshot into the live share, atomic file copy, folder merge; `403` outside the share, unsupported Btrfs non-subvolume `503` |
 | GET/PUT | `/shares/smb\|nfs\|ftp\|webdav\|sftp/config` | admin | service config |
+| GET | `/shares/ws-discovery` | admin | WS-Discovery daemon state (`available`, `enabled`, `running`, `detail`). The `ws_discovery` toggle itself travels in the SMB config payload; discovery only, no share is exposed |
 | GET | `/shares/sftp/users` | admin | users with SFTP access + key status (separate `homevault-sftp.service`, see [Shares guide](./guides/shares.md)) |
 | PUT | `/shares/sftp/users/key` | admin | set a user's SFTP public key `{ username, public_key }` |
 | POST | `/shares/sftp/rebuild` | admin | reconcile SFTP jails against current ACL grants |

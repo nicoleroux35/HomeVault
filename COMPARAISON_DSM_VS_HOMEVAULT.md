@@ -279,6 +279,10 @@ PHP 8.1/Redis 4.0.
   état du dernier job restic), `src/handlers/restore_drill.rs`
   (`/api/settings/backup/restore-drill`) et le bouton *Verify restore* dans
   Settings (P2‑9)
+- **WS‑Discovery** : `src/ws_discovery.rs` (unité `homevault-wsdd`, `wsdd2`
+  sandboxé), champ `ws_discovery` de `SmbConfig`, `GET
+  /api/shares/ws-discovery`, paquet optionnel `wsdd2` dans l'installeur
+  (P1‑29)
 - Catalogue : `catalog/*/homevault-app.toml` (15 apps)
 - Apps catalogue **non liées aux partages** : le compose ne binde que
   `/srv/apps/<app>` (`src/app_catalog/mod.rs:261-270`) — d'où le chantier
@@ -462,7 +466,26 @@ Journal — l'API les porte déjà.
 - Docs : `docs/guides/disaster-recovery.md`, `docs/API.md`, `SCREENS.md`,
   FeatureDocs `disaster-recovery` et `settings`.
 
+**P1‑29 — SMB WS‑Discovery (livré).**
+
+- `SmbConfig` gagne `ws_discovery` (défaut **on**, comme la découverte réseau
+  Windows de DSM), appliqué par `src/ws_discovery.rs` et non par `smb.conf`.
+- `homevault-wsdd.service` exécute `wsdd2` (nom NetBIOS + workgroup
+  sanitizés, `DynamicUser`, `NoNewPrivileges`, `ProtectSystem=strict`,
+  `RestrictAddressFamilies` étroit) ; désactiver l'unité la supprime.
+- Enregistrement SMB en best-effort + reconcile au démarrage ;
+  `GET /api/shares/ws-discovery` expose `available/enabled/running/detail`, et
+  la carte SMB dit « wsdd2 is not installed » plutôt que d'afficher un
+  interrupteur mort. `wsdd2` est un paquet optionnel de l'installeur et une
+  dépendance listée.
+- Tests écrits mais **non exécutés** : 6 unitaires (`src/ws_discovery.rs`), 1
+  (`src/shares.rs`), 1 d'intégration (`tests/shares_integration.rs`), E2E
+  Shares 4.9b.
+- Docs : `docs/guides/shares.md`, `docs/API.md`, `SCREENS.md`, FeatureDoc
+  `shares`.
+
 **Reste sur P2‑9** : le test de reconstruction complète sur une VM jetable
 (boot, installation, restauration DB + configuration + données, vérification)
-et, si la cible le justifie, une image système équivalente à `md0`. C'est le
-prochain chantier de l'ordre, avant les P1.
+et, si la cible le justifie, une image système équivalente à `md0`. Les autres
+P1 de l'ordre restent : MAJ Docker planifiées, unification des tâches
+planifiées, historique/alertes quotas, WireGuard UX.
