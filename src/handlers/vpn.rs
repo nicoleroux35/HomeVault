@@ -29,12 +29,14 @@
 use axum::{
     extract::{Path, State},
     http::HeaderMap,
+    response::Response,
     Json, Router,
 };
 use serde::{Deserialize, Serialize};
 
 use crate::handlers::AppStateArc;
 use crate::storage::vpn_peer_repo::{VpnPeerRepository, VpnWireGuardPeer};
+use crate::utils::response::ResponseHelper;
 use crate::vpn as vpn_mod;
 
 // Re-export VPN types for convenience
@@ -102,6 +104,26 @@ pub struct OpenVPNConfigRequest {
     pub config_content: String,
     pub username: Option<String>,
     pub password: Option<String>,
+}
+
+/// Import a provider configuration (`.conf`) as an outbound client tunnel.
+#[derive(Debug, Deserialize)]
+pub struct WireGuardClientImportRequest {
+    pub name: String,
+    pub config_content: String,
+    #[serde(default)]
+    pub kill_switch: bool,
+    #[serde(default = "default_true")]
+    pub autostart: bool,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct WireGuardClientAutostartRequest {
+    pub autostart: bool,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 type HandlerResult = Result<Json<ApiSuccess>, (axum::http::StatusCode, Json<ApiError>)>;
@@ -209,6 +231,47 @@ fn err(
             error: message,
         }),
     )
+}
+
+/// The new WireGuard-client endpoints answer `Response` (they need `503` and
+/// `409`, which the legacy `(StatusCode, Json<ApiError>)` result cannot
+/// express without changing every existing handler).
+async fn guard_admin_response(
+    state: &AppStateArc,
+    headers: &HeaderMap,
+) -> Result<String, Response> {
+    guard_admin(state, headers)
+        .await
+        .map_err(|(status, body)| ResponseHelper::json_error_with_status(status, body.0.error))
+}
+
+fn client_error_response(error: vpn_mod::WireGuardClientError) -> Response {
+    use vpn_mod::WireGuardClientError as E;
+    match error {
+        E::Validation(message) => ResponseHelper::json_error(message),
+        E::AlreadyExists(message) => {
+            ResponseHelper::json_error_with_status(axum::http::StatusCode::CONFLICT, message)
+        }
+        E::NotFound => ResponseHelper::json_error_with_status(
+            axum::http::StatusCode::NOT_FOUND,
+            "WireGuard client not found".to_string(),
+        ),
+        E::Unavailable(message) => ResponseHelper::json_unavailable(message),
+        E::Host(message) => ResponseHelper::json_internal_error(message),
+    }
+}
+
+/// Client ids are uuids; validate the shape before the engine does any file or
+/// host lookup (a path segment like `../../etc` is a 400, not a 404).
+fn sanitize_client_id(id: &str) -> Result<String, (axum::http::StatusCode, Json<ApiError>)> {
+    if id.is_empty() || id.len() > 64 || !id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
+    {
+        return Err(err(
+            axum::http::StatusCode::BAD_REQUEST,
+            "Invalid WireGuard client id".to_string(),
+        ));
+    }
+    Ok(id.to_string())
 }
 
 // ---------------------------------------------------------------------------
@@ -498,6 +561,198 @@ pub async fn handle_wg_peer_revoke(
     Ok(ok(format!("Device '{}' revoked", peer.name)))
 }
 
+// ---------------------------------------------------------------------------
+// WireGuard client tunnels (outbound provider configurations)
+// ---------------------------------------------------------------------------
+
+/// GET /api/vpn/wireguard/clients — imported client tunnels + live state.
+pub async fn handle_wg_clients_list(
+    State(state): State<AppStateArc>,
+    headers: HeaderMap,
+) -> Response {
+    let _username = match guard_admin_response(&state, &headers).await {
+        Ok(username) => username,
+        Err(response) => return response,
+    };
+
+    match tokio::task::spawn_blocking(|| {
+        (
+            vpn_mod::wireguard_available(),
+            vpn_mod::list_wireguard_clients(),
+        )
+    })
+    .await
+    {
+        Ok((available, Ok(clients))) => ResponseHelper::json_success(serde_json::json!({
+            "available": available,
+            "clients": clients,
+        })),
+        Ok((_, Err(e))) => ResponseHelper::json_internal_error(e),
+        Err(e) => ResponseHelper::json_internal_error(format!("Task join error: {}", e)),
+    }
+}
+
+/// POST /api/vpn/wireguard/clients — validate, persist, write the root-owned
+/// config and bring the interface up (rollback on any failure).
+pub async fn handle_wg_client_import(
+    State(state): State<AppStateArc>,
+    headers: HeaderMap,
+    Json(request): Json<WireGuardClientImportRequest>,
+) -> Response {
+    let username = match guard_admin_response(&state, &headers).await {
+        Ok(username) => username,
+        Err(response) => return response,
+    };
+    let name = match sanitize_peer_name(&request.name) {
+        Ok(name) => name,
+        Err((status, body)) => return ResponseHelper::json_error_with_status(status, body.0.error),
+    };
+
+    let actor = username.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        vpn_mod::import_wireguard_client(
+            &name,
+            &request.config_content,
+            request.kill_switch,
+            request.autostart,
+            &actor,
+        )
+    })
+    .await;
+
+    match result {
+        Ok(Ok(client)) => {
+            crate::events::log_event(format!(
+                "Admin '{}' imported WireGuard client '{}' ({})",
+                username,
+                client.name,
+                client.endpoint.as_deref().unwrap_or("no endpoint")
+            ));
+            ResponseHelper::json_success(serde_json::json!({ "client": client }))
+        }
+        Ok(Err(error)) => client_error_response(error),
+        Err(e) => ResponseHelper::json_internal_error(format!("Task join error: {}", e)),
+    }
+}
+
+/// POST /api/vpn/wireguard/clients/{id}/start — connect an imported client.
+pub async fn handle_wg_client_start(
+    State(state): State<AppStateArc>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> Response {
+    let username = match guard_admin_response(&state, &headers).await {
+        Ok(username) => username,
+        Err(response) => return response,
+    };
+    let id = match sanitize_client_id(&id) {
+        Ok(id) => id,
+        Err((status, body)) => return ResponseHelper::json_error_with_status(status, body.0.error),
+    };
+
+    match tokio::task::spawn_blocking(move || vpn_mod::start_wireguard_client(&id)).await {
+        Ok(Ok(client)) => {
+            crate::events::log_event(format!(
+                "Admin '{}' connected WireGuard client '{}'",
+                username, client.name
+            ));
+            ResponseHelper::json_success(serde_json::json!({ "client": client }))
+        }
+        Ok(Err(error)) => client_error_response(error),
+        Err(e) => ResponseHelper::json_internal_error(format!("Task join error: {}", e)),
+    }
+}
+
+/// POST /api/vpn/wireguard/clients/{id}/stop — disconnect an imported client.
+pub async fn handle_wg_client_stop(
+    State(state): State<AppStateArc>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> Response {
+    let username = match guard_admin_response(&state, &headers).await {
+        Ok(username) => username,
+        Err(response) => return response,
+    };
+    let id = match sanitize_client_id(&id) {
+        Ok(id) => id,
+        Err((status, body)) => return ResponseHelper::json_error_with_status(status, body.0.error),
+    };
+
+    match tokio::task::spawn_blocking(move || vpn_mod::stop_wireguard_client(&id)).await {
+        Ok(Ok(client)) => {
+            crate::events::log_event(format!(
+                "Admin '{}' disconnected WireGuard client '{}'",
+                username, client.name
+            ));
+            ResponseHelper::json_success(serde_json::json!({ "client": client }))
+        }
+        Ok(Err(error)) => client_error_response(error),
+        Err(e) => ResponseHelper::json_internal_error(format!("Task join error: {}", e)),
+    }
+}
+
+/// DELETE /api/vpn/wireguard/clients/{id} — disconnect, remove the config and
+/// forget the record.
+pub async fn handle_wg_client_delete(
+    State(state): State<AppStateArc>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> Response {
+    let username = match guard_admin_response(&state, &headers).await {
+        Ok(username) => username,
+        Err(response) => return response,
+    };
+    let id = match sanitize_client_id(&id) {
+        Ok(id) => id,
+        Err((status, body)) => return ResponseHelper::json_error_with_status(status, body.0.error),
+    };
+
+    match tokio::task::spawn_blocking(move || vpn_mod::delete_wireguard_client(&id)).await {
+        Ok(Ok(name)) => {
+            crate::events::log_event_warn(format!(
+                "Admin '{}' deleted WireGuard client '{}'",
+                username, name
+            ));
+            ResponseHelper::json_success(serde_json::json!({ "success": true }))
+        }
+        Ok(Err(error)) => client_error_response(error),
+        Err(e) => ResponseHelper::json_internal_error(format!("Task join error: {}", e)),
+    }
+}
+
+/// PUT /api/vpn/wireguard/clients/{id} — change the "start at boot" flag.
+pub async fn handle_wg_client_update_autostart(
+    State(state): State<AppStateArc>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+    Json(request): Json<WireGuardClientAutostartRequest>,
+) -> Response {
+    let username = match guard_admin_response(&state, &headers).await {
+        Ok(username) => username,
+        Err(response) => return response,
+    };
+    let id = match sanitize_client_id(&id) {
+        Ok(id) => id,
+        Err((status, body)) => return ResponseHelper::json_error_with_status(status, body.0.error),
+    };
+
+    match tokio::task::spawn_blocking(move || {
+        vpn_mod::set_wireguard_client_autostart(&id, request.autostart)
+    })
+    .await
+    {
+        Ok(Ok(client)) => {
+            crate::events::log_event(format!(
+                "Admin '{}' set WireGuard client '{}' start-at-boot to {}",
+                username, client.name, client.autostart
+            ));
+            ResponseHelper::json_success(serde_json::json!({ "client": client }))
+        }
+        Ok(Err(error)) => client_error_response(error),
+        Err(e) => ResponseHelper::json_internal_error(format!("Task join error: {}", e)),
+    }
+}
+
 /// POST /api/vpn/openvpn - Create OpenVPN connection
 pub async fn handle_openvpn_create(
     State(state): State<AppStateArc>,
@@ -716,6 +971,23 @@ pub fn create_vpn_router(state: AppStateArc) -> Router {
         .route(
             "/wireguard/peers/{id}",
             axum::routing::delete(handle_wg_peer_revoke),
+        )
+        // WireGuard client tunnels (imported provider configurations)
+        .route(
+            "/wireguard/clients",
+            axum::routing::get(handle_wg_clients_list).post(handle_wg_client_import),
+        )
+        .route(
+            "/wireguard/clients/{id}",
+            axum::routing::delete(handle_wg_client_delete).put(handle_wg_client_update_autostart),
+        )
+        .route(
+            "/wireguard/clients/{id}/start",
+            axum::routing::post(handle_wg_client_start),
+        )
+        .route(
+            "/wireguard/clients/{id}/stop",
+            axum::routing::post(handle_wg_client_stop),
         )
         // OpenVPN
         .route("/openvpn", axum::routing::post(handle_openvpn_create))

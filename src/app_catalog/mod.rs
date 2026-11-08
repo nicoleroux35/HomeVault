@@ -34,8 +34,8 @@ pub mod store;
 pub mod updates;
 
 use include_dir::{include_dir, Dir};
-use manifest::Manifest;
-use std::path::PathBuf;
+use manifest::{Manifest, SecurityPolicy};
+use std::path::{Path, PathBuf};
 
 /// The built-in catalog, baked into the binary at compile time (same
 /// mechanism as `sqlx/migrations` and the frontend `static/` dir).
@@ -254,7 +254,140 @@ pub fn render_with_env(
             None => {}
         }
     }
+    let rendered = apply_security_policy(&rendered, &app.manifest.security);
     Ok((rendered, data_dir))
+}
+
+/// Host directories a rendered compose file bind-mounts from the app's data
+/// directory, in template order and without duplicates.
+///
+/// Docker creates a missing bind-mount source as `root:root`, which locks out
+/// a container started with `security.user`. The installer pre-creates these
+/// paths (and hands them to the declared owner) before `docker compose up`.
+pub fn data_volume_paths(rendered: &str, data_dir: &Path) -> Vec<PathBuf> {
+    let prefix = data_dir.to_string_lossy();
+    let mut paths: Vec<PathBuf> = Vec::new();
+    for line in rendered.lines() {
+        let Some(entry) = line.trim_start().strip_prefix("- ") else {
+            continue;
+        };
+        let Some((host, _)) = entry.split_once(':') else {
+            continue;
+        };
+        let host = host.trim();
+        if host.is_empty() || !host.starts_with(prefix.as_ref()) {
+            continue;
+        }
+        let path = PathBuf::from(host);
+        if !paths.contains(&path) {
+            paths.push(path);
+        }
+    }
+    paths
+}
+
+/// Insert the manifest's Docker security policy into every service block of a
+/// rendered compose file.
+///
+/// This is deliberately line-based rather than a YAML rewrite: the catalog
+/// templates are simple, and the function only *adds* keys at the service
+/// level, never reorders or re-serialises the author's file. A key the
+/// template already declares is left alone (the app author's explicit choice
+/// wins), which also avoids duplicate YAML keys.
+fn apply_security_policy(yaml: &str, policy: &SecurityPolicy) -> String {
+    if policy.is_empty() {
+        return yaml.to_string();
+    }
+    let indent_of = |line: &str| line.len() - line.trim_start().len();
+    let lines: Vec<&str> = yaml.lines().collect();
+    let mut out = String::new();
+    let mut i = 0;
+    let mut in_services = false;
+    let mut services_indent = 0usize;
+
+    while i < lines.len() {
+        let line = lines[i];
+        if !in_services {
+            out.push_str(line);
+            out.push('\n');
+            if line.trim_end() == "services:" {
+                in_services = true;
+                services_indent = indent_of(line);
+            }
+            i += 1;
+            continue;
+        }
+        // Leaving the services mapping (next top-level key).
+        if !line.trim().is_empty() && indent_of(line) <= services_indent {
+            in_services = false;
+            out.push_str(line);
+            out.push('\n');
+            i += 1;
+            continue;
+        }
+        let service_indent = services_indent + 2;
+        if !line.trim().is_empty()
+            && indent_of(line) == service_indent
+            && line.trim_end().ends_with(':')
+        {
+            out.push_str(line);
+            out.push('\n');
+            let mut j = i + 1;
+            let mut block: Vec<&str> = Vec::new();
+            while j < lines.len() {
+                let l = lines[j];
+                if !l.trim().is_empty() && indent_of(l) <= service_indent {
+                    break;
+                }
+                block.push(l);
+                j += 1;
+            }
+            let key_indent = service_indent + 2;
+            let item_indent = service_indent + 4;
+            let pad = " ".repeat(key_indent);
+            let item = " ".repeat(item_indent);
+            let has_key = |key: &str| {
+                block.iter().any(|l| {
+                    indent_of(l) == key_indent && l.trim_start().starts_with(&format!("{key}:"))
+                })
+            };
+            if policy.no_new_privileges && !has_key("security_opt") {
+                out.push_str(&format!(
+                    "{pad}security_opt:\n{item}- no-new-privileges:true\n"
+                ));
+            }
+            if !policy.cap_drop.is_empty() && !has_key("cap_drop") {
+                out.push_str(&format!("{pad}cap_drop:\n"));
+                for cap in &policy.cap_drop {
+                    out.push_str(&format!("{item}- {cap}\n"));
+                }
+            }
+            if !policy.cap_add.is_empty() && !has_key("cap_add") {
+                out.push_str(&format!("{pad}cap_add:\n"));
+                for cap in &policy.cap_add {
+                    out.push_str(&format!("{item}- {cap}\n"));
+                }
+            }
+            if let Some(user) = &policy.user {
+                if !has_key("user") {
+                    out.push_str(&format!("{pad}user: \"{user}\"\n"));
+                }
+            }
+            if policy.read_only && !has_key("read_only") {
+                out.push_str(&format!("{pad}read_only: true\n"));
+            }
+            for l in block {
+                out.push_str(l);
+                out.push('\n');
+            }
+            i = j;
+            continue;
+        }
+        out.push_str(line);
+        out.push('\n');
+        i += 1;
+    }
+    out
 }
 
 /// Validate caller-supplied environment values against the manifest's
@@ -396,6 +529,62 @@ mod tests {
         );
         assert!(apps.iter().all(|a| a.store_id == BUILTIN_STORE_ID));
         assert!(apps.iter().any(|a| a.manifest.id == "jellyfin"));
+    }
+
+    #[test]
+    fn test_every_builtin_manifest_declares_security() {
+        for dir in BUILTIN_DIR.dirs() {
+            let name = dir.path().file_name().unwrap().to_str().unwrap();
+            let raw = BUILTIN_DIR
+                .get_file(format!("{name}/homevault-app.toml"))
+                .and_then(|f| f.contents_utf8())
+                .unwrap_or_else(|| panic!("{name} has no homevault-app.toml"));
+            let manifest = Manifest::parse(raw)
+                .unwrap_or_else(|e| panic!("{name} has an invalid manifest: {e}"));
+            assert!(
+                raw.lines().any(|l| l.trim() == "[security]"),
+                "{name} must declare an explicit [security] block"
+            );
+            assert!(
+                manifest.security.no_new_privileges,
+                "{name} must keep no_new_privileges on"
+            );
+        }
+    }
+
+    #[test]
+    fn test_data_volume_paths_only_app_data_mounts() {
+        let dir = PathBuf::from("/srv/apps/demo");
+        let yaml = "services:\n  demo:\n    volumes:\n      - /srv/apps/demo/files:/data\n      - /srv/apps/demo/db:/db:ro\n      - /etc/localtime:/etc/localtime:ro\n    ports:\n      - \"8080:80\"\n";
+        let paths = data_volume_paths(yaml, &dir);
+        assert_eq!(paths, vec![dir.join("files"), dir.join("db")]);
+    }
+
+    #[test]
+    fn test_security_policy_is_rendered_into_every_service() {
+        let mut app = scan_builtin()
+            .into_iter()
+            .find(|a| a.manifest.id == "vikunja")
+            .unwrap();
+        app.manifest.security = SecurityPolicy {
+            no_new_privileges: true,
+            cap_add: vec!["NET_BIND_SERVICE".to_string()],
+            cap_drop: vec!["ALL".to_string()],
+            user: Some("1000:1000".to_string()),
+            read_only: true,
+        };
+        let (yaml, _) = render(&app, 12345).unwrap();
+        assert_eq!(yaml.matches("no-new-privileges:true").count(), 1);
+        assert!(yaml.contains("cap_drop:\n      - ALL"));
+        assert!(yaml.contains("cap_add:\n      - NET_BIND_SERVICE"));
+        assert!(yaml.contains("user: \"1000:1000\""));
+        assert!(yaml.contains("read_only: true"));
+    }
+
+    #[test]
+    fn test_security_policy_rejects_all_in_cap_add() {
+        let toml = "manifest_version = 1\nid = \"demo\"\nname = \"Demo\"\ncategory = \"x\"\napp_port = 1\ndescription = \"d\"\n[security]\ncap_add = [\"ALL\"]\n";
+        assert!(Manifest::parse(toml).is_err());
     }
 
     #[test]

@@ -103,7 +103,7 @@ if [[ "$HV_BOOTSTRAP" -eq 1 && $EUID -ne 0 ]]; then
     fi
     _hv_envs=(HV_INSTALLER_STAGE=reexec)
     for _hv_v in HV_RELEASE_BASE HV_RELEASE_URL HV_RELEASE_SHA256 HV_RELEASE_TOKEN \
-                 HV_MODE HV_YES HV_SKIP_OPTIONAL DATA_DIRECTORY PORT HTTPS_PORT; do
+                 HV_MODE HV_YES HV_SKIP_OPTIONAL HV_SERVICE_USER DATA_DIRECTORY PORT HTTPS_PORT; do
         if [[ -n "${!_hv_v:-}" ]]; then _hv_envs+=("$_hv_v=${!_hv_v}"); fi
     done
     unset _hv_v
@@ -267,6 +267,10 @@ Environment:
   HV_RELEASE_TOKEN      token for a private-repository release
   HV_YES=1              same as --yes
   HV_MODE=cli|tui       same as --cli / --tui
+  HV_SERVICE_USER       root (default) or homevault
+                        homevault runs the unit as a dedicated system account
+                        with a scoped /etc/sudoers.d/homevault; root keeps the
+                        current all-privileged deployment
 
 Log: /var/log/homevault-install.log
 EOM
@@ -332,13 +336,18 @@ if [[ "$MODE" == "uninstall" ]]; then
     run systemctl disable "$SERVICE_NAME_DEFAULT" 2>/dev/null || true
     run rm -f "$SERVICE_FILE_DEFAULT"
     run rm -f "${SERVICE_FILE_DEFAULT}.bak"
+    # The scoped sudoers file belongs to this install; a leftover would keep
+    # granting a future `homevault` account root commands.
+    run rm -f /etc/sudoers.d/homevault
     run systemctl daemon-reload 2>/dev/null || true
     run rm -rf "$INSTALL_DIR_DEFAULT"
 
     if [[ "$PURGE" -eq 1 ]]; then
         run rm -rf "$DATA_DIR_DEFAULT"
         run rm -f "$ENV_FILE_DEFAULT"
-        echo "  Data and environment file removed."
+        run userdel homevault 2>/dev/null || true
+        run groupdel homevault 2>/dev/null || true
+        echo "  Data, environment file and service account removed."
     else
         echo "  Data kept in $DATA_DIR_DEFAULT (use --purge to remove it too)."
     fi
@@ -389,6 +398,7 @@ if [[ "$DRY_RUN" -eq 1 ]]; then
     echo "  install dir : $INSTALL_DIR_DEFAULT"
     echo "  data dir    : $DATA_DIR_DEFAULT"
     echo "  service     : $SERVICE_FILE_DEFAULT"
+    echo "  runs as     : ${HV_SERVICE_USER:-root} (HV_SERVICE_USER=homevault for the unprivileged mode)"
     # `$1` may be a flag rather than an archive path — only show it when it is
     # an actual file the caller passed.
     ARCHIVE_ARG=""
@@ -422,6 +432,29 @@ SERVICE_FILE="/etc/systemd/system/homevault.service"
 ENV_FILE="/etc/homevault.env"
 PORT="8080"
 HTTPS_PORT="8443"
+
+# Deployment model. `root` is the default, proven on real appliances: the
+# service manages RAID/ZFS/Samba/Docker and reads every user's files, so an
+# unprivileged process needs either a very broad sudoers file or loses file
+# access. `homevault` is the optional split deployment: a dedicated system
+# account plus a scoped /etc/sudoers.d/homevault (rendered by the binary
+# itself), so the long-running process never holds uid 0. Both modes run the
+# same code; every host mutation already goes through `sudo`.
+RUN_USER="${HV_SERVICE_USER:-root}"
+case "$RUN_USER" in
+    root)
+        RUN_GROUP="root"
+        RUN_HOME="/root"
+        ;;
+    homevault)
+        RUN_GROUP="homevault"
+        RUN_HOME="$DATA_DIR"
+        ;;
+    *)
+        echo "HV_SERVICE_USER must be 'root' or 'homevault' (got '$RUN_USER')." >&2
+        exit 1
+        ;;
+esac
 
 # Pre-built application archive — one compressed `homevault` binary. Published
 # per architecture on the project's GitHub Releases as `homevault-<arch>.tar.gz`
@@ -1673,6 +1706,44 @@ tar -xzf "$PACKAGE" -C "$INSTALL_DIR"
 chmod +x "$INSTALL_DIR/homevault"
 ok "Application extracted to $INSTALL_DIR"
 
+# Optional non-root deployment: create the service account, hand it the state
+# it writes directly, and let the binary render its own scoped sudoers file.
+# The binary stays root-owned (the service must not be able to rewrite
+# itself); it only needs read/execute.
+if [[ "$RUN_USER" == "homevault" ]]; then
+    if ! getent group homevault >/dev/null 2>&1; then
+        groupadd --system homevault
+    fi
+    if ! id homevault >/dev/null 2>&1; then
+        useradd --system --gid homevault --home-dir "$DATA_DIR" \
+                --shell /usr/sbin/nologin homevault
+    fi
+    # Device access the appliance already relied on when it ran as root.
+    for grp in docker plugdev storage cdrom nut incus incus-admin; do
+        if getent group "$grp" >/dev/null 2>&1; then
+            usermod -a -G "$grp" homevault
+        fi
+    done
+    chmod -R a+rX "$INSTALL_DIR"
+    chown -R "$RUN_USER:$RUN_GROUP" /etc/homevault /etc/homevault-rsync /etc/homevault-backup
+    chown "$RUN_USER:$RUN_GROUP" "$DATA_DIR" "$DATA_DIR/apps"
+    for sub in data compose rescue syncthing logs quarantine vm; do
+        chown -R "$RUN_USER:$RUN_GROUP" "$DATA_DIR/$sub"
+    done
+    chown "$RUN_USER:$RUN_GROUP" /home/homevault
+    # One source of truth for the grants: the same renderer the unit tests
+    # assert on, executed here as root before the unprivileged unit starts.
+    if ! DATA_DIRECTORY="$DATA_DIR" "$INSTALL_DIR/homevault" --install-sudoers; then
+        err "Could not write /etc/sudoers.d/homevault — refusing to start an unprivileged unit without its grants."
+        exit 1
+    fi
+    ok "Non-root service account ready (homevault + scoped sudoers)"
+else
+    # A previous non-root install upgraded with the default root mode must not
+    # keep a stale sudoers file granting the old account.
+    rm -f /etc/sudoers.d/homevault
+fi
+
 # A downloaded archive was only needed at install time — free the disk space.
 if [[ -n "${TMP_ARCHIVE:-}" ]] && [[ "$PACKAGE" == "$TMP_ARCHIVE" ]]; then
     rm -f "$PACKAGE"
@@ -1683,9 +1754,14 @@ if [[ -f "$SERVICE_FILE" ]]; then
 fi
 
 # Systemd unit — written inline so this single script is self-contained (there
-# is no sibling `homevault.service` to fall back to). No dedicated service
-# account: HomeVault runs as root because it manages the host itself; see the
-# note in Step 2 above.
+# is no sibling `homevault.service` to fall back to). `User=`/`Group=` are
+# always written (`root` by default, `homevault` with HV_SERVICE_USER=
+# homevault) so the deployment model is explicit in `systemctl cat` instead of
+# being implied by an absent directive.
+SERVICE_SUPP=""
+if getent group docker >/dev/null 2>&1; then
+    SERVICE_SUPP="SupplementaryGroups=docker"
+fi
 cat > "$SERVICE_FILE" <<EOF
 [Unit]
 Description=HomeVault Server
@@ -1693,10 +1769,17 @@ After=network.target
 
 [Service]
 Type=simple
+User=$RUN_USER
+Group=$RUN_GROUP
+$SERVICE_SUPP
+Environment="HOME=$RUN_HOME"
 WorkingDirectory=$INSTALL_DIR
 ExecStart=$INSTALL_DIR/homevault
 Restart=on-failure
 RestartSec=5
+# A custom privileged PORT (e.g. 80) must still bind when the unit is not
+# root; harmless for the root deployment.
+AmbientCapabilities=CAP_NET_BIND_SERVICE
 Environment="PORT=$PORT"
 Environment="DATA_DIRECTORY=$DATA_DIR"
 # Built-in HTTPS is opt-in (Settings > Security > HTTPS/TLS, or set
@@ -1876,6 +1959,21 @@ if [[ -x "$INSTALL_DIR/homevault" ]]; then
 else
     VFAIL=1
     err "Application binary missing or not executable at $INSTALL_DIR/homevault"
+fi
+if [[ "$RUN_USER" == "homevault" ]]; then
+    if id homevault >/dev/null 2>&1; then
+        ok "Service account homevault exists"
+    else
+        VFAIL=1
+        err "Service account homevault is missing"
+    fi
+    if [[ -f /etc/sudoers.d/homevault ]] \
+        && visudo -c -f /etc/sudoers.d/homevault >/dev/null 2>&1; then
+        ok "Scoped sudoers file /etc/sudoers.d/homevault is valid"
+    else
+        VFAIL=1
+        err "Scoped sudoers file is missing or invalid — privileged features will fail"
+    fi
 fi
 if systemctl is-active --quiet "$SERVICE_NAME"; then
     ok "Service $SERVICE_NAME started"

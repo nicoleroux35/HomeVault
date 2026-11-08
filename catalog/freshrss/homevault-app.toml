@@ -16,3 +16,6 @@ description_fr = "Agrégateur et lecteur de flux RSS auto-hébergé."
 description_de = "Selbstgehosteter RSS-Feed-Aggregator und -Reader."
 description_es = "Agregador y lector de feeds RSS autoalojado."
 tagline = "Self-hosted RSS feed aggregator and reader."
+
+[security]
+no_new_privileges = true

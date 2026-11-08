@@ -106,6 +106,8 @@ export interface DraftValues {
     language: string;
     /** mDNS/Zeroconf advertising (`homevault.local`). ROADMAP 29.1. */
     mdns_enabled: boolean;
+    /** Whether administrators may open the in-browser terminal. */
+    terminal_enabled: boolean;
   };
   email: {
     smtp_server: string;
@@ -135,9 +137,9 @@ export interface DraftValues {
     };
   };
   update: { check_frequency: string };
-  // ROADMAP 26.2: `theme` was removed. Appearance now includes wallpaper,
-  // accent color, and density mode.
-  appearance: { wallpaper: string; accent_color: string; density: string };
+  // ROADMAP 26.2: `theme` and `density` were removed. Appearance now includes
+  // only the wallpaper and the accent colour.
+  appearance: { wallpaper: string; accent_color: string };
   autostart: { enabled: boolean };
   ai: { model: string };
   widgets: WidgetsDraft;
@@ -166,7 +168,8 @@ export const draft = $state<DraftValues>({
     server_name: 'HomeVault',
     timezone: 'UTC',
     language: 'en',
-    mdns_enabled: true
+    mdns_enabled: true,
+    terminal_enabled: true
   },
   email: {
     smtp_server: '',
@@ -194,7 +197,7 @@ export const draft = $state<DraftValues>({
     },
   },
   update: { check_frequency: 'weekly' },
-  appearance: { wallpaper: '', accent_color: '#1E62AE', density: 'comfortable' },
+  appearance: { wallpaper: '', accent_color: '#1E62AE' },
   autostart: { enabled: false },
   ai: { model: '' },
   widgets: { visible: {}, refreshMs: 5000 },
@@ -401,6 +404,7 @@ async function saveGroup(group: SettingsGroup): Promise<void> {
         server_name: draft.general.server_name,
         timezone: draft.general.timezone,
         mdns_enabled: draft.general.mdns_enabled,
+        terminal_enabled: draft.general.terminal_enabled,
       });
       if (!res.success) throw new Error(group);
       notices.hostname = res.data?.restart_required ? res.data.hostname_notice : null;
@@ -470,7 +474,6 @@ async function saveGroup(group: SettingsGroup): Promise<void> {
       const res = await api.updateAppearanceSettings({
         wallpaper: draft.appearance.wallpaper,
         accent_color: draft.appearance.accent_color,
-        density: draft.appearance.density,
       });
       if (!res.success) throw new Error(group);
       break;

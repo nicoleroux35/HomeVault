@@ -535,9 +535,7 @@ Other behaviour:
 - The "All quotas" button opens an overview of every user and group quota
 - The "Quota view" rail button opens the dedicated read-only Quotas app
 
-The homevault_admin OS group grants root-level access. It is never a tickable
-checkbox — it shows as a read-only chip driven by the admin role only. Users
-get shell-less Linux accounts for SFTP access."#.to_string(),
+The homevault_admin OS group is the application-admin group. It grants HomeVault admin rights, not host root; the separate homevault_hostadmin group is the optional host-root grant. It is never a tickable checkbox — it shows as a read-only chip driven by the admin role only. Users get shell-less Linux accounts for SFTP access."#.to_string(),
         },
         FeatureDoc {
             id: "quotas".to_string(),
@@ -689,12 +687,13 @@ Turning HTTPS on redirects plain-HTTP visitors to it by default, so the password
             id: "vpn".to_string(),
             title: "VPN Management".to_string(),
             content: r#"Manage VPN connections:
-- WireGuard: create peers, manage tunnels
-- OpenVPN: import/manage configurations
+- WireGuard server: create roadwarrior peers, manage tunnels
+- WireGuard client: import a provider .conf (file or paste), optional kill switch, connect at boot
+- OpenVPN: import/manage client profiles
 - VPN status monitoring
 - Start/stop VPN connections
 
-All VPN operations require admin access. Names are sanitized to prevent injection."#.to_string(),
+Imported WireGuard client configurations are parsed from an allowlist: PreUp/PostUp/PreDown/PostDown, SaveConfig, Table and FwMark are refused, and every key/address/endpoint is validated before the file is rendered. Client interfaces use the reserved hvc- prefix. All VPN operations require admin access. Names are sanitized to prevent injection."#.to_string(),
         },
         FeatureDoc {
             id: "rescue".to_string(),
@@ -828,8 +827,8 @@ For safety, the first-run endpoints only answer clients on the local network and
 - Create a group — the name is up to 32 characters of lowercase letters, digits and hyphens — view the groups, open one to see its members, and delete it.
 - Add and remove members from a group's detail view, or from the Users app, which offers the same membership as chips on each account.
 - Groups are the sharing unit: a file-share permission can be granted to a group instead of to each person individually, a resource access (app, folder or share) can be granted to a group, and a transfer quota can be set per group. A group grant applies to every current member and stops applying the moment someone is removed.
-- A group can be renamed and described from its detail view. Renaming keeps everything the group was granted (resource access, quotas, share permissions) attached, and the admin group cannot be renamed because it carries the root-level sudo grant.
-- The homevault_admin group is special — it grants root-level access on the host. It is never offered as an ordinary tickable group: it appears as a read-only chip driven by the account's role, so membership cannot be granted by accident.
+- A group can be renamed and described from its detail view. Renaming keeps everything the group was granted (resource access, quotas, share permissions) attached, and the admin group cannot be renamed because it is the application-admin group driven by the account role.
+- The homevault_admin group is special — it is the application-admin group. It is never offered as an ordinary tickable group: it appears as a read-only chip driven by the account's role, so membership cannot be granted by accident. Host root is the separate homevault_hostadmin group and is never granted automatically.
 - Accounts get shell-less Linux users of the same name so they can reach the server over SFTP; the group membership is what a share grant is evaluated against."#.to_string(),
         },
         FeatureDoc {

@@ -148,6 +148,43 @@ fn install_dir(install_key: &str) -> std::path::PathBuf {
     crate::config::paths::apps_dir().join(install_key)
 }
 
+/// Give a data directory to the numeric owner declared by `[security] user`.
+///
+/// Docker mounts a bind-mount source as-is, so a container running as
+/// `1000:1000` cannot write a directory HomeVault created as `root:root`.
+/// The chown is best effort: HomeVault may run unprivileged on a development
+/// machine, and failing to change ownership must not abort an install.
+fn apply_data_ownership(
+    dir: &std::path::Path,
+    policy: &crate::app_catalog::manifest::SecurityPolicy,
+) {
+    let Some((uid, gid)) = policy.data_owner() else {
+        return;
+    };
+    if std::os::unix::fs::chown(dir, Some(uid), gid).is_ok() {
+        return;
+    }
+
+    // The optional non-root deployment owns the directory but cannot change
+    // its uid; the sudoers grant confines this to `apps/<app>/*`.
+    let owner = match gid {
+        Some(gid) => format!("{uid}:{gid}"),
+        None => uid.to_string(),
+    };
+    let mut cmd = std::process::Command::new("sudo");
+    cmd.arg("chown").arg(&owner).arg(dir);
+    match crate::utils::process::run_timed(&mut cmd, std::time::Duration::from_secs(15)) {
+        Ok(out) if out.status.success() => {}
+        Ok(out) => tracing::warn!(
+            "could not give {} to {}: {}",
+            dir.display(),
+            owner,
+            String::from_utf8_lossy(&out.stderr).trim()
+        ),
+        Err(e) => tracing::warn!("could not give {} to {}: {}", dir.display(), owner, e),
+    }
+}
+
 /// Writes `.install.toml` into `dir` and **reports the failure**.
 ///
 /// The result used to be discarded, so an install on a read-only/full apps
@@ -246,9 +283,19 @@ pub async fn handle_catalog_list(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> Response {
-    if let Err(response) = require_auth(&state, &headers).await {
-        return response;
-    }
+    let username = match require_auth(&state, &headers).await {
+        Ok(username) => username,
+        Err(response) => return response,
+    };
+
+    // Members only see the apps an admin granted them (`resource_shares`,
+    // `kind = app`); admins get `None` and see everything. The filter is
+    // server-side: a grant is not a UI preference, it is the only thing that
+    // decides whether the app is listed at all.
+    let visible = match crate::handlers::resource_shares::visible_app_ids(&state, &username).await {
+        Ok(visible) => visible,
+        Err(e) => return ResponseHelper::json_error(format!("Failed to resolve app access: {e}")),
+    };
 
     let stores = enabled_stores(&state).await;
     let lang = crate::i18n::I18n::get_locale();
@@ -259,13 +306,23 @@ pub async fn handle_catalog_list(
         let apps = app_catalog::list_apps(&stores);
 
         // Which install keys currently have a Compose project (installed).
+        // Computed over *every* app so a member's dependency check is not
+        // fooled by a provider they simply cannot see.
         let installed_keys: std::collections::HashSet<String> = apps
             .iter()
             .filter(|a| ComposeManager::get_project(&a.install_key()).is_ok())
             .map(|a| a.bare_id().to_string())
             .collect();
 
+        let may_see = |app: &app_catalog::CatalogApp| match &visible {
+            None => true,
+            Some(ids) => ids
+                .iter()
+                .any(|id| id == app.bare_id() || id == &app.namespaced_id()),
+        };
+
         apps.iter()
+            .filter(|app| may_see(app))
             .map(|app| {
                 let key = app.install_key();
                 let project = ComposeManager::get_project(&key).ok();
@@ -533,6 +590,22 @@ pub async fn install_catalog_app(
 
     if let Err(e) = tokio::fs::create_dir_all(&data_dir).await {
         return Err(format!("Failed to create data directory: {}", e));
+    }
+
+    // Hand the app's data to the account declared by `[security] user`
+    // *before* compose starts. Docker creates a missing bind-mount source as
+    // `root:root`, which would lock out a container started as a non-root uid,
+    // so the sub-directories the template mounts are created here as well.
+    apply_data_ownership(&data_dir, &app.manifest.security);
+    for volume_dir in app_catalog::data_volume_paths(&rendered, &data_dir) {
+        if let Err(e) = tokio::fs::create_dir_all(&volume_dir).await {
+            return Err(format!(
+                "Failed to create data directory {}: {}",
+                volume_dir.display(),
+                e
+            ));
+        }
+        apply_data_ownership(&volume_dir, &app.manifest.security);
     }
 
     let key = install_key.clone();

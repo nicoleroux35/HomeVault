@@ -16,3 +16,6 @@ description_fr = "Synchronisation, partage de fichiers et cloud personnel auto-h
 description_de = "Selbstgehostete Dateisynchronisierung, Freigabe und persönliche Cloud."
 description_es = "Sincronización de archivos, uso compartido y nube personal autoalojada."
 tagline = "Self-hosted file sync, share and personal cloud drive."
+
+[security]
+no_new_privileges = true

@@ -97,6 +97,10 @@ const EXCLUDED_TRANSPORTS: &[(&str, &str)] = &[
     ("/api/explorer/watch", "server-sent events stream"),
     ("/api/chat/send/stream", "server-sent events stream"),
     ("/api/explorer/download", "binary file stream"),
+    (
+        "/api/explorer/download-ticket",
+        "one-shot capability ticket",
+    ),
     ("/api/explorer/thumbnail", "binary image stream"),
     ("/api/explorer/upload", "binary upload stream"),
     ("/api/explorer/upload/", "binary upload stream"),

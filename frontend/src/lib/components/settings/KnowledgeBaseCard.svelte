@@ -182,7 +182,7 @@
       aria-label={$t('chat.rag_refresh')}
       title={$t('chat.rag_refresh')}
     >
-      <IconRefresh size={18} stroke={2} />
+      <IconRefresh size={20} stroke={2} />
     </button>
   </div>
 

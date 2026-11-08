@@ -16,3 +16,6 @@ description_fr = "Tableaux de bord et analyses pour vos métriques et logs."
 description_de = "Dashboards und Analysen für Ihre Metriken und Logs."
 description_es = "Paneles y análisis para tus métricas y registros."
 tagline = "Dashboards and analytics for your metrics and logs."
+
+[security]
+no_new_privileges = true

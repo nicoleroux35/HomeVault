@@ -239,6 +239,35 @@ async fn test_ticket_success_for_admin_returns_a_ticket() {
 }
 
 #[tokio::test]
+async fn test_ticket_is_refused_when_the_terminal_is_disabled() {
+    // `Settings > General > Terminal` is the equivalent of DSM's SSH/Telnet
+    // switch: an admin who turns it off must not be able to mint a ticket.
+    let (state, _tmp, _g) = setup_state().await;
+    create_test_user(&state, "admin1", "Password123!", 2).await;
+    homevault::handlers::settings::GENERAL_SETTINGS
+        .write()
+        .terminal_enabled = Some(false);
+
+    let mut router = terminal_router(state);
+    let token = login(&mut router, "admin1", "Password123!").await;
+    let (status, _) = send(
+        &mut router,
+        Method::POST,
+        "/api/terminal/ticket",
+        &[("x-session-token", &token)],
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+
+    // Restore the default for the rest of this test binary (the suite holds
+    // ENV_LOCK, so no other test is racing this static).
+    homevault::handlers::settings::GENERAL_SETTINGS
+        .write()
+        .terminal_enabled = Some(true);
+}
+
+#[tokio::test]
 async fn test_ticket_validates_the_tab_id() {
     let (state, _tmp, _g) = setup_state().await;
     create_test_user(&state, "admin1", "Password123!", 2).await;

@@ -169,6 +169,15 @@ pub struct GeneralSettings {
     /// off (`crate::mdns::set_enabled`). ROADMAP 29.1.
     #[serde(default)]
     pub mdns_enabled: Option<bool>,
+    /// Whether administrators may open the in-browser terminal.
+    ///
+    /// `None` means "never decided", read as `true` so the shipped default is
+    /// available; only an explicit `false` refuses new terminal tickets
+    /// (`src/handlers/terminal_pty.rs`). Existing tabs keep running until the
+    /// user closes them, the same way disabling SSH in DSM does not kill a
+    /// session already established.
+    #[serde(default)]
+    pub terminal_enabled: Option<bool>,
 }
 
 impl Default for GeneralSettings {
@@ -178,6 +187,7 @@ impl Default for GeneralSettings {
             timezone: Some("UTC".to_string()),
             language: Some(DEFAULT_LANGUAGE.to_string()),
             mdns_enabled: Some(true),
+            terminal_enabled: Some(true),
         }
     }
 }
@@ -862,6 +872,9 @@ pub async fn handle_general_settings_update(
         if let Some(mdns_enabled) = req.mdns_enabled {
             settings.mdns_enabled = Some(mdns_enabled);
         }
+        if let Some(terminal_enabled) = req.terminal_enabled {
+            settings.terminal_enabled = Some(terminal_enabled);
+        }
     }
     if let Some(language) = &language {
         I18n::set_locale(language);
@@ -1026,6 +1039,9 @@ pub async fn handle_general_settings_get(
         // where a save failed to reach the host, and the screen must show what
         // the appliance actually does.
         "mdns_enabled": crate::mdns::is_enabled(),
+        // Default-on: a settings file written before this field existed must
+        // not silently remove the terminal.
+        "terminal_enabled": settings.terminal_enabled.unwrap_or(true),
     }))
 }
 
@@ -1831,6 +1847,7 @@ pub async fn handle_all_settings_get(
                 .clone()
                 .unwrap_or_else(I18n::get_locale),
             "mdns_enabled": crate::mdns::is_enabled(),
+            "terminal_enabled": general.terminal_enabled.unwrap_or(true),
         },
         "email": {
             "smtp_server": email.smtp_server,
@@ -1864,6 +1881,9 @@ pub async fn handle_public_settings_get() -> Response {
         "server_name": general.server_name.clone().unwrap_or_else(|| "HomeVault".to_string()),
         "language": I18n::get_locale(),
         "version": CURRENT_VERSION,
+        // Lets the desktop hide the terminal entry point when an admin turned
+        // it off, without a second authenticated settings call per page.
+        "terminal_enabled": general.terminal_enabled.unwrap_or(true),
     }))
 }
 

@@ -99,11 +99,13 @@
     return Math.min(Math.max(bytes, lo), hi);
   }
 
-  // The real OS admin/sudo group is managed exclusively through the Role
-  // selector (which syncs it automatically). It is kept out of the editable
-  // `groups` list — `toggleGroupSel` / `saveGroups` / `createForm.groups` must
-  // never touch it — but IS shown as a read-only, role-derived chip so an
-  // admin can see who is in it. It stays impossible to grant/revoke by hand.
+  // The application-admin group is managed exclusively through the Role
+  // selector (which syncs it automatically). Host root is a separate,
+  // explicit group (`homevault_hostadmin`) and is never derived from the role.
+  // It is kept out of the editable `groups` list — `toggleGroupSel` /
+  // `saveGroups` / `createForm.groups` must never touch it — but IS shown as a
+  // read-only, role-derived chip so an admin can see who is in it. It stays
+  // impossible to grant/revoke by hand.
   const PROTECTED_GROUP = 'homevault_admin';
   // Captured from the group list for the read-only display chip.
   let adminGroup: Group | null = null;
@@ -272,7 +274,7 @@
     const res = await api.getGroups();
     loadingGroups = false;
     if (res.success && res.data) {
-      // The real OS admin/sudo group is managed only through the Role selector
+      // The application-admin group is managed only through the Role selector
       // and is never an assignable checkbox — it is split out of `groups` here
       // (so an instance whose only group is `homevault_admin` shows an empty
       // editable list) and kept in `adminGroup` for the read-only chip.

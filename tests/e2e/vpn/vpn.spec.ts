@@ -230,7 +230,7 @@ test.describe('2 — Form fields', () => {
     page,
   }) => {
     await gotoVpn(page, adminTokens);
-    const openvpnTab = win(page).locator('.hv-winhdr-tab', { hasText: 'OpenVPN' });
+    const openvpnTab = page.getByRole('tab', { name: /OpenVPN/ });
     if ((await openvpnTab.count()) === 0) test.skip(true, 'OpenVPN not available on this host');
     await openvpnTab.click();
     const addBtn = win(page).locator('[data-testid="vpn-btn"]', { hasText: /New Connection|new_connection/i });
@@ -302,7 +302,7 @@ test.describe('3 — Validation', () => {
 test.describe('4 — All user interactions', () => {
   test('4.1 — clicking a tab switches the active tab and its content', async ({ page }) => {
     await gotoVpn(page, adminTokens);
-    const openvpnTab = win(page).locator('.hv-winhdr-tab', { hasText: 'OpenVPN' });
+    const openvpnTab = page.getByRole('tab', { name: /OpenVPN/ });
     if ((await openvpnTab.count()) === 0) test.skip(true, 'OpenVPN not available on this host');
     await openvpnTab.click();
     await expect(openvpnTab).toHaveAttribute('aria-selected', 'true');
@@ -334,7 +334,7 @@ test.describe('4 — All user interactions', () => {
     page,
   }) => {
     await gotoVpn(page, adminTokens);
-    const openvpnTab = win(page).locator('.hv-winhdr-tab', { hasText: 'OpenVPN' });
+    const openvpnTab = page.getByRole('tab', { name: /OpenVPN/ });
     if ((await openvpnTab.count()) === 0) test.skip(true, 'OpenVPN not available on this host');
     await openvpnTab.click();
     await win(page).locator('[data-testid="vpn-btn"]', { hasText: /New Connection|new_connection/i }).first().click();
@@ -376,7 +376,7 @@ test.describe('5 — Submission flows', () => {
     page,
   }) => {
     await gotoVpn(page, adminTokens);
-    const openvpnTab = win(page).locator('.hv-winhdr-tab', { hasText: 'OpenVPN' });
+    const openvpnTab = page.getByRole('tab', { name: /OpenVPN/ });
     if ((await openvpnTab.count()) === 0) test.skip(true, 'OpenVPN not available on this host');
     await openvpnTab.click();
     await win(page).locator('[data-testid="vpn-btn"]', { hasText: /New Connection|new_connection/i }).first().click();
@@ -403,12 +403,15 @@ test.describe('6 — Navigation', () => {
 
   test('6.2 — switching tabs preserves the window (no reload)', async ({ page }) => {
     await gotoVpn(page, adminTokens);
-    const openvpnTab = win(page).locator('.hv-winhdr-tab', { hasText: 'OpenVPN' });
-    if ((await openvpnTab.count()) === 0) test.skip(true, 'only one/no tab available');
+    const openvpnTab = page.getByRole('tab', { name: /OpenVPN/ });
+    const wgTab = page.getByRole('tab', { name: /WireGuard/ });
+    if ((await openvpnTab.count()) === 0 || (await wgTab.count()) === 0) {
+      test.skip(true, 'both WireGuard and OpenVPN tabs are required');
+    }
     const marker = 'e2e-nav-marker';
     await win(page).evaluate((el, m) => ((el as any)[m] = true), marker);
     await openvpnTab.click();
-    await win(page).locator('.hv-winhdr-tab', { hasText: 'WireGuard' }).click();
+    await wgTab.click();
     const stillThere = await win(page).evaluate((el, m) => Boolean((el as any)[m]), marker);
     expect(stillThere).toBe(true);
   });
@@ -633,10 +636,11 @@ test.describe('12 — Console & network', () => {
     const errors: string[] = [];
     page.on('pageerror', (e) => errors.push(e.message));
     await gotoVpn(page, adminTokens);
-    const openvpnTab = win(page).locator('.hv-winhdr-tab', { hasText: 'OpenVPN' });
-    if ((await openvpnTab.count()) > 0) {
+    const openvpnTab = page.getByRole('tab', { name: /OpenVPN/ });
+    const wgTab = page.getByRole('tab', { name: /WireGuard/ });
+    if ((await openvpnTab.count()) > 0 && (await wgTab.count()) > 0) {
       await openvpnTab.click();
-      await win(page).locator('.hv-winhdr-tab', { hasText: 'WireGuard' }).click();
+      await wgTab.click();
     }
     expect(errors).toEqual([]);
   });
@@ -737,7 +741,7 @@ test.describe('13 — Real device lifecycle (best-effort, always cleaned up)', (
 
     try {
       await gotoVpn(page, adminTokens);
-      const openvpnTab = win(page).locator('.hv-winhdr-tab', { hasText: 'OpenVPN' });
+      const openvpnTab = page.getByRole('tab', { name: /OpenVPN/ });
       await openvpnTab.click();
       await expect(win(page).locator('[data-testid="vpn-card-name"]', { hasText: name })).toBeVisible({
         timeout: 10_000,
@@ -790,8 +794,8 @@ test.describe('14 — Edge cases & memory regression', () => {
 
   test('14.3 — rapidly switching tabs does not crash the page', async ({ page }) => {
     await gotoVpn(page, adminTokens);
-    const openvpnTab = win(page).locator('.hv-winhdr-tab', { hasText: 'OpenVPN' });
-    const wgTab = win(page).locator('.hv-winhdr-tab', { hasText: 'WireGuard' });
+    const openvpnTab = page.getByRole('tab', { name: /OpenVPN/ });
+    const wgTab = page.getByRole('tab', { name: /WireGuard/ });
     if ((await openvpnTab.count()) === 0) test.skip(true, 'only one/no tab available');
     for (let i = 0; i < 8; i++) {
       await (i % 2 === 0 ? openvpnTab : wgTab).click();
@@ -829,5 +833,114 @@ test.describe('14 — Edge cases & memory regression', () => {
       console.log(`[MEM] 5x modal open/close delta: ${delta.toFixed(1)} MB`);
       expect(delta).toBeLessThan(15);
     }
+  });
+});
+
+// ===========================================================================
+// 15. WireGuard client tunnels (P1-17)
+// ===========================================================================
+//
+// Import is validated before `/etc/wireguard` is touched, so the invalid
+// payloads below are safe to POST on any host. The real connect path is not
+// exercised here (it needs `wireguard-tools` + sudoers); the parser and argv
+// are covered by `src/vpn.rs` unit tests.
+
+const CLIENT_CONF = `[Interface]
+PrivateKey = AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=
+Address = 10.2.0.2/32
+
+[Peer]
+PublicKey = AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI=
+AllowedIPs = 0.0.0.0/0
+Endpoint = vpn.example.com:51820
+`;
+
+test.describe('15 — WireGuard client tunnels', () => {
+  test('15.1 — the WireGuard client tab opens the import modal', async ({ page }) => {
+    await gotoVpn(page, adminTokens);
+    const clientTab = win(page).locator('.hv-winhdr-tab', { hasText: 'WireGuard client' });
+    if ((await clientTab.count()) === 0) test.skip(true, 'WireGuard not available on this host');
+    await clientTab.click();
+    await win(page).locator('[data-testid="vpn-import-client-btn"]').first().click();
+    await expect(page.locator('#wg-client-name')).toBeVisible();
+    await expect(page.locator('#wg-client-file')).toHaveAttribute('type', 'file');
+    await expect(page.locator('#wg-client-config')).toBeVisible();
+    await expect(page.locator('#wg-client-kill-switch')).toHaveAttribute('type', 'checkbox');
+    await expect(page.locator('#wg-client-autostart')).toHaveAttribute('type', 'checkbox');
+    await page.keyboard.press('Escape');
+  });
+
+  test('15.2 — import stays disabled until a name and configuration are present', async ({
+    page,
+  }) => {
+    await gotoVpn(page, adminTokens);
+    const clientTab = win(page).locator('.hv-winhdr-tab', { hasText: 'WireGuard client' });
+    if ((await clientTab.count()) === 0) test.skip(true, 'WireGuard not available on this host');
+    await clientTab.click();
+    await win(page).locator('[data-testid="vpn-import-client-btn"]').first().click();
+    const importBtn = page.locator('button', { hasText: /Import and connect|wg_client_import/i });
+    await expect(importBtn).toBeDisabled();
+    await page.locator('#wg-client-name').fill('e2e-provider');
+    await expect(importBtn).toBeDisabled();
+    await page.locator('#wg-client-config').fill(CLIENT_CONF);
+    await expect(importBtn).toBeEnabled();
+    await page.keyboard.press('Escape');
+  });
+
+  test('15.3 — uploading a .conf populates the name and the configuration', async ({
+    page,
+  }) => {
+    await gotoVpn(page, adminTokens);
+    const clientTab = win(page).locator('.hv-winhdr-tab', { hasText: 'WireGuard client' });
+    if ((await clientTab.count()) === 0) test.skip(true, 'WireGuard not available on this host');
+    await clientTab.click();
+    await win(page).locator('[data-testid="vpn-import-client-btn"]').first().click();
+    await page.locator('#wg-client-file').setInputFiles({
+      name: 'e2e-provider.conf',
+      mimeType: 'text/plain',
+      buffer: Buffer.from(CLIENT_CONF),
+    });
+    await expect(page.locator('#wg-client-name')).toHaveValue('e2e-provider');
+    await expect(page.locator('#wg-client-config')).toHaveValue(/PrivateKey = AQEBAQ/);
+    await page.keyboard.press('Escape');
+  });
+
+  test('15.4 — the server rejects an invalid client configuration', async ({ page }) => {
+    await gotoVpn(page, adminTokens);
+    const status = await page.evaluate(
+      async ({ token, csrf }) => {
+        const r = await fetch('/api/vpn/wireguard/clients', {
+          method: 'POST',
+          headers: { 'x-session-token': token, 'x-csrf-token': csrf, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name: 'e2e-provider', config_content: '[Interface]\nPrivateKey = nope\n' }),
+        });
+        return r.status;
+      },
+      { token: adminTokens.token, csrf: adminTokens.csrf },
+    );
+    expect(status).toBe(400);
+  });
+
+  test('15.5 — the server rejects a PostUp hook in an imported configuration', async ({
+    page,
+  }) => {
+    await gotoVpn(page, adminTokens);
+    const result = await page.evaluate(
+      async ({ token, csrf, conf }) => {
+        const r = await fetch('/api/vpn/wireguard/clients', {
+          method: 'POST',
+          headers: { 'x-session-token': token, 'x-csrf-token': csrf, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name: 'e2e-provider', config_content: conf }),
+        });
+        return { status: r.status, body: await r.json().catch(() => ({})) };
+      },
+      {
+        token: adminTokens.token,
+        csrf: adminTokens.csrf,
+        conf: CLIENT_CONF.replace('[Peer]', 'PostUp = /tmp/evil.sh\n\n[Peer]'),
+      },
+    );
+    expect(result.status).toBe(400);
+    expect(JSON.stringify(result.body)).toContain('PostUp');
   });
 });

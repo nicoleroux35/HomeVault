@@ -306,14 +306,16 @@ See [Setup Wizard](./guides/setup-wizard.md).
 - `PathGuard` — validates that file paths used by Explorer/shares stay inside
   allowed roots.
 
-See **Deployment model** in [Architecture](./ARCHITECTURE.md): the process runs
-as root, no `homevault` service account, no generated sudoers file —
-privileged shell-outs stay `sudo`-wrapped and succeed against the distro
-default root rule. `quota.rs` runs `setquota`/`repquota`/`quotaon`/
-`quotacheck` as `sudo -n` with a deadline, so a lost privilege or a stuck
-`quotacheck` fails fast instead of hanging the request; `configure_sudoers`
-lists a scoped grant for those four tools but is not installed today (kept for
-a future non-root mode).
+See **Deployment model** in [Architecture](./ARCHITECTURE.md): `install.sh`
+runs the unit as root by default (`HV_SERVICE_USER=root`) and supports an
+optional `HV_SERVICE_USER=homevault` mode that creates the service account and
+installs a scoped `/etc/sudoers.d/homevault` via the binary's
+`--install-sudoers` flag (one renderer, `SetupService::configure_sudoers`).
+Privileged shell-outs stay `sudo`-wrapped, so both modes use the same code.
+`quota.rs` runs `setquota`/`repquota`/`quotaon`/`quotacheck` as `sudo -n` with
+a deadline, so a lost privilege or a stuck `quotacheck` fails fast instead of
+hanging the request; the non-root sudoers file grants exactly those four
+tools.
 
 ## Auth & sessions (`src/auth/`)
 

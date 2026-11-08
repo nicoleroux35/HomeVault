@@ -16,3 +16,6 @@ description_fr = "Sauvegarde photo et vidéo auto-hébergée, organisée comme G
 description_de = "Selbstgehostetes Foto- und Video-Backup, organisiert wie Google Fotos."
 description_es = "Copia de seguridad de fotos y vídeos autoalojada, organizada como Google Photos."
 tagline = "Self-hosted photo and video backup, organized like Google Photos."
+
+[security]
+no_new_privileges = true

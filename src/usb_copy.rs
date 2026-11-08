@@ -324,9 +324,11 @@ impl UsbCopyService {
             }
         }
 
-        // Need to mount - use udisksctl for user-space mounting
-        let mut mount_cmd = Command::new("udisksctl");
-        mount_cmd.args(["mount", "-b", device]);
+        // Need to mount - use udisksctl. It runs through `sudo` because a
+        // system service has no polkit session to authorise the mount; the
+        // sudoers grant is confined to `/dev/*`.
+        let mut mount_cmd = Command::new("sudo");
+        mount_cmd.args(["udisksctl", "mount", "-b", device]);
         let output = run_timed_async(&mut mount_cmd, DEVICE_OP_TIMEOUT)
             .await
             .ok_or_else(|| "mount timed out".to_string())?;
@@ -350,8 +352,8 @@ impl UsbCopyService {
     /// Unmount and eject a device
     pub async fn eject_device(device: &str) -> Result<(), String> {
         // Unmount first
-        let mut unmount_cmd = Command::new("udisksctl");
-        unmount_cmd.args(["unmount", "-b", device]);
+        let mut unmount_cmd = Command::new("sudo");
+        unmount_cmd.args(["udisksctl", "unmount", "-b", device]);
         let output = run_timed_async(&mut unmount_cmd, DEVICE_OP_TIMEOUT)
             .await
             .ok_or_else(|| "unmount timed out".to_string())?;
@@ -365,8 +367,8 @@ impl UsbCopyService {
         }
 
         // Power off the device
-        let mut poweroff_cmd = Command::new("udisksctl");
-        poweroff_cmd.args(["power-off", "-b", device]);
+        let mut poweroff_cmd = Command::new("sudo");
+        poweroff_cmd.args(["udisksctl", "power-off", "-b", device]);
         let output = run_timed_async(&mut poweroff_cmd, DEVICE_OP_TIMEOUT)
             .await
             .ok_or_else(|| "power-off timed out".to_string())?;

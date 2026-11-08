@@ -16,3 +16,13 @@ description_fr = "Application de gestion de tâches et de listes à faire auto-h
 description_de = "Selbstgehostete To-do-Listen- und Aufgabenverwaltungs-App."
 description_es = "Aplicación autoalojada de listas de tareas y gestión de tareas."
 tagline = "Self-hosted to-do list and task management app."
+
+# Docker hardening (HomeVault's `[security]`, DSM7-style privilege
+# declaration). `no_new_privileges` defaults to true; `cap_drop`, `cap_add`,
+# `user` and `read_only` are opt-in and validated at manifest load.
+[security]
+no_new_privileges = true
+# cap_drop = ["ALL"]
+# cap_add = ["NET_BIND_SERVICE"]
+# user = "1000:1000"
+# read_only = true

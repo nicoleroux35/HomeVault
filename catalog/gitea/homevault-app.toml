@@ -16,3 +16,6 @@ description_fr = "Service Git léger et auto-hébergé."
 description_de = "Leichter, selbstgehosteter Git-Dienst."
 description_es = "Servicio Git ligero y autoalojado."
 tagline = "Lightweight self-hosted Git service."
+
+[security]
+no_new_privileges = true

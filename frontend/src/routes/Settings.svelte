@@ -357,6 +357,17 @@
   ];
 
   // Load settings, version info, and server info in parallel on mount
+  // At phone widths the 208px category rail leaves too little room for the
+  // cards (the DNS card overflowed by ~106px at 360px). Collapse it to its
+  // icon rail so the content stays usable.
+  let narrowSidebar = typeof window !== 'undefined' && window.innerWidth < 700;
+  onMount(() => {
+    const update = () => (narrowSidebar = window.innerWidth < 700);
+    update();
+    window.addEventListener('resize', update);
+    return () => window.removeEventListener('resize', update);
+  });
+
   onMount(async () => {
     await Promise.all([
       loadSettings(),
@@ -415,7 +426,8 @@
                 : $languageStore || data.general?.language || 'en',
           // The live flag, not the stored one: the server reports what the
           // appliance actually does (ROADMAP 29.1).
-          mdns_enabled: data.general?.mdns_enabled !== false
+          mdns_enabled: data.general?.mdns_enabled !== false,
+          terminal_enabled: data.general?.terminal_enabled !== false
         };
         draft.email = {
           smtp_server: data.email?.smtp_server || '',
@@ -449,25 +461,16 @@
         };
         draft.appearance = {
           wallpaper: '',
-          accent_color: data.appearance?.accent_color || '#1E62AE',
-          density: data.appearance?.density || 'comfortable'
+          accent_color: data.appearance?.accent_color || '#1E62AE'
         };
 
         // Apply the persisted accent color and wallpaper live — the desktop
         // updates immediately, but the server only gets the new value on Save.
         document.documentElement.style.setProperty('--hv-primary', draft.appearance.accent_color);
-        // Apply density mode
-        document.documentElement.dataset.density = draft.appearance.density;
         if (data.appearance?.wallpaper) {
-          try {
-            // applyRaw keeps only a bundled /wallpapers/ image; anything else
-            // resolves to the default photo. The server validates the value
-            // on save and on load (ROADMAP 26.1), so this catch is a safety
-            // net rather than the only check.
-            wallpaperStore.applyRaw(JSON.parse(data.appearance.wallpaper));
-          } catch {
-            // A value that is not JSON at all (hand-edited export).
-          }
+          // `normalizeWallpaper` accepts the bare path the API stores and the
+          // legacy JSON-encoded object.
+          wallpaperStore.applyRaw(data.appearance.wallpaper);
         }
         // The wallpaper draft is the live store's JSON — the same value the
         // appearance saver sends — so the baseline matches what is on screen.
@@ -948,6 +951,8 @@
   sidebarLabel={$t('settings.subtitle')}
   sidebarTestId="settings-sidebar"
   sidebarWidth="var(--hv-settings-sidebar-w)"
+  sidebarCollapseable
+  bind:sidebarCollapsed={narrowSidebar}
   sidebarClass="[--winsidebar-pad:8px] bg-[var(--hv-settings-tile)]! border-r-[1.45px]! border-r-[var(--hv-settings-border)]!"
   bodyClass="p-0! overflow-hidden! flex flex-col bg-[var(--hv-settings-canvas)]"
 >
@@ -1122,6 +1127,18 @@
               </Alert>
             </div>
           {/if}
+          <div class={settingsRow} data-testid="settings-terminal-row">
+            <div class="min-w-0">
+              <span class={settingsRowLabel}>{$t('settings.terminal_label')}</span>
+              <p class={settingsRowHint}>{$t('settings.terminal_description')}</p>
+            </div>
+            <Switch
+              bind:checked={draft.general.terminal_enabled}
+              accent={activeCat.accent}
+              ariaLabel={$t('settings.terminal_label')}
+              data-testid="settings-terminal"
+            />
+          </div>
         </div>
       {/if}
       {#if activeCategory === 'security'}
@@ -1167,7 +1184,7 @@
                  reason, never a control that appears to save and does not. -->
             {#if appearanceReadOnly}
               <p class="settings-hint text-xs leading-4 text-[var(--hv-settings-label)]" data-testid="appearance-read-only">
-                <IconLock size={14} stroke={2} class="inline-block align-[-2px] mr-1" />
+                <IconLock size={16} stroke={2} class="inline-block align-[-2px] mr-1" />
                 {$t('settings.wallpaper_managed_by_admin')}
               </p>
             {/if}
@@ -1198,29 +1215,6 @@
           </div>
         </div>
 
-        <!-- Density Selector -->
-        <div data-testid="settings-card-title" class={secLabel}></div>
-        <div data-testid="settings-card" class={settingsCard}>
-          <div class={settingsRowLast}>
-            <div class="min-w-0">
-              <label class={settingsLabel} for="densitySelect">{$t('settings.density')}</label>
-              <p class={settingsHint}>{$t('settings.density_hint')}</p>
-            </div>
-            <select
-              id="densitySelect"
-              class={cn(settingsInput, 'max-w-[280px]')}
-              bind:value={draft.appearance.density}
-              disabled={appearanceReadOnly}
-              onchange={() => {
-                document.documentElement.dataset.density = draft.appearance.density;
-              }}
-            >
-              <option value="comfortable">{$t('settings.density_comfortable')} — {$t('settings.density_comfortable_desc')}</option>
-              <option value="compact">{$t('settings.density_compact')} — {$t('settings.density_compact_desc')}</option>
-              <option value="dense">{$t('settings.density_dense')} — {$t('settings.density_dense_desc')}</option>
-            </select>
-          </div>
-        </div>
       {/if}
       {#if activeCategory === 'notifications'}
         <div data-testid="settings-card-title" class={secLabelFirst}></div>

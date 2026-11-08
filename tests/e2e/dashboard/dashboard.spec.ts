@@ -201,14 +201,10 @@ test.describe('1 — Page load', () => {
     // Assert the bar's real shape instead: the icon tile + the title.
     await expect(win(page).locator('.hv-winhdr > *')).toHaveCount(2);
     await expect(win(page).locator('[data-testid="dashboard-live"]')).toHaveCount(0);
-    // `.db-refresh-btn` is not a class token the app ever renders (Svelte's
-    // `class={const}` trap), so the old `toHaveCount(0)` on it could never
-    // fail. Assert the *rule* instead: no control in the window advertises a
-    // refresh action. `getByRole` matches the computed accessible name, so
-    // this catches a re-added manual Refresh whatever class or testid it
-    // ships with — and an icon-only button needs `aria-label` anyway.
+    // The rule is about the *header*: card-level actions (the app-usage
+    // refresh) are legitimate and must not be caught by this assertion.
     await expect(
-      win(page).getByRole('button', { name: /refresh|actualiser/i }),
+      win(page).locator('.hv-winhdr').getByRole('button', { name: /refresh|actualiser/i }),
     ).toHaveCount(0);
   });
 });
@@ -499,9 +495,30 @@ test.describe('4 — Security', () => {
     expect(created.ok(), await created.text()).toBeTruthy();
 
     try {
-      const viewer = await apiLogin(ctx, username, password);
+      const first = await apiLogin(ctx, username, password);
+      expect(first.token).not.toEqual('');
+      // `POST /api/users` flags the account `must_change_password`: the guard
+      // would route the viewer to the change screen instead of the desktop.
+      // Rotate once (self-service) so the rest of the test exercises the
+      // dashboard as a normal member.
+      const owned = 'ViewerOwnPassw0rd!';
+      const changed = await ctx.put(`/api/users/${username}/password`, {
+        headers: {
+          'x-session-token': first.token,
+          'x-csrf-token': first.csrf,
+        },
+        data: { current_password: password, new_password: owned },
+      });
+      expect(changed.ok(), await changed.text()).toBeTruthy();
+      const viewer = await apiLogin(ctx, username, owned);
       expect(viewer.token).not.toEqual('');
-      const tokens = { username, password, token: viewer.token, csrf: viewer.csrf };
+      // A brand-new account also gets the first-visit "What's new" dialog;
+      // mark it seen so it cannot cover the dock during the navigation.
+      await ctx.post('/api/whats-new/seen', {
+        headers: { 'x-session-token': viewer.token, 'x-csrf-token': viewer.csrf },
+        data: {},
+      });
+      const tokens = { username, password: owned, token: viewer.token, csrf: viewer.csrf };
 
       const adminOnlyCalls: number[] = [];
       page.on('response', (r) => {
@@ -541,6 +558,9 @@ test.describe('5 — Navigation', () => {
   test('5.2 — minimising then restoring keeps the same window', async ({ page }) => {
     await openDashboard(page, adminTokens);
     await page.locator('[data-testid="win-minimize"]').first().click();
+    // Wait for the minimised window to leave the desktop before asking the
+    // dock to restore it, otherwise the click races the animation.
+    await expect(win(page)).toBeHidden();
     await page.locator('[data-testid="dock-dashboard"]').click();
     await expect(win(page)).toBeVisible();
     await expect(win(page)).toHaveCount(1);
@@ -578,9 +598,10 @@ test.describe('7 — Accessibility', () => {
     await openDashboard(page, adminTokens);
     await expect(win(page).locator('.hv-winhdr-title')).not.toBeEmpty();
     await expect(win(page).locator('[data-testid="dashboard-live"]')).toHaveCount(0);
-    // Same rewrite as 1.7 — see the comment there.
+    // Same rewrite as 1.7 — the rule applies to the header, not to a card's
+    // own refresh action.
     await expect(
-      win(page).getByRole('button', { name: /refresh|actualiser/i }),
+      win(page).locator('.hv-winhdr').getByRole('button', { name: /refresh|actualiser/i }),
     ).toHaveCount(0);
   });
 

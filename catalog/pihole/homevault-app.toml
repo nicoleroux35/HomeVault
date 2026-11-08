@@ -16,3 +16,6 @@ description_fr = "Blocage des publicités et trackers sur tout le réseau via DN
 description_de = "Netzwerkweite Werbe- und Tracker-Blockierung über DNS."
 description_es = "Bloqueo de anuncios y rastreadores en toda la red mediante DNS."
 tagline = "Network-wide ad and tracker blocking via DNS."
+
+[security]
+no_new_privileges = true

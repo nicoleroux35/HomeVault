@@ -1304,11 +1304,14 @@ mod tests {
         "ip",
         "journalctl",
         "kill",
+        "losetup",
         "lsblk",
         "mkdir",
+        "modprobe",
         "mkfs.ext4",
         "mount",
         "mountpoint",
+        "mv",
         "pgrep",
         "ping",
         "pkill",
@@ -1328,6 +1331,7 @@ mod tests {
         "umount",
         "uname",
         "useradd",
+        "userdel",
         "usermod",
         "visudo",
         "which",
@@ -1781,13 +1785,27 @@ mod tests {
                 "the systemd unit install.sh writes is missing `{want}`"
             );
         }
-        // HomeVault deliberately runs as root (see docs/ARCHITECTURE.md):
-        // the unit must not grow a User=/Group= line.
+        // The deployment model is explicit: `root` by default, `homevault`
+        // with `HV_SERVICE_USER=homevault`. Both modes render the same unit
+        // shape, so a missing `User=`/`Group=` would silently fall back to
+        // root even in the unprivileged mode.
+        for want in [
+            "User=$RUN_USER",
+            "Group=$RUN_GROUP",
+            "AmbientCapabilities=CAP_NET_BIND_SERVICE",
+        ] {
+            assert!(
+                unit.contains(&want),
+                "the HomeVault unit install.sh writes is missing `{want}`"
+            );
+        }
         assert!(
-            !unit
-                .iter()
-                .any(|l| l.starts_with("User=") || l.starts_with("Group=")),
-            "the HomeVault unit must not pin User=/Group= — it runs as root by design"
+            install.contains("HV_SERVICE_USER"),
+            "install.sh must document the HV_SERVICE_USER deployment switch"
+        );
+        assert!(
+            install.contains("--install-sudoers"),
+            "install.sh must render the scoped sudoers file before starting an unprivileged unit"
         );
     }
 

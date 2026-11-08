@@ -1393,10 +1393,11 @@ test.describe('16 — Edge cases', () => {
       await page.waitForTimeout(250);
     }
 
-    // Still alive and coherent.
+    // Still alive and coherent. The loop ends with `clickNext`, so the wizard
+    // is back on the password step (2) after four full round trips.
     await page.waitForTimeout(300);
     await expect(page.locator('[data-testid="setup-container"]')).toBeVisible();
-    await expect(page.locator('[data-step="1"]')).toBeVisible();
+    await expect(page.locator('[data-step="2"]')).toBeVisible();
   });
 
   test('16.3 — fresh context shows wizard', async ({ browser }) => {

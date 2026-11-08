@@ -52,19 +52,10 @@
       if (response.data.accent_color) {
         document.documentElement.style.setProperty('--hv-primary', response.data.accent_color);
       }
-      if (response.data.density) {
-        document.documentElement.dataset.density = response.data.density;
-      }
       if (response.data.wallpaper) {
-        try {
-          // normalizeWallpaper (inside applyRaw) keeps only a bundled
-          // /wallpapers/ image and falls back to the default photo for
-          // anything else. The server already validates on save (ROADMAP
-          // 26.1), so this catch is a safety net, not the only check.
-          wallpaperStore.applyRaw(JSON.parse(response.data.wallpaper));
-        } catch {
-          wallpaperStore.reset();
-        }
+        // `normalizeWallpaper` accepts the bare path the API stores and the
+        // legacy JSON-encoded object.
+        wallpaperStore.applyRaw(response.data.wallpaper);
       }
     } catch (error) {
       // Non-fatal — the desktop keeps this origin's localStorage value — but

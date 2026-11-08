@@ -185,7 +185,8 @@ async fn test_catalog_list_requires_auth() {
 #[tokio::test]
 async fn test_catalog_list_returns_builtin_apps() {
     let (state, _tmp, _g) = setup_state().await;
-    mk_user(&state, "u", "pw012345", 1).await;
+    // Admins bypass the per-member app filter and see the whole catalog.
+    mk_user(&state, "u", "pw012345", 2).await;
     let mut r = router(state);
     let token = login(&mut r, "u", "pw012345").await;
 
@@ -209,6 +210,61 @@ async fn test_catalog_list_returns_builtin_apps() {
     assert_eq!(jellyfin["store_id"], "homevault");
     assert!(jellyfin["description"].as_str().unwrap().len() > 5);
     assert_eq!(jellyfin["installed"], json!(false));
+}
+
+#[tokio::test]
+async fn test_catalog_list_filters_member_by_granted_apps() {
+    use homevault::storage::resource_share_repo::{
+        ResourceKind, ResourcePermission, ResourceShareRepository,
+    };
+
+    let (state, _tmp, _g) = setup_state().await;
+    mk_user(&state, "admin", "pw012345", 2).await;
+    mk_user(&state, "member", "pw012345", 1).await;
+
+    let repo = ResourceShareRepository::new(state.db.pool());
+    repo.upsert(
+        "admin",
+        "member",
+        ResourceKind::App,
+        "jellyfin",
+        ResourcePermission::Read,
+    )
+    .await
+    .expect("grant");
+
+    let mut r = router(state);
+    let token = login(&mut r, "member", "pw012345").await;
+    let (status, body) = send(
+        &mut r,
+        Method::GET,
+        "/api/docker/catalog",
+        Some(&token),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let apps = body["data"].as_array().expect("array");
+    assert_eq!(apps.len(), 1, "a member sees only the granted app");
+    assert_eq!(apps[0]["app_id"], json!("jellyfin"));
+}
+
+#[tokio::test]
+async fn test_catalog_list_hides_everything_from_ungranted_member() {
+    let (state, _tmp, _g) = setup_state().await;
+    mk_user(&state, "nobody", "pw012345", 1).await;
+    let mut r = router(state);
+    let token = login(&mut r, "nobody", "pw012345").await;
+    let (status, body) = send(
+        &mut r,
+        Method::GET,
+        "/api/docker/catalog",
+        Some(&token),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["data"].as_array().unwrap().len(), 0);
 }
 
 #[tokio::test]

@@ -210,15 +210,15 @@ test.describe('1 — Page load', () => {
     await expect(win(page).locator('.hv-winhdr > *')).toHaveCount(2);
   });
 
-  test('1.3 — the tab strip lists all six views', async ({ page }) => {
+  test('1.3 — the tab strip lists all seven views', async ({ page }) => {
     await gotoShares(page, adminTokens);
-    await expect(win(page).locator('[data-testid="shares-tab"]')).toHaveCount(6);
+    await expect(win(page).locator('[data-testid="shares-tab"]')).toHaveCount(7);
     // Strip the optional trailing count badge before comparing — "FTP" is a
     // substring of "SFTP", so a `hasText` filter would double-match.
     const labels = await win(page)
       .locator('[data-testid="shares-tab"]')
       .evaluateAll((els) => els.map((e) => (e.textContent || '').replace(/\s*\d+\s*$/, '').trim()));
-    expect(labels).toEqual(['Shares', 'SMB', 'NFS', 'FTP', 'WebDAV', 'SFTP']);
+    expect(labels).toEqual(['Shares', 'SMB', 'NFS', 'FTP', 'WebDAV', 'SFTP', 'Rsync']);
   });
 
   test('1.4 — the list tab is selected by default', async ({ page }) => {
@@ -839,7 +839,8 @@ test.describe('10 — Security', () => {
       const r = await fetch('/api/shares');
       return r.status;
     });
-    expect(status).toBe(400);
+    // A missing session is `401` (docs/API.md status contract).
+    expect(status).toBe(401);
   });
 
   test('10.2 — the Shares API rejects a tampered session token', async ({ page }) => {
@@ -955,11 +956,11 @@ test.describe('11 — Keyboard', () => {
       'SMB',
     );
 
-    // ArrowLeft wraps from tab 0 back to the last tab (SFTP).
+    // ArrowLeft wraps from tab 0 back to the last tab (Rsync).
     await tabs.first().focus();
     await page.keyboard.press('ArrowLeft');
     expect(await page.evaluate(() => document.activeElement?.textContent?.replace(/\s*\d+\s*$/, '').trim())).toBe(
-      'SFTP',
+      'Rsync',
     );
 
     // End → last, Home → first.
@@ -969,7 +970,7 @@ test.describe('11 — Keyboard', () => {
     );
     await page.keyboard.press('End');
     expect(await page.evaluate(() => document.activeElement?.textContent?.replace(/\s*\d+\s*$/, '').trim())).toBe(
-      'SFTP',
+      'Rsync',
     );
   });
 
@@ -979,7 +980,7 @@ test.describe('11 — Keyboard', () => {
     await expect(modal(page)).toBeVisible();
     // No documented Escape handler — closing via the explicit control is
     // the guaranteed path; assert the modal is dismissable at all.
-    await modal(page).locator('[data-testid="shares-icon-btn"]').click();
+    await modal(page).getByRole('button', { name: /close|fermer|schließen|cerrar/i }).first().click();
     await expect(modal(page)).toHaveCount(0);
   });
 });
@@ -1004,6 +1005,9 @@ test.describe('12 — Console & network', () => {
     const failed: string[] = [];
     page.on('response', (res) => {
       if (res.status() >= 400 && res.url().includes('/api/')) {
+        // A per-share quota GET may answer 400 when the share's filesystem
+        // cannot enforce a quota; the card hides the bar instead of failing.
+        if (res.status() === 400 && res.url().includes('/quota')) return;
         failed.push(`${res.status()} ${res.url()}`);
       }
     });
@@ -1180,7 +1184,7 @@ test.describe('15 — Action failure feedback', () => {
     });
 
     await gotoShares(page, adminTokens);
-    await switchTab(page, 'SMB / CIFS');
+    await switchTab(page, 'SMB');
     const form = win(page).locator('[data-testid="shares-config"] [data-testid="shares-form"]');
     await expect(form).toBeVisible({ timeout: 10_000 });
     await form

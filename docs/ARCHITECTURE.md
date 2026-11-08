@@ -260,33 +260,54 @@ vm/isos/         Virtual Machines install media
 `DATA_DIRECTORY` at a persistent volume makes the whole identity — accounts,
 setup fingerprint, sessions, snapshots — survive a reinstall of the system disk.
 
-## Deployment model (runs as root)
+## Deployment model (root by default, optional non-root)
 
-Since the 2026-09-04 deployment change there is **no dedicated `homevault` service
-account**. The systemd unit `installer/install.sh` writes has no `User=`/`Group=` so systemd runs
-it as **root**; `installer/install.sh` only creates `/home/homevault` as a
-home-folder root and the first admin's real Linux account at setup. Consequences:
+`installer/install.sh` supports two modes, selected with
+`HV_SERVICE_USER` (default `root`):
 
-- `SetupService::configure_sudoers()` is **dead code** — no sudoers file is
-  generated. Every "the sudoers grant must not be removed" note in older docs is
-  historical.
-- The `sudo` wrappers on the individual commands (`mdadm`, `zfs`/`zpool`,
-  `cryptsetup`, `useradd`/`groupadd`, `setquota`, `ufw`, `journalctl`, `mount`,
-  `setfacl`, …) **stay** — they succeed against the distro-default
-  `root ALL=(ALL:ALL) ALL` and keep a future non-root mode possible. That
-  mode's own policy (`configure_sudoers`) is scoped per subcommand, per flag
-  shape and per path since 2026-10-23 (ROADMAP 7.1 and 7.4), so it would never
-  grant more than the code actually runs: the Storage/LUKS block is rendered
-  from `StorageBins`, and the VPN, interface-control, firewall, `mdadm` and
-  read-only diagnostics lines from `HostBins` (same file). Both tables are
-  covered by unit tests, so a grant cannot quietly become a bare binary again.
-  Two residuals are documented rather than fixed, because sudoers cannot
-  express them: `chpasswd` (it reads stdin) and `kill -TERM <pid>` (the pid
-  cannot be constrained; the signal is pinned and the pid is validated
-  numeric by the caller).
-- On a dev box the binary is typically run directly as an unprivileged user
-  (e.g. `nicolas`), so `sudo`-needing features WARN at startup and degrade
-  gracefully; that is expected in development.
+| Mode | Unit | Sudoers | Use |
+|------|------|---------|-----|
+| `root` (default) | `User=root`, `Group=root` | none | Proven on real appliances: the service manages RAID/ZFS/Samba/Docker and reads every user's files. |
+| `homevault` | `User=homevault`, `Group=homevault`, `SupplementaryGroups=docker` | `/etc/sudoers.d/homevault` | The privilege split: the long-running process never holds uid 0. |
+
+Both modes run the same code; every host mutation already goes through
+`sudo`, which is a no-op for `root`.
+
+### `HV_SERVICE_USER=homevault`
+
+The installer creates the `homevault` system account (nologin, home
+`$DATA_DIR`), adds it to `docker`/`plugdev`/`storage`/`cdrom`, hands it the
+state it writes directly (`/etc/homevault*`, `$DATA_DIR` except the
+container-owned `apps/*` children, `/home/homevault`), and runs the freshly
+extracted binary with `--install-sudoers`. That flag calls
+`SetupService::configure_sudoers()`, so the grants have **one source of
+truth** (the same renderer the unit tests assert on) and are written while
+the installer still has root. The unit then starts unprivileged with
+`AmbientCapabilities=CAP_NET_BIND_SERVICE` (a custom privileged `PORT` still
+binds) and `HOME=$DATA_DIR`.
+
+The policy is scoped per subcommand, per flag shape and per path (ROADMAP 7.1
+and 7.4), so it never grants more than the code actually runs: the
+Storage/LUKS block is rendered from `StorageBins`, the VPN,
+interface-control, firewall, `mdadm` and read-only diagnostics lines from
+`HostBins`, and the home/ACL/removable-media/restic-mount grants from the
+`chown`/`chmod`/`setfacl`/`udisksctl`/`mount` lines in the same file. Both
+tables are covered by unit tests, so a grant cannot quietly become a bare
+binary again. Two residuals are documented rather than fixed, because sudoers
+cannot express them: `chpasswd` (it reads stdin) and `kill -TERM <pid>` (the
+pid cannot be constrained; the signal is pinned and the pid is validated
+numeric by the caller).
+
+**Known limitation:** an unprivileged service cannot read files whose mode
+excludes it (a user's `0600` file, a root-only log). Explorer, antivirus and
+backup coverage are therefore narrower than in root mode; the root deployment
+stays the default for that reason. The non-root mode is the supported way to
+make `homevault_admin` (application admin) and `homevault_hostadmin` (host
+root) a real boundary.
+
+On a dev box the binary is typically run directly as an unprivileged user
+(e.g. `nicolas`), so `sudo`-needing features WARN at startup and degrade
+gracefully; that is expected in development.
 
 ### Identity & first-run state (2026-10-13)
 

@@ -37,7 +37,7 @@
   export let isAdmin = false;
 
   type Kind = 'app' | 'folder' | 'share';
-  type Permission = 'read' | 'write' | 'full';
+  type Permission = 'deny' | 'read' | 'write' | 'full';
 
   interface Grant {
     id: number;
@@ -58,7 +58,7 @@
   }
 
   const KINDS: Kind[] = ['app', 'folder', 'share'];
-  const PERMISSIONS: Permission[] = ['read', 'write', 'full'];
+  const PERMISSIONS: Permission[] = ['deny', 'read', 'write', 'full'];
 
   let grants: Grant[] = [];
   let loading = true;

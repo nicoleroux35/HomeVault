@@ -396,9 +396,11 @@ fn descendant_pids(pid: u32) -> Vec<u32> {
 /// Spawns the shell as the target user without requiring a Linux password.
 /// The homevault service user is granted passwordless sudo to start a login
 /// shell for any homevault_admin member via /etc/sudoers.d/homevault:
-///   homevault ALL=(%homevault_admin) NOPASSWD: /usr/bin/sudo -u * -i
+///   homevault ALL=(%homevault_admin) NOPASSWD: /bin/bash, /bin/sh, ...
 /// `sudo -u <user> -i` simulates an initial login, giving the user's own
-/// HOME, shell and environment.
+/// HOME, shell and environment. The grant lists the common login shells; an
+/// unusual shell needs to be added to `src/setup.rs` for the non-root
+/// deployment (the default root deployment can exec any shell).
 fn spawn_session(username: &str) -> Result<Arc<PtySession>, String> {
     if !crate::setup::SetupService::is_valid_username(username) {
         return Err(format!(
@@ -552,6 +554,7 @@ async fn handle_terminal_ticket(
     State(state): State<Arc<AppState>>,
     Query(query): Query<TabQuery>,
     headers: HeaderMap,
+    peer: crate::middleware::PeerAddr,
 ) -> Response {
     let session_token = headers
         .get("x-session-token")
@@ -574,11 +577,35 @@ async fn handle_terminal_ticket(
             .into_response();
     }
 
+    // `Settings > General > Terminal` (default on). Turning it off is the
+    // equivalent of DSM's SSH/Telnet checkbox: new tabs are refused, while an
+    // already-established tab keeps running until the user closes it.
+    if !crate::handlers::settings::GENERAL_SETTINGS
+        .read()
+        .terminal_enabled
+        .unwrap_or(true)
+    {
+        let ip = crate::handlers::auth::client_ip(&headers, peer.0);
+        tracing::warn!(
+            username = %username,
+            ip = %ip,
+            "Terminal ticket refused: the terminal is disabled"
+        );
+        return (StatusCode::FORBIDDEN, "Terminal is disabled").into_response();
+    }
+
     let tab_id = match resolve_tab_id(query.tab) {
         Ok(t) => t,
         Err(resp) => return resp,
     };
 
+    let ip = crate::handlers::auth::client_ip(&headers, peer.0);
+    tracing::info!(
+        username = %username,
+        tab = %tab_id,
+        ip = %ip,
+        "Terminal ticket issued"
+    );
     let ticket = state.pty_manager.issue_ticket(&username, &tab_id).await;
     Json(serde_json::json!({ "success": true, "data": { "ticket": ticket } })).into_response()
 }
@@ -730,6 +757,7 @@ async fn handle_terminal_close(
     State(state): State<Arc<AppState>>,
     Query(query): Query<TabQuery>,
     headers: HeaderMap,
+    peer: crate::middleware::PeerAddr,
 ) -> Response {
     let session_token = headers
         .get("x-session-token")
@@ -757,6 +785,13 @@ async fn handle_terminal_close(
         Err(resp) => return resp,
     };
 
+    let ip = crate::handlers::auth::client_ip(&headers, peer.0);
+    tracing::info!(
+        username = %username,
+        tab = %tab_id,
+        ip = %ip,
+        "Terminal tab closed by the user"
+    );
     state.pty_manager.close_tab(&username, &tab_id).await;
     Json(serde_json::json!({ "success": true })).into_response()
 }
@@ -788,6 +823,20 @@ async fn terminal_ws_handler(
             "Admin privileges required for terminal access",
         )
             .into_response();
+    }
+
+    // A ticket is short-lived, but an admin can disable the terminal between
+    // issuance and redemption; re-check so the switch is effective at once.
+    if !crate::handlers::settings::GENERAL_SETTINGS
+        .read()
+        .terminal_enabled
+        .unwrap_or(true)
+    {
+        tracing::warn!(
+            username = %username,
+            "Terminal WebSocket refused: the terminal is disabled"
+        );
+        return (StatusCode::FORBIDDEN, "Terminal is disabled").into_response();
     }
 
     ws.on_upgrade(move |socket| handle_socket(socket, state, username, tab_id))

@@ -126,6 +126,10 @@ export const activity = readable<ActivityState>(EMPTY, (set) => {
       if (res.success && Array.isArray(res.data)) {
         consecutiveFailures = 0;
         set({ tasks: res.data, count: activeCount(res.data) });
+      } else if ((res.http_status ?? 0) === 0 || (res.http_status ?? 0) >= 500) {
+        // A transport failure or a 5xx is the case the backoff exists for.
+        consecutiveFailures += 1;
+        if (consecutiveFailures >= FAILURE_TOLERANCE) set(EMPTY);
       } else {
         // A well-formed refusal (e.g. the session went away) is not a
         // transport failure: clear the list and keep the normal cadence.

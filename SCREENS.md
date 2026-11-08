@@ -372,7 +372,7 @@ and in the Groups screen.
 
 ## 15. VPN
 
-**2 tabs:**
+**3 tabs:**
 
 ### WireGuard
 - Server status: public key, listening port, state
@@ -381,6 +381,12 @@ and in the Groups screen.
 - Re-view of config/QR for an existing peer
 - Peer deletion
 - Server start/stop
+
+### WireGuard client
+- Import a provider `.conf` (file picker or paste), optional kill switch
+- Client list: name, interface, endpoint, address, peer count, live status
+- Connect / disconnect / delete
+- "Connect at boot" toggle (reconnects after startup)
 
 ### OpenVPN
 - Connection list: name, status, interface, local/remote IP

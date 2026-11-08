@@ -613,27 +613,27 @@
                 {@const rx = fmtBytesRate(iface.rx_rate || 0)}
                 {@const tx = fmtBytesRate(iface.tx_rate || 0)}
                 <div data-testid="dashboard-net-iface" class="px-5 py-4 rounded-lg bg-[var(--hv-shell-fill)] border border-[var(--hv-shell-border-soft)]">
-                  <div class="flex items-center gap-3">
-                    <span class="font-[family-name:var(--hv-font-mono)] text-c-xl font-bold">{iface.name}</span>
-                    <span class="inline-flex items-center gap-2 h-[34px] px-3 rounded-full bg-[var(--hv-primary-light)] text-[var(--hv-primary)] text-xs font-bold">
+                  <div class="flex items-center gap-3 min-w-0">
+                    <span class="font-[family-name:var(--hv-font-mono)] text-c-xl font-bold min-w-0 truncate">{iface.name}</span>
+                    <span class="inline-flex flex-none items-center gap-2 h-[34px] px-3 rounded-full bg-[var(--hv-primary-light)] text-[var(--hv-primary)] text-xs font-bold">
                       <span class="w-2 h-2 rounded-full bg-[var(--hv-primary)]"></span>
                       {iface.carrier ? 'ACTIVE' : 'DOWN'}
                     </span>
-                    <span class="flex-1 text-right text-sm text-[var(--hv-shell-text-2)]">{iface.link_speed_mbps ? iface.link_speed_mbps + ' Mb/s' : '—'}</span>
+                    <span class="flex-none text-right text-sm text-[var(--hv-shell-text-2)] whitespace-nowrap">{iface.link_speed_mbps ? iface.link_speed_mbps + ' Mb/s' : '—'}</span>
                   </div>
                   <div class="grid grid-cols-2 gap-x-5 gap-y-0.5 mt-3 @max-[768px]:grid-cols-1">
-                    {#if iface.ipv4?.length}<div class={kvRow}><span>IPv4</span><span class={mono}>{iface.ipv4[0]}</span></div>{/if}
-                    {#if iface.mac_address}<div class={kvRow}><span>MAC</span><span class={mono}>{iface.mac_address}</span></div>{/if}
-                    {#if iface.driver}<div class={kvRow}><span>Driver</span><span class={mono}>{iface.driver}</span></div>{/if}
+                    {#if iface.ipv4?.length}<div class={cn(kvRow, 'gap-3')}><span class="flex-none">IPv4</span><span class={cn(mono, 'min-w-0 truncate text-right')}>{iface.ipv4[0]}</span></div>{/if}
+                    {#if iface.mac_address}<div class={cn(kvRow, 'gap-3')}><span class="flex-none">MAC</span><span class={cn(mono, 'min-w-0 truncate text-right')}>{iface.mac_address}</span></div>{/if}
+                    {#if iface.driver}<div class={cn(kvRow, 'gap-3')}><span class="flex-none">Driver</span><span class={cn(mono, 'min-w-0 truncate text-right')}>{iface.driver}</span></div>{/if}
                   </div>
-                  <div class="flex gap-3 mt-3">
-                    <div class="flex-1 flex items-center gap-2.5 h-[52px] px-4 rounded-md bg-[var(--hv-success-bg)]">
+                  <div class="flex gap-3 mt-3 min-w-0">
+                    <div class="flex-1 min-w-0 flex items-center gap-2.5 h-[52px] px-4 rounded-md bg-[var(--hv-success-bg)]">
                       <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="var(--hv-success)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5M6 13l6 6 6-6"></path></svg>
-                      <span class={cn(mono, 'text-base font-bold text-[var(--hv-success-text)]')}>{rx}</span>
+                      <span class={cn(mono, 'text-base font-bold text-[var(--hv-success-text)] min-w-0 truncate')}>{rx}</span>
                     </div>
-                    <div class="flex-1 flex items-center gap-2.5 h-[52px] px-4 rounded-md bg-[var(--hv-primary-light)]">
+                    <div class="flex-1 min-w-0 flex items-center gap-2.5 h-[52px] px-4 rounded-md bg-[var(--hv-primary-light)]">
                       <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="var(--hv-primary)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M6 11l6-6 6 6"></path></svg>
-                      <span class={cn(mono, 'text-base font-bold text-[var(--hv-primary)]')}>{tx}</span>
+                      <span class={cn(mono, 'text-base font-bold text-[var(--hv-primary)] min-w-0 truncate')}>{tx}</span>
                     </div>
                   </div>
                 </div>

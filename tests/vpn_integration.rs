@@ -71,7 +71,9 @@ use homevault::handlers::{
     auth::handle_login,
     vpn::{
         handle_openvpn_create, handle_openvpn_delete, handle_openvpn_start, handle_openvpn_stop,
-        handle_vpn_capabilities, handle_vpn_get, handle_vpn_list, handle_wg_peer_config,
+        handle_vpn_capabilities, handle_vpn_get, handle_vpn_list, handle_wg_client_delete,
+        handle_wg_client_import, handle_wg_client_start, handle_wg_client_stop,
+        handle_wg_client_update_autostart, handle_wg_clients_list, handle_wg_peer_config,
         handle_wg_peer_create, handle_wg_peer_revoke, handle_wg_peers_list,
         handle_wg_server_status,
     },
@@ -139,6 +141,22 @@ fn vpn_router(state: Arc<AppState>) -> Router {
         .route(
             "/api/vpn/wireguard/peers/{id}",
             delete(handle_wg_peer_revoke),
+        )
+        .route(
+            "/api/vpn/wireguard/clients",
+            get(handle_wg_clients_list).post(handle_wg_client_import),
+        )
+        .route(
+            "/api/vpn/wireguard/clients/{id}",
+            delete(handle_wg_client_delete).put(handle_wg_client_update_autostart),
+        )
+        .route(
+            "/api/vpn/wireguard/clients/{id}/start",
+            post(handle_wg_client_start),
+        )
+        .route(
+            "/api/vpn/wireguard/clients/{id}/stop",
+            post(handle_wg_client_stop),
         )
         .route("/api/vpn/openvpn", post(handle_openvpn_create))
         .route("/api/vpn/openvpn/{name}/start", post(handle_openvpn_start))
@@ -729,4 +747,218 @@ async fn test_connections_list_returns_an_array() {
     .await;
     assert_eq!(status, StatusCode::OK);
     assert!(body["data"]["connections"].is_array());
+}
+
+// ---------------------------------------------------------------------------
+// 4. WireGuard client tunnels (P1-17)
+// ---------------------------------------------------------------------------
+//
+// The valid-import path writes `/etc/wireguard` and runs `sudo wg-quick`, so
+// this suite only exercises guards and validation — all of which run before
+// any host command. The parsing/argv/rollback rules are unit tests in
+// `src/vpn.rs`; the live lifecycle is the opt-in E2E section.
+
+const CLIENT_KEY_A: &str = "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=";
+const CLIENT_KEY_B: &str = "AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI=";
+
+fn valid_client_config() -> String {
+    format!(
+        "[Interface]\nPrivateKey = {CLIENT_KEY_A}\nAddress = 10.2.0.2/32\n\n\
+         [Peer]\nPublicKey = {CLIENT_KEY_B}\nAllowedIPs = 0.0.0.0/0\n\
+         Endpoint = vpn.example.com:51820\n"
+    )
+}
+
+#[tokio::test]
+async fn test_wg_clients_list_no_token() {
+    let (state, _tmp, _guard) = setup_state().await;
+    let mut router = vpn_router(state);
+    let (status, _) = send(
+        &mut router,
+        Method::GET,
+        "/api/vpn/wireguard/clients",
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn test_wg_client_import_no_token() {
+    let (state, _tmp, _guard) = setup_state().await;
+    let mut router = vpn_router(state);
+    let (status, _) = send(
+        &mut router,
+        Method::POST,
+        "/api/vpn/wireguard/clients",
+        None,
+        Some(json!({"name": "provider", "config_content": valid_client_config()})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn test_wg_clients_list_rejects_non_admin_session() {
+    let (state, _tmp, _guard) = setup_state().await;
+    create_test_user(&state, "regularuser", "Password123!", 1).await;
+    let mut router = vpn_router(state);
+    let token = login(&mut router, "regularuser", "Password123!").await;
+
+    let (status, _) = send(
+        &mut router,
+        Method::GET,
+        "/api/vpn/wireguard/clients",
+        Some(&token),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn test_wg_client_import_rejects_empty_name() {
+    let (state, _tmp, _guard) = setup_state().await;
+    create_test_user(&state, "admin1", "Password123!", 2).await;
+    let mut router = vpn_router(state);
+    let token = login(&mut router, "admin1", "Password123!").await;
+
+    let (status, body) = send(
+        &mut router,
+        Method::POST,
+        "/api/vpn/wireguard/clients",
+        Some(&token),
+        Some(json!({"name": "", "config_content": valid_client_config()})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(body["message"]
+        .as_str()
+        .unwrap()
+        .contains("1-64 characters"));
+}
+
+#[tokio::test]
+async fn test_wg_client_import_rejects_invalid_configuration() {
+    let (state, _tmp, _guard) = setup_state().await;
+    create_test_user(&state, "admin1", "Password123!", 2).await;
+    let mut router = vpn_router(state);
+    let token = login(&mut router, "admin1", "Password123!").await;
+
+    let (status, body) = send(
+        &mut router,
+        Method::POST,
+        "/api/vpn/wireguard/clients",
+        Some(&token),
+        Some(json!({
+            "name": "provider",
+            "config_content": "[Interface]\nPrivateKey = nope\nAddress = 10.2.0.2/32\n"
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(body["message"].as_str().unwrap().contains("PrivateKey"));
+}
+
+#[tokio::test]
+async fn test_wg_client_import_rejects_root_command_hook() {
+    let (state, _tmp, _guard) = setup_state().await;
+    create_test_user(&state, "admin1", "Password123!", 2).await;
+    let mut router = vpn_router(state);
+    let token = login(&mut router, "admin1", "Password123!").await;
+
+    let content = format!(
+        "[Interface]\nPrivateKey = {CLIENT_KEY_A}\nAddress = 10.2.0.2/32\n\
+         PostUp = /tmp/evil.sh\n\n[Peer]\nPublicKey = {CLIENT_KEY_B}\nAllowedIPs = 0.0.0.0/0\n"
+    );
+    let (status, body) = send(
+        &mut router,
+        Method::POST,
+        "/api/vpn/wireguard/clients",
+        Some(&token),
+        Some(json!({"name": "provider", "config_content": content})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(
+        body["message"].as_str().unwrap().contains("PostUp"),
+        "the offending directive must be named: {}",
+        body["message"]
+    );
+}
+
+#[tokio::test]
+async fn test_wg_clients_list_returns_an_empty_array() {
+    let (state, _tmp, _guard) = setup_state().await;
+    create_test_user(&state, "admin1", "Password123!", 2).await;
+    let mut router = vpn_router(state);
+    let token = login(&mut router, "admin1", "Password123!").await;
+
+    let (status, body) = send(
+        &mut router,
+        Method::GET,
+        "/api/vpn/wireguard/clients",
+        Some(&token),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(body["success"].as_bool().unwrap());
+    assert!(body["data"]["clients"].is_array());
+    assert!(body["data"]["clients"].as_array().unwrap().is_empty());
+    assert!(body["data"]["available"].is_boolean());
+}
+
+#[tokio::test]
+async fn test_wg_client_unknown_id_is_not_found_on_every_action() {
+    let (state, _tmp, _guard) = setup_state().await;
+    create_test_user(&state, "admin1", "Password123!", 2).await;
+    let mut router = vpn_router(state);
+    let token = login(&mut router, "admin1", "Password123!").await;
+    let id = "00000000-0000-4000-8000-000000000000";
+
+    for (method, uri, body) in [
+        (
+            Method::POST,
+            format!("/api/vpn/wireguard/clients/{id}/start"),
+            Some(json!({})),
+        ),
+        (
+            Method::POST,
+            format!("/api/vpn/wireguard/clients/{id}/stop"),
+            Some(json!({})),
+        ),
+        (
+            Method::PUT,
+            format!("/api/vpn/wireguard/clients/{id}"),
+            Some(json!({"autostart": false})),
+        ),
+        (
+            Method::DELETE,
+            format!("/api/vpn/wireguard/clients/{id}"),
+            None,
+        ),
+    ] {
+        let (status, _) = send(&mut router, method, &uri, Some(&token), body).await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{uri}");
+    }
+}
+
+#[tokio::test]
+async fn test_wg_client_id_rejects_path_traversal() {
+    let (state, _tmp, _guard) = setup_state().await;
+    create_test_user(&state, "admin1", "Password123!", 2).await;
+    let mut router = vpn_router(state);
+    let token = login(&mut router, "admin1", "Password123!").await;
+
+    let (status, _) = send(
+        &mut router,
+        Method::DELETE,
+        "/api/vpn/wireguard/clients/..%2F..%2Fetc",
+        Some(&token),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
 }

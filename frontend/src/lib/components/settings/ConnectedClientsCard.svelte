@@ -161,7 +161,7 @@
         disabled={busy}
         data-testid="clients-refresh"
       >
-        <IconRefresh size={14} /> {$t('common.refresh')}
+        <IconRefresh size={16} /> {$t('common.refresh')}
       </button>
     </div>
 
@@ -222,7 +222,7 @@
                 {#if pendingKick === client.id}
                   {$t('settings.clients_kick_confirm')}
                 {:else}
-                  <IconPlugOff size={14} /> {$t('settings.clients_kick')}
+                  <IconPlugOff size={16} /> {$t('settings.clients_kick')}
                 {/if}
               </button>
             {:else}
@@ -231,7 +231,7 @@
                 data-testid="clients-not-kickable"
                 title={$t('settings.clients_not_kickable_hint')}
               >
-                <IconPlugConnected size={14} /> {$t('settings.clients_not_kickable')}
+                <IconPlugConnected size={16} /> {$t('settings.clients_not_kickable')}
               </span>
             {/if}
           </li>

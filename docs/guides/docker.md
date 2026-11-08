@@ -105,6 +105,39 @@ Catalog phase-B additions on the same package shape (no new manifest file):
   `note`) validated at parse (bad names/duplicates/default-outside-options
   rejected) and at install (`validate_env_values`); values render into the
   compose template as `{{NAME}}` placeholders (`render_with_env`).
+- **Per-app Docker security policy**: a `[security]` table in the manifest is
+  rendered into **every service** of the compose file — HomeVault's
+  equivalent of DSM7's `conf/privilege`. `no_new_privileges` defaults to
+  `true` (`security_opt: ["no-new-privileges:true"]`); an app can also declare
+  `cap_add` (uppercase names, `ALL` refused), `cap_drop` (`ALL` allowed),
+  `user` (`uid[:gid]`) and `read_only`. Capability names and the user value
+  are validated at manifest parse. A key the template already declares is left
+  untouched, so an app author can override the default deliberately.
+  Every built-in manifest declares an explicit `[security]` block and a unit
+  test enforces it; the block stays additive, so an app that needs extra
+  capabilities opts in rather than receiving them silently.
+- **Per-app data ownership**: when `[security] user` is numeric (`uid` or
+  `uid:gid`), install creates the data directory *and every host path the
+  rendered compose bind-mounts from it* before `docker compose up`, then
+  `chown`s them to that account (best effort, logged). Docker would otherwise
+  create a missing mount source as `root:root` and lock the non-root container
+  out of its own data. A name-only `user` leaves ownership untouched —
+  HomeVault does not resolve container account names to host uids.
+
+  | App | Declared policy |
+  |---|---|
+  | all built-ins | `no_new_privileges = true` |
+  | `vikunja` | commented example of `cap_drop`/`cap_add`/`user`/`read_only` |
+  | `pihole`, `home-assistant` | default policy only (host networking is a compose-level choice, not a privilege) |
+
+  `cap_drop = ["ALL"]` is **not** applied globally: images that need
+  `NET_BIND_SERVICE` or `CHOWN` would break, so it stays an explicit,
+  per-app decision.
+- **Member visibility**: `GET /docker/catalog` filters the list through
+  `resource_shares` (`kind = app`) — a member sees only the apps an admin
+  granted, directly or through a group; an admin sees everything. Install,
+  update and uninstall stay admin-only. The dependency check is computed over
+  the *full* catalog so a hidden provider does not look missing.
 - **Compatibility**: `arch` (existing) plus `min_homevault_version`
   (`major.minor.patch`, checked against `CARGO_PKG_VERSION`) surface as
   `incompatibility_reason` in the list view and are enforced by install.

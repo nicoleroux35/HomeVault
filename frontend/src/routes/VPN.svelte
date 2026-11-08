@@ -70,6 +70,25 @@
     latest_handshake: number | null;
   }
 
+  interface WireGuardClient {
+    id: string;
+    name: string;
+    interface: string;
+    endpoint: string | null;
+    addresses: string[];
+    dns: string[];
+    allowed_ips: string[];
+    peer_count: number;
+    kill_switch: boolean;
+    autostart: boolean;
+    created_at: string;
+    interface_up: boolean;
+    connected: boolean;
+    latest_handshake: number | null;
+    transfer_rx: number;
+    transfer_tx: number;
+  }
+
   // ---------------------------------------------------------------------------
   // State
   // ---------------------------------------------------------------------------
@@ -77,11 +96,22 @@
   let connections: VpnConnection[] = [];
   let capabilities: VpnCapabilities | null = null;
   let loading = true;
-  let activeTab: 'wireguard' | 'openvpn' = 'wireguard';
+  let activeTab: 'wireguard' | 'wireguard-client' | 'openvpn' = 'wireguard';
 
   // WireGuard: one always-on server + a list of provisioned peers (devices).
   let wgServer: WireGuardServerStatus | null = null;
   let wgPeers: WireGuardPeer[] = [];
+
+  // WireGuard client tunnels: imported provider configurations (outbound).
+  let wgClients: WireGuardClient[] = [];
+  let showWgClientModal = false;
+  let wgClientName = '';
+  let wgClientConfig = '';
+  let wgClientKillSwitch = false;
+  let wgClientAutostart = true;
+  let wgClientFile: File | null = null;
+  let importingWgClient = false;
+  let wgClientBusyId: string | null = null;
 
   // Name of the OpenVPN connection whose start request is in flight — the
   // backend verifies the tunnel connects before answering (~1–10 s), so the
@@ -136,10 +166,11 @@
   // ---------------------------------------------------------------------------
 
   $: openvpnConnections = connections.filter(c => c.vpn_type === 'openvpn');
-  $: totalConnections = wgPeers.length + openvpnConnections.length;
-  $: connectedCount = wgPeers.filter(p => p.connected).length + openvpnConnections.filter(c => c.status === 'connected').length;
-  $: wireguardCount = wgPeers.length;
+  $: totalConnections = wgPeers.length + wgClients.length + openvpnConnections.length;
+  $: connectedCount = wgPeers.filter(p => p.connected).length + wgClients.filter(c => c.connected).length + openvpnConnections.filter(c => c.status === 'connected').length;
+  $: wireguardCount = wgPeers.length + wgClients.length;
   $: openvpnCount = openvpnConnections.length;
+  $: wireguardClientCount = wgClients.length;
 
   // ---------------------------------------------------------------------------
   // Lifecycle
@@ -165,6 +196,7 @@
       loadConnections(),
       capabilities?.wireguard ? loadWireGuardServer() : Promise.resolve(),
       capabilities?.wireguard ? loadWireGuardPeers() : Promise.resolve(),
+      capabilities?.wireguard ? loadWireGuardClients() : Promise.resolve(),
     ]);
     loading = false;
   }
@@ -206,6 +238,114 @@
     if (response.success && response.data) {
       wgPeers = response.data.peers || [];
     }
+  }
+
+  async function loadWireGuardClients() {
+    const response = await api.listWireGuardClients();
+    if (response.success && response.data) {
+      wgClients = response.data.clients || [];
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // WireGuard client tunnels (imported provider configurations)
+  // ---------------------------------------------------------------------------
+
+  function handleWgClientFileUpload(event: Event) {
+    const target = event.target as HTMLInputElement;
+    const file = target.files?.[0];
+    if (!file) return;
+    wgClientFile = file;
+    if (!wgClientName.trim()) {
+      wgClientName = file.name.replace(/\.conf$/i, '');
+    }
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      wgClientConfig = (e.target?.result as string) || '';
+    };
+    reader.readAsText(file);
+  }
+
+  async function importWireGuardClient() {
+    const name = wgClientName.trim();
+    const config = wgClientConfig.trim();
+    if (!name || !config) return;
+
+    importingWgClient = true;
+    const response = await api.importWireGuardClient({
+      name,
+      config_content: config,
+      kill_switch: wgClientKillSwitch,
+      autostart: wgClientAutostart,
+    });
+
+    if (response.success && response.data?.client) {
+      showWgClientModal = false;
+      resetWgClientForm();
+      await loadWireGuardClients();
+      notifyVpn(translate('vpn.wg_client_created', { name }));
+    } else {
+      notifyVpn(response.error || translate('vpn.wg_client_create_failed'), 'error');
+    }
+    importingWgClient = false;
+  }
+
+  function resetWgClientForm() {
+    wgClientName = '';
+    wgClientConfig = '';
+    wgClientKillSwitch = false;
+    wgClientAutostart = true;
+    wgClientFile = null;
+  }
+
+  async function startWireGuardClient(client: WireGuardClient) {
+    wgClientBusyId = client.id;
+    const response = await api.startWireGuardClient(client.id);
+    if (response.success) {
+      await loadWireGuardClients();
+      notifyVpn(translate('vpn.wg_client_started', { name: client.name }));
+    } else {
+      notifyVpn(response.error || translate('vpn.wg_client_start_failed'), 'error');
+    }
+    wgClientBusyId = null;
+  }
+
+  async function stopWireGuardClient(client: WireGuardClient) {
+    wgClientBusyId = client.id;
+    const response = await api.stopWireGuardClient(client.id);
+    if (response.success) {
+      await loadWireGuardClients();
+      notifyVpn(translate('vpn.wg_client_stopped', { name: client.name }));
+    } else {
+      notifyVpn(response.error || translate('vpn.wg_client_stop_failed'), 'error');
+    }
+    wgClientBusyId = null;
+  }
+
+  async function deleteWireGuardClient(client: WireGuardClient) {
+    if (!(await dlg.ask(translate('vpn.wg_client_delete_confirm', { name: client.name })))) return;
+
+    wgClientBusyId = client.id;
+    const response = await api.deleteWireGuardClient(client.id);
+    if (response.success) {
+      await loadWireGuardClients();
+      notifyVpn(translate('vpn.wg_client_deleted', { name: client.name }));
+    } else {
+      notifyVpn(response.error || translate('vpn.wg_client_delete_failed'), 'error');
+    }
+    wgClientBusyId = null;
+  }
+
+  async function toggleWgClientAutostart(client: WireGuardClient, autostart: boolean) {
+    wgClientBusyId = client.id;
+    const response = await api.setWireGuardClientAutostart(client.id, autostart);
+    if (response.success) {
+      await loadWireGuardClients();
+      notifyVpn(translate('vpn.wg_client_autostart_updated'));
+    } else {
+      notifyVpn(response.error || translate('vpn.wg_client_update_failed'), 'error');
+    }
+    wgClientBusyId = null;
   }
 
   async function createWireGuardPeer() {
@@ -461,6 +601,12 @@
       icon: IconShield,
       count: wgPeers.length > 0 ? wgPeers.length : undefined
     }] : []),
+    ...(capabilities?.wireguard ? [{
+      id: 'wireguard-client',
+      label: $t('vpn.tab_wireguard_client'),
+      icon: IconShield,
+      count: wireguardClientCount > 0 ? wireguardClientCount : undefined
+    }] : []),
     ...(capabilities?.openvpn ? [{
       id: 'openvpn',
       label: 'OpenVPN',
@@ -484,6 +630,12 @@
       <Button variant="primary" data-testid="vpn-btn" onclick={() => { showWireGuardModal = true; }}>
         <IconPlus size={16} />
         <span>{$t('vpn.new_wireguard')}</span>
+      </Button>
+    {/if}
+    {#if activeTab === 'wireguard-client' && capabilities?.wireguard}
+      <Button variant="primary" data-testid="vpn-import-client-btn" onclick={() => { showWgClientModal = true; }}>
+        <IconPlus size={16} />
+        <span>{$t('vpn.new_wg_client')}</span>
       </Button>
     {/if}
     {#if activeTab === 'openvpn' && capabilities?.openvpn}
@@ -561,6 +713,54 @@
               <div class="px-4 pb-4 flex gap-2">
                 <button data-testid="vpn-btn" class="grid place-items-center w-11 h-11 rounded-lg border border-[var(--hv-shell-border-strong)] bg-[var(--hv-shell-border-soft)] text-[var(--hv-shell-text-strong)] cursor-pointer hover:bg-[var(--hv-shell-border)]" onclick={() => showPeerConfig(peer)} disabled={configLoading} title={$t('vpn.show_config_title')}><IconDeviceMobile size={14} /></button>
                 <button data-testid="vpn-btn" class="grid place-items-center w-11 h-11 rounded-lg border border-[var(--hv-shell-border-strong)] bg-[var(--hv-shell-border-soft)] text-[var(--hv-shell-text-strong)] cursor-pointer hover:bg-[var(--hv-error-bg)] hover:text-[var(--hv-error)]" onclick={() => revokeWireGuardPeer(peer)} disabled={revokingPeerId === peer.id} title={$t('vpn.revoke_device_title')}><IconTrash size={14} /></button>
+              </div>
+            </div>
+          {/each}
+        </div>
+      {/if}
+
+    {:else if activeTab === 'wireguard-client'}
+      {#if wgClients.length === 0}
+        <EmptyState data-testid="vpn-client-empty-title" title={$t('vpn.no_wg_client_title')} description={$t('vpn.no_wg_client_desc')}>
+          {#snippet iconSnippet()}<IconShield size={32} stroke={1.8} />{/snippet}
+          {#snippet action()}<Button variant="primary" data-testid="vpn-import-client-btn" onclick={() => { showWgClientModal = true; }}><IconPlus size={16} /> <span>{$t('vpn.new_wg_client')}</span></Button>{/snippet}
+        </EmptyState>
+      {:else}
+        <div class="grid gap-4 [grid-template-columns:repeat(auto-fill,minmax(300px,1fr))]">
+          {#each wgClients as client (client.id)}
+            <div data-testid="vpn-client-card" class="rounded-2xl bg-[var(--hv-shell-card)] border border-[var(--hv-shell-border)] shadow-[var(--hv-shell-shadow-card)] overflow-hidden">
+              <div class="flex items-center justify-between gap-3 px-4 pt-4">
+                <div class="flex items-center gap-3 min-w-0">
+                  <span class="grid place-items-center w-11 h-11 rounded-xl flex-none bg-[var(--hv-primary-light)] text-[var(--hv-primary)]"><IconShield size={20} /></span>
+                  <div class="min-w-0">
+                    <div data-testid="vpn-client-name" class="text-sm font-bold text-[var(--hv-shell-text-strong)] truncate">{client.name}</div>
+                    <div class="text-xs text-[var(--hv-shell-text-2)]">WireGuard · {client.interface}</div>
+                  </div>
+                </div>
+                <span class={cn(badge, client.connected ? 'bg-[var(--hv-success-bg)] text-[var(--hv-success)]' : client.interface_up ? 'bg-[var(--hv-warning-bg)] text-[var(--hv-warning)]' : 'bg-[var(--hv-shell-border-soft)] text-[var(--hv-shell-text-2)]')}>
+                  <span class={cn('w-1.5 h-1.5 rounded-full', client.connected ? 'bg-[var(--hv-success)]' : client.interface_up ? 'bg-[var(--hv-warning)]' : 'bg-[var(--hv-shell-text-3)]')}></span>
+                  {client.connected ? $t('vpn.status_connected') : client.interface_up ? $t('vpn.wg_client_status_up') : $t('vpn.status_disconnected')}
+                </span>
+              </div>
+              <div class="px-4 py-3 flex flex-col gap-1.5">
+                <div class="flex items-center justify-between gap-2"><span class={detailLabel}>{$t('vpn.wg_client_endpoint_label')}</span><span class={detailMono}>{client.endpoint || $t('vpn.wg_client_no_endpoint')}</span></div>
+                <div class="flex items-center justify-between gap-2"><span class={detailLabel}>{$t('vpn.wg_client_address_label')}</span><span class={detailMono}>{client.addresses.join(', ')}</span></div>
+                <div class="flex items-center justify-between gap-2"><span class={detailLabel}>{$t('vpn.wg_client_peers_label')}</span><span class={detailValue}>{client.peer_count}</span></div>
+                <div class="flex items-center gap-2 flex-wrap mt-1">
+                  {#if client.kill_switch}<span class={cn(badge, 'bg-[var(--hv-error-bg)] text-[var(--hv-error)]')}>{$t('vpn.wg_client_kill_switch_badge')}</span>{/if}
+                  <label for={`wg-client-autostart-${client.id}`} class="inline-flex items-center gap-1.5 min-h-11 px-1 text-xs text-[var(--hv-shell-text-2)] cursor-pointer">
+                    <input id={`wg-client-autostart-${client.id}`} type="checkbox" checked={client.autostart} disabled={wgClientBusyId === client.id} onchange={(e) => toggleWgClientAutostart(client, e.currentTarget.checked)} class="w-4 h-4 accent-[var(--hv-primary)]" />
+                    <span>{$t('vpn.wg_client_autostart')}</span>
+                  </label>
+                </div>
+              </div>
+              <div class="px-4 pb-4 flex gap-2">
+                {#if client.interface_up}
+                  <button data-testid="vpn-client-stop" class="grid place-items-center w-11 h-11 rounded-lg border border-[var(--hv-shell-border-strong)] bg-[var(--hv-shell-border-soft)] text-[var(--hv-shell-text-strong)] cursor-pointer hover:bg-[var(--hv-shell-border)]" onclick={() => stopWireGuardClient(client)} disabled={wgClientBusyId === client.id} aria-label={$t('vpn.wg_client_stop')} title={$t('vpn.wg_client_stop')}><IconPower size={14} /></button>
+                {:else}
+                  <button data-testid="vpn-client-start" class="grid place-items-center w-11 h-11 rounded-lg border-none bg-[var(--hv-success)] text-white cursor-pointer hover:brightness-110" onclick={() => startWireGuardClient(client)} disabled={wgClientBusyId === client.id} aria-label={$t('vpn.wg_client_start')} title={$t('vpn.wg_client_start')}><IconPower size={14} /></button>
+                {/if}
+                <button data-testid="vpn-client-delete" class="grid place-items-center w-11 h-11 rounded-lg border border-[var(--hv-shell-border-strong)] bg-[var(--hv-shell-border-soft)] text-[var(--hv-shell-text-strong)] cursor-pointer hover:bg-[var(--hv-error-bg)] hover:text-[var(--hv-error)]" onclick={() => deleteWireGuardClient(client)} disabled={wgClientBusyId === client.id} aria-label={$t('vpn.wg_client_delete')} title={$t('vpn.wg_client_delete')}><IconTrash size={14} /></button>
               </div>
             </div>
           {/each}
@@ -713,5 +913,40 @@
   </div>
   {#snippet footer()}
     <div class="flex justify-end"><Button variant="primary" onclick={() => { showPeerConfigModal = false; configPeerConfig = ''; configPeerQrDataUrl = ''; }}>{$t('vpn.close')}</Button></div>
+  {/snippet}
+</Modal>
+
+<!-- Import a WireGuard client configuration (provider tunnel) -->
+<Modal open={showWgClientModal} title={$t('vpn.import_wg_client_title')} size="md" onclose={() => { showWgClientModal = false; resetWgClientForm(); }}>
+  <div class="mb-3">
+    <div class="flex flex-col gap-1.5">
+      <label for="wg-client-name" class="text-c-label font-semibold text-[var(--hv-shell-text-strong)]">{$t('vpn.connection_name')} <span class="text-[var(--hv-error)]">*</span></label>
+      <input id="wg-client-name" class="w-full h-11 px-3 border border-[var(--hv-shell-border-strong)] rounded-lg bg-[var(--hv-shell-border-soft)] text-sm outline-none focus:border-[var(--hv-primary)]" type="text" bind:value={wgClientName} placeholder="my-provider" />
+    </div>
+  </div>
+  <div class="mb-3">
+    <div class="text-xs font-bold uppercase tracking-wide text-[var(--hv-shell-text-3)] mb-2">{$t('vpn.configuration_file')}</div>
+    <div class="flex flex-col gap-1.5">
+      <input type="file" accept=".conf,.txt" onchange={handleWgClientFileUpload} id="wg-client-file" class="sr-only" />
+      <label for="wg-client-file" class="flex items-center gap-2 h-11 px-4 border border-[var(--hv-shell-border-strong)] rounded-lg bg-[var(--hv-shell-fill)] text-c-label font-semibold text-[var(--hv-shell-text-strong)] cursor-pointer hover:bg-[var(--hv-shell-border)]"><IconUpload size={18} /> {wgClientFile ? wgClientFile.name : $t('vpn.choose_conf_file')}</label>
+      <label for="wg-client-config" class="text-c-label font-semibold text-[var(--hv-shell-text-strong)] mt-2">{$t('vpn.wg_client_paste_label')}</label>
+      <textarea id="wg-client-config" rows="7" class="w-full px-3 py-2 border border-[var(--hv-shell-border-strong)] rounded-lg bg-[var(--hv-shell-border-soft)] text-xs font-[family-name:var(--hv-font-mono)] outline-none focus:border-[var(--hv-primary)]" bind:value={wgClientConfig} placeholder="[Interface]&#10;PrivateKey = …&#10;Address = …"></textarea>
+    </div>
+  </div>
+  <div class="flex flex-col gap-2">
+    <label for="wg-client-kill-switch" class="flex items-start gap-2 min-h-11 text-sm text-[var(--hv-shell-text-strong)] cursor-pointer">
+      <input id="wg-client-kill-switch" type="checkbox" bind:checked={wgClientKillSwitch} class="mt-1 w-4 h-4 accent-[var(--hv-primary)]" />
+      <span>{$t('vpn.wg_client_kill_switch')}</span>
+    </label>
+    <label for="wg-client-autostart" class="flex items-start gap-2 min-h-11 text-sm text-[var(--hv-shell-text-strong)] cursor-pointer">
+      <input id="wg-client-autostart" type="checkbox" bind:checked={wgClientAutostart} class="mt-1 w-4 h-4 accent-[var(--hv-primary)]" />
+      <span>{$t('vpn.wg_client_autostart')}</span>
+    </label>
+  </div>
+  {#snippet footer()}
+    <div class="flex gap-2.5 justify-end">
+      <Button variant="ghost" onclick={() => { showWgClientModal = false; resetWgClientForm(); }} disabled={importingWgClient}>{$t('vpn.cancel')}</Button>
+      <Button variant="primary" onclick={importWireGuardClient} disabled={importingWgClient || !wgClientName.trim() || !wgClientConfig.trim()}>{importingWgClient ? $t('vpn.wg_client_importing') : $t('vpn.wg_client_import')}</Button>
+    </div>
   {/snippet}
 </Modal>

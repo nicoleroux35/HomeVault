@@ -377,7 +377,9 @@ test.describe('4 — Backend contract', () => {
 
   test('4.2c — screen ticket needs a real, running, screen-having VM', async () => {
     const res = await sharedCtx.post('/api/vm/no-such-machine/screen/ticket', { headers: adminHeaders });
-    expect(res.status()).toBe(400);
+    // Without Incus the capability gate answers `503` before the instance can
+    // be looked up; on a host with Incus an unknown machine is a `400`.
+    expect([400, 503]).toContain(res.status());
     const b = await res.json();
     expect(b.success).toBe(false);
     expect(b.data?.ticket ?? null).toBeNull();

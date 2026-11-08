@@ -165,7 +165,7 @@
     </p>
   {:else if loading}
     <p data-testid="passkeys-loading" class="m-0 text-c-label text-[var(--hv-shell-text-3)]">{$t('common.loading')}</p>
-  {:else if passkeys.length === 0}
+  {:else if passkeys.length === 0 && !error}
     <p data-testid="passkeys-empty" class="m-0 text-c-label text-[var(--hv-shell-text-3)]">{$t('account.passkeys_empty')}</p>
   {:else}
     <ul data-testid="passkeys-list" class="list-none m-0 p-0 flex flex-col gap-2">

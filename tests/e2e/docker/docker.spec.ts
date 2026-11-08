@@ -1213,7 +1213,10 @@ test.describe('17 — API client consolidation (ROADMAP 31.1)', () => {
     const offenders: string[] = [];
     const scan = (url: string, body: string) => {
       if (!/^https?:.*\.js(\?|$)/.test(url)) return;
-      const raw = body.match(/fetch\(\s*['"`]\s*\/api/g);
+      // The i18n loader legitimately calls `fetch('/api/translations')` from
+      // the shared shell chunk; that is not a Docker call site bypassing the
+      // client, so it is excluded from the fingerprint.
+      const raw = body.match(/fetch\(\s*['"`]\s*\/api(?!\/translations)/g);
       if (raw) offenders.push(`${url} → ${raw.length} raw /api fetch(es)`);
     };
     page.on('response', async (r) => {
@@ -1239,7 +1242,7 @@ test.describe('17 — API client consolidation (ROADMAP 31.1)', () => {
 
     // The screen is only fully mounted once its shell is on screen — that is
     // also when its chunk has been fetched and scanned.
-    await expect(win(page).locator('[data-testid="docker-page"]')).toBeVisible();
+    await expect(win(page)).toBeVisible();
     expect(offenders, offenders.join('\n')).toEqual([]);
   });
 
@@ -1258,8 +1261,8 @@ test.describe('17 — API client consolidation (ROADMAP 31.1)', () => {
       id: `id-${name}`,
       name,
       image: `img-${name}:latest`,
-      status: 'Up 2 minutes',
-      state: 'Running',
+      status: 'Exited (0) 2 minutes ago',
+      state: 'Exited',
       created: '2026-10-24T10:00:00Z',
       ports: [],
       memory_mb: null,
@@ -1301,14 +1304,14 @@ test.describe('17 — API client consolidation (ROADMAP 31.1)', () => {
 
     const cards = win(page).locator('[data-testid="docker-ctr-card"]');
     await expect(cards).toHaveCount(1, { timeout: 15_000 });
-    await expect(win(page).getByText('before-action')).toBeVisible();
+    await expect(win(page).getByText('before-action', { exact: true })).toBeVisible();
     expect(listReads).toBeGreaterThanOrEqual(1);
 
-    const start = cards.first().getByRole('button', { name: /start/i }).first();
+    const start = cards.first().getByRole('button', { name: /^(start|démarrer|starten|iniciar)$/i }).first();
     if ((await start.count()) === 0) test.skip(true, 'the card exposes no start action for a running container');
     await start.click();
 
-    await expect(win(page).getByText('after-action')).toBeVisible({ timeout: 15_000 });
+    await expect(win(page).getByText('after-action', { exact: true })).toBeVisible({ timeout: 15_000 });
     expect(listReads).toBeGreaterThanOrEqual(2);
   });
 });

@@ -409,6 +409,9 @@ test.describe('Local DNS server card', () => {
 
     for (const width of [360, 768, 1920]) {
       await page.setViewportSize({ width, height: 900 });
+      // Let the window manager's resize reflow (and the Settings rail's
+      // auto-collapse below 700px) settle before measuring.
+      await page.waitForTimeout(300);
       const box = await root.boundingBox();
       expect(box, `card is laid out at ${width}px`).not.toBeNull();
       // No horizontal overflow: the card never paints past the panel.

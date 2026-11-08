@@ -165,7 +165,7 @@ async fn pam_login_succeeds_for_a_real_linux_account() {
 
 #[tokio::test]
 #[ignore = "needs root + PAM + useradd"]
-async fn pam_user_in_sudo_group_is_promoted_to_admin() {
+async fn pam_user_in_application_admin_group_is_promoted_to_admin() {
     if !is_root() || !python_pam_available() {
         eprintln!("skipping: not root or PAM module missing");
         return;
@@ -176,18 +176,17 @@ async fn pam_user_in_sudo_group_is_promoted_to_admin() {
         eprintln!("skipping: could not create the test account");
         return;
     }
-    // Put the account in a privileged group (`create_session` checks
-    // sudo/admin/wheel/homevault_admin).
-    let grp = if Command::new("getent")
-        .args(["group", "sudo"])
+    // Application admin is `homevault_admin`; host-root groups (`sudo`,
+    // `wheel`, `homevault_hostadmin`) deliberately do not grant app admin.
+    let grp = "homevault_admin";
+    if !Command::new("getent")
+        .args(["group", grp])
         .status()
         .map(|s| s.success())
         .unwrap_or(false)
     {
-        "sudo"
-    } else {
-        "wheel"
-    };
+        let _ = Command::new("groupadd").arg(grp).status();
+    }
     let _ = Command::new("usermod").args(["-aG", grp, user]).status();
 
     let auth = in_memory_auth().await;
@@ -204,7 +203,7 @@ async fn pam_user_in_sudo_group_is_promoted_to_admin() {
         .expect("create_session should persist a session for a host account");
     assert!(
         session.is_admin,
-        "a host account in `{grp}` should get an admin session"
+        "a host account in `{grp}` should get an application admin session"
     );
 
     // A second login still works (sentinel-hash fall-through to PAM).
@@ -261,7 +260,9 @@ fn configure_sudoers_produces_a_visudo_valid_file() {
 //   sudo -E cargo test --test login_pam_integration -- --ignored --nocapture
 // ---------------------------------------------------------------------------
 
-use homevault::host_accounts::{HostAccountService, HOST_ADMIN_GROUPS};
+use homevault::host_accounts::{
+    HostAccountService, APP_ADMIN_GROUP, HOST_ADMIN_GROUP, HOST_PRIVILEGED_GROUPS,
+};
 
 /// The account's supplementary groups, as `id -nG` reports them.
 fn host_groups(name: &str) -> Vec<String> {
@@ -298,14 +299,14 @@ fn password_status(name: &str) -> String {
 
 #[tokio::test]
 #[ignore = "needs root + useradd/usermod/gpasswd"]
-async fn grant_admin_provisions_the_account_and_every_admin_group() {
+async fn grant_admin_provisions_the_account_and_the_app_admin_group() {
     if !is_root() {
         eprintln!("skipping: not root");
         return;
     }
     // The reserved group is created at startup by `ensure_admin_group`; make
     // sure it is there for this standalone test.
-    let _ = Command::new("groupadd").arg("homevault_admin").status();
+    let _ = Command::new("groupadd").arg(APP_ADMIN_GROUP).status();
 
     let user = "hv_acct_grant";
     let _ = Command::new("userdel").args(["-r", user]).status();
@@ -325,23 +326,17 @@ async fn grant_admin_provisions_the_account_and_every_admin_group() {
     );
     let groups = host_groups(user);
     assert!(
-        groups.iter().any(|g| g == "homevault_admin"),
-        "expected homevault_admin, got {groups:?}"
+        groups.iter().any(|g| g == APP_ADMIN_GROUP),
+        "expected {APP_ADMIN_GROUP}, got {groups:?}"
     );
-    for group in HOST_ADMIN_GROUPS {
-        let exists = Command::new("getent")
-            .args(["group", group])
-            .output()
-            .unwrap()
-            .status
-            .success();
-        if exists {
-            assert!(
-                groups.iter().any(|g| g == group),
-                "expected membership in '{}', got {groups:?}",
-                group
-            );
-        }
+    // Host-root groups are a separate, explicit grant: a promoted app admin
+    // must not receive passwordless root by accident.
+    for group in [HOST_ADMIN_GROUP, "sudo", "wheel"] {
+        assert!(
+            !groups.iter().any(|g| g == group),
+            "'{}' must not be granted automatically, got {groups:?}",
+            group
+        );
     }
 
     delete_linux_user(user);
@@ -354,13 +349,14 @@ async fn revoke_admin_clears_every_admin_group() {
         eprintln!("skipping: not root");
         return;
     }
-    let _ = Command::new("groupadd").arg("homevault_admin").status();
+    let _ = Command::new("groupadd").arg(APP_ADMIN_GROUP).status();
     let user = "hv_acct_revoke";
     if !create_linux_user(user, "Hv-Pam-Pass-123") {
         eprintln!("skipping: could not create the test account");
         return;
     }
-    for group in HOST_ADMIN_GROUPS {
+    for group in HOST_PRIVILEGED_GROUPS {
+        let _ = Command::new("groupadd").arg(group).status();
         let _ = Command::new("usermod").args(["-aG", group, user]).status();
     }
 
@@ -369,7 +365,7 @@ async fn revoke_admin_clears_every_admin_group() {
         .expect("revoke_admin");
 
     let groups = host_groups(user);
-    for group in HOST_ADMIN_GROUPS {
+    for group in HOST_PRIVILEGED_GROUPS {
         assert!(
             !groups.iter().any(|g| g == group),
             "'{}' must be revoked, still in {groups:?}",

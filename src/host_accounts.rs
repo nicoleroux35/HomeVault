@@ -65,11 +65,24 @@ use tokio::process::Command;
 /// take a moment; a hung NSS backend takes forever.
 pub const HOST_OP_TIMEOUT: Duration = Duration::from_secs(20);
 
-/// Groups that grant real administrative rights on the host. `is_admin` and
-/// `create_session` derive HomeVault admin status from exactly this set, so
-/// revoking a demotion must clear all of them — not just `homevault_admin`.
-pub const HOST_ADMIN_GROUPS: &[&str] =
-    &[crate::storage::database::ADMIN_GROUP_NAME, "sudo", "wheel"];
+/// The **application** admin group. Membership grants HomeVault admin rights
+/// and is the only group `grant_admin` adds automatically. It does **not**
+/// grant host root: the web terminal launches a shell *as the admin user*
+/// through the `homevault` service's own sudoers rule.
+pub const APP_ADMIN_GROUP: &str = crate::storage::database::ADMIN_GROUP_NAME;
+
+/// Optional **host root** group. Never granted automatically; an operator who
+/// needs an interactive root shell adds a user to it by hand and sets a Linux
+/// password. The sudoers line for it asks for that password (DSM7's
+/// `%administrators` model), instead of the old passwordless `ALL`.
+pub const HOST_ADMIN_GROUP: &str = "homevault_hostadmin";
+
+/// Every group a demotion must clear. It includes the application admin group
+/// and the host-root groups (`homevault_hostadmin`, `sudo`, `wheel`) so a
+/// demoted account cannot keep real root access. `grant_admin` only adds
+/// [`APP_ADMIN_GROUP`]; the others are cleaned up here for accounts promoted
+/// by older builds or by the operator.
+pub const HOST_PRIVILEGED_GROUPS: &[&str] = &[APP_ADMIN_GROUP, HOST_ADMIN_GROUP, "sudo", "wheel"];
 
 /// Linux login names are capped at 32 bytes (`LOGIN_NAME_MAX`), so a longer
 /// HomeVault username can never be provisioned on the host.
@@ -237,7 +250,8 @@ impl HostAccountService {
         }
     }
 
-    /// The admin groups from [`HOST_ADMIN_GROUPS`] the account belongs to.
+    /// The privileged groups from [`HOST_PRIVILEGED_GROUPS`] the account
+    /// belongs to.
     pub async fn admin_groups(username: &str) -> Vec<String> {
         if Self::validate_username(username).is_err() {
             return Vec::new();
@@ -254,7 +268,7 @@ impl HostAccountService {
             .split_whitespace()
             .map(str::to_string)
             .collect();
-        HOST_ADMIN_GROUPS
+        HOST_PRIVILEGED_GROUPS
             .iter()
             .filter(|group| current.iter().any(|name| name == *group))
             .map(|group| group.to_string())
@@ -267,12 +281,14 @@ impl HostAccountService {
         matches!(Self::run(cmd, "getent group").await, Ok(o) if o.status.success())
     }
 
-    /// Provision the Linux account if needed and grant every host admin group.
+    /// Provision the Linux account if needed and grant the **application**
+    /// admin group only.
     ///
     /// Returns the groups that were added. The account is created with a real
     /// shell and home directory (`useradd -m -d /home/homevault/<user> -s
     /// /bin/bash`) because it is the account the web terminal and SSH use;
-    /// group membership is granted one group at a time afterwards.
+    /// it is deliberately **not** added to `sudo`, `wheel` or
+    /// `homevault_hostadmin` — host root is a separate, explicit grant.
     pub async fn grant_admin(username: &str) -> Result<Vec<String>, HostAccountError> {
         Self::validate_username(username)?;
 
@@ -296,14 +312,14 @@ impl HostAccountService {
         }
 
         let mut added = Vec::new();
-        for group in HOST_ADMIN_GROUPS {
+        for group in [APP_ADMIN_GROUP] {
             if !Self::group_exists(group).await {
                 continue;
             }
             let mut cmd = Self::command("usermod");
             cmd.args(["-a", "-G", group, username]);
             match Self::run_checked(cmd, "usermod").await {
-                Ok(_) => added.push((*group).to_string()),
+                Ok(_) => added.push(group.to_string()),
                 Err(e) => tracing::warn!(
                     "Could not add '{}' to host group '{}': {}",
                     username,
@@ -316,11 +332,14 @@ impl HostAccountService {
         Ok(added)
     }
 
-    /// Revoke every host admin group from the account.
+    /// Revoke every privileged group from the account (application admin,
+    /// optional host root, and the legacy `sudo`/`wheel` grants).
     ///
     /// Returns the groups that were actually removed. An account that does not
     /// exist, or that is not a member of a group, is a no-op — the caller's
-    /// intent ("this account must not be an admin") already holds.
+    /// intent ("this account must not be an admin") already holds. Demotion is
+    /// deliberately conservative: a host-root grant must be re-added by the
+    /// operator after an application demotion.
     pub async fn revoke_admin(username: &str) -> Result<Vec<String>, HostAccountError> {
         Self::validate_username(username)?;
 
@@ -572,13 +591,14 @@ mod tests {
     }
 
     #[test]
-    fn test_host_admin_groups_cover_every_privileged_group() {
-        // `AuthService::user_belongs_to_admin_group` and `is_admin` treat all
-        // three as admin; a demotion that cleared only `homevault_admin`
-        // would leave real sudo access behind.
-        assert!(HOST_ADMIN_GROUPS.contains(&crate::storage::database::ADMIN_GROUP_NAME));
-        assert!(HOST_ADMIN_GROUPS.contains(&"sudo"));
-        assert!(HOST_ADMIN_GROUPS.contains(&"wheel"));
+    fn test_privileged_groups_cover_app_admin_and_host_root() {
+        // A demotion clears the application admin group *and* every host-root
+        // group an older build (or the operator) may have added.
+        assert_eq!(APP_ADMIN_GROUP, crate::storage::database::ADMIN_GROUP_NAME);
+        assert!(HOST_PRIVILEGED_GROUPS.contains(&APP_ADMIN_GROUP));
+        assert!(HOST_PRIVILEGED_GROUPS.contains(&HOST_ADMIN_GROUP));
+        assert!(HOST_PRIVILEGED_GROUPS.contains(&"sudo"));
+        assert!(HOST_PRIVILEGED_GROUPS.contains(&"wheel"));
     }
 
     #[test]

@@ -458,6 +458,9 @@ class ApiClient {
       });
 
       const data = await this.parseResponse<T>(response);
+      // Expose the status so polling stores can back off on a 5xx instead of
+      // treating every `success:false` as a benign refusal.
+      data.http_status = response.status;
 
       // Only cache responses that indicate success
       if (useCache && data.success) {
@@ -1212,7 +1215,7 @@ class ApiClient {
   }
 
   /** Admin: grant (or update) a member's access to a resource. */
-  async grantResourceAccess(member: string, kind: 'app' | 'folder' | 'share', resource: string, permission: 'read' | 'write' | 'full' = 'read') {
+  async grantResourceAccess(member: string, kind: 'app' | 'folder' | 'share', resource: string, permission: 'deny' | 'read' | 'write' | 'full' = 'read') {
     return this.post('/shares/access', { member, kind, resource, permission });
   }
 
@@ -1229,7 +1232,7 @@ class ApiClient {
 
   /** Admin: grant (or update) a group's access to a resource. Every member of
    *  the group inherits it, unioned with their own direct grants. */
-  async grantGroupResourceAccess(group: string, kind: 'app' | 'folder' | 'share', resource: string, permission: 'read' | 'write' | 'full' = 'read') {
+  async grantGroupResourceAccess(group: string, kind: 'app' | 'folder' | 'share', resource: string, permission: 'deny' | 'read' | 'write' | 'full' = 'read') {
     return this.post('/shares/access/groups', { group, kind, resource, permission });
   }
 
@@ -1391,6 +1394,7 @@ class ApiClient {
     server_name?: string;
     timezone?: string;
     mdns_enabled?: boolean;
+    terminal_enabled?: boolean;
   }) {
     return this.put('/settings/general', data);
   }
@@ -1459,7 +1463,7 @@ class ApiClient {
    * previous look.
    */
   async getAppearanceSettings() {
-    return this.get<{ wallpaper: string | null; accent_color: string | null; density: string | null }>(
+    return this.get<{ wallpaper: string | null; accent_color: string | null }>(
       '/settings/appearance',
       { cache: false },
     );
@@ -1468,7 +1472,6 @@ class ApiClient {
   async updateAppearanceSettings(data: {
     wallpaper?: string;
     accent_color?: string;
-    density?: string;
   }) {
     return this.put('/settings/appearance', data);
   }
@@ -2110,6 +2113,36 @@ class ApiClient {
 
   async getWireGuardPeerConfig(id: string) {
     return this.get(`/vpn/wireguard/peers/${encodeURIComponent(id)}`, { cache: false });
+  }
+
+  // WireGuard client tunnels — imported provider configurations (P1-17).
+  async listWireGuardClients() {
+    return this.get('/vpn/wireguard/clients', { ttl: 5000 });
+  }
+
+  async importWireGuardClient(data: {
+    name: string;
+    config_content: string;
+    kill_switch?: boolean;
+    autostart?: boolean;
+  }) {
+    return this.post('/vpn/wireguard/clients', data);
+  }
+
+  async startWireGuardClient(id: string) {
+    return this.post(`/vpn/wireguard/clients/${encodeURIComponent(id)}/start`, {});
+  }
+
+  async stopWireGuardClient(id: string) {
+    return this.post(`/vpn/wireguard/clients/${encodeURIComponent(id)}/stop`, {});
+  }
+
+  async deleteWireGuardClient(id: string) {
+    return this.delete(`/vpn/wireguard/clients/${encodeURIComponent(id)}`);
+  }
+
+  async setWireGuardClientAutostart(id: string, autostart: boolean) {
+    return this.put(`/vpn/wireguard/clients/${encodeURIComponent(id)}`, { autostart });
   }
 
   // OpenVPN

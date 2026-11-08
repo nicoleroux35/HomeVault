@@ -786,6 +786,29 @@ impl SetupService {
         // exactly these two paths) when an upgraded host still has them.
         let exportfs = Self::resolve_bin("exportfs", "/usr/sbin/exportfs");
         let chmod = Self::resolve_bin("chmod", "/usr/bin/chmod");
+        // POSIX ACLs (`src/acl.rs`) and host ownership (`src/handlers/
+        // user_homes.rs`, `src/storage/database.rs`). `setfacl`/`chmod` are
+        // already run through `sudo`; `chown` is too once the service is
+        // unprivileged. Every grant stays confined to the trees HomeVault
+        // manages (home folders, pools, shares), never `/etc` or `/usr`.
+        let setfacl = Self::resolve_bin("setfacl", "/usr/bin/setfacl");
+        let chown = Self::resolve_bin("chown", "/usr/bin/chown");
+        // Removable-media mounting (`src/usb_copy.rs`, Explorer eject). These
+        // calls bypass udisks2's polkit session rule by running as root, the
+        // same way they did when the service itself ran as root.
+        let udisksctl = Self::resolve_bin("udisksctl", "/usr/bin/udisksctl");
+        // VM install media (`src/iso_mount.rs`), traffic shaping
+        // (`src/traffic_control.rs`), iSCSI targets (`src/iscsi.rs`) and disk
+        // spindown (`src/power.rs`). All are dedicated tools whose whole
+        // purpose is the feature that calls them; `targetcli`/`tc` are
+        // granted whole because their argument language is the feature.
+        let losetup = Self::resolve_bin("losetup", "/usr/sbin/losetup");
+        let tc = Self::resolve_bin("tc", "/usr/sbin/tc");
+        let targetcli = Self::resolve_bin("targetcli", "/usr/bin/targetcli");
+        let modprobe = Self::resolve_bin("modprobe", "/usr/sbin/modprobe");
+        let hdparm = Self::resolve_bin("hdparm", "/usr/sbin/hdparm");
+        let dmidecode = Self::resolve_bin("dmidecode", "/usr/sbin/dmidecode");
+        let iso_root = format!("{}/iso", crate::config::paths::base_dir().display());
         // Per-user home-directory quotas (`src/quota.rs`, ROADMAP 3.1-3.3).
         // Every quota call runs as `sudo -n` so it keeps working under the
         // unprivileged `homevault` service account; before this grant the
@@ -819,6 +842,7 @@ impl SetupService {
         let groupadd = Self::resolve_bin("groupadd", "/usr/sbin/groupadd");
         let groupdel = Self::resolve_bin("groupdel", "/usr/sbin/groupdel");
         let useradd = Self::resolve_bin("useradd", "/usr/sbin/useradd");
+        let userdel = Self::resolve_bin("userdel", "/usr/sbin/userdel");
         let usermod_sftp = Self::resolve_bin("usermod", "/usr/sbin/usermod");
         let gpasswd = Self::resolve_bin("gpasswd", "/usr/sbin/gpasswd");
         // `chpasswd` clears the locked-password flag `useradd` leaves on a
@@ -844,6 +868,13 @@ impl SetupService {
             "{}/*/authorized_keys",
             crate::config::paths::sftp_keys_dir().display()
         );
+        let sftp_config_dir = "/etc/homevault-sftp";
+        let sftp_conf = "/etc/homevault-sftp/sshd_config";
+        let sftp_service = "/etc/systemd/system/homevault-sftp.service";
+        // DHCP + local DNS share one root-owned dnsmasq drop-in
+        // (`src/dhcp_server.rs::DROPIN_PATH`); the service writes/removes it
+        // and restarts the daemon through `sudo`.
+        let dnsmasq_conf = "/etc/dnsmasq.d/homevault.conf";
 
         // Settings page "server name" -> OS hostname (`src/handlers/settings.rs`).
         // `hostnamectl set-hostname` needs root; scoped to that one subcommand
@@ -926,15 +957,37 @@ impl SetupService {
 
         let sudoers_content = format!(
             r#"# HomeVault sudoers configuration
-# Grant full administrative privileges to homevault_admin group members
-# Members of this group have the same rights as root/sudo users
+#
+# Two separate privilege levels (DSM7's `administrators` vs `wheel` split):
+#
+#   * `homevault_admin` is the APPLICATION admin group. It grants HomeVault
+#     admin rights, not host root. The web terminal launches a shell as the
+#     admin user through the `homevault` service's own rule below; it does not
+#     give that user a passwordless `sudo` of their own.
+#   * `homevault_hostadmin` is the optional HOST ROOT group. It is never
+#     granted automatically; an operator adds a user by hand and sets a Linux
+#     password. Its sudo entry asks for that password, like DSM7's
+#     `%administrators`.
+#
+# `sudo`/`wheel` are deliberately NOT granted here and NOT added to app admins.
 
-# Full sudo access for homevault_admin group members (like sudo/wheel groups)
-%homevault_admin ALL=(ALL:ALL) NOPASSWD: ALL
+# Host root, password required (opt-in group, never auto-granted)
+%homevault_hostadmin ALL=(ALL:ALL) ALL
 
-# Terminal access - allow homevault process to launch shells as admin group members
-# This enables the web terminal to provide each admin with their own Linux shell session
-homevault ALL=(%homevault_admin) NOPASSWD: /usr/bin/sudo -u * -i
+# The service runs under systemd with no controlling terminal; every grant
+# below is non-interactive, so `requiretty` (on distributions that enable it)
+# would otherwise make each one fail with "you must have a tty".
+Defaults:homevault !requiretty
+
+# Terminal access - allow the homevault service to launch a login shell as
+# an application admin (`sudo -u <admin> -i`, src/handlers/terminal_pty.rs).
+# The shell runs as that admin user, not as root. Grant the shells `-i` can
+# exec rather than the `sudo` binary: the old `/usr/bin/sudo -u * -i` rule
+# never matched an actual invocation (sudo consumes `-u`/`-i` itself). The
+# list covers the shells a HomeVault-created admin (`/bin/bash`) and a PAM
+# admin provisioned by the operator commonly have; an unusual login shell
+# must be added here or the terminal cannot start in the non-root deployment.
+homevault ALL=(%homevault_admin) NOPASSWD: /bin/bash, /usr/bin/bash, /bin/sh, /usr/bin/sh, /bin/dash, /usr/bin/dash, /bin/zsh, /usr/bin/zsh, /usr/bin/fish
 
 # VPN management - the unprivileged homevault service delegates privileged
 # network operations (interface creation, tunnels, stopping root-owned
@@ -943,9 +996,11 @@ homevault ALL=(%homevault_admin) NOPASSWD: /usr/bin/sudo -u * -i
 # run unprivileged as the homevault user against paths it already owns.
 #
 # Every entry is scoped to the exact argv shape src/vpn.rs builds (ROADMAP
-# 7.4): `wg` only shows/sets the one hardcoded interface (`WG_INTERFACE`),
-# `wg-quick` only brings that interface up, and `openvpn` only starts a
-# config HomeVault wrote itself under /etc/openvpn.
+# 7.4): `wg` only shows/sets the one hardcoded server interface (`wg0`) and
+# the `hvc-*` client interfaces, `wg-quick` only brings those interfaces
+# up/down, and `openvpn` only starts a config HomeVault wrote itself under
+# /etc/openvpn. Imported client configs are parsed from an allowlist (no
+# PreUp/PostUp/PreDown/PostDown) before they are ever handed to `wg-quick`.
 #
 # `kill` keeps a variable pid (`-TERM <pid>`): sudoers cannot express "only a
 # pid this process just resolved through pgrep", and a signal-only tool is
@@ -986,7 +1041,7 @@ homevault ALL=(root) NOPASSWD: {chmod} 600 /etc/netplan/99-homevault-*.yaml, {rm
 # cover them implicitly, and an unscoped `tee` would let homevault overwrite
 # any file on the host as root, /etc/shadow included. The trailing `rm -f` is
 # the same file the mdns module writes: unpublishing the service removes it.
-homevault ALL=(root) NOPASSWD: {tee} /etc/resolv.conf, {tee} /etc/netplan/99-homevault-*.yaml, {tee} /etc/network/interfaces.d/homevault-*, {tee} /etc/avahi/avahi-daemon.conf, {tee} /etc/avahi/services/homevault.service, {tee} /etc/docker/daemon.json, {tee} /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor, {tee} /proc/sys/net/ipv6/conf/*/*, {rm} -f /etc/avahi/services/homevault.service
+homevault ALL=(root) NOPASSWD: {tee} /etc/resolv.conf, {tee} /etc/netplan/99-homevault-*.yaml, {tee} /etc/network/interfaces.d/homevault-*, {tee} /etc/avahi/avahi-daemon.conf, {tee} /etc/avahi/services/homevault.service, {tee} /etc/docker/daemon.json, {tee} /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor, {tee} /sys/class/hwmon/*/pwm*, {tee} /proc/sys/net/ipv6/conf/*/*, {rm} -f /etc/avahi/services/homevault.service
 
 # WireGuard server boot persistence — the roadwarrior server+peer feature in
 # src/vpn.rs enables the packaged `wg-quick@wg0` systemd unit the first time
@@ -1094,9 +1149,56 @@ homevault ALL=(root) NOPASSWD: {systemctl} start docker, {systemctl} enable dock
 # exact paths.
 homevault ALL=(root) NOPASSWD: {tee} {smb_conf}, {tee} -a {smb_conf}, {tee} {vsftpd_conf}, {tee} {exports}, {tee} -a {exports}, {exportfs} -ra, {rm} -f {webdav_py}, {rm} -f {webdav_service}
 
+# Filesystem ownership, permissions and POSIX ACLs on the trees HomeVault
+# manages (user home folders, pools and shares). These calls used to work
+# because the service ran as root; under the optional non-root deployment
+# (`HV_SERVICE_USER=homevault`) they must go through `sudo`, and the grants
+# stay confined to those trees — never `/etc`, `/usr` or another user's data.
+# `chown` is recursive because a new home folder inherits the user's uid/gid
+# all the way down; `chmod`/`setfacl` are one path per call.
+homevault ALL=(root) NOPASSWD: {chown} -R * {homes_base}/*, {chown} * {apps_root}/*, {chmod} * {homes_base}/*, {chmod} * /mnt/*, {chmod} * /media/*, {chmod} * /run/media/*, {chmod} * /srv/*, {setfacl} * {homes_base}/*, {setfacl} * /mnt/*, {setfacl} * /srv/*
+
+# Removable media (`src/usb_copy.rs` and Explorer's eject): udisks2's polkit
+# policy only auto-authorises an active local session, so a system service
+# must ask root — the same privilege the root deployment already had.
+homevault ALL=(root) NOPASSWD: {udisksctl} mount -b /dev/*, {udisksctl} unmount -b /dev/*, {udisksctl} power-off -b /dev/*
+
+# Restic snapshot browsing (`src/restic.rs`) bind-mounts a ZFS snapshot (or
+# the dataset) under /tmp/restic-snap-<name>; the prefix is the boundary, so
+# no other mount point can be created or removed.
+homevault ALL=(root) NOPASSWD: {mount} -t zfs * /tmp/restic-snap-*, {mount} --bind * /tmp/restic-snap-*, {umount} /tmp/restic-snap-*
+
+# VM install media (`src/iso_mount.rs`): a loop device over the image, a
+# read-only mount under the app's own ISO root, and the reverse. `losetup -d`
+# is confined to `/dev/loop*` so it cannot detach a device HomeVault did not
+# create with `--find`.
+homevault ALL=(root) NOPASSWD: {losetup} --find --show --read-only *, {losetup} -d /dev/loop*, {mount} -o loop\,ro\,nosuid\,nodev * {iso_root}/*, {umount} {iso_root}/*
+
+# Traffic shaping (`src/traffic_control.rs`): `tc` is dedicated to qdiscs and
+# classes, and every grant names the object family the module builds.
+homevault ALL=(root) NOPASSWD: {tc} qdisc replace dev * root handle * htb default *, {tc} qdisc del dev * root, {tc} class replace dev * parent * classid * htb rate * ceil *, {tc} filter replace dev * protocol ip parent * prio * u32 match ip sport * * flowid *
+
+# iSCSI targets (`src/iscsi.rs`): the four LIO modules and the targetcli
+# configuration shell. `targetcli` is the feature's whole interface, like
+# `zpool` above; it writes only under configfs.
+homevault ALL=(root) NOPASSWD: {modprobe} target_core_mod, {modprobe} iscsi_target_mod, {modprobe} target_core_file, {modprobe} target_core_iblock, {targetcli} *
+
+# Disk spindown (`src/power.rs`): APM and standby timers on a block device,
+# both flag orders because the settings are independent and optional.
+homevault ALL=(root) NOPASSWD: {hdparm} -B * /dev/*, {hdparm} -S * /dev/*, {hdparm} -B * -S * /dev/*, {hdparm} -S * -B * /dev/*
+
+# Dashboard hardware identity (`src/utils/proc.rs`): sysfs is tried first,
+# then `dmidecode -s <keyword>` / `--type 17` as a read-only fallback.
+homevault ALL=(root) NOPASSWD: {dmidecode} -s *, {dmidecode} --type 17
+
 # SFTP — see the comment above where `groupadd`/`useradd`/`usermod_sftp`/
 # `gpasswd` are resolved for why these are scoped to exact arguments.
-homevault ALL=(root) NOPASSWD: {groupadd} homevault-sftp, {useradd} -M -s /usr/sbin/nologin -G homevault-sftp *, {usermod_sftp} -a -G homevault-sftp *, {gpasswd} -d * homevault-sftp, {chmod} 644 {sftp_keys_glob}, {chpasswd}, {rm} -f {sftp_keys_glob}
+homevault ALL=(root) NOPASSWD: {groupadd} homevault-sftp, {mkdir} -p {sftp_config_dir}, {tee} {sftp_conf}, {tee} {sftp_service}, {useradd} -M -s /usr/sbin/nologin -G homevault-sftp *, {usermod_sftp} -a -G homevault-sftp *, {gpasswd} -d * homevault-sftp, {chmod} 644 {sftp_keys_glob}, {chpasswd}, {rm} -f {sftp_keys_glob}
+
+# DHCP + local DNS (`src/dhcp_server.rs`, `src/local_dns.rs`) share the
+# dnsmasq drop-in; `systemctl` is scoped to that one unit, never the daemon
+# family, and `rm -f` only removes the file HomeVault itself wrote.
+homevault ALL=(root) NOPASSWD: {tee} {dnsmasq_conf}, {rm} -f {dnsmasq_conf}, {systemctl} start dnsmasq, {systemctl} stop dnsmasq, {systemctl} restart dnsmasq
 
 # Rsync server (`src/rsync_server.rs`) and backup destination
 # (`src/backup_target.rs`): two dedicated units HomeVault generates and drives,
@@ -1107,21 +1209,21 @@ homevault ALL=(root) NOPASSWD: {service_grants}
 
 # Users/Groups admin page (`src/groups.rs`, `src/storage/database.rs`) —
 # creating/deleting a `homevault_`-prefixed group, adding/removing a user
-# from one (including the admin group itself, and the host's own
-# `sudo`/`wheel` groups when promoting a user to admin), and creating the
-# Linux account backing a newly-promoted admin, all need root the same way
-# every other host-privileged mutation in this file does. Confirmed live
-# these silently no-op under the real unprivileged `homevault` service
-# account without this grant (group create/delete failed with an IO error,
-# and a promoted admin's Linux account was never actually created).
+# from one (including the admin group itself), and creating the Linux account
+# backing a newly-promoted admin, all need root the same way every other
+# host-privileged mutation in this file does. Confirmed live these silently
+# no-op under the real unprivileged `homevault` service account without this
+# grant (group create/delete failed with an IO error, and a promoted admin's
+# Linux account was never actually created).
 # `groupadd`/`groupdel` are scoped to the `homevault_` prefix every group
-# managed by this page always carries; `usermod`/`gpasswd` are scoped to
-# that same prefix plus the `sudo`/`wheel` grants `sync_admin_user_to_group`
-# also needs; `useradd` is scoped to the exact real-account-shell shape
+# managed by this page always carries; `usermod`/`gpasswd` are scoped to that
+# same prefix; `useradd` is scoped to the exact real-account-shell shape
 # `sync_admin_user_to_group` runs, not the bare binary — unscoped, any of
 # these could create/modify an arbitrary account instead of just a
-# HomeVault-managed one.
-homevault ALL=(root) NOPASSWD: {groupadd} homevault_*, {groupdel} homevault_*, {usermod_sftp} -a -G homevault_* *, {usermod_sftp} -a -G sudo *, {usermod_sftp} -a -G wheel *, {gpasswd} -d * homevault_*, {useradd} -m -d * -s /bin/bash -G homevault_admin *
+# HomeVault-managed one. Host-root groups (`sudo`, `wheel`,
+# `homevault_hostadmin`) are deliberately absent: app admins must not gain
+# passwordless root.
+homevault ALL=(root) NOPASSWD: {groupadd} homevault_*, {groupdel} homevault_*, {usermod_sftp} -a -G homevault_* *, {gpasswd} -d * homevault_*, {useradd} -m -d * -s /bin/bash -G homevault_admin *, {userdel} *, {usermod_sftp} -L *, {usermod_sftp} -U *
 
 # Per-user home-directory quotas (`src/quota.rs`, ROADMAP 3.1-3.3) — the
 # Users page "home folder size" slider only limits anything if these four
@@ -1140,10 +1242,10 @@ homevault ALL=(root) NOPASSWD: {setquota} -u * * * * * *, {repquota} -u *, {quot
 # `src/groups.rs`) — most HomeVault accounts are DB-only (no Linux user at
 # all) until promoted to admin or given a home folder, per the comment on
 # the grant just above, but `usermod`/`gpasswd`-based group membership
-# (the `homevault_*`/`sudo`/`wheel` grant just above) requires one to exist.
+# (the `homevault_*` grant just above) requires one to exist.
 # Confirmed live: adding a DB-only account to a group failed outright
 # ("user does not exist") with no way to fix it short of the admin-promotion
-# path, which also grants real sudo — wrong for an ordinary group. This
+# path, which also grants application admin — wrong for an ordinary group. This
 # grant provisions a bare account on demand instead: no home directory
 # (`-M`), no login shell (`-s /usr/sbin/nologin`), and — unlike the
 # admin-promotion `useradd` above — no `-G` at all, so creating the account
@@ -1199,6 +1301,20 @@ homevault ALL=(root) NOPASSWD: {power_grants}
             systemctl = systemctl,
             exportfs = exportfs,
             chmod = chmod,
+            setfacl = setfacl,
+            chown = chown,
+            udisksctl = udisksctl,
+            mount = mount_bin,
+            umount = umount_bin,
+            losetup = losetup,
+            tc = tc,
+            targetcli = targetcli,
+            modprobe = modprobe,
+            hdparm = hdparm,
+            dmidecode = dmidecode,
+            iso_root = iso_root,
+            homes_base = crate::config::paths::HOMES_BASE_DIR,
+            apps_root = crate::config::paths::apps_dir().display(),
             setquota = setquota,
             repquota = repquota,
             quotaon = quotaon,
@@ -1211,11 +1327,16 @@ homevault ALL=(root) NOPASSWD: {power_grants}
             groupadd = groupadd,
             groupdel = groupdel,
             useradd = useradd,
+            userdel = userdel,
             usermod_sftp = usermod_sftp,
             gpasswd = gpasswd,
             chpasswd = chpasswd,
             rm = rm,
             sftp_keys_glob = sftp_keys_glob,
+            sftp_config_dir = sftp_config_dir,
+            sftp_conf = sftp_conf,
+            sftp_service = sftp_service,
+            dnsmasq_conf = dnsmasq_conf,
             hostnamectl = hostnamectl,
             timedatectl = timedatectl,
             nut_grants = nut_sudoers,
@@ -1226,51 +1347,63 @@ homevault ALL=(root) NOPASSWD: {power_grants}
         sudoers_content
     }
 
+    /// Lenient variant kept for callers/tests that may run without root: a
+    /// failure is logged, not propagated.
     pub fn configure_sudoers() -> Result<(), SetupError> {
-        let sudoers_content = Self::render_sudoers();
-        match std::fs::write("/etc/sudoers.d/homevault", sudoers_content) {
-            Ok(_) => {
-                // Set correct permissions for sudoers file
-                if let Err(e) = std::fs::set_permissions(
-                    "/etc/sudoers.d/homevault",
-                    std::os::unix::fs::PermissionsExt::from_mode(0o440),
-                ) {
-                    tracing::warn!("Failed to set sudoers file permissions: {}", e);
-                }
+        Self::write_sudoers(false)
+    }
 
-                // Validate sudoers syntax
-                match run_timed(
-                    std::process::Command::new("visudo").args([
-                        "-c",
-                        "-f",
-                        "/etc/sudoers.d/homevault",
-                    ]),
-                    SETUP_OP_TIMEOUT,
-                ) {
-                    Ok(output) => {
-                        if output.status.success() {
-                            tracing::info!(
-                                "Sudoers configuration created and validated successfully"
-                            );
-                        } else {
-                            tracing::error!("Sudoers syntax validation failed, removing file");
-                            let _ = std::fs::remove_file("/etc/sudoers.d/homevault");
-                            return Err(SetupError::Validation(
-                                "Invalid sudoers configuration".to_string(),
-                            ));
-                        }
-                    }
-                    Err(e) => {
-                        tracing::warn!("Could not validate sudoers file: {}", e);
-                        // Continue anyway - visudo might not be available
-                    }
-                }
+    /// Strict variant used by `homevault --install-sudoers` (the optional
+    /// `HV_SERVICE_USER=homevault` deployment). The installer runs it as root
+    /// and aborts when the file cannot be written or validated: starting the
+    /// unprivileged unit without its grants would leave every host feature
+    /// broken at the sudo prompt.
+    pub fn install_sudoers() -> Result<(), SetupError> {
+        Self::write_sudoers(true)
+    }
 
+    fn write_sudoers(strict: bool) -> Result<(), SetupError> {
+        let path = "/etc/sudoers.d/homevault";
+        let content = Self::render_sudoers();
+        if let Err(e) = std::fs::write(path, content) {
+            if strict {
+                return Err(SetupError::Io(e));
+            }
+            tracing::warn!("Failed to create sudoers configuration: {}", e);
+            return Ok(());
+        }
+
+        if let Err(e) =
+            std::fs::set_permissions(path, std::os::unix::fs::PermissionsExt::from_mode(0o440))
+        {
+            if strict {
+                return Err(SetupError::Io(e));
+            }
+            tracing::warn!("Failed to set sudoers file permissions: {}", e);
+        }
+
+        match run_timed(
+            std::process::Command::new("visudo").args(["-c", "-f", path]),
+            SETUP_OP_TIMEOUT,
+        ) {
+            Ok(output) if output.status.success() => {
+                tracing::info!("Sudoers configuration created and validated successfully");
                 Ok(())
             }
+            Ok(_) => {
+                tracing::error!("Sudoers syntax validation failed, removing file");
+                let _ = std::fs::remove_file(path);
+                Err(SetupError::Validation(
+                    "Invalid sudoers configuration".to_string(),
+                ))
+            }
             Err(e) => {
-                tracing::warn!("Failed to create sudoers configuration: {}", e);
-                // Don't fail setup if sudoers cannot be configured (might not have permissions)
+                if strict {
+                    return Err(SetupError::Io(std::io::Error::other(format!(
+                        "could not run visudo: {e}"
+                    ))));
+                }
+                tracing::warn!("Could not validate sudoers file: {}", e);
                 Ok(())
             }
         }
@@ -1453,6 +1586,13 @@ impl HostBins<'_> {
             grant(self.wg, "show wg0 dump"),
             grant(self.wg, "set wg0 *"),
             grant(self.wg_quick, "up wg0"),
+            // Imported outbound clients (P1-17). The `hvc-` prefix is the
+            // boundary: a client name is display-only, so it can never reach
+            // `wg0` or an interface the VPN module does not own.
+            grant(self.wg, "show hvc-*"),
+            grant(self.wg, "show hvc-* dump"),
+            grant(self.wg_quick, "up hvc-*"),
+            grant(self.wg_quick, "down hvc-*"),
             grant(
                 self.openvpn,
                 "--config /etc/openvpn/*.ovpn --cd /etc/openvpn --log /etc/openvpn/*.log --daemon",
@@ -2570,7 +2710,7 @@ mod tests {
     }
 
     #[test]
-    fn test_vpn_grants_pin_the_wireguard_interface() {
+    fn test_vpn_grants_pin_the_wireguard_interfaces() {
         let grants = host_bins().vpn_grants();
         let wg: Vec<&String> = grants
             .iter()
@@ -2579,14 +2719,26 @@ mod tests {
         assert!(!wg.is_empty(), "wg must be granted");
         for grant in wg {
             assert!(
-                grant.contains("wg0"),
-                "'{grant}' must name the hardcoded wg0 interface"
+                grant.contains("wg0") || grant.contains("hvc-*"),
+                "'{grant}' must name wg0 or a HomeVault-owned hvc-* client"
             );
         }
         assert!(
             grants.iter().any(|g| g == "/usr/bin/wg-quick up wg0"),
-            "wg-quick must only be able to bring wg0 up"
+            "wg-quick must be able to bring wg0 up"
         );
+        // Imported clients may only reach the `hvc-` namespace, never an
+        // arbitrary interface name or `wg0`.
+        for shape in ["up hvc-*", "down hvc-*"] {
+            assert!(
+                grants
+                    .iter()
+                    .any(|g| g == &format!("/usr/bin/wg-quick {shape}")),
+                "wg-quick must be granted '{shape}'"
+            );
+        }
+        assert!(!grants.iter().any(|g| g.contains("wg-quick up *")));
+        assert!(!grants.iter().any(|g| g.contains("wg-quick down *")));
         // The signal is pinned; a bare `kill *` would accept any signal.
         assert!(
             grants.iter().any(|g| g == "/usr/bin/kill -TERM *"),
@@ -2853,6 +3005,68 @@ mod tests {
                 .any(|g| g.contains("--output-fields=__REALTIME_TIMESTAMP")),
             "the journalctl grant must pin the output fields"
         );
+    }
+
+    #[test]
+    fn test_non_root_grants_cover_ownership_media_and_restic() {
+        // The optional `HV_SERVICE_USER=homevault` deployment runs these
+        // through `sudo`; without the grants Explorer permissions, home-folder
+        // ownership, ACLs, removable media and restic snapshot browsing would
+        // all fail at the prompt.
+        let sudoers = SetupService::sudoers_body_for_tests();
+        for want in [
+            "chown -R * /home/homevault/*",
+            "chmod * /home/homevault/*",
+            "setfacl * /home/homevault/*",
+            "udisksctl mount -b /dev/*",
+            "udisksctl unmount -b /dev/*",
+            "udisksctl power-off -b /dev/*",
+            "mount -t zfs * /tmp/restic-snap-*",
+            "mount --bind * /tmp/restic-snap-*",
+            "umount /tmp/restic-snap-*",
+        ] {
+            assert!(
+                sudoers.contains(want),
+                "the non-root sudoers file is missing `{want}`"
+            );
+        }
+        // No grant may reach outside the trees the features manage.
+        for line in sudoers.lines().filter(|l| {
+            l.contains("udisksctl") || l.contains("restic-snap") || l.contains("setfacl")
+        }) {
+            assert!(
+                !line.contains("/etc/") && !line.contains("/root/"),
+                "'{line}' reaches outside the managed trees"
+            );
+        }
+    }
+
+    #[test]
+    fn test_rendered_sudoers_is_visudo_valid() {
+        // The non-root deployment installs this exact text; a syntax error
+        // would make `--install-sudoers` abort (strict mode) or, worse, leave
+        // the unit without grants. `visudo -c` is the same check the installer
+        // runs.
+        let body = SetupService::sudoers_body_for_tests();
+        let path = std::env::temp_dir().join(format!(
+            "homevault-sudoers-{}-{:?}.conf",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        std::fs::write(&path, body).expect("write temp sudoers");
+        let mut cmd = std::process::Command::new("visudo");
+        cmd.args(["-c", "-f"]).arg(&path);
+        let result = run_timed(&mut cmd, SETUP_OP_TIMEOUT);
+        let _ = std::fs::remove_file(&path);
+        match result {
+            Ok(output) => assert!(
+                output.status.success(),
+                "visudo rejected the rendered sudoers file: {}",
+                String::from_utf8_lossy(&output.stderr)
+            ),
+            // A dev box without sudo installed has nothing to validate.
+            Err(_) => {}
+        }
     }
 
     #[test]

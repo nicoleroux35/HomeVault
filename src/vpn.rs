@@ -20,10 +20,12 @@
  */
 
 use crate::utils::process::{run_timed, run_timed_detached, run_timed_with_stdin};
+use base64::Engine as _;
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 use std::path::Path;
 use std::process::{Command, Output};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 // ---------------------------------------------------------------------------
 // Deadlines (ROADMAP X.2)
@@ -999,6 +1001,1062 @@ pub fn delete_openvpn_connection(name: &str) -> Result<(), String> {
 }
 
 // ---------------------------------------------------------------------------
+// WireGuard client tunnels (outbound provider configurations)
+// ---------------------------------------------------------------------------
+// The WireGuard implementation above is a *server*: HomeVault owns `wg0` and
+// provisions roadwarrior peers. This second, independent path lets the
+// appliance itself be a WireGuard client of a remote provider or concentrator.
+// Imported configurations are parsed and re-rendered from an allowlist — a
+// provider's `PostUp`/`PreUp` directive would otherwise run a command as root,
+// exactly like the OpenVPN profile deny list below.
+
+/// Prefix of every client interface. The prefix is what the sudoers grants
+/// pin (`hvc-*`), so a client can never name `wg0` or an unrelated interface.
+pub const WG_CLIENT_PREFIX: &str = "hvc-";
+/// The `/etc/wireguard` directory, shared with the server config.
+pub const WG_CLIENT_CONFIG_DIR: &str = "/etc/wireguard";
+/// How long the boot job waits for the network before reconnecting clients.
+pub const WG_CLIENT_BOOT_DELAY: Duration = Duration::from_secs(20);
+/// A client is "connected" when its last handshake is younger than this.
+const WG_CLIENT_CONNECTED_WINDOW: u64 = 180;
+/// The `wg-quick up` verification grace and poll cadence.
+const WG_CLIENT_START_GRACE: Duration = Duration::from_secs(15);
+const WG_CLIENT_START_POLL: Duration = Duration::from_millis(300);
+/// Store key -> `{DATA_DIRECTORY}/data/wireguard_clients.json`.
+const WG_CLIENT_STORE_KEY: &str = "wireguard_clients";
+/// AES-GCM associated data: a sealed config cannot be moved to another row.
+fn client_secret_scope(id: &str) -> String {
+    format!("wireguard-client:{id}")
+}
+
+/// One `[Peer]` block of a client configuration.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WgClientPeer {
+    pub public_key: String,
+    pub preshared_key: Option<String>,
+    pub allowed_ips: Vec<String>,
+    pub endpoint: Option<String>,
+    pub persistent_keepalive: Option<u16>,
+}
+
+/// A parsed WireGuard client configuration. Only the directives HomeVault can
+/// render safely are kept; everything else is refused by the parser.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct WgClientConfig {
+    pub private_key: String,
+    pub addresses: Vec<String>,
+    pub dns: Vec<String>,
+    pub mtu: Option<u16>,
+    pub listen_port: Option<u16>,
+    pub peers: Vec<WgClientPeer>,
+}
+
+/// Why an import, start, stop or delete was refused. The handler maps each
+/// variant to the status the API contract requires.
+#[derive(Debug)]
+pub enum WireGuardClientError {
+    /// The uploaded configuration is invalid (400).
+    Validation(String),
+    /// A client with the same display name already exists (409).
+    AlreadyExists(String),
+    /// No client with that id (404).
+    NotFound,
+    /// `wireguard-tools` is not installed (503).
+    Unavailable(String),
+    /// A host command or file operation failed (500).
+    Host(String),
+}
+
+impl std::fmt::Display for WireGuardClientError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Validation(m) | Self::AlreadyExists(m) | Self::Unavailable(m) | Self::Host(m) => {
+                write!(f, "{m}")
+            }
+            Self::NotFound => write!(f, "WireGuard client not found"),
+        }
+    }
+}
+
+impl std::error::Error for WireGuardClientError {}
+
+impl From<String> for WireGuardClientError {
+    fn from(value: String) -> Self {
+        Self::Validation(value)
+    }
+}
+
+/// The persisted definition of one imported client.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WireGuardClientRecord {
+    pub id: String,
+    pub name: String,
+    pub interface: String,
+    pub endpoint: Option<String>,
+    pub addresses: Vec<String>,
+    pub dns: Vec<String>,
+    pub allowed_ips: Vec<String>,
+    pub peer_count: usize,
+    pub kill_switch: bool,
+    #[serde(default = "default_true")]
+    pub autostart: bool,
+    pub created_at: String,
+    pub created_by: String,
+    /// The rendered configuration, sealed with the appliance key (`hv1:`).
+    /// The private key never appears in an API payload.
+    pub config_sealed: String,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+struct WireGuardClientStore {
+    #[serde(default)]
+    clients: Vec<WireGuardClientRecord>,
+}
+
+/// What the list endpoint may expose: metadata + live state, never the config.
+#[derive(Debug, Clone, Serialize)]
+pub struct WireGuardClientView {
+    pub id: String,
+    pub name: String,
+    pub interface: String,
+    pub endpoint: Option<String>,
+    pub addresses: Vec<String>,
+    pub dns: Vec<String>,
+    pub allowed_ips: Vec<String>,
+    pub peer_count: usize,
+    pub kill_switch: bool,
+    pub autostart: bool,
+    pub created_at: String,
+    pub interface_up: bool,
+    pub connected: bool,
+    pub latest_handshake: Option<u64>,
+    pub transfer_rx: u64,
+    pub transfer_tx: u64,
+}
+
+/// Live kernel state of one client interface.
+#[derive(Debug, Clone, Default)]
+pub struct WireGuardClientLiveStatus {
+    pub interface_up: bool,
+    pub connected: bool,
+    pub latest_handshake: Option<u64>,
+    pub transfer_rx: u64,
+    pub transfer_tx: u64,
+}
+
+/// The exact host commands used for one interface. Pure so the argv is
+/// asserted by unit tests instead of being inferred from a running host.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WireGuardClientCommands {
+    pub up: Vec<String>,
+    pub down: Vec<String>,
+    pub show_dump: Vec<String>,
+}
+
+pub fn wireguard_client_commands(interface: &str) -> WireGuardClientCommands {
+    WireGuardClientCommands {
+        up: vec![
+            "wg-quick".to_string(),
+            "up".to_string(),
+            interface.to_string(),
+        ],
+        down: vec![
+            "wg-quick".to_string(),
+            "down".to_string(),
+            interface.to_string(),
+        ],
+        show_dump: vec![
+            "wg".to_string(),
+            "show".to_string(),
+            interface.to_string(),
+            "dump".to_string(),
+        ],
+    }
+}
+
+/// The host actions an import performs when it has to roll back. `down` comes
+/// first (a half-created interface must not outlive the record), then the
+/// rendered config file is removed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WireGuardClientRollbackStep {
+    Down,
+    RemoveConfig,
+}
+
+pub fn wireguard_client_import_rollback_plan() -> [WireGuardClientRollbackStep; 2] {
+    [
+        WireGuardClientRollbackStep::Down,
+        WireGuardClientRollbackStep::RemoveConfig,
+    ]
+}
+
+/// Deterministic interface name from the client id: `hvc-` + 10 characters,
+/// 14 bytes total (Linux caps interface names at 15). The user-supplied name
+/// is display-only, so it can never choose `wg0` or another interface.
+pub fn wireguard_client_interface(id: &str) -> String {
+    let compact: String = id
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric())
+        .take(10)
+        .collect();
+    format!("{WG_CLIENT_PREFIX}{compact}")
+}
+
+pub fn wireguard_client_config_path(interface: &str) -> std::path::PathBuf {
+    Path::new(WG_CLIENT_CONFIG_DIR).join(format!("{interface}.conf"))
+}
+
+/// Refuse a stored interface name that is not one HomeVault generated. The
+/// store is on disk and can be restored or edited, so it is never trusted as
+/// a path/argv fragment: a tampered record must not reach `/etc/wireguard`
+/// or `sudo wg-quick`.
+fn validate_client_interface(interface: &str) -> Result<(), String> {
+    if interface.len() <= 15
+        && interface.starts_with(WG_CLIENT_PREFIX)
+        && interface
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-')
+    {
+        Ok(())
+    } else {
+        Err(format!(
+            "stored WireGuard interface name '{interface}' is invalid"
+        ))
+    }
+}
+
+/// Accumulates one `[Peer]` block while the parser walks the file.
+#[derive(Default)]
+struct PeerBuilder {
+    public_key: Option<String>,
+    preshared_key: Option<String>,
+    allowed_ips: Option<Vec<String>>,
+    endpoint: Option<String>,
+    persistent_keepalive: Option<u16>,
+}
+
+/// Parse a WireGuard client configuration from an allowlist.
+///
+/// Refused with a named message: `PreUp`/`PostUp`/`PreDown`/`PostDown` (the
+/// config is executed as root by `wg-quick`), `SaveConfig` (HomeVault owns the
+/// file), `Table`/`FwMark` (HomeVault derives routes from `AllowedIPs`) and
+/// every unknown directive. Values are validated before they are re-rendered,
+/// so an import can never smuggle a second line into the generated file.
+pub fn parse_wireguard_client_config(content: &str) -> Result<WgClientConfig, String> {
+    let mut section: Option<&str> = None;
+    let mut interface_seen = false;
+    let mut private_key: Option<String> = None;
+    let mut addresses: Option<Vec<String>> = None;
+    let mut dns: Vec<String> = Vec::new();
+    let mut mtu: Option<u16> = None;
+    let mut listen_port: Option<u16> = None;
+    let mut peers: Vec<WgClientPeer> = Vec::new();
+    let mut peer: Option<PeerBuilder> = None;
+    let mut seen_interface: HashSet<&'static str> = HashSet::new();
+    let mut seen_peer: HashSet<&'static str> = HashSet::new();
+
+    for (index, raw) in content.lines().enumerate() {
+        let line = raw.trim().trim_start_matches('\u{feff}');
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let line_no = index + 1;
+
+        if line.starts_with('[') {
+            if !line.ends_with(']') {
+                return Err(format!("line {line_no}: malformed section header"));
+            }
+            let name = line[1..line.len() - 1].trim().to_ascii_lowercase();
+            if let Some(builder) = peer.take() {
+                peers.push(builder.finish(line_no)?);
+            }
+            match name.as_str() {
+                "interface" => {
+                    if interface_seen {
+                        return Err("only one [Interface] section is supported".to_string());
+                    }
+                    interface_seen = true;
+                    section = Some("interface");
+                }
+                "peer" => {
+                    if !interface_seen {
+                        return Err(format!("line {line_no}: [Peer] appears before [Interface]"));
+                    }
+                    section = Some("peer");
+                    peer = Some(PeerBuilder::default());
+                    seen_peer.clear();
+                }
+                other => {
+                    return Err(format!(
+                        "line {line_no}: unsupported section '[{other}]' (only [Interface] and [Peer] are accepted)"
+                    ));
+                }
+            }
+            continue;
+        }
+
+        let (key, value) = line
+            .split_once('=')
+            .ok_or_else(|| format!("line {line_no}: expected 'Key = value', found '{line}'"))?;
+        let key = key.trim();
+        let value = value.trim();
+        if key.is_empty() || value.is_empty() {
+            return Err(format!("line {line_no}: empty key or value"));
+        }
+        let directive = key.to_ascii_lowercase();
+
+        match section {
+            Some("interface") => {
+                if directive != "dns" && !seen_interface.insert(static_directive(&directive)) {
+                    return Err(format!(
+                        "line {line_no}: duplicate directive '{key}' in [Interface]"
+                    ));
+                }
+                match directive.as_str() {
+                    "privatekey" => {
+                        private_key = Some(parse_wireguard_key("PrivateKey", value)?);
+                    }
+                    "address" => {
+                        addresses = Some(parse_cidr_list("Address", value)?);
+                    }
+                    "dns" => {
+                        let parsed = parse_dns_list(value)?;
+                        if dns.is_empty() {
+                            dns = parsed;
+                        } else {
+                            dns.extend(parsed);
+                        }
+                    }
+                    "mtu" => {
+                        let parsed: u32 = value
+                            .parse()
+                            .map_err(|_| format!("line {line_no}: MTU must be a whole number"))?;
+                        if !(576..=65535).contains(&parsed) {
+                            return Err(format!(
+                                "line {line_no}: MTU must be between 576 and 65535"
+                            ));
+                        }
+                        mtu = Some(parsed as u16);
+                    }
+                    "listenport" => {
+                        let parsed: u32 = value.parse().map_err(|_| {
+                            format!("line {line_no}: ListenPort must be a whole number")
+                        })?;
+                        if !(1..=65535).contains(&parsed) {
+                            return Err(format!(
+                                "line {line_no}: ListenPort must be between 1 and 65535"
+                            ));
+                        }
+                        listen_port = Some(parsed as u16);
+                    }
+                    "preup" | "postup" | "predown" | "postdown" => {
+                        return Err(format!(
+                            "line {line_no}: '{key}' is refused — wg-quick runs it as root, so an imported configuration may not execute commands"
+                        ));
+                    }
+                    "saveconfig" => {
+                        return Err(format!(
+                            "line {line_no}: 'SaveConfig' is not supported — HomeVault owns the generated configuration file"
+                        ));
+                    }
+                    "table" | "fwmark" => {
+                        return Err(format!(
+                            "line {line_no}: '{key}' is not supported — routes come from AllowedIPs"
+                        ));
+                    }
+                    _ => {
+                        return Err(format!(
+                            "line {line_no}: unsupported directive '{key}' in [Interface]"
+                        ));
+                    }
+                }
+            }
+            Some("peer") => {
+                let builder = peer.as_mut().ok_or_else(|| {
+                    format!("line {line_no}: peer directive outside a [Peer] section")
+                })?;
+                if !seen_peer.insert(static_directive(&directive)) {
+                    return Err(format!(
+                        "line {line_no}: duplicate directive '{key}' in [Peer]"
+                    ));
+                }
+                match directive.as_str() {
+                    "publickey" => {
+                        builder.public_key = Some(parse_wireguard_key("PublicKey", value)?);
+                    }
+                    "presharedkey" => {
+                        builder.preshared_key = Some(parse_wireguard_key("PresharedKey", value)?);
+                    }
+                    "allowedips" => {
+                        builder.allowed_ips = Some(parse_cidr_list("AllowedIPs", value)?);
+                    }
+                    "endpoint" => {
+                        builder.endpoint = Some(parse_wireguard_endpoint(value, line_no)?);
+                    }
+                    "persistentkeepalive" => {
+                        let parsed: u32 = value.parse().map_err(|_| {
+                            format!("line {line_no}: PersistentKeepalive must be a whole number")
+                        })?;
+                        if parsed > 65535 {
+                            return Err(format!(
+                                "line {line_no}: PersistentKeepalive must be between 0 and 65535"
+                            ));
+                        }
+                        builder.persistent_keepalive = Some(parsed as u16);
+                    }
+                    _ => {
+                        return Err(format!(
+                            "line {line_no}: unsupported directive '{key}' in [Peer]"
+                        ));
+                    }
+                }
+            }
+            _ => {
+                return Err(format!(
+                    "line {line_no}: directive '{key}' appears outside a section"
+                ));
+            }
+        }
+    }
+
+    if let Some(builder) = peer.take() {
+        peers.push(builder.finish(content.lines().count())?);
+    }
+
+    if !interface_seen {
+        return Err("the configuration has no [Interface] section".to_string());
+    }
+    let private_key =
+        private_key.ok_or_else(|| "the [Interface] section has no PrivateKey".to_string())?;
+    let addresses = addresses
+        .filter(|a| !a.is_empty())
+        .ok_or_else(|| "the [Interface] section has no Address".to_string())?;
+    if peers.is_empty() {
+        return Err("the configuration has no [Peer] section".to_string());
+    }
+
+    Ok(WgClientConfig {
+        private_key,
+        addresses,
+        dns,
+        mtu,
+        listen_port,
+        peers,
+    })
+}
+
+impl WgClientConfig {
+    /// The first peer endpoint, which is what the UI shows on the card.
+    pub fn endpoint(&self) -> Option<String> {
+        self.peers.iter().find_map(|p| p.endpoint.clone())
+    }
+
+    /// Every AllowedIPs network across peers, de-duplicated in order.
+    pub fn allowed_ips(&self) -> Vec<String> {
+        let mut seen = HashSet::new();
+        let mut out = Vec::new();
+        for peer in &self.peers {
+            for network in &peer.allowed_ips {
+                if seen.insert(network.clone()) {
+                    out.push(network.clone());
+                }
+            }
+        }
+        out
+    }
+}
+
+impl PeerBuilder {
+    fn finish(self, line_no: usize) -> Result<WgClientPeer, String> {
+        let public_key = self
+            .public_key
+            .ok_or_else(|| format!("line {line_no}: [Peer] has no PublicKey"))?;
+        let allowed_ips = self
+            .allowed_ips
+            .filter(|v| !v.is_empty())
+            .ok_or_else(|| format!("line {line_no}: [Peer] has no AllowedIPs"))?;
+        Ok(WgClientPeer {
+            public_key,
+            preshared_key: self.preshared_key,
+            allowed_ips,
+            endpoint: self.endpoint,
+            persistent_keepalive: self.persistent_keepalive,
+        })
+    }
+}
+
+/// `HashSet<&'static str>` needs a `'static` key. The directive set is small
+/// and fixed, so map it to the canonical spelling instead of leaking the
+/// caller's string.
+fn static_directive(directive: &str) -> &'static str {
+    match directive {
+        "privatekey" => "privatekey",
+        "address" => "address",
+        "dns" => "dns",
+        "mtu" => "mtu",
+        "listenport" => "listenport",
+        "publickey" => "publickey",
+        "presharedkey" => "presharedkey",
+        "allowedips" => "allowedips",
+        "endpoint" => "endpoint",
+        "persistentkeepalive" => "persistentkeepalive",
+        _ => "unknown",
+    }
+}
+
+fn parse_wireguard_key(field: &str, value: &str) -> Result<String, String> {
+    let decoded = base64::engine::general_purpose::STANDARD
+        .decode(value)
+        .map_err(|_| format!("{field} is not a valid WireGuard key (base64 expected)"))?;
+    if decoded.len() != 32 {
+        return Err(format!("{field} must decode to a 32-byte WireGuard key"));
+    }
+    Ok(value.to_string())
+}
+
+fn parse_cidr_list(field: &str, value: &str) -> Result<Vec<String>, String> {
+    let mut networks = Vec::new();
+    for raw in value.split(',') {
+        let raw = raw.trim();
+        if raw.is_empty() {
+            continue;
+        }
+        // WireGuard requires a prefix on `Address`; `IpNetwork` would accept a
+        // bare host address as an implicit /32 (or /128), which the client
+        // would then install as a host route instead of the intended network.
+        if !raw.contains('/') {
+            return Err(format!(
+                "{field} contains '{raw}' without a prefix (use CIDR, for example 10.2.0.2/32)"
+            ));
+        }
+        raw.parse::<ipnetwork::IpNetwork>()
+            .map_err(|_| format!("{field} contains an invalid network '{raw}'"))?;
+        networks.push(raw.to_string());
+    }
+    if networks.is_empty() {
+        return Err(format!("{field} must contain at least one network"));
+    }
+    Ok(networks)
+}
+
+fn parse_dns_list(value: &str) -> Result<Vec<String>, String> {
+    let mut servers = Vec::new();
+    for raw in value.split(',') {
+        let raw = raw.trim();
+        if raw.is_empty() {
+            continue;
+        }
+        raw.parse::<std::net::IpAddr>().map_err(|_| {
+            format!("DNS contains an invalid address '{raw}' (only IP addresses are accepted)")
+        })?;
+        servers.push(raw.to_string());
+    }
+    if servers.is_empty() {
+        return Err("DNS must contain at least one IP address".to_string());
+    }
+    Ok(servers)
+}
+
+fn parse_wireguard_endpoint(value: &str, line_no: usize) -> Result<String, String> {
+    let (host, port_text) = if let Some(rest) = value.strip_prefix('[') {
+        let (host, rest) = rest
+            .split_once(']')
+            .ok_or_else(|| format!("line {line_no}: Endpoint has an unterminated IPv6 address"))?;
+        let port = rest
+            .strip_prefix(':')
+            .ok_or_else(|| format!("line {line_no}: Endpoint must be '[IPv6]:port'"))?;
+        (host, port)
+    } else {
+        let (host, port) = value
+            .rsplit_once(':')
+            .ok_or_else(|| format!("line {line_no}: Endpoint must be 'host:port'"))?;
+        if host.contains(':') {
+            return Err(format!(
+                "line {line_no}: an IPv6 Endpoint must be written '[address]:port'"
+            ));
+        }
+        (host, port)
+    };
+
+    if host.is_empty() || port_text.is_empty() {
+        return Err(format!(
+            "line {line_no}: Endpoint is missing its host or port"
+        ));
+    }
+    if host.parse::<std::net::IpAddr>().is_err() && !is_valid_hostname(host) {
+        return Err(format!(
+            "line {line_no}: Endpoint host '{host}' is not a valid IP address or hostname"
+        ));
+    }
+    let port: u16 = port_text
+        .parse()
+        .map_err(|_| format!("line {line_no}: Endpoint port must be between 1 and 65535"))?;
+    if port == 0 {
+        return Err(format!(
+            "line {line_no}: Endpoint port must be between 1 and 65535"
+        ));
+    }
+
+    Ok(if host.contains(':') {
+        format!("[{host}]:{port}")
+    } else {
+        format!("{host}:{port}")
+    })
+}
+
+fn is_valid_hostname(host: &str) -> bool {
+    !host.is_empty()
+        && host.len() <= 253
+        && host.split('.').all(|label| {
+            !label.is_empty()
+                && label.len() <= 63
+                && !label.starts_with('-')
+                && !label.ends_with('-')
+                && label.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
+        })
+}
+
+/// Render the canonical configuration. Only values that passed the parser are
+/// written, so a value can never inject a second directive.
+pub fn render_wireguard_client_config(config: &WgClientConfig, kill_switch: bool) -> String {
+    let mut out = String::new();
+    out.push_str("[Interface]\n");
+    out.push_str(&format!("PrivateKey = {}\n", config.private_key));
+    out.push_str(&format!("Address = {}\n", config.addresses.join(", ")));
+    if !config.dns.is_empty() {
+        out.push_str(&format!("DNS = {}\n", config.dns.join(", ")));
+    }
+    if let Some(mtu) = config.mtu {
+        out.push_str(&format!("MTU = {mtu}\n"));
+    }
+    if let Some(port) = config.listen_port {
+        out.push_str(&format!("ListenPort = {port}\n"));
+    }
+    if kill_switch {
+        out.push_str(KILL_SWITCH_POST_UP);
+        out.push_str(KILL_SWITCH_PRE_DOWN);
+    }
+
+    for peer in &config.peers {
+        out.push_str("\n[Peer]\n");
+        out.push_str(&format!("PublicKey = {}\n", peer.public_key));
+        if let Some(psk) = &peer.preshared_key {
+            out.push_str(&format!("PresharedKey = {psk}\n"));
+        }
+        out.push_str(&format!("AllowedIPs = {}\n", peer.allowed_ips.join(", ")));
+        if let Some(endpoint) = &peer.endpoint {
+            out.push_str(&format!("Endpoint = {endpoint}\n"));
+        }
+        if let Some(keepalive) = peer.persistent_keepalive {
+            out.push_str(&format!("PersistentKeepalive = {keepalive}\n"));
+        }
+    }
+    out
+}
+
+/// The fixed kill-switch rules. `%i` is expanded by `wg-quick`; `ip6tables`
+/// is skipped when absent so an IPv4-only host can still use the option.
+const KILL_SWITCH_POST_UP: &str = "PostUp = iptables -I OUTPUT ! -o %i -m mark ! --mark $(wg show %i fwmark) -m addrtype ! --dst-type LOCAL -j REJECT; if command -v ip6tables >/dev/null 2>&1; then ip6tables -I OUTPUT ! -o %i -m mark ! --mark $(wg show %i fwmark) -m addrtype ! --dst-type LOCAL -j REJECT; fi\n";
+const KILL_SWITCH_PRE_DOWN: &str = "PreDown = iptables -D OUTPUT ! -o %i -m mark ! --mark $(wg show %i fwmark) -m addrtype ! --dst-type LOCAL -j REJECT; if command -v ip6tables >/dev/null 2>&1; then ip6tables -D OUTPUT ! -o %i -m mark ! --mark $(wg show %i fwmark) -m addrtype ! --dst-type LOCAL -j REJECT; fi\n";
+
+fn client_store() -> crate::storage::json::JsonStorage {
+    crate::storage::json::JsonStorage::new(
+        crate::config::paths::base_dir()
+            .to_string_lossy()
+            .to_string(),
+    )
+}
+
+fn load_client_store() -> Result<WireGuardClientStore, String> {
+    match client_store().load::<WireGuardClientStore>(WG_CLIENT_STORE_KEY) {
+        Ok(Some(store)) => Ok(store),
+        Ok(None) => Ok(WireGuardClientStore::default()),
+        Err(e) => Err(format!("Could not read the WireGuard client store: {e}")),
+    }
+}
+
+fn save_client_store(store: &WireGuardClientStore) -> Result<(), String> {
+    client_store()
+        .save(WG_CLIENT_STORE_KEY, store)
+        .map_err(|e| format!("Could not save the WireGuard client store: {e}"))
+}
+
+fn run_client_command(args: &[String], timeout: Duration) -> Result<Output, String> {
+    let mut cmd = Command::new("sudo");
+    cmd.args(args);
+    run_command(&mut cmd, timeout)
+}
+
+fn is_client_interface_up(interface: &str) -> bool {
+    if validate_client_interface(interface).is_err() {
+        return false;
+    }
+    let commands = wireguard_client_commands(interface);
+    run_client_command(&commands.show_dump, VPN_PROBE_TIMEOUT)
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+}
+
+fn write_client_config_file(interface: &str, content: &str) -> Result<(), String> {
+    validate_client_interface(interface)?;
+    let path = wireguard_client_config_path(interface);
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("Could not create {}: {e}", parent.display()))?;
+    }
+    std::fs::write(&path, content)
+        .map_err(|e| format!("Could not write {}: {e}", path.display()))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))
+            .map_err(|e| format!("Could not restrict {}: {e}", path.display()))?;
+    }
+    Ok(())
+}
+
+fn remove_client_config_file(interface: &str) -> Result<(), String> {
+    validate_client_interface(interface)?;
+    let path = wireguard_client_config_path(interface);
+    match std::fs::remove_file(&path) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(format!("Could not remove {}: {e}", path.display())),
+    }
+}
+
+fn decrypt_client_config(record: &WireGuardClientRecord) -> Result<String, WireGuardClientError> {
+    crate::storage::secret_box::open(&client_secret_scope(&record.id), &record.config_sealed)
+        .map_err(|e| {
+            WireGuardClientError::Host(format!(
+                "The stored configuration for '{}' cannot be read ({e}). Delete the client and import the .conf again.",
+                record.name
+            ))
+        })
+}
+
+fn stop_client_interface(interface: &str) -> Result<(), String> {
+    validate_client_interface(interface)?;
+    let commands = wireguard_client_commands(interface);
+    let output = run_client_command(&commands.down, VPN_WRITE_TIMEOUT)?;
+    if output.status.success() {
+        return Ok(());
+    }
+    let stderr = String::from_utf8_lossy(&output.stderr).to_lowercase();
+    // Already down is a fine outcome for an idempotent stop/delete.
+    if stderr.contains("not a wireguard interface")
+        || stderr.contains("cannot find device")
+        || stderr.contains("is not up")
+    {
+        return Ok(());
+    }
+    Err(format!(
+        "Could not stop WireGuard interface '{}': {}",
+        interface,
+        String::from_utf8_lossy(&output.stderr).trim()
+    ))
+}
+
+fn start_client_record(record: &WireGuardClientRecord) -> Result<(), WireGuardClientError> {
+    if !wireguard_available() {
+        return Err(WireGuardClientError::Unavailable(
+            "WireGuard is not installed (install the 'wireguard-tools' package).".to_string(),
+        ));
+    }
+
+    // Rewrite the file from the sealed store before every start: a restored
+    // data directory or a hand-edited root file must not diverge from the
+    // record the UI shows.
+    let content = decrypt_client_config(record)?;
+    write_client_config_file(&record.interface, &content).map_err(WireGuardClientError::Host)?;
+
+    if is_client_interface_up(&record.interface) {
+        return Ok(());
+    }
+
+    let commands = wireguard_client_commands(&record.interface);
+    let output =
+        run_client_command(&commands.up, VPN_WRITE_TIMEOUT).map_err(WireGuardClientError::Host)?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        if !stderr.to_lowercase().contains("already exists") {
+            // A partially-created interface must not be left behind.
+            let _ = stop_client_interface(&record.interface);
+            return Err(WireGuardClientError::Host(format!(
+                "Could not start WireGuard client '{}': {}",
+                record.name,
+                stderr.trim()
+            )));
+        }
+    }
+
+    // `wg-quick up` can return success while PostUp/resolvconf failed and the
+    // interface never appeared. Verify the kernel, then roll back on timeout.
+    let deadline = Instant::now() + WG_CLIENT_START_GRACE;
+    loop {
+        if is_client_interface_up(&record.interface) {
+            return Ok(());
+        }
+        if Instant::now() >= deadline {
+            let _ = stop_client_interface(&record.interface);
+            return Err(WireGuardClientError::Host(format!(
+                "WireGuard client '{}' did not come up within {} s (check DNS/resolvconf and the kill-switch rules)",
+                record.name,
+                WG_CLIENT_START_GRACE.as_secs()
+            )));
+        }
+        std::thread::sleep(WG_CLIENT_START_POLL);
+    }
+}
+
+/// Live state from `wg show <iface> dump`. The interface line is skipped; a
+/// handshake younger than [`WG_CLIENT_CONNECTED_WINDOW`] means connected.
+pub fn wireguard_client_live_status(interface: &str) -> WireGuardClientLiveStatus {
+    if validate_client_interface(interface).is_err() {
+        return WireGuardClientLiveStatus::default();
+    }
+    let commands = wireguard_client_commands(interface);
+    let output = match run_client_command(&commands.show_dump, VPN_PROBE_TIMEOUT) {
+        Ok(output) if output.status.success() => output,
+        _ => return WireGuardClientLiveStatus::default(),
+    };
+    let text = String::from_utf8_lossy(&output.stdout);
+    let now = chrono::Utc::now().timestamp().max(0) as u64;
+    let mut latest = 0u64;
+    let mut transfer_rx = 0u64;
+    let mut transfer_tx = 0u64;
+    for line in text.lines().skip(1) {
+        let fields: Vec<&str> = line.split('\t').collect();
+        if fields.len() >= 7 {
+            let handshake: u64 = fields[4].parse().unwrap_or(0);
+            latest = latest.max(handshake);
+            transfer_rx = transfer_rx.saturating_add(fields[5].parse().unwrap_or(0));
+            transfer_tx = transfer_tx.saturating_add(fields[6].parse().unwrap_or(0));
+        }
+    }
+    let connected = latest > 0 && now.saturating_sub(latest) < WG_CLIENT_CONNECTED_WINDOW;
+    WireGuardClientLiveStatus {
+        interface_up: true,
+        connected,
+        latest_handshake: (latest > 0).then_some(latest),
+        transfer_rx,
+        transfer_tx,
+    }
+}
+
+fn client_view(record: &WireGuardClientRecord) -> WireGuardClientView {
+    let live = wireguard_client_live_status(&record.interface);
+    WireGuardClientView {
+        id: record.id.clone(),
+        name: record.name.clone(),
+        interface: record.interface.clone(),
+        endpoint: record.endpoint.clone(),
+        addresses: record.addresses.clone(),
+        dns: record.dns.clone(),
+        allowed_ips: record.allowed_ips.clone(),
+        peer_count: record.peer_count,
+        kill_switch: record.kill_switch,
+        autostart: record.autostart,
+        created_at: record.created_at.clone(),
+        interface_up: live.interface_up,
+        connected: live.connected,
+        latest_handshake: live.latest_handshake,
+        transfer_rx: live.transfer_rx,
+        transfer_tx: live.transfer_tx,
+    }
+}
+
+/// Import (and immediately connect) a provider configuration. On any failure
+/// after the file was written, the interface is brought down, the file is
+/// removed and the record is not kept.
+pub fn import_wireguard_client(
+    name: &str,
+    config_content: &str,
+    kill_switch: bool,
+    autostart: bool,
+    created_by: &str,
+) -> Result<WireGuardClientView, WireGuardClientError> {
+    // Validation first: an invalid upload is a 400 even on a host without
+    // `wireguard-tools`, so the caller can fix the file before installing it.
+    let config =
+        parse_wireguard_client_config(config_content).map_err(WireGuardClientError::Validation)?;
+    if !wireguard_available() {
+        return Err(WireGuardClientError::Unavailable(
+            "WireGuard is not installed (install the 'wireguard-tools' package).".to_string(),
+        ));
+    }
+
+    let mut store = load_client_store().map_err(WireGuardClientError::Host)?;
+    if store
+        .clients
+        .iter()
+        .any(|c| c.name.eq_ignore_ascii_case(name))
+    {
+        return Err(WireGuardClientError::AlreadyExists(format!(
+            "A WireGuard client named '{name}' already exists"
+        )));
+    }
+
+    let id = uuid::Uuid::new_v4().to_string();
+    let interface = wireguard_client_interface(&id);
+    if interface == WG_INTERFACE {
+        // Defensive: the `hvc-` prefix can never produce `wg0`, but a
+        // collision would hand an imported config the server interface.
+        return Err(WireGuardClientError::Host(
+            "Generated WireGuard interface name collides with the server".to_string(),
+        ));
+    }
+    if store.clients.iter().any(|c| c.interface == interface) {
+        return Err(WireGuardClientError::Host(
+            "Generated WireGuard interface name already exists".to_string(),
+        ));
+    }
+
+    let rendered = render_wireguard_client_config(&config, kill_switch);
+    let sealed =
+        crate::storage::secret_box::seal(&client_secret_scope(&id), &rendered).map_err(|e| {
+            WireGuardClientError::Host(format!("Could not seal the configuration: {e}"))
+        })?;
+
+    let record = WireGuardClientRecord {
+        id,
+        name: name.to_string(),
+        interface,
+        endpoint: config.endpoint(),
+        addresses: config.addresses.clone(),
+        dns: config.dns.clone(),
+        allowed_ips: config.allowed_ips(),
+        peer_count: config.peers.len(),
+        kill_switch,
+        autostart,
+        created_at: chrono::Utc::now().to_rfc3339(),
+        created_by: created_by.to_string(),
+        config_sealed: sealed,
+    };
+
+    write_client_config_file(&record.interface, &rendered).map_err(WireGuardClientError::Host)?;
+    store.clients.push(record.clone());
+    if let Err(e) = save_client_store(&store) {
+        let _ = remove_client_config_file(&record.interface);
+        return Err(WireGuardClientError::Host(e));
+    }
+
+    if let Err(e) = start_client_record(&record) {
+        // Full rollback: interface, file, then record.
+        for step in wireguard_client_import_rollback_plan() {
+            match step {
+                WireGuardClientRollbackStep::Down => {
+                    let _ = stop_client_interface(&record.interface);
+                }
+                WireGuardClientRollbackStep::RemoveConfig => {
+                    let _ = remove_client_config_file(&record.interface);
+                }
+            }
+        }
+        store.clients.retain(|c| c.id != record.id);
+        let _ = save_client_store(&store);
+        return Err(e);
+    }
+
+    Ok(client_view(&record))
+}
+
+pub fn list_wireguard_clients() -> Result<Vec<WireGuardClientView>, String> {
+    let store = load_client_store()?;
+    Ok(store.clients.iter().map(client_view).collect())
+}
+
+pub fn start_wireguard_client(id: &str) -> Result<WireGuardClientView, WireGuardClientError> {
+    let store = load_client_store().map_err(WireGuardClientError::Host)?;
+    let record = store
+        .clients
+        .iter()
+        .find(|c| c.id == id)
+        .cloned()
+        .ok_or(WireGuardClientError::NotFound)?;
+    start_client_record(&record)?;
+    Ok(client_view(&record))
+}
+
+pub fn stop_wireguard_client(id: &str) -> Result<WireGuardClientView, WireGuardClientError> {
+    let store = load_client_store().map_err(WireGuardClientError::Host)?;
+    let record = store
+        .clients
+        .iter()
+        .find(|c| c.id == id)
+        .cloned()
+        .ok_or(WireGuardClientError::NotFound)?;
+    if !wireguard_available() {
+        return Err(WireGuardClientError::Unavailable(
+            "WireGuard is not installed (install the 'wireguard-tools' package).".to_string(),
+        ));
+    }
+    stop_client_interface(&record.interface).map_err(WireGuardClientError::Host)?;
+    Ok(client_view(&record))
+}
+
+pub fn delete_wireguard_client(id: &str) -> Result<String, WireGuardClientError> {
+    let mut store = load_client_store().map_err(WireGuardClientError::Host)?;
+    let record = store
+        .clients
+        .iter()
+        .find(|c| c.id == id)
+        .cloned()
+        .ok_or(WireGuardClientError::NotFound)?;
+
+    if wireguard_available() {
+        let _ = stop_client_interface(&record.interface);
+    }
+    remove_client_config_file(&record.interface).map_err(WireGuardClientError::Host)?;
+    store.clients.retain(|c| c.id != id);
+    save_client_store(&store).map_err(WireGuardClientError::Host)?;
+    Ok(record.name)
+}
+
+pub fn set_wireguard_client_autostart(
+    id: &str,
+    autostart: bool,
+) -> Result<WireGuardClientView, WireGuardClientError> {
+    let mut store = load_client_store().map_err(WireGuardClientError::Host)?;
+    let record = store
+        .clients
+        .iter_mut()
+        .find(|c| c.id == id)
+        .ok_or(WireGuardClientError::NotFound)?;
+    record.autostart = autostart;
+    let view = client_view(record);
+    save_client_store(&store).map_err(WireGuardClientError::Host)?;
+    Ok(view)
+}
+
+/// Re-connect every client whose "start at boot" flag is on. Called once at
+/// startup after [`WG_CLIENT_BOOT_DELAY`]; failures are returned as strings so
+/// the caller can log each one without aborting the others.
+pub fn restore_autostart_clients() -> Vec<String> {
+    let store = match load_client_store() {
+        Ok(store) => store,
+        Err(e) => return vec![e],
+    };
+    if !store.clients.iter().any(|c| c.autostart) || !wireguard_available() {
+        return Vec::new();
+    }
+    store
+        .clients
+        .iter()
+        .filter(|c| c.autostart)
+        .filter_map(|record| {
+            start_client_record(record)
+                .err()
+                .map(|e| format!("{}: {}", record.name, e))
+        })
+        .collect()
+}
+
+// ---------------------------------------------------------------------------
 // Unified VPN API
 // ---------------------------------------------------------------------------
 
@@ -1153,6 +2211,220 @@ mod tests {
         };
         let config = build_client_config("PEERPRIVKEY=", "10.8.0.5", &server, "PSK=");
         assert!(config.contains("Endpoint = YOUR-SERVER-IP:51820"));
+    }
+
+    // -- WireGuard client: parsing / rendering --------------------------------
+
+    const CLIENT_KEY_A: &str = "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=";
+    const CLIENT_KEY_B: &str = "AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI=";
+    const CLIENT_KEY_C: &str = "AwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwM=";
+
+    fn sample_client_config() -> String {
+        format!(
+            "[Interface]\n\
+             PrivateKey = {CLIENT_KEY_A}\n\
+             Address = 10.2.0.2/32, fd00::2/128\n\
+             DNS = 10.2.0.1\n\
+             MTU = 1420\n\n\
+             [Peer]\n\
+             PublicKey = {CLIENT_KEY_B}\n\
+             PresharedKey = {CLIENT_KEY_C}\n\
+             AllowedIPs = 0.0.0.0/0, ::/0\n\
+             Endpoint = vpn.example.com:51820\n\
+             PersistentKeepalive = 25\n"
+        )
+    }
+
+    #[test]
+    fn test_parse_wireguard_client_config_reads_every_supported_field() {
+        let parsed = parse_wireguard_client_config(&sample_client_config()).expect("valid config");
+        assert_eq!(parsed.private_key, CLIENT_KEY_A);
+        assert_eq!(parsed.addresses, vec!["10.2.0.2/32", "fd00::2/128"]);
+        assert_eq!(parsed.dns, vec!["10.2.0.1"]);
+        assert_eq!(parsed.mtu, Some(1420));
+        assert_eq!(parsed.listen_port, None);
+        assert_eq!(parsed.peers.len(), 1);
+        assert_eq!(parsed.peers[0].public_key, CLIENT_KEY_B);
+        assert_eq!(parsed.peers[0].preshared_key.as_deref(), Some(CLIENT_KEY_C));
+        assert_eq!(parsed.peers[0].allowed_ips, vec!["0.0.0.0/0", "::/0"]);
+        assert_eq!(
+            parsed.peers[0].endpoint.as_deref(),
+            Some("vpn.example.com:51820")
+        );
+        assert_eq!(parsed.peers[0].persistent_keepalive, Some(25));
+        assert_eq!(parsed.endpoint().as_deref(), Some("vpn.example.com:51820"));
+        assert_eq!(parsed.allowed_ips(), vec!["0.0.0.0/0", "::/0"]);
+    }
+
+    #[test]
+    fn test_parse_wireguard_client_config_accepts_multiple_peers_and_merges_routes() {
+        let content = format!(
+            "[Interface]\n\
+             PrivateKey = {CLIENT_KEY_A}\n\
+             Address = 10.9.0.2/32\n\n\
+             [Peer]\n\
+             PublicKey = {CLIENT_KEY_B}\n\
+             AllowedIPs = 192.168.10.0/24\n\n\
+             [Peer]\n\
+             PublicKey = {CLIENT_KEY_C}\n\
+             AllowedIPs = 192.168.10.0/24, 192.168.20.0/24\n\
+             Endpoint = [2001:db8::1]:51820\n"
+        );
+        let parsed = parse_wireguard_client_config(&content).expect("valid config");
+        assert_eq!(parsed.peers.len(), 2);
+        assert_eq!(
+            parsed.allowed_ips(),
+            vec!["192.168.10.0/24", "192.168.20.0/24"]
+        );
+        assert_eq!(
+            parsed.peers[1].endpoint.as_deref(),
+            Some("[2001:db8::1]:51820")
+        );
+    }
+
+    #[test]
+    fn test_parse_wireguard_client_config_refuses_root_command_hooks() {
+        for directive in ["PreUp", "PostUp", "PreDown", "PostDown"] {
+            let content = format!(
+                "[Interface]\nPrivateKey = {CLIENT_KEY_A}\nAddress = 10.2.0.2/32\n\
+                 {directive} = /tmp/evil.sh\n\n[Peer]\nPublicKey = {CLIENT_KEY_B}\nAllowedIPs = 0.0.0.0/0\n"
+            );
+            let error = parse_wireguard_client_config(&content)
+                .expect_err("a root command hook must be refused");
+            assert!(
+                error.contains(directive) && error.contains("root"),
+                "wrong refusal for {directive}: {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_parse_wireguard_client_config_refuses_unknown_directives() {
+        let content = format!(
+            "[Interface]\nPrivateKey = {CLIENT_KEY_A}\nAddress = 10.2.0.2/32\n\
+             SaveConfig = true\n\n[Peer]\nPublicKey = {CLIENT_KEY_B}\nAllowedIPs = 0.0.0.0/0\n"
+        );
+        let error = parse_wireguard_client_config(&content).expect_err("SaveConfig is refused");
+        assert!(error.contains("SaveConfig"), "{error}");
+
+        let content = format!(
+            "[Interface]\nPrivateKey = {CLIENT_KEY_A}\nAddress = 10.2.0.2/32\n\
+             Mystery = yes\n\n[Peer]\nPublicKey = {CLIENT_KEY_B}\nAllowedIPs = 0.0.0.0/0\n"
+        );
+        let error = parse_wireguard_client_config(&content).expect_err("unknown key is refused");
+        assert!(error.contains("Mystery"), "{error}");
+    }
+
+    #[test]
+    fn test_parse_wireguard_client_config_refuses_invalid_values() {
+        let bad_key = format!(
+            "[Interface]\nPrivateKey = not-a-key\nAddress = 10.2.0.2/32\n\n\
+             [Peer]\nPublicKey = {CLIENT_KEY_B}\nAllowedIPs = 0.0.0.0/0\n"
+        );
+        assert!(parse_wireguard_client_config(&bad_key).is_err());
+
+        let bad_cidr = format!(
+            "[Interface]\nPrivateKey = {CLIENT_KEY_A}\nAddress = 10.2.0.2\n\n\
+             [Peer]\nPublicKey = {CLIENT_KEY_B}\nAllowedIPs = 0.0.0.0/0\n"
+        );
+        assert!(parse_wireguard_client_config(&bad_cidr).is_err());
+
+        let bad_dns = format!(
+            "[Interface]\nPrivateKey = {CLIENT_KEY_A}\nAddress = 10.2.0.2/32\n\
+             DNS = example.com\n\n[Peer]\nPublicKey = {CLIENT_KEY_B}\nAllowedIPs = 0.0.0.0/0\n"
+        );
+        assert!(parse_wireguard_client_config(&bad_dns).is_err());
+
+        let bad_endpoint = format!(
+            "[Interface]\nPrivateKey = {CLIENT_KEY_A}\nAddress = 10.2.0.2/32\n\n\
+             [Peer]\nPublicKey = {CLIENT_KEY_B}\nAllowedIPs = 0.0.0.0/0\nEndpoint = vpn.example.com\n"
+        );
+        assert!(parse_wireguard_client_config(&bad_endpoint).is_err());
+    }
+
+    #[test]
+    fn test_parse_wireguard_client_config_requires_interface_and_peer() {
+        let no_peer = format!("[Interface]\nPrivateKey = {CLIENT_KEY_A}\nAddress = 10.2.0.2/32\n");
+        assert!(parse_wireguard_client_config(&no_peer)
+            .unwrap_err()
+            .contains("[Peer]"));
+
+        let no_interface = format!("[Peer]\nPublicKey = {CLIENT_KEY_B}\nAllowedIPs = 0.0.0.0/0\n");
+        assert!(parse_wireguard_client_config(&no_interface).is_err());
+    }
+
+    #[test]
+    fn test_render_wireguard_client_config_round_trips_and_has_no_hook_by_default() {
+        let parsed = parse_wireguard_client_config(&sample_client_config()).expect("valid config");
+        let rendered = render_wireguard_client_config(&parsed, false);
+        assert!(rendered.contains("PrivateKey = "));
+        assert!(rendered.contains("Address = 10.2.0.2/32, fd00::2/128"));
+        assert!(rendered.contains("DNS = 10.2.0.1"));
+        assert!(rendered.contains("MTU = 1420"));
+        assert!(rendered.contains("AllowedIPs = 0.0.0.0/0, ::/0"));
+        assert!(rendered.contains("Endpoint = vpn.example.com:51820"));
+        assert!(!rendered.contains("PostUp"));
+        assert!(!rendered.contains("PreDown"));
+
+        // The canonical form is itself parseable (no operator-owned hook).
+        let reparsed = parse_wireguard_client_config(&rendered).expect("round trip");
+        assert_eq!(reparsed, parsed);
+    }
+
+    #[test]
+    fn test_render_wireguard_client_config_kill_switch_is_fixed() {
+        let parsed = parse_wireguard_client_config(&sample_client_config()).expect("valid config");
+        let rendered = render_wireguard_client_config(&parsed, true);
+        assert!(rendered.contains("PostUp = iptables -I OUTPUT"));
+        assert!(rendered.contains("PreDown = iptables -D OUTPUT"));
+        assert!(rendered.contains("ip6tables"));
+    }
+
+    #[test]
+    fn test_wireguard_client_interface_is_deterministic_and_bounded() {
+        let id = "123e4567-e89b-12d3-a456-426614174000";
+        let iface = wireguard_client_interface(id);
+        assert_eq!(iface, "hvc-123e4567e8");
+        assert!(iface.len() <= 15);
+        assert!(iface.starts_with(WG_CLIENT_PREFIX));
+        assert_ne!(iface, WG_INTERFACE);
+        assert_eq!(iface, wireguard_client_interface(id));
+    }
+
+    #[test]
+    fn test_wireguard_client_commands_are_argv_only() {
+        let commands = wireguard_client_commands("hvc-abc");
+        assert_eq!(commands.up, vec!["wg-quick", "up", "hvc-abc"]);
+        assert_eq!(commands.down, vec!["wg-quick", "down", "hvc-abc"]);
+        assert_eq!(commands.show_dump, vec!["wg", "show", "hvc-abc", "dump"]);
+    }
+
+    #[test]
+    fn test_wireguard_client_import_rollback_plan_orders_down_before_removal() {
+        assert_eq!(
+            wireguard_client_import_rollback_plan(),
+            [
+                WireGuardClientRollbackStep::Down,
+                WireGuardClientRollbackStep::RemoveConfig
+            ]
+        );
+    }
+
+    #[test]
+    fn test_wireguard_client_config_path_stays_in_etc_wireguard() {
+        let path = wireguard_client_config_path("hvc-abc");
+        assert_eq!(path.to_string_lossy(), "/etc/wireguard/hvc-abc.conf");
+    }
+
+    #[test]
+    fn test_stored_client_interface_is_validated_before_use() {
+        assert!(validate_client_interface("hvc-1234abcd").is_ok());
+        for invalid in ["wg0", "hvc-../etc", "hvc-a/b", "hvc-with-a-very-long-name"] {
+            assert!(
+                validate_client_interface(invalid).is_err(),
+                "'{invalid}' must be refused"
+            );
+        }
     }
 
     // -- saved_config_names -----------------------------------------------

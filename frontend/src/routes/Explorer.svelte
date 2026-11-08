@@ -2020,7 +2020,7 @@
         <span>{$t('explorer.upload')}</span>
       </Button>
     {/if}
-    <div class="flex items-center gap-1.5 ml-auto">
+    <div class="flex flex-wrap items-center gap-1.5 ml-auto min-w-0">
       <div class="relative flex items-center">
         <IconSearch size={14} class="absolute left-2.5 text-[var(--hv-shell-text-3)]" />
         <input type="search" data-testid="explorer-search-input" class="h-9 w-44 pl-8 pr-7 rounded-lg border border-[var(--hv-shell-border)] bg-[var(--hv-shell-glass)] text-c-base outline-none focus:border-[var(--hv-primary)]" placeholder={$t('explorer.search_placeholder')} value={searchQuery} oninput={(e) => handleSearchInput((e.target as HTMLInputElement).value)} />

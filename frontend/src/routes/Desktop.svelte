@@ -98,6 +98,10 @@
   let now = Date.now();
   let showUserMenu = false;
   let showAppsCenter = false;
+  /** `Settings > General > Terminal` (default on). Hides the dock/search
+   *  entry points entirely when an admin disabled the terminal, matching
+   *  DSM's SSH/Telnet switch instead of showing an app that always 403s. */
+  let terminalEnabled = true;
   /** The "add a web shortcut" dialog. Its trigger is the launcher's last
    *  tile (`HvLaunchpad`), not a control on the desktop itself. */
   let showShortcutAdd = false;
@@ -264,6 +268,9 @@
   // the widget returns to its original spot once the window is wide again.
   let viewportWidth = typeof window !== 'undefined' ? window.innerWidth : 1920;
   let viewportHeight = typeof window !== 'undefined' ? window.innerHeight : 1080;
+  // Re-clamp open windows when the viewport changes: a window opened on a
+  // wide desktop must not stay 1024px wide (and off-screen) on a phone.
+  $: windowManager.reflow(viewportWidth, viewportHeight);
   $: resourceMonitorClamped = (() => {
     void viewportWidth; void viewportHeight;
     return applySnap($monitorStore.resourceMonitor.x, $monitorStore.resourceMonitor.y, 280, 400);
@@ -588,6 +595,10 @@
   let dockerActionBusy: Record<string, boolean> = {};
 
   async function loadDockerData() {
+    // `/docker/available` and `/docker/containers` are admin-only: a regular
+    // member must not poll them (the 403 would fire every 10 s and the data
+    // is not theirs to see).
+    if (!$isAdmin) return;
     const availRes = await api.isDockerAvailable();
     if (!availRes.success || !availRes.data?.available) {
       dockerData = { status: 'ready', data: { available: false, containers: [] } };
@@ -1381,6 +1392,16 @@
     // Connect WebSocket
     websocket.connect();
 
+    // The terminal toggle is public-safe (no secrets), so the desktop can
+    // hide its entry point without an admin-only settings call. Default on
+    // if the request fails: the backend still refuses tickets when disabled.
+    api.getPublicSettings().then((res) => {
+      if (res.success && res.data) {
+        terminalEnabled =
+          (res.data as { terminal_enabled?: boolean }).terminal_enabled !== false;
+      }
+    });
+
     resourcePollMounted = true;
     startResourcePollers($monitorStore.refreshMs);
 
@@ -1730,7 +1751,7 @@
       keywords: $t('desktop.search_chat_keywords').split(',').map(k => k.trim()),
       action: () => openApp(apps.find(a => a.id === 'chat')!)
     }
-  ]);
+  ]).filter((item) => item.id !== 'action-terminal' || ($isAdmin && terminalEnabled));
 
   function toggleAppsCenter() {
     showAppsCenter = !showAppsCenter;
@@ -2453,7 +2474,7 @@
   {/if}
 
   <!-- Docker Monitor (draggable) -->
-  {#if $monitorStore.dockerMonitorVisible}
+  {#if $isAdmin && $monitorStore.dockerMonitorVisible}
     <!-- svelte-ignore a11y_no_static_element_interactions -->
     <div
       class="hv-docker-monitor"
@@ -2904,22 +2925,26 @@
         {#if $windowManager && hasOpenWindow('dashboard')}<span class="hv-dock-dot"></span>{/if}
       </button>
 
-      <!-- Terminal (green gradient) -->
-      <button
-        class="hv-dock-item"
-        style="--dock-i: 1; --dock-c: var(--hv-app-terminal-c)"
-        class:hv-dock-item-active={$windowManager.some(w => w.appId === 'terminal' && !w.isMinimized)}
-        class:hv-dock-item-minimized={$windowManager.some(w => w.appId === 'terminal' && w.isMinimized)}
-        class:hv-dock-item-multi={openWindowCount('terminal') > 1}
-        onclick={() => handleDockAppClick('terminal')}
-        data-testid="dock-terminal"
-        aria-label={$t('desktop.terminal')}
-      >
-        <div class="hv-dock-icon hv-dock-icon-terminal">
-          <TerminalIcon size={28} stroke={1.8} />
-        </div>
-        {#if $windowManager && hasOpenWindow('terminal')}<span class="hv-dock-dot"></span>{/if}
-      </button>
+      <!-- Terminal (green gradient). Admin-only and hideable from Settings:
+           a member must not see an app the backend refuses, and an admin who
+           disabled the terminal must not see a dead icon. -->
+      {#if $isAdmin && terminalEnabled}
+        <button
+          class="hv-dock-item"
+          style="--dock-i: 1; --dock-c: var(--hv-app-terminal-c)"
+          class:hv-dock-item-active={$windowManager.some(w => w.appId === 'terminal' && !w.isMinimized)}
+          class:hv-dock-item-minimized={$windowManager.some(w => w.appId === 'terminal' && w.isMinimized)}
+          class:hv-dock-item-multi={openWindowCount('terminal') > 1}
+          onclick={() => handleDockAppClick('terminal')}
+          data-testid="dock-terminal"
+          aria-label={$t('desktop.terminal')}
+        >
+          <div class="hv-dock-icon hv-dock-icon-terminal">
+            <TerminalIcon size={28} stroke={1.8} />
+          </div>
+          {#if $windowManager && hasOpenWindow('terminal')}<span class="hv-dock-dot"></span>{/if}
+        </button>
+      {/if}
 
       <!-- Containers (purple gradient) -->
       <button

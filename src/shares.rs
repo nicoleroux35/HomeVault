@@ -3417,7 +3417,7 @@ mod tests {
         let config = NfsConfig::default();
         assert_eq!(
             nfs_export_line("/mnt/pool/media", &[], &config),
-            "/mnt/pool/media *(rw,sync,no_subtree_check,root_squash,vers=4)\n"
+            "/mnt/pool/media *(rw,sync,no_subtree_check,root_squash)\n"
         );
 
         let line = "/mnt/pool/media *(rw,sync,no_subtree_check,root_squash,vers=4)";
@@ -3529,7 +3529,7 @@ mod tests {
         assert!(!parsed.enabled, "a tagged line is a disabled share");
         assert_eq!(
             parsed.options,
-            vec!["rw", "sync", "no_subtree_check", "root_squash", "vers=4"]
+            vec!["rw", "sync", "no_subtree_check", "root_squash"]
         );
     }
 

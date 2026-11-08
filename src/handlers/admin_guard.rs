@@ -148,6 +148,27 @@ pub async fn require_admin(state: &Arc<AppState>, headers: &HeaderMap) -> Result
         .map_err(Denial::into_response)
 }
 
+/// Ensures the caller is an admin **or** a delegated account manager.
+///
+/// This is deliberately narrower than [`require_admin`]: the handlers that
+/// accept it must still refuse to touch an administrator, the caller's own
+/// account, or the protected admin groups. It exists for DSM's "Local user and
+/// group management" role, not as a second full-admin path.
+#[allow(clippy::result_large_err)]
+pub async fn require_account_manager(
+    state: &Arc<AppState>,
+    headers: &HeaderMap,
+) -> Result<String, Response> {
+    let username = require_auth(state, headers).await?;
+    if state.auth.can_manage_accounts(&username).await {
+        Ok(username)
+    } else {
+        Err(ResponseHelper::json_forbidden(
+            "Account management privileges required".to_string(),
+        ))
+    }
+}
+
 /// An authenticated caller: who they are, and the opaque token that proved it.
 ///
 /// `token` exists only for server-side comparisons — "is this row my current
@@ -323,7 +344,8 @@ mod tests {
             // that answer their own JSON envelope.
             assert!(
                 text.contains("admin_guard::require_admin")
-                    || text.contains("admin_guard::check_admin"),
+                    || text.contains("admin_guard::check_admin")
+                    || text.contains("admin_guard::require_account_manager"),
                 "{module} must delegate its guard to admin_guard"
             );
         }

@@ -154,6 +154,9 @@ pub struct UserListItem {
     /// and disables deletion for it.
     #[serde(default)]
     pub is_host_account: bool,
+    /// `true` for a delegated account manager (DSM's local-account role).
+    #[serde(default)]
+    pub is_account_manager: bool,
 }
 
 /// Response containing the total number of users.

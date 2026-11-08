@@ -1795,6 +1795,39 @@ test.describe('20 — i18n', () => {
 });
 
 // ---------------------------------------------------------------------------
+// 22. Successful password login (no 2FA) leaves the login screen
+// ---------------------------------------------------------------------------
+
+test.describe('22 — Successful login', () => {
+  test('22.1 — valid admin credentials navigate away from /login and store a session', async ({
+    page,
+  }) => {
+    await gotoLogin(page);
+    if ((await detectState(page)) !== 'login') return;
+
+    await fillAndSubmit(page, ADMIN_USER, ADMIN_PASS);
+
+    // The seeded admin normally has no 2FA. If a previous run left 2FA on,
+    // this lands on the code screen instead — treat that as out of scope here.
+    // `isVisible` returns immediately (its `timeout` option is ignored), so it
+    // never saw the 2FA step that renders a moment after the submit — a real
+    // wait is required for the skip to fire.
+    const twoFa = page.locator('[data-testid="login-code-input"]').first();
+    const twoFaShown = await twoFa
+      .waitFor({ state: 'visible', timeout: 3_000 })
+      .then(() => true)
+      .catch(() => false);
+    if (twoFaShown) {
+      test.skip(true, 'seeded admin currently has 2FA enabled');
+    }
+
+    await page.waitForURL((url) => !url.pathname.startsWith('/login'), { timeout: 10_000 });
+    const token = await page.evaluate(() => localStorage.getItem('session-token'));
+    expect(token && token.length > 0).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // 21. Error-message specificity — the modal shows the *right* localized text
 // ---------------------------------------------------------------------------
 
@@ -1805,7 +1838,7 @@ test.describe('21 — Error specificity', () => {
     await gotoLogin(page);
     if ((await detectState(page)) !== 'login') return;
 
-    await fillAndSubmit(page, 'spec_user_a', 'WrongPass123');
+    await fillAndSubmit(page, `spec_bad_${Date.now()}`, 'WrongPass123');
     const modal = page.locator('[data-testid="login-error-msg"]').first();
     await expect(modal).toBeVisible({ timeout: 8_000 });
     await expect(modal).toContainText(/incorrect username or password/i);
@@ -1836,39 +1869,6 @@ test.describe('21 — Error specificity', () => {
     expect(all).toMatch(/incorrect username or password/);
     expect(all).toMatch(/account (has been|is) locked/);
     expect(all).toMatch(/too many login attempts|try again later/);
-  });
-});
-
-// ---------------------------------------------------------------------------
-// 22. Successful password login (no 2FA) leaves the login screen
-// ---------------------------------------------------------------------------
-
-test.describe('22 — Successful login', () => {
-  test('22.1 — valid admin credentials navigate away from /login and store a session', async ({
-    page,
-  }) => {
-    await gotoLogin(page);
-    if ((await detectState(page)) !== 'login') return;
-
-    await fillAndSubmit(page, ADMIN_USER, ADMIN_PASS);
-
-    // The seeded admin normally has no 2FA. If a previous run left 2FA on,
-    // this lands on the code screen instead — treat that as out of scope here.
-    // `isVisible` returns immediately (its `timeout` option is ignored), so it
-    // never saw the 2FA step that renders a moment after the submit — a real
-    // wait is required for the skip to fire.
-    const twoFa = page.locator('[data-testid="login-code-input"]').first();
-    const twoFaShown = await twoFa
-      .waitFor({ state: 'visible', timeout: 3_000 })
-      .then(() => true)
-      .catch(() => false);
-    if (twoFaShown) {
-      test.skip(true, 'seeded admin currently has 2FA enabled');
-    }
-
-    await page.waitForURL((url) => !url.pathname.startsWith('/login'), { timeout: 10_000 });
-    const token = await page.evaluate(() => localStorage.getItem('session-token'));
-    expect(token && token.length > 0).toBe(true);
   });
 });
 

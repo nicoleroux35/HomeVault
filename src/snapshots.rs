@@ -1657,7 +1657,11 @@ fn parse_zfs_dataset_snapshots(
             properties: std::collections::HashMap::new(),
         });
     }
-    snapshots.reverse(); // zfs lists oldest first; callers show newest first
+    // `zfs list` does not guarantee creation order (it sorts by name), so
+    // sort on the creation timestamp the caller selected instead of trusting
+    // the line order. Callers show newest first.
+    snapshots
+        .sort_by_key(|snapshot| std::cmp::Reverse(snapshot.created.parse::<i64>().unwrap_or(0)));
     Ok(snapshots)
 }
 
@@ -1676,17 +1680,16 @@ fn parse_btrfs_share_snapshots(
         let Some(path) = parts.get(path_idx + 1) else {
             continue;
         };
-        if !path.starts_with(&prefix) {
+        let Some(relative) = path.strip_prefix(&prefix) else {
+            continue;
+        };
+        // The snapshot directory is exactly one safe component: a path that
+        // escapes it (`../…`) or nests another directory is not a snapshot of
+        // this share and must never be listed.
+        if relative.is_empty() || relative.contains('/') || !is_safe_snapshot_name(relative) {
             continue;
         }
-        let name = Path::new(path)
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or(path)
-            .to_string();
-        if !is_safe_snapshot_name(&name) {
-            continue;
-        }
+        let name = relative.to_string();
         let created = match parts.iter().position(|p| *p == "otime") {
             Some(i) => [parts.get(i + 1), parts.get(i + 2)]
                 .into_iter()

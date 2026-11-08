@@ -97,7 +97,8 @@ test.describe('Forced password change', () => {
     await page.goto('/login');
     await page.getByLabel(new RegExp('Username', 'i')).first().fill(username);
     await page.locator('#password').fill(password);
-    await page.getByRole('button', { name: /sign in/i }).click();
+    // Exact match: the passkey button is also named "Sign in with a passkey".
+    await page.getByRole('button', { name: /^sign in$/i }).click();
     // The change form replaces the credential form on the same card.
     await expect(page.getByTestId('login-pwchange-notice')).toBeVisible();
     await expect(page).toHaveURL(/\/login$/);

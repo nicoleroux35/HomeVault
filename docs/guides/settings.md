@@ -724,6 +724,10 @@ screen:
   `api.setAutostart`.
 - The **mDNS** toggle stages `draft.general.mdns_enabled`; Save sends it in
   the General `PUT` (ROADMAP 29.1).
+- The **Terminal** toggle stages `draft.general.terminal_enabled`; Save sends
+  it in the General `PUT`. When off, new terminal tickets are refused and the
+  desktop hides the dock/search entry points (see [terminal.md](terminal.md));
+  existing tabs keep running until closed.
 - **Widgets / weather** stage `draft.widgets.*` and `draft.weather.*`; Save
   applies them through `monitorStore` / `weatherLocationStore` /
   `weatherDisplayPrefsStore` (their own persistence paths are the save). The

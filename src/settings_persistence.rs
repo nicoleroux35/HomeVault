@@ -93,6 +93,10 @@ pub struct PersistedGeneral {
     /// existed still loads — `None` reads as "on", the shipped default.
     #[serde(default)]
     pub mdns_enabled: Option<bool>,
+    /// In-browser terminal availability (`Settings > General > Terminal`).
+    /// `None` reads as "on", the shipped default.
+    #[serde(default)]
+    pub terminal_enabled: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -154,6 +158,7 @@ impl PersistedSettings {
             timezone: self.general.as_ref().and_then(|g| g.timezone.clone()),
             language: self.general.as_ref().and_then(|g| g.language.clone()),
             mdns_enabled: self.general.as_ref().and_then(|g| g.mdns_enabled),
+            terminal_enabled: self.general.as_ref().and_then(|g| g.terminal_enabled),
         }
     }
 
@@ -236,6 +241,7 @@ impl SettingsPersistence {
                 timezone: general.timezone.clone(),
                 language: general.language.clone(),
                 mdns_enabled: general.mdns_enabled,
+                terminal_enabled: general.terminal_enabled,
             }),
             email: Some(PersistedEmail {
                 smtp_server: email.smtp_server.clone(),
@@ -578,6 +584,9 @@ fn apply_loaded_settings(loaded: &PersistedSettings) {
             // `unpublish()` was.
             crate::mdns::set_enabled(mdns_enabled);
         }
+        if let Some(terminal_enabled) = general.terminal_enabled {
+            settings.terminal_enabled = Some(terminal_enabled);
+        }
     }
 
     // Email settings
@@ -702,6 +711,7 @@ pub fn save_all_settings() {
                 timezone: general.timezone.clone(),
                 language: general.language.clone(),
                 mdns_enabled: general.mdns_enabled,
+                terminal_enabled: general.terminal_enabled,
             }),
             email: Some(PersistedEmail {
                 smtp_server: email.smtp_server.clone(),
@@ -1143,6 +1153,7 @@ mod tests {
             timezone: Some("Mars/Olympus".to_string()),
             language: None,
             mdns_enabled: None,
+            terminal_enabled: None,
         });
         let err = validate_import(&bad_tz).unwrap_err();
         assert!(err.contains("timezone"), "{err}");
@@ -1184,6 +1195,7 @@ mod tests {
             timezone: None,
             language: Some("it".to_string()),
             mdns_enabled: None,
+            terminal_enabled: None,
         });
         assert!(validate_import(&bad_language)
             .unwrap_err()
@@ -1199,6 +1211,7 @@ mod tests {
                 timezone: Some("Europe/Paris".to_string()),
                 language: Some("fr".to_string()),
                 mdns_enabled: Some(true),
+                terminal_enabled: Some(true),
             }),
             ..PersistedSettings::default()
         };

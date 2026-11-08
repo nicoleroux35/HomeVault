@@ -220,6 +220,11 @@ pub struct LoginResponse {
     pub csrf_token: String,
     pub username: String,
     pub is_admin: bool,
+    /// `true` for an admin **or** a delegated account manager. The desktop
+    /// uses it to show the Users/Groups apps to a non-admin manager; every
+    /// handler still enforces the narrower target rules server-side.
+    #[serde(default)]
+    pub can_manage_accounts: bool,
     /// `true` when the account still holds an admin-chosen password: the
     /// client routes to the forced password-change screen instead of the
     /// desktop; the server, via `middleware::password_change_guard`, enforces

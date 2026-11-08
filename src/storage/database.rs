@@ -56,6 +56,9 @@ const HOST_ACCOUNT_OP_TIMEOUT: Duration = Duration::from_secs(30);
 static MIGRATIONS_DIR: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/sqlx/migrations");
 
 pub const ADMIN_GROUP_NAME: &str = "homevault_admin";
+/// Optional host-root group (see `src/host_accounts.rs`). It is created so the
+/// sudoers line has a group to point at, but nobody is added automatically.
+pub const HOST_ADMIN_GROUP_NAME: &str = "homevault_hostadmin";
 
 /// Errors originating from database operations.
 #[derive(Error, Debug)]
@@ -632,8 +635,8 @@ impl Database {
         stmts
     }
 
-    /// Ensure the `homevault_admin` system group exists (best-effort).
-    /// Ensure the `homevault_admin` system group exists on the host (best-effort).
+    /// Ensure the `homevault_admin` (application admin) and
+    /// `homevault_hostadmin` (optional host root) groups exist (best-effort).
     pub async fn ensure_admin_group(&self) -> Result<(), DbError> {
         let getent_check = run_timed_async_result(
             tokio::process::Command::new("which").arg("getent"),
@@ -646,32 +649,43 @@ impl Database {
             return Ok(());
         }
 
-        let output = run_timed_async_result(
-            tokio::process::Command::new("getent").args(["group", ADMIN_GROUP_NAME]),
-            HOST_ACCOUNT_OP_TIMEOUT,
-        )
-        .await
-        .map_err(|e| DbError::Io(std::io::Error::other(e.to_string())))?;
+        for group in [ADMIN_GROUP_NAME, HOST_ADMIN_GROUP_NAME] {
+            let output = run_timed_async_result(
+                tokio::process::Command::new("getent").args(["group", group]),
+                HOST_ACCOUNT_OP_TIMEOUT,
+            )
+            .await
+            .map_err(|e| DbError::Io(std::io::Error::other(e.to_string())))?;
 
-        if !output.status.success() {
+            if output.status.success() {
+                continue;
+            }
+
             // Attempt group creation, but do not fail if we lack privileges.
             match run_timed_async_result(
                 tokio::process::Command::new("sudo")
                     .arg("groupadd")
-                    .arg(ADMIN_GROUP_NAME),
+                    .arg(group),
                 HOST_ACCOUNT_OP_TIMEOUT,
             )
             .await
             {
                 Ok(output) => {
                     if output.status.success() {
-                        tracing::info!("Created admin group: {}", ADMIN_GROUP_NAME);
+                        tracing::info!("Created system group: {}", group);
                     } else {
-                        tracing::warn!("Could not create system group (insufficient permissions). Continuing without system group integration.");
+                        tracing::warn!(
+                            "Could not create system group '{}' (insufficient permissions). Continuing without it.",
+                            group
+                        );
                     }
                 }
                 Err(e) => {
-                    tracing::warn!("Could not create system group: {}. Continuing without system group integration.", e);
+                    tracing::warn!(
+                        "Could not create system group '{}': {}. Continuing without it.",
+                        group,
+                        e
+                    );
                 }
             }
         }
@@ -816,8 +830,11 @@ impl Database {
             .to_string();
 
         // Ensure ownership is correct
+        // See `handlers/user_homes.rs`: root is a no-op for `sudo`, and the
+        // non-root deployment needs it to own the home folder.
         let output = run_timed_async_result(
-            tokio::process::Command::new("chown").args([
+            tokio::process::Command::new("sudo").args([
+                "chown",
                 "-R",
                 &format!("{}:{}", uid_str, gid_str),
                 &home_dir,

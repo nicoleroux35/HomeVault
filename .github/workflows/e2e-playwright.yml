@@ -101,7 +101,7 @@ jobs:
       - name: Start server (scratch data dir)
         run: |
           mkdir -p /tmp/hv-e2e-data
-          DATA_DIRECTORY=/tmp/hv-e2e-data PORT=8080 ./target/debug/homevault > /tmp/hv-e2e.log 2>&1 &
+          DATA_DIRECTORY=/tmp/hv-e2e-data PORT=8080 HOMEVAULT_E2E_LOGIN_IP_MAX_PER_HOUR=100000 ./target/debug/homevault > /tmp/hv-e2e.log 2>&1 &
           echo $! > /tmp/hv-e2e.pid
           for i in $(seq 1 60); do
             curl -sf http://localhost:8080/api/health >/dev/null && break
@@ -114,14 +114,20 @@ jobs:
       # Stage A — setup wizard on a truly fresh server. 19.1 completes
       # first-run (random admin), so stage B below uses a second fresh
       # server for everything else.
+      #
+      # `--workers=1` is mandatory here: both browser projects share one
+      # server and the wizard is global state, so parallel workers raced
+      # (one project's 19.1 created the admin while the other was still
+      # asserting the wizard, producing timeouts and a negative card
+      # position on the login screen).
       - name: E2E stage A — setup wizard
-        run: npx playwright test tests/e2e/setup --reporter=html --retries=1
+        run: npx playwright test tests/e2e/setup --workers=1 --reporter=html --retries=1
       - name: Reset server + seed e2eadmin
         run: |
           kill $(cat /tmp/hv-e2e.pid) || true
           sleep 2
           rm -rf /tmp/hv-e2e-data && mkdir -p /tmp/hv-e2e-data
-          DATA_DIRECTORY=/tmp/hv-e2e-data PORT=8080 ./target/debug/homevault > /tmp/hv-e2e.log 2>&1 &
+          DATA_DIRECTORY=/tmp/hv-e2e-data PORT=8080 HOMEVAULT_E2E_LOGIN_IP_MAX_PER_HOUR=100000 ./target/debug/homevault > /tmp/hv-e2e.log 2>&1 &
           echo $! > /tmp/hv-e2e.pid
           for i in $(seq 1 60); do
             curl -sf http://localhost:8080/api/health >/dev/null && break
@@ -135,18 +141,31 @@ jobs:
             sleep 2
           done
           echo "$SEED" | grep -q '"success":true'
+          # The first visit shows the "What's new" dialog for a fresh account;
+          # it covers the launcher and blocks every spec whose navigation
+          # helper does not dismiss it. Mark it seen once, for the shared
+          # e2eadmin account, before any spec runs.
+          TOKEN=$(echo "$SEED" | sed -n 's/.*"token":"\([^"]*\)".*/\1/p')
+          CSRF=$(echo "$SEED" | sed -n 's/.*"csrf_token":"\([^"]*\)".*/\1/p')
+          curl -sf -X POST http://localhost:8080/api/whats-new/seen \
+            -H "X-Session-Token: $TOKEN" -H "X-CSRF-Token: $CSRF" \
+            -H 'Content-Type: application/json' -d '{}' >/dev/null
           # Warm the paths the specs hit first (cold debug builds answer
           # slowly; specs click through within tight timeouts).
           curl -sf http://localhost:8080/ -o /dev/null
           curl -sf http://localhost:8080/api/auth/setup-status -o /dev/null
           curl -sf "http://localhost:8080/api/auth/check-username?username=warmup_probe" -o /dev/null
       # Stage B — every other screen against the seeded server.
+      # `--workers=1`: the specs share one server and mutate global state
+      # (settings, users, shares); parallel workers caused cold-debug
+      # timeouts and cross-spec interference (terminal alone: 52 failures
+      # in parallel vs 162/162 serial).
       # --retries=1 absorbs cold-start timing flakes (a cold debug build
       # shifts layout mid-click); failures that persist warm stay red.
       - name: E2E stage B — all screens except setup
         run: |
           E2E_DIRS=$(for d in tests/e2e/*/; do [ "$d" != "tests/e2e/setup/" ] && printf '%s ' "$d"; done)
-          npx playwright test $E2E_DIRS --reporter=html --retries=1
+          npx playwright test $E2E_DIRS --workers=1 --reporter=html --retries=1
       - name: Stop server
         if: always()
         run: |

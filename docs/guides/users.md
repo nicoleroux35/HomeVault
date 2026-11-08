@@ -108,9 +108,11 @@ making them an admin. Grants live in `resource_shares`
 | `POST /shares/access/groups` | admin | grant/update `{group, kind, resource, permission?}` |
 | `DELETE /shares/access/groups` | admin | revoke `?group=&kind=&resource=` |
 
-`kind` ∈ `app` \| `folder` \| `share`; `permission` ∈ `read` \| `write` \|
-`full` (default `read`; `full ⊇ write ⊇ read`). Repository:
-`src/storage/resource_share_repo.rs`.
+`kind` ∈ `app` \| `folder` \| `share`; `permission` ∈ `deny` \| `read` \|
+`write` \| `full` (default `read`; `full ⊇ write ⊇ read`). A `deny` row
+**wins over every allow**, from a direct or a group grant (DSM's "No access >
+Read/Write > Read only" rule); `merge_effective` is the single place that
+rule lives. Repository: `src/storage/resource_share_repo.rs`.
 
 **The filter is server-side.** An admin (the appliance "owner") sees
 everything implicitly and needs no rows; a member sees exactly the
@@ -153,6 +155,32 @@ inherit access nobody granted it.
 
 The editor is `frontend/src/lib/components/users/MemberAccessCard.svelte`,
 embedded in the Users detail view (admins see a read-only note instead).
+
+### Delegated account managers (2026-11-08, migration 083)
+
+DSM lets an administrator delegate **local user and group management** to a
+non-admin. HomeVault now has the same backend role, deliberately narrower than
+`admin`:
+
+- `PUT /users/{username}/account-manager` (admin only) with
+  `{"enabled": true|false}` grants/revokes the role. Stored in
+  `account_managers` (migration 083), so a DB-only user does not need a Linux
+  account just to be delegated.
+- A manager reaches the Users/Groups endpoints through
+  `admin_guard::require_account_manager`. They can create, edit, lock, expire,
+  reset the password of, and delete **non-administrator** accounts, and manage
+  **non-protected** groups.
+- They cannot see or touch an administrator, change their own managed account,
+  create/promote an admin, grant the delegated role, manage the
+  `homevault_admin`/`homevault_hostadmin` groups, or read another account's
+  sessions/2FA. The Users list hides administrators from a manager; the role,
+  2FA-disable and session endpoints stay admin-only.
+- The web desktop remains **admins-only by design**. The delegated role is for
+  API/MCP clients today; exposing a reduced manager desktop is a separate UI
+  change, not a widening of this guard.
+
+`GET /users` and `GET /users/{u}` report `is_account_manager`, so an admin UI
+can show the toggle.
 
 ## Account expiry (2026-10-20, migration 050)
 
@@ -379,7 +407,9 @@ paper-white vocabulary and the single `--hv-primary` accent).
   `deleteUserHome`, `updateUserPassword`, `updateUserRole`, `setUserLocked`,
   `adminDisable2FA`, `getAvailableHomeDisks`.
 - `src/groups.rs` `GroupService::is_admin_group` hides the real `homevault_admin`
-  system group (which grants passwordless sudo) from the ordinary Groups UI.
+  application-admin group from the ordinary Groups UI. It grants HomeVault
+  admin rights, **not** host root; the optional host-root group is
+  `homevault_hostadmin` and is never granted automatically.
 - **Group checklist:** `loadGroups()` fetches `GET /groups`, splits
   `homevault_admin` into `adminGroup`, and puts the rest in the editable
   `groups` array. A genuine fetch failure sets `groupsError` so the UI shows
@@ -395,8 +425,23 @@ paper-white vocabulary and the single `--hv-primary` accent).
   membership stays driven solely by the Role selector
   (`database.rs::sync_admin_user_to_group` on promote,
   `GroupService::remove_user_from_group` on demote). This keeps the app role
-  and the real sudo group from ever diverging. Normal groups remain open to
-  any user (role `user` or `admin`).
+  and the real application-admin group from ever diverging. Normal groups
+  remain open to any user (role `user` or `admin`).
+
+- **Host root is separate.** `homevault_admin` is the application-admin group;
+  it does **not** grant host root. The optional `homevault_hostadmin` group is
+  the only host-root grant, it is created at startup but never populated
+  automatically, and its sudoers entry asks for the Linux password. App
+  promotion therefore grants only `homevault_admin`; `sudo`, `wheel` and
+  `homevault_hostadmin` are a deliberate, explicit operator choice.
+  The Linux password is set when the owner changes their HomeVault password
+  (`chpasswd` sync); until then a freshly provisioned account has no usable
+  Linux password, so direct `sudo` from an SSH session is unavailable.
+  The sudoers entries above are installed by the optional non-root deployment
+  (`HV_SERVICE_USER=homevault`, see
+  [Architecture](../ARCHITECTURE.md#deployment-model-root-by-default-optional-non-root));
+  the default root deployment generates no sudoers file, and the separation
+  still holds for *users* because promotion never adds `sudo`/`wheel`.
 - i18n: `[users]` table in `src/i18n/*.toml`. `users.username_example` /
   `fullname_example` / `email_example` back the input placeholders (localized —
   never hard-code "Jean Dupont"). `formatBytes()` in `Users.svelte` formats via
@@ -473,10 +518,12 @@ real holes:
    lacks privileges) leaves both sides consistent and retryable.
 2. **Demotion left real sudo.** `PUT /users/{u}/role` used to clear only
    `homevault_admin`; `sudo`/`wheel` stayed. `HostAccountService::revoke_admin`
-   clears all three (`HOST_ADMIN_GROUPS`) **before** the `role_id` write, and
-   `AuthService::update_role` signs the demoted account out — a session keeps
-   the `is_admin` flag it was created with, and `get_session` now re-derives it
-   from the current role on every call.
+   clears every privileged group (`HOST_PRIVILEGED_GROUPS`) **before** the
+   `role_id` write, and `AuthService::update_role` signs the demoted account
+   out — a session keeps the `is_admin` flag it was created with, and
+   `get_session` now re-derives it from the current role on every call.
+   Promotion now grants **only** `homevault_admin`; host root
+   (`homevault_hostadmin`, `sudo`, `wheel`) is a separate, explicit grant.
 3. **Lock left the host password usable.** The DB flag stops a PAM sign-in but
    not SSH or the web terminal. Lock/unlock now mirrors to
    `usermod -L` / `-U` (best-effort, logged).
@@ -520,7 +567,8 @@ demotion, group validation) are pinned without touching the host in
 
 - The `homevault_admin` group must never be exposed as an ordinary group
   checkbox — a past bug compared a display name to a full system name and never
-  matched, leaking sudo. Guard logic lives in `src/groups.rs`.
+  matched, leaking admin rights. Guard logic lives in `src/groups.rs`. It is the
+  **application** admin group; host root is `homevault_hostadmin`.
 - Deleting a user cleans up live terminal sessions (`handle_user_delete`) and
   removes its Linux account before the row (see *Host (Linux) account
   lifecycle*). A PAM-mirrored account whose Linux user still exists is refused.

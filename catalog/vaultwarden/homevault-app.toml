@@ -16,3 +16,6 @@ description_fr = "Gestionnaire de mots de passe léger, auto-hébergé, compatib
 description_de = "Leichter, selbstgehosteter, Bitwarden-kompatibler Passwortmanager."
 description_es = "Gestor de contraseñas ligero y autoalojado, compatible con Bitwarden."
 tagline = "Lightweight, self-hosted Bitwarden-compatible password manager."
+
+[security]
+no_new_privileges = true

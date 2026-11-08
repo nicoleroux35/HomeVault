@@ -148,7 +148,9 @@ pub fn validate_route(route: &StaticRoute) -> Result<StaticRoute, String> {
     }
 
     Ok(StaticRoute {
-        destination: destination.to_string(),
+        destination: IpNetwork::new(destination.network(), destination.prefix())
+            .unwrap_or(destination)
+            .to_string(),
         via: via.to_string(),
         metric: route.metric,
         interface: interface.to_string(),
@@ -156,7 +158,16 @@ pub fn validate_route(route: &StaticRoute) -> Result<StaticRoute, String> {
 }
 
 fn parse_destination(value: &str) -> Result<IpNetwork, String> {
-    let destination: IpNetwork = value.trim().parse().map_err(|_| {
+    let trimmed = value.trim();
+    // A bare address would be accepted by `IpNetwork` as a /32 or /128 host
+    // route, which this screen deliberately does not manage: the destination
+    // must name the network and its prefix explicitly.
+    if !trimmed.contains('/') {
+        return Err(
+            "Enter a destination network in CIDR form, for example 192.168.20.0/24.".to_string(),
+        );
+    }
+    let destination: IpNetwork = trimmed.parse().map_err(|_| {
         "Enter a destination network in CIDR form, for example 192.168.20.0/24.".to_string()
     })?;
     if destination.prefix() == 0 {

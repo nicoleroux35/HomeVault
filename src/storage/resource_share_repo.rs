@@ -63,6 +63,9 @@ impl ResourceKind {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ResourcePermission {
+    /// Explicit refusal. It wins over every allow, from either a direct or a
+    /// group grant (DSM's "No access > Read/Write > Read only" rule).
+    Deny,
     Read,
     Write,
     Full,
@@ -71,6 +74,7 @@ pub enum ResourcePermission {
 impl ResourcePermission {
     pub fn as_str(self) -> &'static str {
         match self {
+            ResourcePermission::Deny => "deny",
             ResourcePermission::Read => "read",
             ResourcePermission::Write => "write",
             ResourcePermission::Full => "full",
@@ -79,6 +83,7 @@ impl ResourcePermission {
 
     pub fn parse(s: &str) -> Option<Self> {
         match s {
+            "deny" => Some(ResourcePermission::Deny),
             "read" => Some(ResourcePermission::Read),
             "write" => Some(ResourcePermission::Write),
             "full" => Some(ResourcePermission::Full),
@@ -86,10 +91,13 @@ impl ResourcePermission {
         }
     }
 
-    /// Whether this level implies `other` (full ⊇ write ⊇ read).
+    /// Whether this level implies `other`. `deny` implies nothing (a caller
+    /// that needs access must also rule out a deny explicitly, which
+    /// [`ResourceShareRepository::merge_effective`] does).
     pub fn implies(self, other: ResourcePermission) -> bool {
         match self {
-            ResourcePermission::Full => true,
+            ResourcePermission::Deny => matches!(other, ResourcePermission::Deny),
+            ResourcePermission::Full => !matches!(other, ResourcePermission::Deny),
             ResourcePermission::Write => {
                 matches!(other, ResourcePermission::Read | ResourcePermission::Write)
             }
@@ -453,10 +461,12 @@ impl ResourceShareRepository {
         Ok(out)
     }
 
-    /// Merge two `resource -> permission` lists into one, keeping the strongest
-    /// level per resource (`full` ⊃ `write` ⊃ `read`). Pure, so the union rule
-    /// is unit-tested without a database.
-    pub fn merge_strongest(
+    /// Merge direct and inherited `resource -> permission` lists into one.
+    ///
+    /// `deny` wins over every allow (from either source); otherwise the
+    /// strongest level wins (`full` ⊃ `write` ⊃ `read`). Pure, so the rule is
+    /// unit-tested without a database.
+    pub fn merge_effective(
         direct: Vec<(String, String)>,
         inherited: Vec<(String, String)>,
     ) -> Vec<(String, String)> {
@@ -469,7 +479,9 @@ impl ResourceShareRepository {
             merged
                 .entry(resource)
                 .and_modify(|current| {
-                    if parsed.implies(*current) {
+                    if *current == ResourcePermission::Deny || parsed == ResourcePermission::Deny {
+                        *current = ResourcePermission::Deny;
+                    } else if parsed.implies(*current) {
                         *current = parsed;
                     }
                 })
@@ -534,6 +546,7 @@ mod tests {
     #[test]
     fn test_resource_permission_roundtrip() {
         for p in [
+            ResourcePermission::Deny,
             ResourcePermission::Read,
             ResourcePermission::Write,
             ResourcePermission::Full,
@@ -544,9 +557,9 @@ mod tests {
     }
 
     #[test]
-    fn test_merge_strongest_takes_the_stronger_level() {
+    fn test_merge_effective_takes_the_stronger_level() {
         // Direct read + inherited write → write.
-        let merged = ResourceShareRepository::merge_strongest(
+        let merged = ResourceShareRepository::merge_effective(
             vec![("jellyfin".to_string(), "read".to_string())],
             vec![("jellyfin".to_string(), "write".to_string())],
         );
@@ -554,7 +567,7 @@ mod tests {
 
         // Direct full + inherited read → full (a weaker group row must never
         // demote a member who holds a stronger direct grant).
-        let merged = ResourceShareRepository::merge_strongest(
+        let merged = ResourceShareRepository::merge_effective(
             vec![("media".to_string(), "full".to_string())],
             vec![("media".to_string(), "read".to_string())],
         );
@@ -562,8 +575,38 @@ mod tests {
     }
 
     #[test]
-    fn test_merge_strongest_is_a_union_sorted_by_resource() {
-        let merged = ResourceShareRepository::merge_strongest(
+    fn test_merge_effective_lets_deny_win() {
+        // DSM rule: No access > Read/Write > Read only. A deny from either
+        // the direct row or an inherited group row wins over every allow.
+        let merged = ResourceShareRepository::merge_effective(
+            vec![("jellyfin".to_string(), "deny".to_string())],
+            vec![("jellyfin".to_string(), "full".to_string())],
+        );
+        assert_eq!(merged, vec![("jellyfin".to_string(), "deny".to_string())]);
+
+        let merged = ResourceShareRepository::merge_effective(
+            vec![("media".to_string(), "read".to_string())],
+            vec![("media".to_string(), "deny".to_string())],
+        );
+        assert_eq!(merged, vec![("media".to_string(), "deny".to_string())]);
+
+        // A deny on one resource must not affect another.
+        let merged = ResourceShareRepository::merge_effective(
+            vec![("a".to_string(), "deny".to_string())],
+            vec![("b".to_string(), "write".to_string())],
+        );
+        assert_eq!(
+            merged,
+            vec![
+                ("a".to_string(), "deny".to_string()),
+                ("b".to_string(), "write".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_merge_effective_is_a_union_sorted_by_resource() {
+        let merged = ResourceShareRepository::merge_effective(
             vec![("b-app".to_string(), "read".to_string())],
             vec![
                 ("a-folder".to_string(), "write".to_string()),
@@ -580,15 +623,15 @@ mod tests {
     }
 
     #[test]
-    fn test_merge_strongest_ignores_unknown_levels() {
+    fn test_merge_effective_ignores_unknown_levels() {
         // A corrupt row must not grant anything (fail closed), and must not
         // shadow a valid row for the same resource either.
-        let merged = ResourceShareRepository::merge_strongest(
+        let merged = ResourceShareRepository::merge_effective(
             vec![("x".to_string(), "admin".to_string())],
             vec![("x".to_string(), "read".to_string())],
         );
         assert_eq!(merged, vec![("x".to_string(), "read".to_string())]);
-        assert!(ResourceShareRepository::merge_strongest(
+        assert!(ResourceShareRepository::merge_effective(
             vec![("y".to_string(), "bogus".to_string())],
             vec![]
         )
@@ -604,5 +647,9 @@ mod tests {
         assert!(Write.implies(Write) && Write.implies(Read));
         assert!(!Read.implies(Write) && !Read.implies(Full));
         assert!(Read.implies(Read));
+        // Deny is not an allow: it implies only itself, and no allow implies it.
+        assert!(Deny.implies(Deny));
+        assert!(!Deny.implies(Read) && !Deny.implies(Write) && !Deny.implies(Full));
+        assert!(!Full.implies(Deny) && !Read.implies(Deny));
     }
 }

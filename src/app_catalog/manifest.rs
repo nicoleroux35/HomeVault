@@ -100,6 +100,113 @@ pub struct Manifest {
     /// `CARGO_PKG_VERSION` in `is_compatible_with_server`.
     #[serde(default)]
     pub min_homevault_version: Option<String>,
+    /// Docker isolation policy applied to every service in the rendered
+    /// compose file. Defaults to `no-new-privileges:true`; an app that needs
+    /// extra capabilities or a specific uid declares it explicitly.
+    #[serde(default)]
+    pub security: SecurityPolicy,
+}
+
+/// Per-app Docker hardening, rendered into every service of the compose
+/// template. This is HomeVault's equivalent of DSM7's `conf/privilege`: the
+/// package declares what it may do instead of the host granting it silently.
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+pub struct SecurityPolicy {
+    /// Add `security_opt: ["no-new-privileges:true"]` to every service.
+    #[serde(default = "default_true")]
+    pub no_new_privileges: bool,
+    /// Linux capabilities to add (uppercase names, never `ALL`).
+    #[serde(default)]
+    pub cap_add: Vec<String>,
+    /// Linux capabilities to drop (`ALL` is allowed here).
+    #[serde(default)]
+    pub cap_drop: Vec<String>,
+    /// Optional `user:` value (`uid`, `uid:gid`, or a simple account name).
+    #[serde(default)]
+    pub user: Option<String>,
+    /// Mount the container root filesystem read-only.
+    #[serde(default)]
+    pub read_only: bool,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+impl Default for SecurityPolicy {
+    fn default() -> Self {
+        Self {
+            no_new_privileges: true,
+            cap_add: Vec::new(),
+            cap_drop: Vec::new(),
+            user: None,
+            read_only: false,
+        }
+    }
+}
+
+impl SecurityPolicy {
+    /// Nothing to render (only possible when a manifest explicitly turns
+    /// `no_new_privileges` off and declares no other policy).
+    pub fn is_empty(&self) -> bool {
+        !self.no_new_privileges
+            && self.cap_add.is_empty()
+            && self.cap_drop.is_empty()
+            && self.user.is_none()
+            && !self.read_only
+    }
+
+    /// The numeric owner declared by `user` (`uid` or `uid:gid`), used to give
+    /// the app's data directory to the container account.
+    ///
+    /// A non-numeric value (an account name) yields `None`: HomeVault does not
+    /// resolve container names to host uids, so it leaves ownership alone
+    /// rather than guessing. Parsing never fails here because [`validate`]
+    /// already rejected malformed values at manifest load.
+    ///
+    /// [`validate`]: SecurityPolicy::validate
+    pub fn data_owner(&self) -> Option<(u32, Option<u32>)> {
+        let mut parts = self.user.as_deref()?.split(':');
+        let uid = parts.next()?.parse::<u32>().ok()?;
+        let gid = match parts.next() {
+            Some(raw) => Some(raw.parse::<u32>().ok()?),
+            None => None,
+        };
+        if parts.next().is_some() {
+            return None;
+        }
+        Some((uid, gid))
+    }
+
+    /// Validate the capability names and the optional `user:` value. A
+    /// malformed value is a manifest error, not something to pass to Docker.
+    pub fn validate(&self) -> Result<(), String> {
+        for cap in self.cap_add.iter().chain(self.cap_drop.iter()) {
+            if cap.is_empty()
+                || cap.len() > 64
+                || !cap
+                    .chars()
+                    .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_')
+            {
+                return Err(format!("invalid capability name: {cap:?}"));
+            }
+        }
+        if self.cap_add.iter().any(|c| c == "ALL") {
+            return Err("cap_add may not contain ALL (declare the exact capabilities)".to_string());
+        }
+        if let Some(user) = &self.user {
+            let valid = user
+                .chars()
+                .all(|c| c.is_ascii_digit() || c == ':' || c == '_' || c == '-')
+                && !user.is_empty()
+                && !user.starts_with(':')
+                && !user.ends_with(':');
+            if !valid {
+                return Err(format!("invalid container user: {user:?}"));
+            }
+        }
+        Ok(())
+    }
 }
 
 /// One advanced environment variable an app package declares.
@@ -188,6 +295,7 @@ impl Manifest {
                 format!("invalid min_homevault_version {min:?} (want major.minor.patch)")
             })?;
         }
+        m.security.validate()?;
         Ok(m)
     }
 
@@ -410,6 +518,39 @@ mod tests {
             "description = \"d\"\ndependencies = [\"../evil\"]"
         ))
         .is_err());
+    }
+
+    #[test]
+    fn test_security_defaults_and_parsing() {
+        let m = Manifest::parse(MINIMAL).unwrap();
+        assert_eq!(m.security, SecurityPolicy::default());
+        assert!(m.security.no_new_privileges);
+        assert_eq!(m.security.data_owner(), None);
+
+        let src = format!(
+            "{MINIMAL}\n[security]\ncap_drop = [\"ALL\"]\ncap_add = [\"NET_BIND_SERVICE\"]\nuser = \"1000:1001\"\nread_only = true\n"
+        );
+        let m = Manifest::parse(&src).unwrap();
+        assert_eq!(m.security.cap_drop, vec!["ALL"]);
+        assert_eq!(m.security.cap_add, vec!["NET_BIND_SERVICE"]);
+        assert_eq!(m.security.user.as_deref(), Some("1000:1001"));
+        assert!(m.security.read_only);
+        assert_eq!(m.security.data_owner(), Some((1000, Some(1001))));
+    }
+
+    #[test]
+    fn test_security_data_owner_is_numeric_only() {
+        let mut policy = SecurityPolicy::default();
+        policy.user = Some("1000".to_string());
+        assert_eq!(policy.data_owner(), Some((1000, None)));
+        policy.user = Some("1000:1001".to_string());
+        assert_eq!(policy.data_owner(), Some((1000, Some(1001))));
+        policy.user = Some("app-user".to_string());
+        assert_eq!(policy.data_owner(), None);
+        policy.user = Some("1000:".to_string());
+        assert_eq!(policy.data_owner(), None);
+        policy.user = Some("1000:1001:1002".to_string());
+        assert_eq!(policy.data_owner(), None);
     }
 
     #[test]

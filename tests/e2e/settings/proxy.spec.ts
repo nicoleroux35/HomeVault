@@ -175,11 +175,12 @@ test('3.1 — A SOCKS URL is refused and nothing is stored', async ({ page }) =>
 
 test('3.2 — Enabling without any proxy URL is refused', async ({ page }) => {
   await openSecurityCategory(page, adminTokens);
-  // The switch is the row's control; use its accessible name instead of the
-  // visual geometry so this works whatever the component renders.
-  const switchControl = page.getByRole('switch', { name: /outbound proxy|proxy sortant|proxy de salida|ausgehenden proxy/i });
-  if ((await switchControl.getAttribute('aria-checked')) !== 'true') {
-    await switchControl.click();
+  // The Settings switch is a native checkbox inside a label (theme/Switch),
+  // not a role="switch" button.
+  const switchInput = page.locator('input[aria-labelledby="proxy-enable-label"]');
+  const switchLabel = page.locator('label.settings-toggle-label:has(input[aria-labelledby="proxy-enable-label"])');
+  if (!(await switchInput.isChecked())) {
+    await switchLabel.click();
   }
   await page.locator('[data-testid="proxy-http"]').fill('');
   await page.locator('[data-testid="proxy-https"]').fill('');
@@ -189,16 +190,17 @@ test('3.2 — Enabling without any proxy URL is refused', async ({ page }) => {
     /at least one proxy URL|au moins une URL de proxy|al menos una URL de proxy|mindestens eine Proxy-URL/i,
   );
   // Put the switch back so the next test starts from the shipped default.
-  if ((await switchControl.getAttribute('aria-checked')) === 'true') {
-    await switchControl.click();
+  if (await switchInput.isChecked()) {
+    await switchLabel.click();
   }
 });
 
 test('4.1 — A save with the feature off round-trips', async ({ page }) => {
   await openSecurityCategory(page, adminTokens);
-  const switchControl = page.getByRole('switch', { name: /outbound proxy|proxy sortant|proxy de salida|ausgehenden proxy/i });
-  if ((await switchControl.getAttribute('aria-checked')) === 'true') {
-    await switchControl.click();
+  const switchInput = page.locator('input[aria-labelledby="proxy-enable-label"]');
+  const switchLabel = page.locator('label.settings-toggle-label:has(input[aria-labelledby="proxy-enable-label"])');
+  if (await switchInput.isChecked()) {
+    await switchLabel.click();
   }
   await page.locator('[data-testid="proxy-http"]').fill('');
   await page.locator('[data-testid="proxy-https"]').fill('');

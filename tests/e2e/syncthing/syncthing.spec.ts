@@ -396,7 +396,7 @@ test.describe('2 — Tab navigation', () => {
 test.describe('3 — Security', () => {
   test('3.1 — every endpoint rejects a missing session token', async ({ page }) => {
     await gotoSyncthing(page, adminTokens);
-    const results = await page.evaluate(async () => {
+    const results = await page.evaluate(async (deviceId) => {
       const eps: [string, string, any][] = [
         ['GET', '/api/syncthing/status', null],
         ['GET', '/api/syncthing/config', null],
@@ -411,8 +411,8 @@ test.describe('3 — Security', () => {
         // ROADMAP 18.1 — the management routes are the same privilege bar.
         ['POST', '/api/syncthing/folders', { id: 'x', path: '/tmp/x' }],
         ['DELETE', '/api/syncthing/folders/x', null],
-        ['POST', '/api/syncthing/devices', { device_id: DEVICE_ID }],
-        ['DELETE', `/api/syncthing/devices/${DEVICE_ID}`, null],
+        ['POST', '/api/syncthing/devices', { device_id: deviceId }],
+        ['DELETE', `/api/syncthing/devices/${deviceId}`, null],
       ];
       const out: Record<string, boolean> = {};
       for (const [m, p, b] of eps) {
@@ -425,7 +425,7 @@ test.describe('3 — Security', () => {
         out[m + ' ' + p] = j?.success === false;
       }
       return out;
-    });
+    }, DEVICE_ID);
     for (const [k, denied] of Object.entries(results)) {
       expect(denied, `${k} must be denied`).toBe(true);
     }

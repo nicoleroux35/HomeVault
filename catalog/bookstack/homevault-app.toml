@@ -16,3 +16,6 @@ description_fr = "Wiki et plateforme de documentation auto-hébergée, simple."
 description_de = "Einfache, selbstgehostete Wiki- und Dokumentationsplattform."
 description_es = "Wiki y plataforma de documentación autoalojada, sencilla."
 tagline = "Simple, self-hosted wiki and documentation platform."
+
+[security]
+no_new_privileges = true

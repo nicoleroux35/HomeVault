@@ -27,7 +27,7 @@
 use crate::groups::{
     run_group_op, AddMemberRequest, CreateGroupRequest, GroupService, UpdateGroupMetaRequest,
 };
-use crate::handlers::admin_guard::{require_admin, require_auth};
+use crate::handlers::admin_guard::{require_account_manager, require_admin, require_auth};
 use crate::handlers::AppState;
 use crate::storage::database::ADMIN_GROUP_NAME;
 use crate::utils::ResponseHelper;
@@ -38,18 +38,43 @@ use axum::{
 };
 use std::sync::Arc;
 
+/// Refuse an account-manager operation on a protected administrator group.
+/// Admins are unrestricted, so this is a no-op for them.
+async fn account_manager_group_denied(
+    state: &Arc<AppState>,
+    caller: &str,
+    group: &str,
+) -> Option<Response> {
+    if state.auth.is_admin(caller).await {
+        return None;
+    }
+    let display = GroupService::get_display_name(group);
+    if GroupService::is_admin_group(&display) {
+        return Some(ResponseHelper::json_forbidden(
+            "The administrator group is managed by an administrator".to_string(),
+        ));
+    }
+    None
+}
+
 #[axum_macros::debug_handler]
 pub async fn handle_groups_list_users(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> Response {
-    if let Err(resp) = require_admin(&state, &headers).await {
-        return resp;
-    }
+    let caller = match require_account_manager(&state, &headers).await {
+        Ok(username) => username,
+        Err(resp) => return resp,
+    };
+    let caller_is_admin = state.auth.is_admin(&caller).await;
 
     match state.auth.get_all_users().await {
         Ok(users) => {
-            let list: Vec<_> = users.into_iter().map(|u| u.username).collect();
+            let list: Vec<_> = users
+                .into_iter()
+                .filter(|u| caller_is_admin || !u.is_admin())
+                .map(|u| u.username)
+                .collect();
             ResponseHelper::json_success(list)
         }
         Err(e) => ResponseHelper::json_error(format!("Failed to list users: {}", e)),
@@ -107,7 +132,7 @@ pub async fn handle_group_create(
     headers: HeaderMap,
     req: axum::extract::Json<CreateGroupRequest>,
 ) -> Response {
-    let admin_username = match require_admin(&state, &headers).await {
+    let admin_username = match require_account_manager(&state, &headers).await {
         Ok(username) => username,
         Err(resp) => return resp,
     };
@@ -181,10 +206,13 @@ pub async fn handle_group_update(
     headers: HeaderMap,
     req: axum::extract::Json<UpdateGroupMetaRequest>,
 ) -> Response {
-    let admin_username = match require_admin(&state, &headers).await {
+    let admin_username = match require_account_manager(&state, &headers).await {
         Ok(username) => username,
         Err(resp) => return resp,
     };
+    if let Some(resp) = account_manager_group_denied(&state, &admin_username, &name).await {
+        return resp;
+    }
 
     let old_display = GroupService::get_display_name(&name);
     if GroupService::is_admin_group(&old_display) {
@@ -327,10 +355,13 @@ pub async fn handle_group_delete(
     Path(name): Path<String>,
     headers: HeaderMap,
 ) -> Response {
-    let admin_username = match require_admin(&state, &headers).await {
+    let admin_username = match require_account_manager(&state, &headers).await {
         Ok(username) => username,
         Err(resp) => return resp,
     };
+    if let Some(resp) = account_manager_group_denied(&state, &admin_username, &name).await {
+        return resp;
+    }
 
     let full_group_name = GroupService::get_full_group_name(&name);
 
@@ -434,14 +465,25 @@ pub async fn handle_group_add_member(
     headers: HeaderMap,
     req: axum::extract::Json<AddMemberRequest>,
 ) -> Response {
-    let admin_username = match require_admin(&state, &headers).await {
+    let admin_username = match require_account_manager(&state, &headers).await {
         Ok(username) => username,
         Err(resp) => return resp,
     };
+    if let Some(resp) = account_manager_group_denied(&state, &admin_username, &group_name).await {
+        return resp;
+    }
 
     let username = req.username.trim().to_string();
     if username.is_empty() {
         return ResponseHelper::json_error("Username cannot be empty".to_string());
+    }
+    if !state.auth.is_admin(&admin_username).await
+        && (state.auth.is_admin(&username).await || state.auth.can_manage_accounts(&username).await)
+    {
+        return ResponseHelper::json_forbidden(
+            "Administrator and account-manager accounts are managed by an administrator"
+                .to_string(),
+        );
     }
 
     // The member must be a HomeVault account: adding an arbitrary name would
@@ -488,10 +530,21 @@ pub async fn handle_group_remove_member(
     Path((group_name, username)): Path<(String, String)>,
     headers: HeaderMap,
 ) -> Response {
-    let admin_username = match require_admin(&state, &headers).await {
+    let admin_username = match require_account_manager(&state, &headers).await {
         Ok(username) => username,
         Err(resp) => return resp,
     };
+    if let Some(resp) = account_manager_group_denied(&state, &admin_username, &group_name).await {
+        return resp;
+    }
+    if !state.auth.is_admin(&admin_username).await
+        && (state.auth.is_admin(&username).await || state.auth.can_manage_accounts(&username).await)
+    {
+        return ResponseHelper::json_forbidden(
+            "Administrator and account-manager accounts are managed by an administrator"
+                .to_string(),
+        );
+    }
 
     let full_group_name = GroupService::get_full_group_name(&group_name);
 

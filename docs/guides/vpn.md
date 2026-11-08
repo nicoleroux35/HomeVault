@@ -38,6 +38,12 @@ Two independent backends behind one router (`src/handlers/vpn.rs`
 | POST | `/vpn/wireguard/peers` | admin | add device — `{ name }`; response carries the one `client_config` |
 | GET | `/vpn/wireguard/peers/{id}/config` | admin | re-display the device's client config/QR (keys were stored at creation) |
 | DELETE | `/vpn/wireguard/peers/{id}` | admin | revoke: removed from `wg0` live, then from the config and DB |
+| GET | `/vpn/wireguard/clients` | admin | imported outbound client tunnels + live state; **never** the configuration/private key |
+| POST | `/vpn/wireguard/clients` | admin | import — `{ name, config_content, kill_switch?, autostart? }`; validated allowlist, **400** invalid, **409** duplicate name, **503** without `wireguard-tools` |
+| POST | `/vpn/wireguard/clients/{id}/start` | admin | write the config, `wg-quick up`, verify the interface, roll back on failure |
+| POST | `/vpn/wireguard/clients/{id}/stop` | admin | `wg-quick down` (idempotent when already down) |
+| PUT | `/vpn/wireguard/clients/{id}` | admin | `{ autostart }` — connect at boot |
+| DELETE | `/vpn/wireguard/clients/{id}` | admin | disconnect, remove the config file, forget the record |
 | POST | `/vpn/openvpn` | admin | upload profile — `{ name, config_content }`; content-validated, refuses to overwrite a running one (409) |
 | POST | `/vpn/openvpn/{name}/start` | admin | start + **verify connect** (body may carry `{ username, password }` for `--auth-user-pass`) |
 | POST | `/vpn/openvpn/{name}/stop` | admin | kill daemon + delete its log and credential files |
@@ -95,6 +101,64 @@ backup-up.example.com` or a comment never trips the list. The handler also
 answers **409** on an upload whose name matches a profile a daemon is
 currently running from (stop the connection before replacing it).
 
+## WireGuard client tunnels (P1-17)
+
+The **client** direction is independent from the server/peer feature above:
+the appliance itself can join a provider or a remote concentrator. An admin
+imports a standard `.conf`; HomeVault validates it, writes its own copy under
+`/etc/wireguard/hvc-<id>.conf` (0600), brings the interface up and can
+reconnect it at boot.
+
+**The configuration is parsed from an allowlist, never passed through.**
+
+- `[Interface]`: `PrivateKey`, `Address`, `DNS`, `MTU`, `ListenPort`.
+- `[Peer]` (one or more): `PublicKey`, `PresharedKey`, `AllowedIPs`,
+  `Endpoint`, `PersistentKeepalive`.
+- Refused with a named message: `PreUp`/`PostUp`/`PreDown`/`PostDown`
+  (`wg-quick` runs them as root — the same privilege-escalation class as the
+  OpenVPN deny list), `SaveConfig` (HomeVault owns the file), `Table`/`FwMark`
+  (routes come from `AllowedIPs`) and every unknown directive.
+- Every value is validated before it is **re-rendered** into the file: keys
+  must decode to 32 bytes, addresses/DNS/`AllowedIPs` must parse, `Endpoint`
+  must be `host:port` (IPv6 in brackets), the port is 1–65535. A value can
+  therefore never inject a second line.
+
+`kill_switch = true` appends two **fixed** `wg-quick` hooks (no user text):
+`PostUp`/`PreDown` install and remove `iptables` OUTPUT rules for traffic that
+does not leave through `%i`, with `ip6tables` skipped when absent. Without the
+option the rendered file carries no hook at all.
+
+**Interface naming and privileges.** The display name is never used as an
+interface or path: `wireguard_client_interface(id)` derives `hvc-` + 10
+characters from the record uuid (14 bytes, Linux's limit is 15), so a client
+can never reach `wg0`. The sudoers grants are pinned to that namespace
+(`wg show hvc-*[/dump]`, `wg-quick up|down hvc-*`); the config directory is
+already `homevault`-owned, so the file itself is written directly.
+
+**Persistence and boot.** Records live in
+`{DATA_DIRECTORY}/data/wireguard_clients.json`; the rendered configuration is
+sealed with the appliance key (`hv1:`, scope `wireguard-client:<id>`), so the
+private key never appears in an API payload or the list endpoint. A data
+directory restored on another machine yields an unreadable blob: the API says
+so and the admin re-imports the `.conf` instead of running half-configured.
+At startup, after `WG_CLIENT_BOOT_DELAY` (20 s), every record with
+`autostart = true` is reconnected by `restore_autostart_clients`; a failure is
+logged and the record is kept.
+
+**Start is verify-then-rollback.** The file is rewritten from the sealed blob
+before each start, `wg-quick up` runs under `VPN_WRITE_TIMEOUT`, then the
+kernel is polled for 15 s (`wg show <iface> dump`) — `wg-quick` can return
+success while `PostUp`/resolvconf failed. On timeout the interface is brought
+down. An import that fails at any point removes the interface, the file and
+the record, in that order
+(`wireguard_client_import_rollback_plan`).
+
+**Limits.** Only the standard `wg-quick` field set is imported; provider
+configs that rely on `Table = off`, `SaveConfig` or custom scripts are
+refused with the directive named (they must be adapted first). The kill
+switch is IPv4 `iptables` with an optional IPv6 companion — it is not a
+replacement for a firewall policy on the LAN side.
+
 ## WireGuard verification
 
 `ensure_wireguard_server` re-checks that `wg0` is actually up after each
@@ -102,8 +166,10 @@ currently running from (stop the connection before replacing it).
 fail silently (missing permissions, PostUp script error) and provisioning
 would otherwise announce a server no peer can reach. Sudoers grants live in
 `src/setup.rs` (`HostBins::vpn_grants`, scoped since ROADMAP 7.4): `wg show
-wg0`, `wg show wg0 dump`, `wg set wg0 …`, `wg-quick up wg0` (nothing else of
-either binary — the interface name is the hardcoded `WG_INTERFACE`),
+wg0`, `wg show wg0 dump`, `wg set wg0 …`, `wg-quick up wg0`, plus the client
+namespace `wg show hvc-*[/dump]` and `wg-quick up|down hvc-*` (nothing else
+of either binary — the interface is either the hardcoded `WG_INTERFACE` or a
+HomeVault-generated `hvc-*` name),
 `openvpn --config /etc/openvpn/*.ovpn --cd /etc/openvpn --log
 /etc/openvpn/*.log --daemon [--auth-user-pass /etc/openvpn/*.auth]` (both
 tails, so the optional credentials file stays inside the config directory),
@@ -167,23 +233,34 @@ config ships the `YOUR-SERVER-IP` placeholder the admin must replace.
 6. every host command carries a deadline (see above); `run_command`,
    `run_timed_with_stdin` and — for the daemonizing OpenVPN parent —
    `run_timed_detached` are the only allowed shapes. A bare `Command::output()`
-   in this module is a regression the source guard test catches.
+   in this module is a regression the source guard test catches;
+7. an imported client configuration is parsed from an allowlist, re-rendered,
+   sealed at rest and never returned by the API; `PreUp`/`PostUp`/`PreDown`/
+   `PostDown` can never reach `wg-quick`.
 
 ## Tests
 
-- `src/vpn.rs` unit (34): peer-IP allocation, config extraction, client
+- `src/vpn.rs` unit (47): peer-IP allocation, config extraction, client
   config builder, saved-config listing, **profile-content deny list matrix**
   (per-directive, comments/values must not match, case-insensitivity,
   `script-security` levels), **log parsers** (`Initialization Sequence
   Completed` marker, fatal/transport error extraction, timestamp stripping
-  in the summary), and **subprocess deadlines** (source guard, kill path,
-  exit-status-as-data, missing tool, deadline ordering);
-- `tests/vpn_integration.rs` (25): guards on every endpoint, name
+  in the summary), **subprocess deadlines** (source guard, kill path,
+  exit-status-as-data, missing tool, deadline ordering), and **12 on the
+  imported WireGuard client** (allowlist fields, multi-peer route merge,
+  `PreUp`/`PostUp`/`PreDown`/`PostDown` refusal, unknown directive,
+  key/CIDR/DNS/endpoint validation, missing sections, render/round-trip,
+  fixed kill-switch hooks, bounded `hvc-` naming, stored-interface
+  validation, exact argv, rollback order, confined config path);
+- `tests/vpn_integration.rs` (34): guards on every endpoint, name
   sanitisation (traversal, encoded slash, control characters, empty,
   oversized), read-only success paths, **400 profile-content tests** (exec
-  hook, `script-security 2`, credential collector) — they fail validation
-  before any file is written so they stay host-independent;
-- `tests/e2e/vpn/vpn.spec.ts` (39, Playwright);
+  hook, `script-security 2`, credential collector), and **9 client tests**
+  (401/403, empty name, invalid config, `PostUp` refusal, empty list, 404
+  matrix, id traversal) — they fail validation before any file is written so
+  they stay host-independent;
+- `tests/e2e/vpn/vpn.spec.ts` (44, Playwright) — §15 covers the client tab,
+  import modal fields, button gating, `.conf` upload, and the two 400 paths;
 - the genuine WireGuard/OpenVPN tunnel behaviour cannot be exercised in the
   Rust suites (root interfaces, real daemons) — see `TESTING.md`, live pass.
 

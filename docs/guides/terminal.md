@@ -25,6 +25,43 @@ resolves the real working directory of the shell behind a tab by reading
 `/proc/<pid>/cwd`, walking the `sudo -u <user> -i` process tree a few levels
 down (`descendant_pids`) and keeping the deepest readable cwd.
 
+## Access, rights and the Settings toggle
+
+The terminal is **admin-only at the API**, matching DSM's
+`administrators`-only SSH/Telnet login. The desktop also hides the entry
+points for members: the dock button and the command-palette action are
+rendered only for `$isAdmin`, so a member never sees an app that would answer
+`403`.
+
+`Settings > General > Terminal` (`general.terminal_enabled`, default on) is
+the equivalent of DSM's SSH/Telnet checkbox. Turning it off:
+
+- refuses new tickets with `403 Terminal is disabled` (an already-open tab
+  keeps running until closed — deliberately unlike DSM, which terminates every
+  SSH connection when the service is disabled, because losing unsaved shell
+  work is worse than letting the admin close the tab themselves);
+- removes the dock icon and command-palette entry, for admins too;
+- does not touch SFTP: the chrooted, key-only `homevault-sftp` service has its
+  own enable path and group.
+
+The shell runs as the **admin's own Linux account**, not root. A
+`homevault_admin` has no `sudo` entry, so `sudo -i` inside the terminal is
+refused; only a member of `homevault_hostadmin` can escalate (password
+required). This is the deliberate difference from DSM, where every
+`administrators` member can `sudo -i` with their password.
+
+In the optional non-root deployment (`HV_SERVICE_USER=homevault`), the
+sudoers grant lists the common login shells (`/bin/bash`, `/bin/sh`,
+`/bin/dash`, `/bin/zsh`, `/usr/bin/fish`). An admin whose Linux login shell is
+something else needs that path added to the grant in `src/setup.rs`; the
+default root deployment can exec any shell.
+
+Every ticket issuance and explicit tab close logs the **username, tab id and
+client IP** at INFO level to `logs/homevault.log` (the System Journal's
+"HomeVault Application Log" source); a refusal while the terminal is disabled
+is logged at WARN. DSM logs SSH authentication through PAM to `authpriv`;
+HomeVault's audit trail is the application log.
+
 ## Frontend
 
 - `frontend/src/routes/Terminal.svelte` (Svelte 5 runes).

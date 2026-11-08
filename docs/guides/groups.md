@@ -40,8 +40,10 @@ missing) leaves every reference untouched. The dependent updates are
 best-effort and logged — the OS rename already happened, so a failure there is
 an inconsistency to surface, not something to roll back.
 
-The admin group (`homevault_admin`) is refused: it carries the passwordless
-sudo grant, and renaming it would leave the sudoers rule dangling.
+The admin group (`homevault_admin`) is refused: it is the application-admin
+group, and renaming it would leave the role-derived membership dangling.
+Host root is a separate group (`homevault_hostadmin`), never granted
+automatically.
 
 The description lives in the `hv_groups` mirror only (the OS group database
 has no such column), so `GET /groups` fills it in from that table; a group
@@ -111,6 +113,8 @@ page resolves the whole list's memberships in **one** hop
 
 - The `homevault_admin` group is hidden and protected here too
   (`GroupService::is_admin_group`). It cannot be deleted/renamed through this API.
+  The optional host-root group `homevault_hostadmin` is protected the same way
+  and is not listed as an ordinary group: it is an explicit operator-only grant.
 - A member must be an existing HomeVault account: `create_group` provisions a
   Linux account for every member, so an unchecked name creates an unmanaged OS
   account.

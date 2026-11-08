@@ -3067,10 +3067,24 @@ pub async fn handle_explorer_permissions(
 
         let path = validated_path.to_string_lossy().into_owned();
         let result = tokio::task::spawn_blocking(move || {
-            run_timed(
+            // Try the direct call first: root mode and a file the service
+            // owns need no escalation, and a dev/test process without sudo
+            // keeps working. A file owned by another user (the optional
+            // non-root deployment) falls back to the scoped sudo grant.
+            let direct = run_timed(
                 std::process::Command::new("chmod").arg(&mode).arg(&path),
                 HOST_PROBE_TIMEOUT,
-            )
+            );
+            match direct {
+                Ok(out) if out.status.success() => Ok(out),
+                _ => run_timed(
+                    std::process::Command::new("sudo")
+                        .arg("chmod")
+                        .arg(&mode)
+                        .arg(&path),
+                    HOST_PROBE_TIMEOUT,
+                ),
+            }
         })
         .await;
 

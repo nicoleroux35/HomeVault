@@ -80,10 +80,10 @@ use homevault::config::PathGuard;
 use homevault::handlers::settings::{
     handle_all_settings_get, handle_appearance_settings_get, handle_appearance_settings_update,
     handle_autostart_get, handle_autostart_update, handle_check_version_now,
-    handle_email_settings_get, handle_email_settings_update, handle_get_language,
-    handle_notification_settings_get, handle_notification_settings_update,
-    handle_public_settings_get, handle_set_language, handle_settings_export,
-    handle_settings_import, handle_settings_reset, handle_timezones_get,
+    handle_email_settings_get, handle_email_settings_update, handle_general_settings_get,
+    handle_general_settings_update, handle_get_language, handle_notification_settings_get,
+    handle_notification_settings_update, handle_public_settings_get, handle_set_language,
+    handle_settings_export, handle_settings_import, handle_settings_reset, handle_timezones_get,
     handle_update_settings_get, handle_update_settings_update, handle_version_info,
     update_check_attempts, UpdateFrequency, CACHED_UPDATE_RESULT, LAST_UPDATE_CHECK,
     UPDATE_SETTINGS,
@@ -145,6 +145,10 @@ fn settings_router(state: Arc<AppState>) -> Router {
         .route("/api/auth/login", post(handle_login))
         .route("/api/settings", get(handle_all_settings_get))
         .route("/api/settings/public", get(handle_public_settings_get))
+        .route(
+            "/api/settings/general",
+            get(handle_general_settings_get).put(handle_general_settings_update),
+        )
         .route(
             "/api/settings/appearance",
             get(handle_appearance_settings_get).put(handle_appearance_settings_update),
@@ -313,6 +317,58 @@ async fn test_the_aggregate_carries_the_mdns_choice() {
         json!(true),
         "discovery ships enabled: {body}"
     );
+}
+
+/// `Settings > General > Terminal`: default on, persisted with the General
+/// block, reported by the aggregate and the public settings (the desktop
+/// hides its entry point from the latter).
+#[tokio::test]
+async fn test_terminal_toggle_is_persisted_and_reported() {
+    let (state, _tmp, _guard) = setup_state().await;
+    create_test_user(&state, "admin1", "Password123!", 2).await;
+    let mut router = settings_router(state);
+    let token = login(&mut router, "admin1", "Password123!").await;
+
+    let (status, body) = send(
+        &mut router,
+        Method::PUT,
+        "/api/settings/general",
+        Some(&token),
+        Some(json!({"terminal_enabled": false})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    let (_, all) = send(
+        &mut router,
+        Method::GET,
+        "/api/settings",
+        Some(&token),
+        None,
+    )
+    .await;
+    assert_eq!(
+        all["data"]["general"]["terminal_enabled"],
+        json!(false),
+        "the aggregate must report the saved toggle: {all}"
+    );
+
+    let (_, public) = send(&mut router, Method::GET, "/api/settings/public", None, None).await;
+    assert_eq!(
+        public["data"]["terminal_enabled"],
+        json!(false),
+        "the desktop reads the toggle from the public settings: {public}"
+    );
+
+    // Restore the default for the rest of this binary.
+    let _ = send(
+        &mut router,
+        Method::PUT,
+        "/api/settings/general",
+        Some(&token),
+        Some(json!({"terminal_enabled": true})),
+    )
+    .await;
 }
 
 // ---------------------------------------------------------------------------

@@ -370,7 +370,9 @@ test.describe('4 — Security', () => {
       '/api/restic/retention-policies',
     ]) {
       const r = await api(page, null, 'GET', p);
-      expect(r.http, p).toBe(400);
+      // A missing session is `401` (see docs/API.md status contract), not a
+      // malformed request (`400`).
+      expect(r.http, p).toBe(401);
     }
   });
 

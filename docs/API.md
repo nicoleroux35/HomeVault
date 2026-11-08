@@ -272,8 +272,8 @@ only for a `kid` the cached set does not contain.
 | Method | Path | Auth | Notes |
 |--------|------|------|-------|
 | GET | `/settings` | auth | aggregate of all categories |
-| GET | `/settings/public` | public | safe subset (server name, language, version — no appearance) |
-| GET/PUT | `/settings/general` | auth / admin | server name, timezone, `mdns_enabled` — the timezone is validated (IANA) and applied to the host with `timedatectl` (a failed apply returns `timezone_notice`); `mdns_enabled` drives the Avahi service file and the `host-name` override (a refused host change returns `mdns_notice`). The `GET` reports the **live** `mdns_enabled` |
+| GET | `/settings/public` | public | safe subset (server name, language, version, `terminal_enabled` — no appearance) |
+| GET/PUT | `/settings/general` | auth / admin | server name, timezone, `mdns_enabled`, `terminal_enabled` — the timezone is validated (IANA) and applied to the host with `timedatectl` (a failed apply returns `timezone_notice`); `mdns_enabled` drives the Avahi service file and the `host-name` override (a refused host change returns `mdns_notice`). The `GET` reports the **live** `mdns_enabled`; `terminal_enabled` (default true) refuses new terminal tickets when false |
 | GET | `/settings/timezones` | auth | every zone name the scheduler can evaluate (`chrono-tz`'s IANA database, region-prefixed names + `UTC`), sorted — what the Settings picker renders |
 | GET/POST | `/settings/language` | auth | set UI language — persisted as `general.language` and applied at boot before the first page renders; unsupported tags answer `400` |
 | GET | `/translations` | auth | returns flattened `locale → key → string` map (`handle_get_translations`, `src/handlers/settings.rs`; mounted at `/api/translations`) |
@@ -476,7 +476,8 @@ names exactly those verbs (`src/setup.rs::power_grants`).
 | GET | `/users/{username}/sessions` | admin | `handle_admin_user_sessions` — active sessions of that user, tokens masked to 8 chars + `…` |
 | DELETE | `/users/{username}/sessions` | admin | `handle_admin_revoke_user_sessions` — revoke all of that user's sessions (`{"revoked": n}`) |
 | PUT | `/users/{username}/expiry` | admin | `handle_user_set_expiry` — set (`{"expires_at": "<RFC 3339>"}`, must be future) or clear (`null`) the horizon; enforcement in `AuthService::authenticate` + the session sweep |
-| PUT | `/users/{username}/role` | admin | `handle_user_update_role` — demotion revokes `homevault_admin`/`sudo`/`wheel` **before** the write and signs the account out; promotion provisions the Linux account (best-effort) |
+| PUT | `/users/{username}/role` | admin | `handle_user_update_role` — demotion revokes every privileged group (`homevault_admin`/`homevault_hostadmin`/`sudo`/`wheel`) **before** the write and signs the account out; promotion provisions the Linux account and grants **only** `homevault_admin` (host root is a separate explicit grant) |
+| PUT | `/users/{username}/account-manager` | admin | `handle_user_set_account_manager` — `{enabled}` grants/revokes delegated local-account management (migration 083). The manager can manage non-admin users and non-protected groups only; the role, 2FA, sessions and `homevault_admin`/`homevault_hostadmin` stay admin-only. The web desktop remains admins-only; the role is for API/MCP clients today |
 | PUT | `/users/{username}/locked` | admin | `handle_user_set_locked` — a **permanent** lock (clears `locked_until`), mirrored to the Linux password (`usermod -L/-U`, best-effort); an automatic lockout instead expires on its own (see `guides/auth.md`) |
 | POST | `/users/{username}/2fa/disable` | admin | `handle_admin_disable_2fa` |
 | PUT | `/users/{username}/groups` | admin | `handle_user_update_groups` — blank names are rejected, unknown groups → `400 "Group '<x>' does not exist"` |
@@ -502,9 +503,10 @@ names exactly those verbs (`src/setup.rs::power_grants`).
 | GET | `/groups/users` | admin | `handle_groups_list_users` |
 | GET | `/users/{username}/groups` | admin/self | `handle_user_groups` |
 
-The `homevault_admin` system group (the OS admin group) is hidden from ordinary
-group management and cannot be created/deleted through these endpoints
-(see `src/groups.rs` `is_admin_group`).
+The `homevault_admin` system group (the application-admin group) is hidden from
+ordinary group management and cannot be created/deleted through these endpoints
+(see `src/groups.rs` `is_admin_group`). Host root uses the separate
+`homevault_hostadmin` group and is never granted automatically.
 
 **Home-directory size:** `POST /users` and `PUT /users/{u}/full` also accept
 `home_size_bytes: Option<i64>` (`0`/`null` = no limit; negative → 400; larger
@@ -701,7 +703,8 @@ and `handle_share_get` accepted any non-empty `X-Session-Token`; they now use
 
 `/shares/access` is the **fine-grained per-member** layer (apps / folders /
 shares), separate from the POSIX-ACL share permissions above. `kind` ∈ {`app`,
-`folder`, `share`}, `permission` ∈ {`read`, `write`, `full`}. See
+`folder`, `share`}, `permission` ∈ {`deny`, `read`, `write`, `full`} — `deny`
+wins over every allow. See
 [Users](./guides/users.md) for the server-side filter contract.
 
 `share_type` ∈ {`smb`, `nfs`, `ftp`, `webdav`, `sftp`}. Permission grant applies the
@@ -898,7 +901,7 @@ Representative endpoints:
 | GET/PUT | `/docker/daemon/config` | admin | read / validated write of `daemon.json` (+ `systemctl restart docker`) |
 | GET/POST/DELETE | `/docker/networks` (+ `/{name}`, `/prune`, `/connect`, `/disconnect`) | admin |
 | GET/POST/PUT/DELETE | `/docker/compose/projects` (+ `/{name}/config\|start\|stop\|restart\|update\|services`) | admin | `update` = `compose pull` + `up -d` |
-| GET | `/docker/catalog` | auth | manifest-driven app list (15 built-in packages + community stores) + `installed`/`installed_port` |
+| GET | `/docker/catalog` | auth | manifest-driven app list (15 built-in packages + community stores) + `installed`/`installed_port`; filtered by `resource_shares` `kind=app` for members (admins see all) |
 | GET | `/docker/catalog/{id}/icon` · `/gallery/{n}` | auth | package icon / screenshot (`id` is namespaced `<store>:<app>`, URL-encoded) |
 | POST | `/docker/catalog/{id}/install` | admin | renders the package's compose template into a project, starts it, writes `.install.toml`, starts the per-app proxy. Body `{port?, alternatives?, environment?}`; hard-gates compatibility, settings and dependencies |
 | GET | `/docker/catalog/{id}/install-review` | auth | pre-install review: dependency plan (satisfiers, providers, selection), declared environment, compatibility verdict |
@@ -1235,6 +1238,12 @@ engine in `src/vpn.rs`; full semantics in [guides/vpn.md](./guides/vpn.md).
 | POST | `/wireguard/peers` | add device — `{name}` only; response carries the one `client_config` |
 | GET | `/wireguard/peers/{id}/config` | re-display the device's client config/QR (keys stored per migration 026) |
 | DELETE | `/wireguard/peers/{id}` | revoke device (live + persisted) |
+| GET | `/wireguard/clients` | imported outbound client tunnels + live state (`available`, `clients[]`); never the config/private key |
+| POST | `/wireguard/clients` | import `{name,config_content,kill_switch?,autostart?}` — allowlist parser; **400** invalid/hook, **409** duplicate name, **503** without `wireguard-tools` |
+| POST | `/wireguard/clients/{id}/start` | write config, `wg-quick up`, verify the interface within 15 s, roll back on failure |
+| POST | `/wireguard/clients/{id}/stop` | `wg-quick down` (idempotent) |
+| PUT | `/wireguard/clients/{id}` | `{autostart}` — reconnect at boot |
+| DELETE | `/wireguard/clients/{id}` | disconnect, remove `/etc/wireguard/hvc-*.conf`, forget the record |
 | POST | `/openvpn` | upload profile — `{name,config_content}`; **content-validated** (no exec directives / `script-security > 1`, else 400 naming the directive), **409** if the same name's profile is currently running |
 | POST | `/openvpn/{name}/start` | start + **verify the tunnel connects within a 10 s grace** (log marker), else the daemon is killed and the API answers `success:false` with the log's error line; body `{username,password}` optional (`--auth-user-pass`) |
 | POST | `/openvpn/{name}/stop` | kill daemon, delete its `.log` and `.auth` files |
@@ -1296,6 +1305,10 @@ User avatars served at `GET /users/{username}/avatar.svg`.
 
 Router in `src/handlers/terminal_pty.rs`, nested at `/api/terminal`. The PTY
 WebSocket requires a single-use ticket (long-lived tokens never appear in URLs).
+Every endpoint is admin-only; `GET /settings/public` exposes
+`terminal_enabled` so the desktop can hide the entry point when an admin
+disabled the terminal (`403 Terminal is disabled` on ticket issuance). Ticket
+issuance and tab close log the username, tab id and client IP.
 
 | Method | Endpoint | Notes |
 |--------|----------|-------|

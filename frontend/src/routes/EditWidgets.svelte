@@ -234,7 +234,7 @@
             <div class="text-xs text-[var(--hv-shell-text-2)] truncate">{$t(d.descKey)}</div>
           </div>
 
-          <div class="flex items-center gap-1 flex-none">
+          <div class="flex items-center gap-4 flex-none">
             <button
               type="button"
               class="hv-ic"

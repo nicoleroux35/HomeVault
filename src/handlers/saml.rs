@@ -577,6 +577,7 @@ pub async fn handle_saml_complete(Json(request): Json<CompleteRequest>) -> Respo
         csrf_token: issued.csrf_token,
         username: issued.username,
         is_admin: issued.is_admin,
+        can_manage_accounts: issued.is_admin,
         must_change_password: false,
     })
 }

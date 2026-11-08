@@ -680,11 +680,13 @@ pub async fn directory_login(
                 .record_successful_attempt(&session.username, ip_address, user_agent)
                 .await;
             let token = session.token.clone();
+            let can_manage_accounts = state.auth.can_manage_accounts(&session.username).await;
             let response = crate::storage::models::LoginResponse {
                 token: session.token,
                 csrf_token: session.csrf_token,
                 username: session.username,
                 is_admin: session.is_admin,
+                can_manage_accounts,
                 // A directory password is never HomeVault's to change.
                 must_change_password: false,
             };

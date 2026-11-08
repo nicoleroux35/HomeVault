@@ -842,11 +842,13 @@ pub async fn handle_passkey_login_finish(
                 .await
                 .map(|u| u.must_change_password)
                 .unwrap_or(false);
+            let can_manage_accounts = state.auth.can_manage_accounts(&session.username).await;
             let response = crate::storage::models::LoginResponse {
                 token: session.token,
                 csrf_token: session.csrf_token,
                 username: session.username,
                 is_admin: session.is_admin,
+                can_manage_accounts,
                 must_change_password,
             };
             crate::app_proxy::cookie::attach_session(

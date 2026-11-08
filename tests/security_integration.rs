@@ -1103,7 +1103,7 @@ async fn test_firewall_rule_delete_reports_a_missing_rule_instead_of_deleting() 
         assert_eq!(status, StatusCode::NOT_FOUND);
         assert_eq!(body["success"], json!(false));
     } else {
-        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
         assert!(body["message"]
             .as_str()
             .unwrap_or("")
@@ -1331,7 +1331,7 @@ async fn test_firewall_enable_preview_is_readable_by_any_session() {
         assert!(body["data"]["default_policy"]["outgoing"].is_string());
         assert!(body["data"]["warnings"].is_array());
     } else {
-        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
         assert!(body["message"]
             .as_str()
             .unwrap_or("")

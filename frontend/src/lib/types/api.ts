@@ -32,6 +32,10 @@ export interface ApiResponse<T = any> {
    * bounded window instead of showing a short list with no explanation.
    */
   meta?: Record<string, any>;
+  /** HTTP status of the response, when it came from the network. Lets a
+   *  polling caller distinguish a transport/5xx failure from a well-formed
+   *  `success:false` refusal (e.g. an expired session). */
+  http_status?: number;
 }
 
 // ── Auth ────────────────────────────────────────────────────────────────────

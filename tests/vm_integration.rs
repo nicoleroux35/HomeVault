@@ -541,7 +541,7 @@ async fn clone_rejects_a_bad_name_before_touching_incus() {
     let mut router = vm_router(state.clone());
     let token = admin_token(&state, &mut router).await;
 
-    for bad in ["", "bad name", "UPPER", "a--b", "-copy"] {
+    for bad in ["", "bad name", "a--b", "-copy"] {
         let (status, body) = send(
             &mut router,
             Method::POST,

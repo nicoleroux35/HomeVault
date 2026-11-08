@@ -324,7 +324,7 @@ test.describe('4 — Security', () => {
     });
     expect(results.send).toBe(false);
     expect(results.models).toBe(false);
-    expect(results.modelStatus).toBe(400);
+    expect(results.modelStatus).toBe(401);
     expect(results.streamStatus).toBe(401);
   });
 
@@ -362,12 +362,13 @@ test.describe('4 — Security', () => {
 
       const pull = await ctx.post('/api/chat/models/pull', { headers: h, data: { name: 'gemma3:1b' } });
       const pj = await pull.json();
-      expect(pull.status()).toBe(400);
+      // A valid non-admin session on an admin mutation is `403` (docs/API.md).
+      expect(pull.status()).toBe(403);
       expect(pj.error || pj.message || '').toMatch(/admin/i);
 
       const set = await ctx.put('/api/chat/model', { headers: h, data: { model: 'gemma3:1b' } });
       const sj = await set.json();
-      expect(set.status()).toBe(400);
+      expect(set.status()).toBe(403);
       expect(sj.error || sj.message || '').toMatch(/admin/i);
 
       // but reading the model + chatting is fine for a regular user

@@ -62,9 +62,10 @@ use homevault::handlers::{
     users::{
         handle_admin_disable_2fa, handle_admin_revoke_user_sessions, handle_admin_user_sessions,
         handle_user_count, handle_user_create, handle_user_delete, handle_user_exists,
-        handle_user_get, handle_user_set_expiry, handle_user_set_locked, handle_user_update,
-        handle_user_update_full, handle_user_update_groups, handle_user_update_password,
-        handle_user_update_role, handle_users_list,
+        handle_user_get, handle_user_set_account_manager, handle_user_set_expiry,
+        handle_user_set_locked, handle_user_update, handle_user_update_full,
+        handle_user_update_groups, handle_user_update_password, handle_user_update_role,
+        handle_users_list,
     },
     AppState,
 };
@@ -168,6 +169,10 @@ fn users_router(state: Arc<AppState>) -> Router {
         .route(
             "/api/users/{username}/locked",
             axum::routing::put(handle_user_set_locked),
+        )
+        .route(
+            "/api/users/{username}/account-manager",
+            axum::routing::put(handle_user_set_account_manager),
         )
         .route(
             "/api/users/{username}/2fa/disable",
@@ -2177,4 +2182,95 @@ async fn test_user_create_rejects_a_blank_group_name() {
     )
     .await;
     assert_eq!(body["success"], json!(false));
+}
+
+/// Delegated account management (DSM's "Local user and group management"):
+/// a non-admin manager can manage non-admin accounts, but can neither see nor
+/// touch an administrator, create another administrator, or appoint another
+/// manager.
+#[tokio::test]
+async fn test_account_manager_is_scoped_to_non_admin_accounts() {
+    let (state, _tmp, _g) = setup_state().await;
+    create_test_user(&state, "admin1", "Passw0rd!123", 2).await;
+    create_test_user(&state, "manager1", "Passw0rd!123", 1).await;
+    create_test_user(&state, "bob", "Passw0rd!123", 1).await;
+    let mut r = users_router(state);
+    let admin_token = login(&mut r, "admin1", "Passw0rd!123").await;
+
+    let (status, _) = send(
+        &mut r,
+        Method::PUT,
+        "/api/users/manager1/account-manager",
+        Some(&admin_token),
+        Some(json!({"enabled": true})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    let manager_token = login(&mut r, "manager1", "Passw0rd!123").await;
+
+    // The list hides administrators from the delegated manager.
+    let (status, body) = send(
+        &mut r,
+        Method::GET,
+        "/api/users",
+        Some(&manager_token),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let names: Vec<&str> = body["data"]
+        .as_array()
+        .expect("user array")
+        .iter()
+        .filter_map(|u| u["username"].as_str())
+        .collect();
+    assert!(names.contains(&"manager1") && names.contains(&"bob"));
+    assert!(!names.contains(&"admin1"), "admins stay hidden: {body}");
+
+    // Cannot create another administrator.
+    let mut payload = valid_create_payload("eve");
+    payload["role_id"] = json!(2);
+    let (status, _) = send(
+        &mut r,
+        Method::POST,
+        "/api/users",
+        Some(&manager_token),
+        Some(payload),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+
+    // Cannot edit an administrator.
+    let (status, _) = send(
+        &mut r,
+        Method::PUT,
+        "/api/users/admin1",
+        Some(&manager_token),
+        Some(json!({"fullname": "Pwned", "email": ""})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+
+    // Cannot appoint another manager.
+    let (status, _) = send(
+        &mut r,
+        Method::PUT,
+        "/api/users/bob/account-manager",
+        Some(&manager_token),
+        Some(json!({"enabled": true})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+
+    // Can create a normal account.
+    let (status, _) = send(
+        &mut r,
+        Method::POST,
+        "/api/users",
+        Some(&manager_token),
+        Some(valid_create_payload("carol")),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
 }

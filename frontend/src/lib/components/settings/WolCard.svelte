@@ -207,7 +207,7 @@
       {#each hosts as host (host.id)}
         <li class="settings-info-row" data-testid="wol-host" data-host-id={host.id}>
           <span class="flex items-center gap-2 min-w-0">
-            <IconDeviceDesktop size={15} />
+            <IconDeviceDesktop size={16} />
             <span class="min-w-0">
               <span class="block text-sm font-medium text-[var(--hv-settings-title)] truncate">
                 {host.label}
@@ -226,7 +226,7 @@
               aria-label={$t('settings.wol_wake_host', { label: host.label })}
               data-testid="wol-wake"
             >
-              <IconBolt size={14} /> {$t('settings.wol_wake')}
+              <IconBolt size={16} /> {$t('settings.wol_wake')}
             </button>
             <button
               class={cn(settingsBtn, settingsBtnGhost)}
@@ -243,7 +243,7 @@
               aria-label={$t('settings.wol_delete_host', { label: host.label })}
               data-testid="wol-delete"
             >
-              <IconTrash size={15} />
+              <IconTrash size={16} />
             </button>
           </span>
         </li>

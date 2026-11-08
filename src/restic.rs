@@ -559,8 +559,11 @@ fn unmount_path(mount_point: &str) -> Result<(), ResticError> {
         }));
     }
 
+    // `sudo` is a no-op when the service already runs as root and the only
+    // way to unmount under the optional non-root deployment; the sudoers
+    // grant is confined to `/tmp/restic-snap-*`.
     let output = run_timed(
-        &mut Command::new("umount").arg(mount_point),
+        &mut Command::new("sudo").arg("umount").arg(mount_point),
         RESTIC_FUSE_UNMOUNT_TIMEOUT,
     )
     .map_err(ResticError::CommandFailed)?;
@@ -1992,12 +1995,19 @@ impl SnapshotMount {
 
         let output = if is_zfs {
             run_timed(
-                &mut Command::new("mount").args(["-t", "zfs", snapshot_path, mount_point]),
+                &mut Command::new("sudo").arg("mount").args([
+                    "-t",
+                    "zfs",
+                    snapshot_path,
+                    mount_point,
+                ]),
                 RESTIC_MOUNT_TIMEOUT,
             )
         } else {
             run_timed(
-                &mut Command::new("mount").args(["--bind", dataset, mount_point]),
+                &mut Command::new("sudo")
+                    .arg("mount")
+                    .args(["--bind", dataset, mount_point]),
                 RESTIC_MOUNT_TIMEOUT,
             )
         }
@@ -2022,7 +2032,7 @@ impl SnapshotMount {
 impl Drop for SnapshotMount {
     fn drop(&mut self) {
         let _ = run_timed(
-            &mut Command::new("umount").arg(&self.mount_point),
+            &mut Command::new("sudo").arg("umount").arg(&self.mount_point),
             RESTIC_MOUNT_TIMEOUT,
         );
         let _ = std::fs::remove_dir(&self.mount_point);

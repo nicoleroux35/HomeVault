@@ -171,11 +171,15 @@ impl GroupService {
         full_name.starts_with(GROUP_PREFIX)
     }
 
-    /// True if `name` (display or full system name) refers to the reserved
-    /// admin group — used to keep it out of generic group-management UIs,
-    /// since it grants real passwordless sudo on the host.
+    /// True if `name` (display or full system name) refers to a reserved
+    /// privileged group — the application-admin group (`homevault_admin`) or
+    /// the optional host-root group (`homevault_hostadmin`). Both are kept out
+    /// of generic group-management UIs: one is driven by the account role, the
+    /// other is an explicit operator-only host grant.
     pub fn is_admin_group(name: &str) -> bool {
-        Self::get_full_group_name(name) == crate::storage::database::ADMIN_GROUP_NAME
+        let full = Self::get_full_group_name(name);
+        full == crate::storage::database::ADMIN_GROUP_NAME
+            || full == crate::storage::database::HOST_ADMIN_GROUP_NAME
     }
 
     /// List all HomeVault-managed groups from the system's group database.
@@ -203,6 +207,11 @@ impl GroupService {
                     .collect();
 
                 if !Self::is_homevault_group(&full_name) {
+                    continue;
+                }
+                // The host-root group is operator-only: do not expose it as an
+                // ordinary group an admin could grant by ticking a box.
+                if full_name == crate::storage::database::HOST_ADMIN_GROUP_NAME {
                     continue;
                 }
 
@@ -300,6 +309,14 @@ impl GroupService {
             ));
         }
 
+        // Reserved privileged names are created only by the application, not
+        // by an admin typing a display name into the Groups page.
+        if Self::is_admin_group(display_name) {
+            return Err(GroupError::CommandFailed(
+                "This group name is reserved".to_string(),
+            ));
+        }
+
         let full_name = Self::get_full_group_name(display_name);
 
         let output = grp_run(Command::new("getent").args(["group", &full_name]))?;
@@ -350,7 +367,7 @@ impl GroupService {
     pub fn delete_group(name: &str) -> Result<(), GroupError> {
         let full_name = Self::get_full_group_name(name);
 
-        if full_name == crate::storage::database::ADMIN_GROUP_NAME {
+        if Self::is_admin_group(&full_name) {
             return Err(GroupError::CommandFailed(
                 "Cannot delete system group".to_string(),
             ));

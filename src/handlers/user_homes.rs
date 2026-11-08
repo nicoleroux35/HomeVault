@@ -258,8 +258,12 @@ pub(crate) async fn apply_home_folder(
             .trim()
             .to_string();
 
+        // `sudo` is a no-op for the root deployment and the only way to hand
+        // a home folder to its owner under the optional non-root deployment;
+        // the grant is confined to `/home/homevault/*`.
         let chown_output = run_timed_async_result(
-            tokio::process::Command::new("chown").args([
+            tokio::process::Command::new("sudo").args([
+                "chown",
                 "-R",
                 &format!("{}:{}", uid, gid),
                 &home_path,
@@ -411,7 +415,14 @@ pub async fn handle_user_home_put(
     headers: HeaderMap,
     req: axum::extract::Json<SetHomeFolderRequest>,
 ) -> Response {
-    if let Err(resp) = crate::handlers::admin_guard::require_admin(&state, &headers).await {
+    let caller = match crate::handlers::admin_guard::require_account_manager(&state, &headers).await
+    {
+        Ok(username) => username,
+        Err(resp) => return resp,
+    };
+    if let Some(resp) =
+        crate::handlers::users::account_manager_target_denied(&state, &caller, &username).await
+    {
         return resp;
     }
 
@@ -459,7 +470,14 @@ pub async fn handle_user_home_delete(
     Path(username): Path<String>,
     headers: HeaderMap,
 ) -> Response {
-    if let Err(resp) = crate::handlers::admin_guard::require_admin(&state, &headers).await {
+    let caller = match crate::handlers::admin_guard::require_account_manager(&state, &headers).await
+    {
+        Ok(username) => username,
+        Err(resp) => return resp,
+    };
+    if let Some(resp) =
+        crate::handlers::users::account_manager_target_denied(&state, &caller, &username).await
+    {
         return resp;
     }
 

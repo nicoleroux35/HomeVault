@@ -430,7 +430,14 @@ pub async fn visible_app_ids(
         return Ok(None);
     }
     let rows = effective_visible_resources(state, username, ResourceKind::App).await?;
-    Ok(Some(rows.into_iter().map(|(r, _)| r).collect()))
+    // A deny is not a visible grant: it removes the app from the member's
+    // catalog entirely (the same way DSM's "No access" wins).
+    Ok(Some(
+        rows.into_iter()
+            .filter(|(_, level)| level != ResourcePermission::Deny.as_str())
+            .map(|(r, _)| r)
+            .collect(),
+    ))
 }
 
 /// Whether `username` may see `resource` of `kind`. Admins always can.
@@ -446,12 +453,11 @@ pub async fn can_access(
     effective_visible_resources(state, username, kind)
         .await
         .map(|rows| {
-            rows.into_iter().any(|(r, level)| {
-                r == resource
-                    && ResourcePermission::parse(&level)
-                        .map(|p| p.implies(ResourcePermission::Read))
-                        .unwrap_or(false)
-            })
+            rows.into_iter()
+                .find(|(r, _)| r == resource)
+                .and_then(|(_, level)| ResourcePermission::parse(&level))
+                .map(|p| p != ResourcePermission::Deny && p.implies(ResourcePermission::Read))
+                .unwrap_or(false)
         })
         .unwrap_or(false)
 }
@@ -492,7 +498,7 @@ pub async fn effective_visible_resources(
         .visible_resources_for_groups(&groups, kind)
         .await
         .map_err(|e| sqlx::Error::Protocol(e.to_string()))?;
-    Ok(ResourceShareRepository::merge_strongest(direct, inherited))
+    Ok(ResourceShareRepository::merge_effective(direct, inherited))
 }
 
 /// Whether `username` holds the admin role.

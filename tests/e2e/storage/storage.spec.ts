@@ -443,7 +443,8 @@ test.describe('4 — Security', () => {
       '/api/encryption/volumes',
     ]) {
       const r = await api(page, null, 'GET', path);
-      expect(r.http, path).toBe(400);
+      // A missing session is `401` (docs/API.md status contract).
+      expect(r.http, path).toBe(401);
     }
   });
 

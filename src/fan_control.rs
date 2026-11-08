@@ -34,6 +34,29 @@ const HYSTERESIS_TEMP: i32 = 2; // 2°C hysteresis
 /// `u8`: `MIN_SAFE_PWM * 100` is 5100, which does not fit in a byte.
 const MIN_SAFE_DUTY_PERCENT: u8 = (MIN_SAFE_PWM as u32 * 100 / 255) as u8;
 
+/// Write a sysfs value, falling back to `sudo tee` when the service is not
+/// root. The hwmon files are root-owned, so the optional non-root deployment
+/// needs the sudoers grant; root mode takes the direct path.
+async fn write_sysfs(path: &Path, value: String) -> Result<(), String> {
+    if fs::write(path, &value).await.is_ok() {
+        return Ok(());
+    }
+    let mut cmd = tokio::process::Command::new("sudo");
+    cmd.arg("tee").arg(path);
+    let output = crate::utils::process::run_timed_async_with_stdin(
+        &mut cmd,
+        Duration::from_secs(10),
+        value.as_bytes(),
+    )
+    .await
+    .map_err(|e| e.to_string())?;
+    if output.status.success() {
+        Ok(())
+    } else {
+        Err(String::from_utf8_lossy(&output.stderr).trim().to_string())
+    }
+}
+
 /// Fan control profile
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "lowercase")]
@@ -395,7 +418,7 @@ impl FanControlService {
             .hwmon_path
             .join(format!("pwm{}_enable", channel.pwm_num));
 
-        fs::write(&enable_path, mode.to_string())
+        write_sysfs(&enable_path, mode.to_string())
             .await
             .map_err(|e| format!("failed to set PWM mode: {}", e))
     }
@@ -414,7 +437,7 @@ impl FanControlService {
 
         let pwm_path = channel.hwmon_path.join(format!("pwm{}", channel.pwm_num));
 
-        fs::write(&pwm_path, pwm_value.to_string())
+        write_sysfs(&pwm_path, pwm_value.to_string())
             .await
             .map_err(|e| format!("failed to set PWM duty: {}", e))
     }

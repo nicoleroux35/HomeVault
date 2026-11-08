@@ -23,7 +23,7 @@
 //! * `users.password_changed_at` — RFC 3339; `NULL` on legacy rows, in which
 //!   case the caller falls back to `created_at`.
 
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, NaiveDateTime, Utc};
 use sqlx::SqlitePool;
 use std::sync::Arc;
 
@@ -110,9 +110,19 @@ impl PasswordPolicyRepository {
 }
 
 fn parse_rfc3339(value: &str) -> Option<DateTime<Utc>> {
-    DateTime::parse_from_rfc3339(value)
-        .ok()
-        .map(|parsed| parsed.with_timezone(&Utc))
+    if let Ok(parsed) = DateTime::parse_from_rfc3339(value) {
+        return Some(parsed.with_timezone(&Utc));
+    }
+    // `created_at` and rows written by older builds use SQLite's
+    // `datetime('now')` shape (`YYYY-MM-DD HH:MM:SS`, no offset, UTC). A
+    // legacy account must still be governed by the expiry policy instead of
+    // silently falling back to "never expires".
+    for format in ["%Y-%m-%d %H:%M:%S%.f", "%Y-%m-%d %H:%M:%S"] {
+        if let Ok(naive) = NaiveDateTime::parse_from_str(value, format) {
+            return Some(naive.and_utc());
+        }
+    }
+    None
 }
 
 /// Whether `changed_at + expiry_days` is in the past. Pure, so the edge cases

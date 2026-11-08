@@ -651,7 +651,7 @@ pub fn render_config(config: &AgentConfig) -> String {
             }
         }
         AgentVersion::V3 => {
-            s.push_str("# Dedicated SNMPv3 user. Read-only: no `rwuser`.\n");
+            s.push_str("# Dedicated SNMPv3 user. Read-only: no write user.\n");
             if config.v3_username.is_empty()
                 || config.v3_auth_secret.is_empty()
                 || config.v3_priv_secret.is_empty()

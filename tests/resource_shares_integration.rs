@@ -704,8 +704,8 @@ async fn test_group_grant_rejects_unknown_kind() {
 }
 
 /// The union rule end-to-end, without needing real OS groups: the repository
-/// is the same one the handlers call, and `merge_strongest` is the single
-/// place the "strongest wins" decision lives.
+/// is the same one the handlers call, and `merge_effective` is the single
+/// place the deny-wins / strongest-allow decision lives.
 #[tokio::test]
 async fn test_effective_access_unions_direct_and_group_grants() {
     let (state, _tmp, _guard) = setup_state().await;
@@ -750,7 +750,7 @@ async fn test_effective_access_unions_direct_and_group_grants() {
         .visible_resources_for_groups(&["family".to_string()], ResourceKind::App)
         .await
         .expect("group rows");
-    let merged = ResourceShareRepository::merge_strongest(direct, inherited);
+    let merged = ResourceShareRepository::merge_effective(direct, inherited);
 
     assert_eq!(
         merged,
@@ -781,11 +781,68 @@ async fn test_effective_access_unions_direct_and_group_grants() {
         .visible_resources_for_groups(&["family".to_string()], ResourceKind::App)
         .await
         .expect("group rows");
-    let merged = ResourceShareRepository::merge_strongest(direct, inherited);
+    let merged = ResourceShareRepository::merge_effective(direct, inherited);
     assert_eq!(
         merged,
         vec![("jellyfin".to_string(), "full".to_string())],
         "the direct row survives, the group-only one is gone"
+    );
+}
+
+/// DSM's "No access > Read/Write > Read only": a deny from either the direct
+/// row or a group row wins, and `can_access` refuses the resource.
+#[tokio::test]
+async fn test_deny_wins_over_a_direct_or_group_allow() {
+    let (state, _tmp, _guard) = setup_state().await;
+    create_test_user(&state, "admin1", "pw12345678", 2).await;
+    create_test_user(&state, "member", "pw12345678", 1).await;
+    let repo = ResourceShareRepository::new(state.db.pool());
+
+    repo.upsert(
+        "admin1",
+        "member",
+        ResourceKind::App,
+        "jellyfin",
+        ResourcePermission::Deny,
+    )
+    .await
+    .expect("direct deny");
+    repo.upsert_group(
+        "admin1",
+        "family",
+        ResourceKind::App,
+        "jellyfin",
+        ResourcePermission::Full,
+    )
+    .await
+    .expect("group allow");
+
+    let direct = repo
+        .visible_resources("member", ResourceKind::App)
+        .await
+        .expect("direct rows");
+    let inherited = repo
+        .visible_resources_for_groups(&["family".to_string()], ResourceKind::App)
+        .await
+        .expect("group rows");
+    let merged = ResourceShareRepository::merge_effective(direct, inherited);
+    assert_eq!(
+        merged,
+        vec![("jellyfin".to_string(), "deny".to_string())],
+        "the deny must survive the union"
+    );
+
+    assert!(
+        !repo
+            .can_access(
+                "member",
+                ResourceKind::App,
+                "jellyfin",
+                ResourcePermission::Read
+            )
+            .await
+            .expect("can_access"),
+        "a denied resource is not readable"
     );
 }
 

@@ -16,3 +16,6 @@ description_fr = "Gestion documentaire auto-hébergée avec OCR et recherche ple
 description_de = "Selbstgehostete Dokumentenverwaltung mit OCR und Volltextsuche."
 description_es = "Gestión documental autoalojada con OCR y búsqueda de texto completo."
 tagline = "Self-hosted document management with OCR and full-text search."
+
+[security]
+no_new_privileges = true

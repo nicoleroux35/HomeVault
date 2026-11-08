@@ -43,8 +43,8 @@
 //! HomeVault database accounts are the primary path; host (PAM) accounts are
 //! also accepted — they authenticate against the system's PAM stack, are
 //! mirrored into the `users` table with a sentinel password hash, and derive
-//! their admin status from host group membership
-//! (sudo/admin/wheel/homevault_admin).
+//! their admin status from the **application** admin group
+//! (`homevault_admin`), not from host-root groups (`sudo`/`wheel`).
 
 use super::models::{Session, User};
 use crate::storage::database::ADMIN_GROUP_NAME;
@@ -172,6 +172,20 @@ impl AuthService {
     pub const LOGIN_IP_MAX_PER_HOUR: u32 = 120;
 
     pub fn new(db: Database) -> Self {
+        // The full E2E suite logs in hundreds of times from one IP in a
+        // single run; the production hourly ceiling (120) would lock the
+        // suite out of its own server. Debug builds honour an explicit
+        // override so the harness can raise only that ceiling; release
+        // builds always use the constant.
+        let hourly_max = if cfg!(debug_assertions) {
+            std::env::var("HOMEVAULT_E2E_LOGIN_IP_MAX_PER_HOUR")
+                .ok()
+                .and_then(|v| v.parse::<u32>().ok())
+                .filter(|v| *v > 0)
+                .unwrap_or(Self::LOGIN_IP_MAX_PER_HOUR)
+        } else {
+            Self::LOGIN_IP_MAX_PER_HOUR
+        };
         Self {
             pool: db.pool(),
             login_ip_limiter: Arc::new(crate::middleware::rate_limit::RateLimitState::new(
@@ -179,8 +193,7 @@ impl AuthService {
                 60,
             )),
             login_ip_hourly_limiter: Arc::new(crate::middleware::rate_limit::RateLimitState::new(
-                Self::LOGIN_IP_MAX_PER_HOUR,
-                3600,
+                hourly_max, 3600,
             )),
         }
     }
@@ -654,8 +667,8 @@ impl AuthService {
     /// only through [`Self::authenticate_with_pam`].
     ///
     /// Upserts the row on every PAM login so the mirrored `role_id` tracks the
-    /// account's *current* host group membership (promoted/demoted in
-    /// sudo/wheel/admin/homevault_admin).
+    /// account's *current* application-admin membership
+    /// (`homevault_admin`), never host-root membership (`sudo`/`wheel`).
     async fn ensure_pam_user_row(&self, username: &str) -> Result<(), AuthError> {
         let is_admin = Self::user_belongs_to_admin_group(username)
             .await
@@ -899,8 +912,8 @@ except Exception as e:
             u.role_id == ADMIN_ROLE_ID
         } else if Self::is_system_user(&username) {
             // The user is not in the HomeVault DB but authenticated via PAM.
-            // Grant admin privileges if they belong to a privileged group on
-            // the host (sudo, admin, or homevault_admin).
+            // Grant application admin privileges only when the account is in
+            // `homevault_admin`; host-root groups are a separate concern.
             Self::user_belongs_to_admin_group(&username)
                 .await
                 .unwrap_or(false)
@@ -951,11 +964,11 @@ except Exception as e:
             .unwrap_or(false)
     }
 
-    /// Returns true if the system user belongs to a group that grants
-    /// administrative privileges in HomeVault (sudo, admin, wheel, or
-    /// homevault_admin). Callers: `create_session` (once per login — cheap
-    /// even blocking) and `is_admin` (every admin-gated request — the
-    /// `spawn_blocking` below is what keeps that path off the Tokio runtime).
+    /// Returns true if the system user belongs to the **application** admin
+    /// group (`homevault_admin`). Host-root groups (`homevault_hostadmin`,
+    /// `sudo`, `wheel`) deliberately do **not** grant HomeVault admin: an
+    /// operator who needs a root shell gets one from the host, not from the
+    /// appliance's web UI (DSM7's `administrators` vs `wheel` split).
     async fn user_belongs_to_admin_group(username: &str) -> Result<bool, AuthError> {
         use std::process::Command;
 
@@ -976,7 +989,7 @@ except Exception as e:
         let groups_output = String::from_utf8_lossy(&output.stdout);
         Ok(groups_output
             .split_whitespace()
-            .any(|g| g == "sudo" || g == "admin" || g == "wheel" || g == ADMIN_GROUP_NAME))
+            .any(|g| g == ADMIN_GROUP_NAME))
     }
 
     pub async fn get_session(&self, token: &str) -> Result<Session, AuthError> {
@@ -1043,6 +1056,54 @@ except Exception as e:
         Self::user_belongs_to_admin_group(username)
             .await
             .unwrap_or(false)
+    }
+
+    /// Whether `username` may manage local users/groups without being an
+    /// application admin (DSM's delegated "Local user and group management"
+    /// role). Admins always can.
+    pub async fn can_manage_accounts(&self, username: &str) -> bool {
+        if self.is_admin(username).await {
+            return true;
+        }
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM account_managers WHERE username = ?")
+            .bind(username)
+            .fetch_one(self.pool.as_ref())
+            .await
+            .map(|n| n > 0)
+            .unwrap_or(false)
+    }
+
+    /// Grant or revoke the delegated account-manager role.
+    pub async fn set_account_manager(
+        &self,
+        username: &str,
+        enabled: bool,
+    ) -> Result<(), AuthError> {
+        let result = if enabled {
+            sqlx::query(
+                "INSERT INTO account_managers (username) VALUES (?)
+                 ON CONFLICT(username) DO NOTHING",
+            )
+            .bind(username)
+            .execute(self.pool.as_ref())
+            .await
+        } else {
+            sqlx::query("DELETE FROM account_managers WHERE username = ?")
+                .bind(username)
+                .execute(self.pool.as_ref())
+                .await
+        };
+        result
+            .map(|_| ())
+            .map_err(|e| AuthError::Database(e.to_string()))
+    }
+
+    /// Every delegated account manager (for the Users list/detail).
+    pub async fn list_account_managers(&self) -> Result<Vec<String>, AuthError> {
+        sqlx::query_scalar::<_, String>("SELECT username FROM account_managers ORDER BY username")
+            .fetch_all(self.pool.as_ref())
+            .await
+            .map_err(|e| AuthError::Database(e.to_string()))
     }
 
     pub async fn validate_session_token(&self, token: &str) -> bool {
@@ -1246,12 +1307,13 @@ except Exception as e:
 
         // Demotion revokes the host grants FIRST, before the database row
         // changes. `is_admin` and `create_session` derive admin status from
-        // sudo/wheel/homevault_admin membership, so a demotion that only
-        // rewrote `role_id` (the pre-2026-10-21 behaviour, which cleared
-        // `homevault_admin` alone) left the account with real root access —
-        // and the next PAM sign-in promoted it straight back to admin. Doing
-        // this first means a host failure aborts with the DB still consistent
-        // with the host, instead of reporting a demotion that did not happen.
+        // `homevault_admin` membership, so a demotion that only rewrote
+        // `role_id` (the pre-2026-10-21 behaviour, which cleared
+        // `homevault_admin` alone) left the account with real root access
+        // through `sudo`/`wheel` — and the next PAM sign-in promoted it
+        // straight back to admin. Doing this first means a host failure aborts
+        // with the DB still consistent with the host, instead of reporting a
+        // demotion that did not happen.
         if demoting {
             match crate::host_accounts::HostAccountService::revoke_admin(username).await {
                 Ok(removed) if !removed.is_empty() => tracing::info!(

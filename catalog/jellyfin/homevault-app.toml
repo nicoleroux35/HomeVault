@@ -16,3 +16,6 @@ description_fr = "Serveur multimédia gratuit pour films, séries et musique."
 description_de = "Kostenloser Medienserver für Filme, Serien und Musik."
 description_es = "Servidor multimedia gratuito para películas, series y música."
 tagline = "Free media server for movies, TV shows and music."
+
+[security]
+no_new_privileges = true

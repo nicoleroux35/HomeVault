@@ -16,3 +16,6 @@ description_fr = "Outil d'automatisation de workflows reliant vos applications e
 description_de = "Workflow-Automatisierungstool zur Verbindung Ihrer Apps und Dienste."
 description_es = "Herramienta de automatización de flujos de trabajo que conecta tus apps y servicios."
 tagline = "Workflow automation tool connecting your apps and services."
+
+[security]
+no_new_privileges = true

@@ -286,11 +286,14 @@ pub async fn handle_login(
                         .await
                         .map(|u| u.must_change_password)
                         .unwrap_or(false);
+                    let can_manage_accounts =
+                        state.auth.can_manage_accounts(&session.username).await;
                     let response = LoginResponse {
                         token: session.token,
                         csrf_token: session.csrf_token,
                         username: session.username,
                         is_admin: session.is_admin,
+                        can_manage_accounts,
                         must_change_password,
                     };
                     crate::app_proxy::cookie::attach_session(
@@ -396,11 +399,13 @@ pub async fn handle_2fa_verify(
                 .await
                 .map(|u| u.must_change_password)
                 .unwrap_or(false);
+            let can_manage_accounts = state.auth.can_manage_accounts(&session.username).await;
             let response = LoginResponse {
                 token: session.token,
                 csrf_token: session.csrf_token,
                 username: session.username,
                 is_admin: session.is_admin,
+                can_manage_accounts,
                 must_change_password,
             };
             let response = crate::app_proxy::cookie::attach_session(
@@ -632,6 +637,10 @@ pub async fn handle_get_current_user(
                     "role": user.role_name().to_string(),
                     "role_id": user.role_id,
                     "is_admin": session.is_admin,
+                    "can_manage_accounts": state
+                        .auth
+                        .can_manage_accounts(&session.username)
+                        .await,
                     "created_at": user.created_at,
                     "two_fa_enabled": two_fa_enabled,
                     "avatar_seed": user.avatar_seed,
@@ -1024,14 +1033,15 @@ pub async fn handle_setup(
         }
     }
 
-    // No sudoers file to generate any more: HomeVault runs as root (see
-    // the systemd unit installer/install.sh writes — no User=/Group=, and
-    // install.sh no longer creates a "homevault" service account), so every
-    // `sudo` call already in the codebase (RAID/mdadm, ZFS, VPN, Docker, useradd/
-    // groupadd above, ...) already succeeds against the default Debian/
-    // Ubuntu `root ALL=(ALL:ALL) ALL` sudoers rule — nothing left to grant.
-    // `SetupService::configure_sudoers()` is kept in setup.rs (unused) as a
-    // reference for anyone reviving a non-root deployment mode later.
+    // No sudoers file to generate here. In the default deployment the unit
+    // runs as root, so every `sudo` call in the codebase (RAID/mdadm, ZFS,
+    // VPN, Docker, useradd/groupadd above, ...) already succeeds against the
+    // distro-default `root ALL=(ALL:ALL) ALL` rule. The optional non-root
+    // deployment (`HV_SERVICE_USER=homevault`) has the installer run
+    // `homevault --install-sudoers` as root *before* starting the unit, so
+    // the grants exist before the wizard's first `useradd` runs. The wizard
+    // itself must never write `/etc/sudoers.d`: it would have to do so as the
+    // unprivileged service account.
 
     let ip_address = extract_client_ip(&headers);
 

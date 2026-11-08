@@ -363,9 +363,10 @@ use crate::handlers::{
     users::{
         handle_admin_disable_2fa, handle_admin_revoke_user_sessions, handle_admin_user_sessions,
         handle_user_count, handle_user_create, handle_user_delete, handle_user_exists,
-        handle_user_get, handle_user_set_expiry, handle_user_set_locked, handle_user_update,
-        handle_user_update_full, handle_user_update_groups, handle_user_update_password,
-        handle_user_update_role, handle_users_list,
+        handle_user_get, handle_user_set_account_manager, handle_user_set_expiry,
+        handle_user_set_locked, handle_user_update, handle_user_update_full,
+        handle_user_update_groups, handle_user_update_password, handle_user_update_role,
+        handle_users_list,
     },
     weather_location::{handle_get_weather_location, handle_set_weather_location},
     web_push::{
@@ -2009,6 +2010,12 @@ pub fn create_app(state: AppStateArc) -> Router {
             axum::routing::put(handle_user_set_locked),
         )
         .route(
+            // Delegated local-account management (DSM's role). Admin-only:
+            // a manager must not be able to appoint another manager.
+            "/api/users/{username}/account-manager",
+            axum::routing::put(handle_user_set_account_manager),
+        )
+        .route(
             // Account expiry (migration 050): profile saves must never move
             // this horizon, only this dedicated admin endpoint does.
             "/api/users/{username}/expiry",
@@ -2755,6 +2762,20 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 }
             }
             Err(e) => tracing::warn!("Static-route boot re-apply task failed: {e}"),
+        }
+    });
+    // Imported WireGuard client tunnels flagged "start at boot": reconnect
+    // once the network is up. A failure is logged and the record is kept, so a
+    // slow provider endpoint is not a reason to forget the operator's choice.
+    tokio::spawn(async move {
+        tokio::time::sleep(crate::vpn::WG_CLIENT_BOOT_DELAY).await;
+        match tokio::task::spawn_blocking(crate::vpn::restore_autostart_clients).await {
+            Ok(failures) => {
+                for failure in failures {
+                    tracing::warn!("WireGuard client not restored at boot: {failure}");
+                }
+            }
+            Err(e) => tracing::warn!("WireGuard client boot task failed: {e}"),
         }
     });
     tokio::spawn(crate::metrics::run_collector_loop(state.db.pool()));

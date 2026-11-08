@@ -29,7 +29,7 @@
 //! profile, password and home folder).
 
 use crate::groups::{run_group_op, GroupService};
-use crate::handlers::admin_guard::{require_admin, require_auth};
+use crate::handlers::admin_guard::{require_account_manager, require_admin, require_auth};
 use crate::handlers::{users_models::*, AppState};
 use crate::host_accounts::HostAccountService;
 use crate::storage::user_home_repo::UserHomeRepository;
@@ -49,12 +49,40 @@ pub struct DeleteUserQuery {
     pub delete_home_folder: bool,
 }
 
+/// Refuse an account-manager operation on an administrator or on the caller's
+/// own account. Admins are unrestricted, so this is a no-op for them.
+///
+/// This is the second half of `require_account_manager`: the guard proves the
+/// caller may manage *some* accounts, this proves the target is one of them.
+pub(crate) async fn account_manager_target_denied(
+    state: &Arc<AppState>,
+    caller: &str,
+    target: &str,
+) -> Option<Response> {
+    if state.auth.is_admin(caller).await {
+        return None;
+    }
+    if target == caller {
+        return Some(ResponseHelper::json_forbidden(
+            "You cannot change your own account here".to_string(),
+        ));
+    }
+    if state.auth.is_admin(target).await {
+        return Some(ResponseHelper::json_forbidden(
+            "Administrator accounts are managed by an administrator".to_string(),
+        ));
+    }
+    None
+}
+
 /// Lists all users with their roles, group memberships, and home-folder status.
 #[axum_macros::debug_handler]
 pub async fn handle_users_list(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Response {
-    if let Err(resp) = require_admin(&state, &headers).await {
-        return resp;
-    }
+    let caller = match require_account_manager(&state, &headers).await {
+        Ok(username) => username,
+        Err(resp) => return resp,
+    };
+    let caller_is_admin = state.auth.is_admin(&caller).await;
 
     let users = match state.auth.get_all_users().await {
         Ok(users) => users,
@@ -77,6 +105,14 @@ pub async fn handle_users_list(State(state): State<Arc<AppState>>, headers: Head
             std::collections::HashMap::new()
         }
     };
+
+    let account_managers: std::collections::HashSet<String> = state
+        .auth
+        .list_account_managers()
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .collect();
 
     let repo = UserHomeRepository::new(state.db.pool());
     let mut user_list: Vec<UserListItem> = Vec::new();
@@ -117,7 +153,14 @@ pub async fn handle_users_list(State(state): State<Arc<AppState>>, headers: Head
             avatar_url: format!("/api/users/{}/avatar.svg", username_clone),
             two_fa_enabled,
             is_host_account,
+            is_account_manager: account_managers.contains(&username_clone),
         });
+    }
+
+    // DSM's delegated role cannot view administrators; hide them from the
+    // list rather than returning rows every edit would then refuse.
+    if !caller_is_admin {
+        user_list.retain(|u| u.role_id != crate::storage::models::ADMIN_ROLE_ID);
     }
 
     ResponseHelper::json_success(user_list)
@@ -134,7 +177,10 @@ pub async fn handle_user_get(
         Err(resp) => return resp,
     };
 
-    if caller != username && !state.auth.is_admin(&caller).await {
+    if caller != username
+        && !state.auth.is_admin(&caller).await
+        && !(state.auth.can_manage_accounts(&caller).await && !state.auth.is_admin(&username).await)
+    {
         return ResponseHelper::json_forbidden("Access denied".to_string());
     }
 
@@ -177,6 +223,8 @@ pub async fn handle_user_get(
         "home_path": home.as_ref().and_then(|h| h.path.clone()),
         "home_size_bytes": home.as_ref().and_then(|h| h.size_limit_bytes),
         "is_host_account": is_host_account,
+        "is_account_manager": state.auth.can_manage_accounts(&user.username).await
+            && !state.auth.is_admin(&user.username).await,
     });
     ResponseHelper::json_success(user_data)
 }
@@ -187,10 +235,11 @@ pub async fn handle_user_create(
     headers: HeaderMap,
     req: axum::extract::Json<CreateUserRequest>,
 ) -> Response {
-    let admin_username = match require_admin(&state, &headers).await {
+    let admin_username = match require_account_manager(&state, &headers).await {
         Ok(username) => username,
         Err(resp) => return resp,
     };
+    let caller_is_admin = state.auth.is_admin(&admin_username).await;
 
     let rate_limit_key = format!("user_create:{}", admin_username);
     if state
@@ -227,6 +276,11 @@ pub async fn handle_user_create(
     if req.role_id != 1 && req.role_id != 2 {
         return ResponseHelper::json_error(
             "Invalid role_id: must be 1 (user) or 2 (admin)".to_string(),
+        );
+    }
+    if !caller_is_admin && req.role_id != crate::storage::models::USER_ROLE_ID {
+        return ResponseHelper::json_forbidden(
+            "Only an administrator can create another administrator".to_string(),
         );
     }
 
@@ -405,7 +459,10 @@ pub async fn handle_user_update(
         Err(resp) => return resp,
     };
 
-    if caller != username && !state.auth.is_admin(&caller).await {
+    if caller != username
+        && !state.auth.is_admin(&caller).await
+        && !(state.auth.can_manage_accounts(&caller).await && !state.auth.is_admin(&username).await)
+    {
         return ResponseHelper::json_forbidden("Access denied".to_string());
     }
 
@@ -426,7 +483,11 @@ pub async fn handle_user_update_full(
     headers: HeaderMap,
     req: axum::extract::Json<UpdateUserFullRequest>,
 ) -> Response {
-    if let Err(resp) = require_admin(&state, &headers).await {
+    let caller = match require_account_manager(&state, &headers).await {
+        Ok(username) => username,
+        Err(resp) => return resp,
+    };
+    if let Some(resp) = account_manager_target_denied(&state, &caller, &username).await {
         return resp;
     }
 
@@ -472,10 +533,13 @@ pub async fn handle_user_update_groups(
     headers: HeaderMap,
     req: axum::extract::Json<UpdateGroupMembershipRequest>,
 ) -> Response {
-    let admin_username = match require_admin(&state, &headers).await {
+    let admin_username = match require_account_manager(&state, &headers).await {
         Ok(username) => username,
         Err(resp) => return resp,
     };
+    if let Some(resp) = account_manager_target_denied(&state, &admin_username, &username).await {
+        return resp;
+    }
 
     let requested = match GroupService::normalize_member_list(&req.groups) {
         Ok(groups) => groups,
@@ -656,10 +720,13 @@ pub async fn handle_user_set_expiry(
     headers: HeaderMap,
     req: axum::extract::Json<SetExpiryRequest>,
 ) -> Response {
-    let admin_username = match require_admin(&state, &headers).await {
+    let admin_username = match require_account_manager(&state, &headers).await {
         Ok(username) => username,
         Err(resp) => return resp,
     };
+    if let Some(resp) = account_manager_target_denied(&state, &admin_username, &username).await {
+        return resp;
+    }
 
     let user_repo = crate::storage::user_repo::UserRepository::new(state.db.pool());
     if user_repo
@@ -759,7 +826,11 @@ pub async fn handle_user_update_password(
     };
 
     let caller_is_admin = state.auth.is_admin(&caller).await;
-    if !caller_is_admin && caller != username {
+    let manager_reset = !caller_is_admin
+        && caller != username
+        && state.auth.can_manage_accounts(&caller).await
+        && !state.auth.is_admin(&username).await;
+    if !caller_is_admin && caller != username && !manager_reset {
         return ResponseHelper::json_forbidden("Access denied".to_string());
     }
 
@@ -774,7 +845,7 @@ pub async fn handle_user_update_password(
         return ResponseHelper::json_error(message.to_string());
     }
 
-    let current_password = if caller_is_admin {
+    let current_password = if caller_is_admin || manager_reset {
         None
     } else {
         // Self-service change by a non-admin: a stolen session token
@@ -794,21 +865,27 @@ pub async fn handle_user_update_password(
             &username,
             current_password,
             &req.new_password,
-            // An admin resetting someone else's password chose (or let
-            // the server generate) an out-of-band secret: its owner
-            // must change it at the next sign-in. A self change — the
-            // current password was verified or the session is the
-            // admin's own — is owner-chosen, which also clears any
-            // pending requirement.
-            caller_is_admin && caller != username,
+            // An admin (or a delegated account manager) resetting someone
+            // else's password chose (or let the server generate) an
+            // out-of-band secret: its owner must change it at the next
+            // sign-in. A self change — the current password was verified or
+            // the session is the owner's own — is owner-chosen, which also
+            // clears any pending requirement.
+            caller != username,
         )
         .await
     {
         Ok(_) => {
-            if caller_is_admin && caller != username {
+            if caller != username {
                 crate::events::log_event(format!(
-                    "Admin '{}' changed password for user '{}'",
-                    caller, username
+                    "{} '{}' changed password for user '{}'",
+                    if caller_is_admin {
+                        "Admin"
+                    } else {
+                        "Account manager"
+                    },
+                    caller,
+                    username
                 ));
             } else {
                 crate::events::log_event(format!("User '{}' changed their password", username));
@@ -889,6 +966,48 @@ pub async fn handle_user_update_role(
         Err(e) => ResponseHelper::json_error(format!("Failed to update role: {}", e)),
     }
 }
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct SetAccountManagerRequest {
+    pub enabled: bool,
+}
+
+/// Grants or revokes the delegated account-manager role (DSM's "Local user and
+/// group management"). Admin-only: a delegated manager must never be able to
+/// create another manager.
+#[axum_macros::debug_handler]
+pub async fn handle_user_set_account_manager(
+    State(state): State<Arc<AppState>>,
+    Path(username): Path<String>,
+    headers: HeaderMap,
+    req: axum::extract::Json<SetAccountManagerRequest>,
+) -> Response {
+    let admin_username = match require_admin(&state, &headers).await {
+        Ok(username) => username,
+        Err(resp) => return resp,
+    };
+    if !state.auth.user_exists(&username).await {
+        return ResponseHelper::json_error(format!("User '{}' not found", username));
+    }
+    if state.auth.is_admin(&username).await {
+        return ResponseHelper::json_error(
+            "Administrators already manage accounts; the delegated role is for non-admins"
+                .to_string(),
+        );
+    }
+    match state.auth.set_account_manager(&username, req.enabled).await {
+        Ok(()) => {
+            crate::events::log_event(format!(
+                "Admin '{}' {} account-manager delegation for '{}'",
+                admin_username,
+                if req.enabled { "granted" } else { "revoked" },
+                username
+            ));
+            ResponseHelper::json_success(serde_json::json!({ "enabled": req.enabled }))
+        }
+        Err(e) => ResponseHelper::json_error(format!("Failed to update delegation: {}", e)),
+    }
+}
+
 /// Locks or unlocks a user account. Locked users cannot authenticate.
 #[axum_macros::debug_handler]
 pub async fn handle_user_set_locked(
@@ -897,10 +1016,13 @@ pub async fn handle_user_set_locked(
     headers: HeaderMap,
     req: axum::extract::Json<SetLockedRequest>,
 ) -> Response {
-    let admin_username = match require_admin(&state, &headers).await {
+    let admin_username = match require_account_manager(&state, &headers).await {
         Ok(username) => username,
         Err(resp) => return resp,
     };
+    if let Some(resp) = account_manager_target_denied(&state, &admin_username, &username).await {
+        return resp;
+    }
 
     // Locking is one-way from the admin's own perspective: there is no
     // recovery path other than another admin unlocking you, so refuse
@@ -992,10 +1114,13 @@ pub async fn handle_user_delete(
     headers: HeaderMap,
     axum::extract::Query(query): axum::extract::Query<DeleteUserQuery>,
 ) -> Response {
-    let admin_username = match require_admin(&state, &headers).await {
+    let admin_username = match require_account_manager(&state, &headers).await {
         Ok(username) => username,
         Err(resp) => return resp,
     };
+    if let Some(resp) = account_manager_target_denied(&state, &admin_username, &username).await {
+        return resp;
+    }
 
     if admin_username == username {
         return ResponseHelper::json_error("Cannot delete your own account".to_string());

@@ -285,6 +285,7 @@ mod tests {
         );
         sqlx::query(
             "CREATE TABLE snapshot_schedules (id TEXT PRIMARY KEY, pool TEXT NOT NULL, \
+             share TEXT, share_type TEXT, \
              enabled INTEGER NOT NULL DEFAULT 1, cron TEXT NOT NULL, prefix TEXT NOT NULL, \
              recursive INTEGER NOT NULL DEFAULT 1, gfs_hourly INTEGER NOT NULL, \
              gfs_daily INTEGER NOT NULL, gfs_weekly INTEGER NOT NULL, \

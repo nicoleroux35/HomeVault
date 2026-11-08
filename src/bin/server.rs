@@ -21,6 +21,17 @@ use std::error::Error;
 
 /// Entry point — starts the Tokio runtime and launches the async server.
 fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
+    // Installer hook for the optional non-root deployment (`HV_SERVICE_USER=
+    // homevault`): the installer runs this as root *before* starting the
+    // unprivileged unit, so the service account gets the scoped sudoers file
+    // it needs without ever holding root itself. Idempotent and safe to run
+    // again on upgrade.
+    if std::env::args().nth(1).as_deref() == Some("--install-sudoers") {
+        homevault::setup::SetupService::install_sudoers()?;
+        println!("HomeVault sudoers file written to /etc/sudoers.d/homevault");
+        return Ok(());
+    }
+
     let rt = tokio::runtime::Runtime::new()?;
     rt.block_on(async {
         // Propagate the failure instead of swallowing it: a refused start (for

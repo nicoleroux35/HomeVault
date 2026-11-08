@@ -16,3 +16,6 @@ description_fr = "Serveur de streaming musical auto-hébergé, compatible Subson
 description_de = "Selbstgehosteter Musik-Streaming-Server, Subsonic-kompatibel."
 description_es = "Servidor de streaming de música autoalojado, compatible con Subsonic."
 tagline = "Self-hosted music streaming server, Subsonic-compatible."
+
+[security]
+no_new_privileges = true

@@ -16,3 +16,6 @@ description_fr = "Hub domotique open-source. Utilise le réseau hôte pour la d�
 description_de = "Open-Source-Hub für Hausautomation. Nutzt Host-Netzwerk zur Geräteerkennung."
 description_es = "Hub de automatización del hogar de código abierto. Usa la red del host para detectar dispositivos."
 tagline = "Open-source home automation hub. Uses host networking for device discovery."
+
+[security]
+no_new_privileges = true

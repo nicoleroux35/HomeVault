@@ -206,6 +206,44 @@ function createWindowManager() {
       });
     },
 
+    /** Re-clamp every floating window after a viewport resize. A window
+     * opened on a wide desktop keeps its 1024px width otherwise and ends up
+     * partly (or entirely) off-screen on a phone, with no reachable drag
+     * handle. Below the auto-maximize breakpoint the window is maximized,
+     * matching what a fresh open at that width would do. */
+    reflow(vw: number, vh: number) {
+      const margin = DEFAULT_SNAP_CONFIG.edgeMargin;
+      const maxWidth = Math.max(MIN_RESTORED_WIDTH, vw - margin * 2);
+      const maxHeight = Math.max(
+        MIN_RESTORED_HEIGHT,
+        vh - DEFAULT_SNAP_CONFIG.topbarHeight - DEFAULT_SNAP_CONFIG.dockHeight - margin * 2,
+      );
+      windows.update(wins =>
+        wins.map(w => {
+          if (w.isMinimized) return w;
+          if (w.isMaximized) return w;
+          if (vw <= AUTO_MAXIMIZE_BREAKPOINT) {
+            return {
+              ...w,
+              isMaximized: true,
+              savedX: w.x,
+              savedY: w.y,
+              savedWidth: w.width,
+              savedHeight: w.height,
+            };
+          }
+          const width = Math.min(w.width, maxWidth);
+          const height = Math.min(w.height, maxHeight);
+          const x = Math.max(margin, Math.min(w.x, vw - width - margin));
+          const y = Math.max(
+            DEFAULT_SNAP_CONFIG.topbarHeight,
+            Math.min(w.y, vh - height - margin),
+          );
+          return { ...w, x, y, width, height };
+        }),
+      );
+    },
+
     updateWindowSize(id: string, width: number, height: number) {
       windows.update(wins => {
         return wins.map(w =>

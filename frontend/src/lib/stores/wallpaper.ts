@@ -76,6 +76,21 @@ const STORAGE_KEY = 'hv-wallpaper';
  * back to the default bundled photo.
  */
 export function normalizeWallpaper(raw: unknown): WallpaperConfig {
+  // The settings API persists the wallpaper as a bare path string
+  // (`/wallpapers/hv-07.webp`); older exports may carry the JSON-encoded
+  // object. Accept both shapes here so hydration never silently falls back
+  // to the default photo.
+  if (typeof raw === 'string') {
+    const trimmed = raw.trim();
+    if (trimmed.startsWith('/wallpapers/')) {
+      return { type: 'image', value: trimmed };
+    }
+    try {
+      return normalizeWallpaper(JSON.parse(trimmed));
+    } catch {
+      return DEFAULT_WALLPAPER;
+    }
+  }
   if (raw && typeof raw === 'object') {
     const r = raw as Record<string, unknown>;
     if (

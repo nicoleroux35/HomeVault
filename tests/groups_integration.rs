@@ -728,7 +728,10 @@ async fn test_group_update_requires_admin() {
     )
     .await;
     assert_ne!(status, StatusCode::OK);
-    assert!(body["message"].as_str().unwrap_or("").contains("Admin"));
+    assert!(body["message"]
+        .as_str()
+        .unwrap_or("")
+        .contains("privileges required"));
 }
 
 #[tokio::test]
