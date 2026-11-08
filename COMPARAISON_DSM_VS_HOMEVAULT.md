@@ -36,8 +36,9 @@ qu'elle listait sont **désormais livrés** et ne doivent plus être comptés :
 | SMB multicanal, AD/Kerberos (config + join), NFS `sec=krb5` | ✅ livrés (P2 partiel assumé) |
 | ACL par partage, quotas par partage, Previous Versions, Time Machine, serveur rsync | ✅ livrés |
 | OpenAPI, DDNS 7 fournisseurs, SNMP v3 | ✅ livrés |
-| Table d'audit, isolation d'exécution | ❌ toujours ouverts (voir §3) |
+| Table d'audit | ❌ toujours ouvert (voir §3) |
 | Signature + atomicité de mise à jour | 🟡 **installeur livré le 2026‑11‑08** (P2‑8 partiel : déclenchement UI restant) |
+| Isolation d'exécution | 🟡 **installeur livré le 2026‑11‑08** (P2‑7 partiel : systemd durci + AppArmor opt‑in ; validation terrain/enforce restante) |
 
 **Ce que la revue du 2026‑11‑08 ajoute.** Le diagnostic de ce document reste
 juste : les vrais manques sont la **confiance** (mise à jour, isolation, audit,
@@ -161,8 +162,18 @@ Référence opérationnelle : `HOMEVAULT_TASKLIST_A_FAIRE.md` §1bis.
 vérifié avant téléchargement, application atomique, `homevault.previous`
 conservé, rollback automatique si le service ne devient pas prêt, résultat
 exposé dans Settings (`last_update`). Le **déclenchement depuis l'UI** reste à
-faire, ainsi que la publication de la clé publique de production. P2‑7,
-P1‑18 et P2‑9 restent ouverts.
+faire, ainsi que la publication de la clé publique de production.
+
+P2‑7 est livré côté **installeur** : unité systemd durcie et mesurable
+(`ProtectSystem`, `ReadOnlyPaths`, `PrivateTmp`, `RestrictSUIDSGID`,
+`LockPersonality`, `RestrictRealtime`, `ProtectKernelLogs`, et
+`NoNewPrivileges` en mode root), directives qui casseraient une fonction
+volontairement absentes et documentées, profil AppArmor **opt‑in** en mode
+complain (enforce après validation terrain), score `systemd-analyze security`
+dans le journal d'installation. Restent la validation terrain et l'enforce
+AppArmor.
+
+P1‑18 (table d'audit) et P2‑9 (restauration bare‑metal) restent ouverts.
 
 ### 3.2 À recadrer — bon objectif, mauvais périmètre
 
@@ -239,9 +250,12 @@ PHP 8.1/Redis 4.0.
 - Protocoles du téléchargeur : `src/handlers/downloader.rs:78`
 - Types de tâches : `src/scheduled_tasks_scheduler.rs:83-160`
 - Clone VM : `src/handlers/vm.rs:163` ; routes VM : `src/web/mod.rs:2355-2426`
-- Absence d'audit/signature/isolation : aucune occurrence dans
-  `sqlx/migrations/`, `src/app_catalog/`, `installer/install.sh`
-  (unité principale sans `ProtectSystem`)
+- **Audit** : aucune table dédiée dans `sqlx/migrations/` (P1‑18 ouvert)
+- **Isolation** : `installer/install.sh` → `render_service_unit` (durcissement
+  P2‑7) et `render_apparmor_profile` (opt‑in) ; score
+  `systemd-analyze security` imprimé par l'installeur
+- **Signature/atomicité** : `hv_load_manifest`, `hv_swap_binary`,
+  `hv_rollback_binary` dans `installer/install.sh` (P2‑8)
 - Catalogue : `catalog/*/homevault-app.toml` (15 apps)
 - Apps catalogue **non liées aux partages** : le compose ne binde que
   `/srv/apps/<app>` (`src/app_catalog/mod.rs:261-270`) — d'où le chantier
@@ -351,5 +365,32 @@ installeur).**
 
 **Reste sur P2‑8** : bouton *Apply update* dans Settings (le bouton actuel ne
 fait que vérifier), appel privilégié du moteur, et publication de la clé
-publique de production. Les autres P0 gardent leur ordre : P2‑7 isolation,
-P1‑18 table d'audit, P2‑9 restauration bare‑metal.
+publique de production.
+
+**P2‑7 — isolation d'exécution (partiel, côté installeur).**
+
+- L'unité systemd est désormais rendue par `render_service_unit` (source
+  unique, testée) et embarque un bloc de durcissement **mesuré** :
+  `ProtectSystem=true`, `ReadOnlyPaths=-/opt/homevault`, `PrivateTmp=true`,
+  `RestrictSUIDSGID=true`, `LockPersonality=true`, `RestrictRealtime=true`,
+  `ProtectKernelLogs=true`, et `NoNewPrivileges=true` **en mode root
+  uniquement**.
+- Les directives qui casseraient une fonction livrée sont volontairement
+  **absentes** et documentées : `ProtectKernelTunables` (sysctl WireGuard),
+  `ProtectKernelModules` (modprobe iSCSI), `ProtectHostname` (renommage),
+  `ProtectClock` (fuseau), `PrivateDevices` (disques), `ProtectHome`
+  (dossiers utilisateurs), `CapabilityBoundingSet` (sudo setuid).
+- Profil AppArmor **opt‑in** (`HV_APPARMOR=1`), **complain par défaut**,
+  enforce après validation terrain (`HV_APPARMOR_ENFORCE=1`). LSM absent →
+  avertissement, jamais de confinement revendiqué à tort.
+- Le journal d'installation affiche le score
+  `systemd-analyze security homevault`.
+- Tests écrits mais **non exécutés** :
+  `installer/tests/unit-hardening.test.sh` (root vs non‑root, présence du
+  durcissement, absence des directives cassantes, complain/enforce AppArmor).
+- Docs : `docs/guides/security.md` → « Process isolation ».
+
+**Reste sur P2‑7** : passe terrain sur un hôte réel (`systemd-analyze security`
+avant/après, `aa-logprof` puis enforce), et un profil AppArmor resserré après
+cette mesure. Les autres P0 gardent leur ordre : P1‑18 table d'audit, P2‑9
+restauration bare‑metal.

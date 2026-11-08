@@ -1,5 +1,17 @@
 # HomeVault — Test tracking
 
+## P2-7 process isolation — 2026-11-08 (not run)
+
+> **Instruction followed: no test command was executed for this change.** The
+> shell suite was written, not run. Static checks passed: `bash -n` on the
+> installer and the test file, and `apparmor_parser -Q --cache-loc=<tmp>` on the
+> rendered profile (syntax valid).
+
+| Coverage | Added / changed |
+|---|---|
+| Unit renderer (`installer/tests/unit-hardening.test.sh`) | **new suite** — root vs unprivileged unit; every hardening directive present; feature-breaking directives (`ProtectKernelTunables`, `ProtectKernelModules`, `ProtectHostname`, `ProtectClock`, `PrivateDevices`, `ProtectHome`, `CapabilityBoundingSet`) absent; `NoNewPrivileges` only for root; AppArmor profile attaches to the binary, defaults to complain, switches to enforce; no unexpanded command substitution. Uses `HV_LIB_ONLY=1` to source `installer/install.sh` |
+| Docs | `docs/guides/security.md` → "Process isolation", `CHANGELOG.md`, `HOMEVAULT_TASKLIST_A_FAIRE.md` (P2-7 `[~]`), `COMPARAISON_DSM_VS_HOMEVAULT.md` §3.1/§7 |
+
 ## P2-8 signed, atomic updates — 2026-11-08 (not run)
 
 > **Instruction followed: no test command was executed for this change.** The

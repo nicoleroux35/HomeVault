@@ -666,7 +666,7 @@ Features:
 - Firewall: mandatory rules can't be deleted
 - Enable requires {confirmed:true} confirmation
 - Locale-independent status detection (LC_ALL=C)
-The interface is delivered with a strict content policy: inline scripts are only allowed when the server stamped them for that exact page load, so a script injected into the page cannot run — which matters because the session credential lives in browser storage. The installer also handles the rest of the appliance's life: it can roll back to the previous build, uninstall while keeping all data, or uninstall and delete everything after an explicit typed confirmation, and every mode has a preview that changes nothing."#.to_string(),
+The interface is delivered with a strict content policy: inline scripts are only allowed when the server stamped them for that exact page load, so a script injected into the page cannot run — which matters because the session credential lives in browser storage. The installer also handles the rest of the appliance's life: it can roll back to the previous build, uninstall while keeping all data, or uninstall and delete everything after an explicit typed confirmation, and every mode has a preview that changes nothing. The service itself runs under a hardened systemd unit: system binaries and the installed programme are read-only to it, its temporary directory is private, it cannot create setuid files or switch execution domains, and in the default root deployment no child process can gain privileges. An optional AppArmor profile can be installed in complain mode and switched to enforcement after it has been checked on the machine."#.to_string(),
         },
         FeatureDoc {
             id: "tls".to_string(),

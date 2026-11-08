@@ -217,6 +217,70 @@ future timestamp, RFC 3339), `tests/password_policy_integration.rs` (3 — admin
 matrix + bounds, expired flag + clock restart after a change, `0` never
 expires / fresh password not flagged).
 
+## Process isolation (P2-7, 2026-11-08)
+
+HomeVault is a privileged appliance: it shells out to `sudo` for Samba,
+nftables/ufw, RAID/ZFS/Btrfs, mounts, `modprobe`, `hostnamectl` and
+`timedatectl`. Hardening therefore has to be **measured**, not assumed — every
+directive that would block one of those tools is deliberately absent.
+
+### systemd unit
+
+`installer/install.sh` renders the unit from `render_service_unit` (the single
+source of truth; `installer/tests/unit-hardening.test.sh` asserts on it). The
+shipped block:
+
+| Directive | Effect |
+|---|---|
+| `ProtectSystem=true` | `/usr` and `/boot` read-only; the service cannot rewrite system binaries |
+| `ReadOnlyPaths=-/opt/homevault` | the installed binary and assets are read-only to the service; updates are applied by the installer or a privileged transient unit |
+| `PrivateTmp=true` | private `/tmp` and `/var/tmp` per unit |
+| `RestrictSUIDSGID=true` | no new setuid/setgid files |
+| `LockPersonality=true` | no execution-domain switching (the backend has no JIT) |
+| `RestrictRealtime=true` | no realtime scheduling |
+| `ProtectKernelLogs=true` | `/dev/kmsg` and `syslog(2)` closed; journal files stay readable |
+| `NoNewPrivileges=true` | **root deployment only**; no child may gain privileges. Left off in the `homevault` deployment because `sudo` is its privilege path |
+
+Deliberately **not** set, with the shipped feature that would break:
+
+| Directive | Why it is absent |
+|---|---|
+| `ProtectKernelTunables` | WireGuard `PostUp` runs `sysctl -w net.ipv4.ip_forward=1` |
+| `ProtectKernelModules` | iSCSI runs `modprobe target_core_mod` and friends |
+| `ProtectHostname` | Settings → General renames the server |
+| `ProtectClock` | Settings → General changes the timezone |
+| `PrivateDevices` | Storage/RAID/SMART need the real `/dev` nodes |
+| `ProtectHome` | user home folders live under `/home/homevault` |
+| `CapabilityBoundingSet` | `sudo` is setuid; a bounding set would mask it |
+
+`RestrictAddressFamilies` is left commented as a next step: it has to be
+measured against Docker/Incus and the network diagnostics first.
+
+The installer prints the `systemd-analyze security homevault` score after the
+service starts, so the exposure number is part of the install log. Compare it
+across hosts and releases instead of claiming a level.
+
+### AppArmor (opt-in)
+
+`HV_APPARMOR=1` installs `/etc/apparmor.d/homevault` and loads it with
+`apparmor_parser`. The default is **complain** mode: the service runs host tools
+through `sudo`, so enforcement is a field decision, not an installer default.
+After reviewing `dmesg | grep -i apparmor` and `aa-logprof`, re-run with
+`HV_APPARMOR=1 HV_APPARMOR_ENFORCE=1`.
+
+If AppArmor is not enabled on the kernel (or `apparmor_parser` is missing), the
+installer **warns and ignores the flag** — it never reports a confinement it did
+not apply.
+
+### Tests
+
+`installer/tests/unit-hardening.test.sh` sources the renderers with
+`HV_LIB_ONLY=1` and asserts: the root unit has the hardening block and
+`NoNewPrivileges`; the unprivileged unit does not; none of the
+feature-breaking directives appear; the AppArmor profile attaches to the
+binary, defaults to complain, and switches to enforce. It is run by hand, not
+by the installer.
+
 ## Backend
 
 Handlers in `src/handlers/security.rs`.

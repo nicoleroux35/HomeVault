@@ -127,7 +127,7 @@ justifie.
 | **P2-4** | Déduplication — **gelé au design** (planification `duperemove` ; exécution après benchmark seulement) | P2 | XL | Économie d'espace |
 | **P2-5** | KMIP / coffre de clés — **rejeté pour la cible** (dépendance critique au boot) | P2 | XL | Clés externalisées |
 | **P2-6** | WORM par fichier — **rejeté pour la cible** (les snapshots immuables suffisent) | P2 | M/L | Immuabilité légale |
-| **P2-7** | Isolation d'exécution (systemd durci + profils AppArmor) — **priorité** | P2 | L | Défense en profondeur |
+| **P2-7** | Isolation d'exécution (systemd durci + profils AppArmor) — **priorité**, installeur livré 2026‑11‑08 (enforce/terrain restants) | P2 | L | Défense en profondeur |
 | **P2-8** | Mise à jour signée + atomique + rollback — **priorité**, installeur livré 2026‑11‑08 (UI restante) | P2 | L/XL | Intégrité de la chaîne |
 | **P2-9** | Réparation/restauration bare‑metal testée — **priorité, runbook + VM d'abord** | P2 | L | Reprise après sinistre |
 | **P2-10** | Prédiction de panne disque par régression SMART (pas de ML) ✅ | P2 | M | Anticiper le remplacement |
@@ -194,9 +194,9 @@ justifie.
 > split-brain externes).
 >
 > Les P0 sont fonctionnellement terminés. Après la revue de valeur du
-> 2026‑11‑06 (ci-dessous), la suite prioritaire est **P2-7, P2-8, P1-18,
-> P2-9 (runbook), P1-16**, puis les finitions P1-27/P1-28. Les autres items
-> sont gelés ou rejetés pour la cible actuelle.
+> 2026‑11‑06 (ci-dessous), la suite prioritaire est **P2-7 (enforce/terrain),
+> P2-8 (UI), P1-18, P2-9 (runbook), P1-16**, puis les finitions P1-27/P1-28.
+> Les autres items sont gelés ou rejetés pour la cible actuelle.
 
 ---
 
@@ -215,7 +215,7 @@ panne majeur.
 
 | Décision | Items | Justification |
 |---|---|---|
-| **Priorité** | **P2-7** isolation d’exécution, **P2-8** mises à jour signées/atomiques (**installeur livré 2026‑11‑08**, UI restante), **P1-18** table d’audit, **P2-9** restauration bare-metal (runbook + test VM) | Sécurité, intégrité de la chaîne et reprise après sinistre : gains réels, sans dépendance externe. |
+| **Priorité** | **P2-7** isolation d’exécution (**installeur livré 2026‑11‑08**, enforce/terrain restants), **P2-8** mises à jour signées/atomiques (**installeur livré 2026‑11‑08**, UI restante), **P1-18** table d’audit, **P2-9** restauration bare-metal (runbook + test VM) | Sécurité, intégrité de la chaîne et reprise après sinistre : gains réels, sans dépendance externe. |
 | **À faire, plus tard** | **P1-16** OAuth2 e-mail | Gmail/Microsoft retirent les mots de passe applicatifs ; les alertes peuvent cesser de partir. Coût modéré. |
 | **Finitions seulement** | **P1-27** signature du catalogue (pas de pinning obligatoire), **P1-28** avertissement installateur (pas de carte UI), **P1-21** suggestion de spare (pas d’ajout auto) | Le cœur est déjà livré ; le reste ajoute du risque ou peu de valeur. |
 | **Gelé au stade partiel** | **P2-1** SMB AD, **P2-2** NFS Kerberos, **P2-3** thin provisioning, **P2-4** déduplication, **P2-15** witness | Utiles seulement en entreprise/multi-site ou après benchmark ; ne pas investir sans cible explicite. |
@@ -243,8 +243,10 @@ panne majeur.
 - **P2-1/P2-2 : gelés au partiel.** La configuration et les validations sont
   livrées ; la validation DC/KDC réelle n’a de sens que si la cible
   entreprise est confirmée.
-- **P2-7/P2-8 : à faire en priorité**, avec tests de non-régression (HomeVault
-  utilise `sudo`, donc l’isolation doit être mesurée, pas supposée).
+- **P2-7/P2-8 : cœur livré côté installeur le 2026‑11‑08**, avec tests de
+  non-régression (HomeVault utilise `sudo`, donc l’isolation doit être mesurée,
+  pas supposée). Restent l’enforce AppArmor + la passe terrain pour P2-7, et le
+  déclenchement UI + la clé de production pour P2-8.
 - **P2-9 : runbook d’abord.** Une restauration testée sur VM vaut mieux qu’une
   usine à gaz d’images système.
 
@@ -1675,7 +1677,7 @@ verrouillage administratif.
 Verrou `chattr +i`/immutable + journal, déverrouillage break‑glass avec phrase
 tapée, audit. Complète les snapshots immuables.
 
-### [ ] P2-7 — Isolation d'exécution · L
+### [~] P2-7 — Isolation d'exécution · L
 
 **Décision 2026‑11‑06 : priorité.** Gain sécurité réel ; à faire avec des tests
 de non-régression car HomeVault utilise `sudo`.
@@ -1685,6 +1687,22 @@ de non-régression car HomeVault utilise `sudo`.
   `ProtectHome`, `PrivateTmp`, capacités minimales.
 - Profils AppArmor par unit si disponible ; refus si le LSM est absent.
 - Tests : `systemd-analyze security` avant/après, non‑régression.
+
+**Livré 2026‑11‑08 (partiel).** L'unité est rendue par `render_service_unit`
+et embarque `ProtectSystem=true`, `ReadOnlyPaths=-/opt/homevault`,
+`PrivateTmp=true`, `RestrictSUIDSGID=true`, `LockPersonality=true`,
+`RestrictRealtime=true`, `ProtectKernelLogs=true`, et
+`NoNewPrivileges=true` en mode root uniquement. Les directives qui casseraient
+une fonction livrée sont **volontairement absentes** et documentées :
+`ProtectKernelTunables` (sysctl WireGuard), `ProtectKernelModules` (modprobe
+iSCSI), `ProtectHostname`, `ProtectClock`, `PrivateDevices`, `ProtectHome`
+(dossiers utilisateurs), `CapabilityBoundingSet` (sudo setuid). Profil AppArmor
+**opt‑in** (`HV_APPARMOR=1`, complain par défaut, enforce après validation), et
+score `systemd-analyze security` imprimé par l'installeur. Tests :
+`installer/tests/unit-hardening.test.sh` (non exécutés). Docs :
+`docs/guides/security.md` → « Process isolation ». **Reste** : passe terrain
+`systemd-analyze security`/`aa-logprof`, enforce AppArmor, et l'étude d'un
+utilisateur système par sous‑système (aujourd'hui un seul compte de service).
 
 ### [~] P2-8 — Mise à jour signée + atomique · L/XL
 
@@ -1968,7 +1986,7 @@ Shares, docs et `TESTING.md` à jour.
 
 - [~] P2-1 AD/Kerberos (gelé au partiel : config ADS + join/leave)
 - [~] P2-2 NFSv4/Kerberos (gelé au partiel : flavor + validation keytab)
-- [ ] P2-7 isolation d'exécution — **priorité**
+- [~] P2-7 isolation d'exécution — installeur livré 2026‑11‑08, enforce/terrain restants
 - [~] P2-8 mises à jour signées — installeur livré 2026‑11‑08, déclenchement UI restant
 - [ ] P2-9 restauration bare-metal — **priorité, runbook + VM**
 - [~] P2-3 thin (gelé au support zvol ; overcommit rejeté)
@@ -2049,9 +2067,9 @@ Shares, docs et `TESTING.md` à jour.
   et la protection volume plein iSCSI ; **aucune réserve P0** (`dm-flakey`
   de P0-7, `x-systemd.*`, température sur 3 échantillons, backoff et
   notification `backup.jobs` sont livrés). Après la **revue de valeur du
-  2026‑11‑06**, les prochains chantiers ouverts sont **P2-7, P2-8 (UI
-  restante), P1-18, P2-9 (runbook), P1-16**, puis les finitions P1-27/P1-28 ;
-  les autres items sont gelés ou rejetés.
+  2026‑11‑06**, les prochains chantiers ouverts sont **P2-7 (enforce +
+  terrain), P2-8 (UI), P1-18, P2-9 (runbook), P1-16**, puis les finitions
+  P1-27/P1-28 ; les autres items sont gelés ou rejetés.
 - **Tests** : `cargo check --lib`, `cargo test --lib --no-run` et les
   `--no-run` de `replication_integration`, `iscsi_integration`,
   `storage_integration`, `raid_integration`, `rclone_integration`,

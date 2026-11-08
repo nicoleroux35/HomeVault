@@ -108,6 +108,7 @@ if [[ "$HV_BOOTSTRAP" -eq 1 && $EUID -ne 0 ]]; then
     _hv_envs=(HV_INSTALLER_STAGE=reexec)
     for _hv_v in HV_RELEASE_BASE HV_RELEASE_URL HV_RELEASE_SHA256 HV_RELEASE_TOKEN \
                  HV_RELEASE_MANIFEST HV_RELEASE_SIGNATURE HV_RELEASE_PUBKEY \
+                 HV_APPARMOR HV_APPARMOR_ENFORCE \
                  HV_MODE HV_YES HV_SKIP_OPTIONAL HV_SERVICE_USER DATA_DIRECTORY PORT HTTPS_PORT; do
         if [[ -n "${!_hv_v:-}" ]]; then _hv_envs+=("$_hv_v=${!_hv_v}"); fi
     done
@@ -322,6 +323,10 @@ Environment:
                         homevault runs the unit as a dedicated system account
                         with a scoped /etc/sudoers.d/homevault; root keeps the
                         current all-privileged deployment
+  HV_APPARMOR=1         install and load the optional AppArmor profile
+                        (complain mode by default)
+  HV_APPARMOR_ENFORCE=1 with HV_APPARMOR=1, load it in enforce mode after the
+                        profile has been validated on this host
 
 Log: /var/log/homevault-install.log
 EOM
@@ -680,7 +685,185 @@ PY
     return 0
 }
 
-# Sourced by `installer/tests/update-engine.test.sh`: stop here.
+# ---------------------------------------------------------------------------
+# Process isolation (P2-7).
+#
+# The hardening block is deliberately conservative: HomeVault shells out to
+# privileged host tools through `sudo` (Samba, nftables/ufw, mdadm/zpool,
+# mount, modprobe, hostnamectl, timedatectl, wg-quick…). A directive that
+# blocks one of those turns a shipped feature into a silent 503, so the block
+# below only contains restrictions that cannot break them.
+#
+# Deliberately NOT set, and why:
+#   ProtectKernelTunables — VPN PostUp runs `sysctl -w net.ipv4.ip_forward=1`
+#   ProtectKernelModules  — iSCSI runs `modprobe target_core_mod` (via sudo)
+#   ProtectHostname       — Settings > General renames the server
+#   ProtectClock          — Settings > General changes the timezone
+#   PrivateDevices        — Storage/RAID/SMART need the real /dev nodes
+#   ProtectHome           — user home folders live under /home/homevault
+#   CapabilityBoundingSet — sudo is setuid; a bounding set would mask it
+#   NoNewPrivileges       — set only in root mode; in the unprivileged mode
+#                           `sudo` is the whole privilege path and NNP would
+#                           make every privileged feature fail
+# ---------------------------------------------------------------------------
+service_hardening_block() {
+    local run_user="$1"
+    cat <<'EOF'
+# --- Hardening (P2-7) -------------------------------------------------------
+# Read-only system binaries: the service cannot rewrite /usr or /boot, which
+# also protects the installed binary from its own process.
+ProtectSystem=true
+# The binary and its assets are read-only to the service. An update is applied
+# by the installer (or a privileged transient unit), never by this process.
+ReadOnlyPaths=-/opt/homevault
+# Each unit gets its own /tmp and /var/tmp; no cross-service temp-file reads.
+PrivateTmp=true
+# No new setuid/setgid files can be created by the service or its children.
+RestrictSUIDSGID=true
+# No execution-domain switching (the backend has no JIT).
+LockPersonality=true
+# No realtime scheduling from the service.
+RestrictRealtime=true
+# /dev/kmsg and syslog(2) are closed; journal files stay readable.
+ProtectKernelLogs=true
+# Optional, only after measuring on the target host:
+#RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+EOF
+    if [[ "$run_user" == "root" ]]; then
+        cat <<'EOF'
+# Root deployment only: no child may *gain* privileges (setuid binaries,
+# file capabilities). Every privileged tool is already running as root, so
+# sudo, mount and ping keep working; the unprivileged deployment below must
+# leave this off because sudo is its privilege path.
+NoNewPrivileges=true
+EOF
+    fi
+}
+
+render_service_unit() {
+    local run_user="$1" run_group="$2" service_supp="$3" run_home="$4"
+    cat <<EOF
+[Unit]
+Description=HomeVault Server
+After=network.target
+
+[Service]
+Type=simple
+User=$run_user
+Group=$run_group
+$service_supp
+Environment="HOME=$run_home"
+WorkingDirectory=$INSTALL_DIR
+ExecStart=$INSTALL_DIR/homevault
+Restart=on-failure
+RestartSec=5
+# A custom privileged PORT (e.g. 80) must still bind when the unit is not
+# root; harmless for the root deployment.
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+Environment="PORT=$PORT"
+Environment="DATA_DIRECTORY=$DATA_DIR"
+# Provision the Linux/Samba identity of a new HomeVault account (useradd,
+# chpasswd, smbpasswd). Without this the web login works but SMB/FTP do not
+# have a credential. Tests and a bare \`cargo run\` leave it unset on purpose.
+Environment="HV_HOST_SYNC=1"
+# Built-in HTTPS is opt-in (Settings > Security > HTTPS/TLS, or set
+# TLS_ENABLED=true here / in /etc/homevault.env). When enabled, HomeVault
+# adds a TLS listener on HTTPS_PORT (default $HTTPS_PORT) alongside HTTP.
+# Plain HTTP is then redirected to it by default (TLS_REDIRECT=0 keeps both
+# listeners usable), so the admin password is never served in clear.
+#Environment="TLS_ENABLED=true"
+#Environment="HTTPS_PORT=$HTTPS_PORT"
+#Environment="TLS_REDIRECT=0"
+EnvironmentFile=-$ENV_FILE
+
+$(service_hardening_block "$run_user")
+
+# Resource ceiling: HomeVault targets low-power boards and modest mini-PCs,
+# often shared with other host services (Samba, Docker apps). These give the
+# process room for legitimate heavy work (large Restic backups, Explorer
+# archive operations) while still capping a runaway feature or memory leak
+# instead of letting it starve the whole machine. MemoryHigh is a soft
+# throttle (reclaim pressure, no kill); MemoryMax is the hard cap. Tune both
+# against real \`systemd-cgtop\`/\`systemctl status\` measurements for your
+# hardware before relying on them in production — these are conservative
+# starting points, not measured limits.
+MemoryHigh=1536M
+MemoryMax=2G
+TasksMax=1024
+# CPU is intentionally left unrestricted by default (backup/compression
+# throughput benefits from all available cores); uncomment and size to your
+# hardware's core count if HomeVault needs to share CPU with other services:
+#CPUQuota=300%
+
+[Install]
+WantedBy=multi-user.target
+EOF
+}
+
+# Optional AppArmor attachment. Complain mode by default: the service runs a
+# lot of host tools through sudo, so enforcement is a field-validated decision,
+# not an installer default. `HV_APPARMOR_ENFORCE=1` flips the flag.
+render_apparmor_profile() {
+    local flags="complain"
+    if [[ "${HV_APPARMOR_ENFORCE:-0}" == "1" ]]; then
+        flags="enforce"
+    fi
+    cat <<EOF
+# HomeVault — generated by installer/install.sh (P2-7).
+# Default is complain mode until this profile has been validated on the host
+# (\`dmesg | grep -i apparmor\`, \`aa-logprof\`, then HV_APPARMOR_ENFORCE=1).
+#include <tunables/global>
+
+profile homevault $INSTALL_DIR/homevault flags=($flags) {
+  #include <abstractions/base>
+  #include <abstractions/nameservice>
+
+  capability,
+  network,
+  mount,
+  umount,
+  pivot_root,
+  signal,
+  unix,
+
+  $INSTALL_DIR/homevault mr,
+  $INSTALL_DIR/** r,
+  /var/lib/homevault/** rwkl,
+  /etc/homevault/** rw,
+  /etc/homevault.env r,
+  /etc/homevault-rsync/** rw,
+  /etc/homevault-backup/** rw,
+  /etc/samba/** rw,
+  /etc/exports rw,
+  /etc/vsftpd.conf rw,
+  /etc/vsftpd.user_list rw,
+  /etc/netplan/** rw,
+  /etc/sudoers.d/homevault rw,
+  /etc/nut/** rw,
+  /etc/systemd/system/** rw,
+  /etc/apparmor.d/homevault r,
+  /home/homevault/** rwkl,
+  /mnt/** rwkl,
+  /media/** rwkl,
+  /srv/** rwkl,
+  /run/** rw,
+  /tmp/** rw,
+  /var/tmp/** rw,
+  /proc/** r,
+  /sys/** rw,
+  /dev/** rw,
+  /usr/** r,
+  /bin/** r,
+  /sbin/** r,
+  /lib/** r,
+  /lib64/** r,
+  /boot/** r,
+  owner /root/** rw,
+}
+EOF
+}
+
+# Sourced by `installer/tests/*.test.sh`: stop here.
 if [[ "${HV_LIB_ONLY:-0}" == "1" ]]; then
     return 0 2>/dev/null || exit 0
 fi
@@ -2272,61 +2455,33 @@ SERVICE_SUPP=""
 if getent group docker >/dev/null 2>&1; then
     SERVICE_SUPP="SupplementaryGroups=docker"
 fi
-cat > "$SERVICE_FILE" <<EOF
-[Unit]
-Description=HomeVault Server
-After=network.target
-
-[Service]
-Type=simple
-User=$RUN_USER
-Group=$RUN_GROUP
-$SERVICE_SUPP
-Environment="HOME=$RUN_HOME"
-WorkingDirectory=$INSTALL_DIR
-ExecStart=$INSTALL_DIR/homevault
-Restart=on-failure
-RestartSec=5
-# A custom privileged PORT (e.g. 80) must still bind when the unit is not
-# root; harmless for the root deployment.
-AmbientCapabilities=CAP_NET_BIND_SERVICE
-Environment="PORT=$PORT"
-Environment="DATA_DIRECTORY=$DATA_DIR"
-# Provision the Linux/Samba identity of a new HomeVault account (useradd,
-# chpasswd, smbpasswd). Without this the web login works but SMB/FTP do not
-# have a credential. Tests and a bare `cargo run` leave it unset on purpose.
-Environment="HV_HOST_SYNC=1"
-# Built-in HTTPS is opt-in (Settings > Security > HTTPS/TLS, or set
-# TLS_ENABLED=true here / in /etc/homevault.env). When enabled, HomeVault
-# adds a TLS listener on HTTPS_PORT (default $HTTPS_PORT) alongside HTTP.
-# Plain HTTP is then redirected to it by default (TLS_REDIRECT=0 keeps both
-# listeners usable), so the admin password is never served in clear.
-#Environment="TLS_ENABLED=true"
-#Environment="HTTPS_PORT=$HTTPS_PORT"
-#Environment="TLS_REDIRECT=0"
-EnvironmentFile=-$ENV_FILE
-
-# Resource ceiling: HomeVault targets low-power boards and modest mini-PCs,
-# often shared with other host services (Samba, Docker apps). These give the
-# process room for legitimate heavy work (large Restic backups, Explorer
-# archive operations) while still capping a runaway feature or memory leak
-# instead of letting it starve the whole machine. MemoryHigh is a soft
-# throttle (reclaim pressure, no kill); MemoryMax is the hard cap. Tune both
-# against real \`systemd-cgtop\`/\`systemctl status\` measurements for your
-# hardware before relying on them in production — these are conservative
-# starting points, not measured limits.
-MemoryHigh=1536M
-MemoryMax=2G
-TasksMax=1024
-# CPU is intentionally left unrestricted by default (backup/compression
-# throughput benefits from all available cores); uncomment and size to your
-# hardware's core count if HomeVault needs to share CPU with other services:
-#CPUQuota=300%
-
-[Install]
-WantedBy=multi-user.target
-EOF
+render_service_unit "$RUN_USER" "$RUN_GROUP" "$SERVICE_SUPP" "$RUN_HOME" > "$SERVICE_FILE"
 ok "System service unit written to $SERVICE_FILE"
+
+# Optional AppArmor confinement (P2-7). Opt-in: a wrong profile can block a
+# disk, network or Samba operation, so compliance is never claimed silently.
+# When requested but impossible, warn and leave the unit exactly as it was.
+if [[ "${HV_APPARMOR:-0}" == "1" ]]; then
+    APPARMOR_ENABLED="N"
+    if [[ -r /sys/module/apparmor/parameters/enabled ]]; then
+        APPARMOR_ENABLED=$(cat /sys/module/apparmor/parameters/enabled 2>/dev/null || echo N)
+    fi
+    if [[ "$APPARMOR_ENABLED" == "Y" ]] && command -v apparmor_parser >/dev/null 2>&1; then
+        mkdir -p /etc/apparmor.d
+        render_apparmor_profile > /etc/apparmor.d/homevault
+        if apparmor_parser -r /etc/apparmor.d/homevault 2>/dev/null; then
+            APPARMOR_MODE="complain"
+            if [[ "${HV_APPARMOR_ENFORCE:-0}" == "1" ]]; then APPARMOR_MODE="enforce"; fi
+            ok "AppArmor profile loaded in $APPARMOR_MODE mode (/etc/apparmor.d/homevault)"
+            echo -e "  Validate it with ${C_BOLD}dmesg | grep -i apparmor${C_RESET}, then re-run with "
+            echo -e "  ${C_BOLD}HV_APPARMOR=1 HV_APPARMOR_ENFORCE=1${C_RESET} to enforce."
+        else
+            warn "AppArmor profile written but not loaded — check apparmor_parser output"
+        fi
+    else
+        warn "HV_APPARMOR=1 ignored: AppArmor is not enabled on this kernel (or apparmor_parser is missing)"
+    fi
+fi
 
 # Optional: turn on built-in HTTPS with a self-signed certificate. Opt-in and
 # only offered on a fresh install; can also be toggled later from
@@ -2495,6 +2650,17 @@ else
     VFAIL=1
     err "The service $SERVICE_NAME did not start."
     echo -e "  See: ${C_BOLD}journalctl -u $SERVICE_NAME -e${C_RESET}"
+fi
+
+# P2-7: report the measured exposure instead of claiming a level. The number
+# comes from systemd itself, so an operator can compare hosts and releases.
+if command -v systemd-analyze >/dev/null 2>&1; then
+    HV_EXPOSURE=$(systemd-analyze security --no-pager "$SERVICE_NAME" 2>/dev/null \
+        | tail -n 1 | awk '{print $NF}')
+    if [[ -n "$HV_EXPOSURE" ]]; then
+        info "systemd hardening exposure for $SERVICE_NAME: $HV_EXPOSURE"
+        echo -e "  ${C_DIM}Lower is better; review with: systemd-analyze security $SERVICE_NAME${C_RESET}"
+    fi
 fi
 
 HV_READY=0

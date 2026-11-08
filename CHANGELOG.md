@@ -458,6 +458,24 @@ follows [Semantic Versioning](https://semver.org/).
   whatever the previous attempt left. Two entry points can start a run, so a
   job cannot run twice at once (a click during a scheduled run is refused).
 
+### Security
+
+- **Measured process isolation (2026-11-08, P2-7, partial).** The systemd
+  unit is now rendered by `render_service_unit` and ships a conservative
+  hardening block: `ProtectSystem=true`, `ReadOnlyPaths=-/opt/homevault`,
+  `PrivateTmp=true`, `RestrictSUIDSGID=true`, `LockPersonality=true`,
+  `RestrictRealtime=true`, `ProtectKernelLogs=true`, plus
+  `NoNewPrivileges=true` in the root deployment. Directives that would break
+  a shipped feature (`ProtectKernelTunables` for the WireGuard `sysctl`,
+  `ProtectKernelModules` for iSCSI `modprobe`, `ProtectHostname`,
+  `ProtectClock`, `PrivateDevices`, `ProtectHome`, `CapabilityBoundingSet`)
+  are deliberately absent and documented. `HV_APPARMOR=1` installs an
+  opt-in, **complain-by-default** profile (enforce with
+  `HV_APPARMOR_ENFORCE=1` after field validation); if the LSM is absent the
+  installer warns instead of claiming confinement. The install log now
+  prints `systemd-analyze security homevault`. Tests:
+  `installer/tests/unit-hardening.test.sh` (written, not run).
+
 ### Fixed
 
 - **The unit gate is green again — and it was hiding real bugs (2026-10-27).**
