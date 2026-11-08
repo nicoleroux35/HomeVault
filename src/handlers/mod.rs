@@ -72,6 +72,7 @@ pub mod docker_catalog;
 pub mod downloader;
 pub mod encryption;
 pub mod explorer;
+pub mod file_requests;
 pub mod fan_control;
 pub mod firewall;
 pub mod groups;

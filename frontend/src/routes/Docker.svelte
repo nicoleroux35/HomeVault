@@ -323,6 +323,9 @@
   let cMemory = $state('');
   let cCpu = $state('');
   let cPrivileged = $state(false);
+  // Hardened by default, matching catalog apps. The toggle exists so an admin
+  // can opt out for an image that genuinely needs setuid escalation.
+  let cNoNewPrivileges = $state(true);
   let cAutoRemove = $state(false);
   let cNetwork = $state('');
   let modalBusy = $state(false);
@@ -966,7 +969,7 @@
     cVolumes = [{ host_path: '', container_path: '', read_only: false }];
     cEnv = [{ key: '', value: '' }];
     cRestart = 'unless-stopped';
-    cMemory = ''; cCpu = ''; cPrivileged = false; cAutoRemove = false; cNetwork = '';
+    cMemory = ''; cCpu = ''; cPrivileged = false; cNoNewPrivileges = true; cAutoRemove = false; cNetwork = '';
     portChecks = {};
     modalOpen = true;
   }
@@ -1003,6 +1006,7 @@
       memory_limit: cMemory || null,
       cpu_limit: cCpu || null,
       privileged: cPrivileged,
+      no_new_privileges: cNoNewPrivileges,
       auto_remove: cAutoRemove,
     });
     modalBusy = false;
@@ -2271,6 +2275,7 @@
             <input type="text" id="cCpu" class={textInput} bind:value={cCpu} placeholder={$t('docker.ph_cpu')}>
           </div>
         </div>
+        <Toggle bind:checked={cNoNewPrivileges} label={$t('docker.no_new_privileges_label')} description={$t('docker.no_new_privileges_desc')} />
         <Toggle bind:checked={cPrivileged} label={$t('docker.privileged2')} description={$t('docker.privileged_desc')} />
         <Toggle bind:checked={cAutoRemove} label={$t('docker.auto_remove2')} description={$t('docker.auto_remove_desc')} />
       </div>

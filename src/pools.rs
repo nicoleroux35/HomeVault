@@ -432,8 +432,10 @@ impl PoolService {
                         .to_string();
                     if !uuid.is_empty() {
                         let marker = format!("# homevault-pool:{}", name);
-                        let line =
-                            format!("UUID={} {} btrfs defaults,nofail 0 2", uuid, mount_point);
+                        let line = format!(
+                            "UUID={} {} btrfs defaults,nofail,compress=zstd:3 0 2",
+                            uuid, mount_point
+                        );
                         let _ = Self::append_pool_fstab_entry(&marker, &line);
                     }
                 }
@@ -1649,9 +1651,12 @@ impl PoolService {
             )));
         }
         let live_mount = run_timed(
-            Command::new("sudo")
-                .arg("mount")
-                .args(["-o", "subvol=@", &devices[0], mount_point]),
+            Command::new("sudo").arg("mount").args([
+                "-o",
+                "subvol=@,compress=zstd:3",
+                &devices[0],
+                mount_point,
+            ]),
             POOL_WRITE_TIMEOUT,
         )?;
         if !live_mount.status.success() {
@@ -1675,7 +1680,7 @@ impl PoolService {
         let snapshots_mount = run_timed(
             Command::new("sudo").arg("mount").args([
                 "-o",
-                "subvol=@snapshots",
+                "subvol=@snapshots,compress=zstd:3",
                 &devices[0],
                 &format!("{mount_point}/.snapshots"),
             ]),
@@ -1701,11 +1706,11 @@ impl PoolService {
                 .to_string();
             if !uuid.is_empty() {
                 let fstab_line = format!(
-                    "UUID={} {} btrfs defaults,nofail,subvol=@ 0 2",
+                    "UUID={} {} btrfs defaults,nofail,subvol=@,compress=zstd:3 0 2",
                     uuid, mount_point
                 );
                 let snapshots_line = format!(
-                    "UUID={} {}/.snapshots btrfs defaults,nofail,subvol=@snapshots 0 2",
+                    "UUID={} {}/.snapshots btrfs defaults,nofail,subvol=@snapshots,compress=zstd:3 0 2",
                     uuid, mount_point
                 );
                 let _ = Self::append_pool_fstab_entry(&marker, &fstab_line);

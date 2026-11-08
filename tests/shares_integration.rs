@@ -79,18 +79,24 @@ use homevault::handlers::terminal_pty::PtyManager;
 use homevault::handlers::{
     auth::handle_login,
     permissions::{
+        handle_share_permission_all_grant, handle_share_permission_all_revoke,
         handle_share_permission_grant, handle_share_permission_revoke,
-        handle_share_permissions_list, handle_share_permissions_sync, handle_user_permissions,
+        handle_share_permissions_all_list, handle_share_permissions_all_sync,
+        handle_share_permissions_list, handle_share_permissions_matrix,
+        handle_share_permissions_report, handle_share_permissions_sync, handle_user_permissions,
     },
     shares::{
         handle_ftp_config_get, handle_ftp_config_update, handle_nfs_config_get,
-        handle_nfs_config_update, handle_sftp_config_get, handle_sftp_config_update,
-        handle_sftp_grantees_list, handle_sftp_key_set, handle_sftp_rebuild, handle_share_create,
-        handle_share_delete, handle_share_get, handle_share_service_restart,
-        handle_share_service_start, handle_share_service_stop, handle_share_toggle,
+        handle_nfs_config_update, handle_nfs_rules_get, handle_nfs_rules_set,
+        handle_sftp_config_get, handle_sftp_config_update, handle_sftp_grantees_list,
+        handle_sftp_key_set, handle_sftp_rebuild, handle_share_bind_protocol, handle_share_create,
+        handle_share_definition_create, handle_share_definitions_list, handle_share_delete,
+        handle_share_get, handle_share_service_restart, handle_share_service_start,
+        handle_share_service_stop, handle_share_toggle, handle_share_unbind_protocol,
         handle_share_update, handle_shares_list, handle_smb_config_get, handle_smb_config_update,
-        handle_smb_recycle_list, handle_smb_recycle_set, handle_webdav_config_get,
-        handle_webdav_config_update,
+        handle_smb_domain_join, handle_smb_domain_leave, handle_smb_previous_versions_list,
+        handle_smb_previous_versions_set, handle_smb_recycle_list, handle_smb_recycle_set,
+        handle_webdav_config_get, handle_webdav_config_update,
     },
     AppState,
 };
@@ -149,6 +155,15 @@ fn shares_router(state: Arc<AppState>) -> Router {
         // shares CRUD
         .route("/api/shares", get(handle_shares_list))
         .route("/api/shares", post(handle_share_create))
+        .route(
+            "/api/shares/definitions",
+            get(handle_share_definitions_list).post(handle_share_definition_create),
+        )
+        .route("/api/shares/{name}/bind", post(handle_share_bind_protocol))
+        .route(
+            "/api/shares/{name}/bind/{share_type}",
+            delete(handle_share_unbind_protocol),
+        )
         .route("/api/shares/{name}/{share_type}", get(handle_share_get))
         .route("/api/shares/{name}/{share_type}", put(handle_share_update))
         .route(
@@ -167,8 +182,26 @@ fn shares_router(state: Arc<AppState>) -> Router {
             "/api/shares/{name}/smb/recycle",
             put(handle_smb_recycle_set),
         )
+        .route(
+            "/api/shares/smb/previous-versions",
+            get(handle_smb_previous_versions_list),
+        )
+        .route(
+            "/api/shares/{name}/smb/previous-versions",
+            put(handle_smb_previous_versions_set),
+        )
+        .route(
+            "/api/shares/smb/domain/join",
+            post(handle_smb_domain_join),
+        )
+        .route(
+            "/api/shares/smb/domain/leave",
+            post(handle_smb_domain_leave),
+        )
         .route("/api/shares/nfs/config", get(handle_nfs_config_get))
         .route("/api/shares/nfs/config", put(handle_nfs_config_update))
+        .route("/api/shares/{name}/nfs/rules", get(handle_nfs_rules_get))
+        .route("/api/shares/{name}/nfs/rules", put(handle_nfs_rules_set))
         .route("/api/shares/ftp/config", get(handle_ftp_config_get))
         .route("/api/shares/ftp/config", put(handle_ftp_config_update))
         .route("/api/shares/webdav/config", get(handle_webdav_config_get))
@@ -195,6 +228,24 @@ fn shares_router(state: Arc<AppState>) -> Router {
             post(handle_share_service_restart),
         )
         // permissions / ACL
+        .route(
+            "/api/shares/{name}/permissions",
+            get(handle_share_permissions_all_list)
+                .post(handle_share_permission_all_grant)
+                .delete(handle_share_permission_all_revoke),
+        )
+        .route(
+            "/api/shares/{name}/permissions/sync",
+            post(handle_share_permissions_all_sync),
+        )
+        .route(
+            "/api/shares/permissions",
+            get(handle_share_permissions_matrix),
+        )
+        .route(
+            "/api/shares/permissions/report",
+            get(handle_share_permissions_report),
+        )
         .route(
             "/api/shares/{name}/{share_type}/permissions",
             get(handle_share_permissions_list),
@@ -1282,6 +1333,98 @@ async fn test_webdav_service_start_is_admin_only_and_never_binds_without_shares(
     )
     .await;
     assert_eq!(status, StatusCode::OK);
+}
+
+#[tokio::test]
+async fn test_logical_share_views_and_previous_versions_are_admin_reads() {
+    let (state, _tmp, _g) = setup_state().await;
+    create_test_user(&state, "admin1", "Passw0rd!123", 2).await;
+    let mut r = shares_router(state);
+    let token = login(&mut r, "admin1", "Passw0rd!123").await;
+
+    let (status, body) = send(&mut r, Method::GET, "/api/shares/definitions", Some(&token), None).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(body["data"].is_array(), "{body}");
+
+    let (status, body) = send(
+        &mut r,
+        Method::GET,
+        "/api/shares/smb/previous-versions",
+        Some(&token),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(body["data"].is_object(), "{body}");
+}
+
+#[tokio::test]
+async fn test_nfs_kerberos_is_rejected_before_a_v3_export_is_written() {
+    let (state, _tmp, _g) = setup_state().await;
+    create_test_user(&state, "admin1", "Passw0rd!123", 2).await;
+    let mut r = shares_router(state);
+    let token = login(&mut r, "admin1", "Passw0rd!123").await;
+
+    let (status, body) = send(
+        &mut r,
+        Method::PUT,
+        "/api/shares/nfs/config",
+        Some(&token),
+        Some(json!({
+            "networks": ["*"],
+            "default_access": "rw",
+            "version": "3",
+            "root_squash": "root_squash",
+            "security_flavor": "krb5p",
+            "custom_options": []
+        })),
+    )
+    .await;
+    // Validation refuses before `save_nfs_config` touches /etc/exports.
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert_eq!(body["success"], json!(false), "{body}");
+}
+
+#[tokio::test]
+async fn test_domain_join_requires_an_ads_config_and_is_admin_only() {
+    let (state, _tmp, _g) = setup_state().await;
+    create_test_user(&state, "admin1", "Passw0rd!123", 2).await;
+    let mut r = shares_router(state);
+    let token = login(&mut r, "admin1", "Passw0rd!123").await;
+
+    let (status, body) = send(
+        &mut r,
+        Method::POST,
+        "/api/shares/smb/domain/join",
+        Some(&token),
+        Some(json!({"username": "Administrator", "password": "secret"})),
+    )
+    .await;
+    assert_ne!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["success"], json!(false), "{body}");
+}
+
+#[tokio::test]
+async fn test_logical_permissions_and_matrix_are_clean_for_an_unknown_share() {
+    let (state, _tmp, _g) = setup_state().await;
+    create_test_user(&state, "admin1", "Passw0rd!123", 2).await;
+    let mut r = shares_router(state);
+    let token = login(&mut r, "admin1", "Passw0rd!123").await;
+
+    let (status, body) = send(
+        &mut r,
+        Method::GET,
+        "/api/shares/nope/permissions",
+        Some(&token),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert_eq!(body["success"], json!(false), "{body}");
+
+    let (status, body) = send(&mut r, Method::GET, "/api/shares/permissions", Some(&token), None).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(body["data"].is_array(), "{body}");
 }
 
 #[tokio::test]

@@ -103,6 +103,20 @@ pub enum HostAccountError {
     Failed { what: &'static str, message: String },
 }
 
+/// Whether this process should provision host/Samba identities on account
+/// creation. The systemd unit sets `HV_HOST_SYNC=1`; a bare test run (or a
+/// web-only developer build) leaves it unset and never shells out to
+/// `useradd`/`smbpasswd` just because a DB row was created.
+pub fn host_sync_enabled() -> bool {
+    match std::env::var("HV_HOST_SYNC") {
+        Ok(value) => !value.is_empty() && value != "0",
+        // Opt-in: the systemd unit sets `HV_HOST_SYNC=1`. A bare test/dev
+        // process (including a root CI container) must not shell out to
+        // `useradd`/`smbpasswd` just because an in-memory account was created.
+        Err(_) => false,
+    }
+}
+
 /// Lifecycle operations on the Linux account backing a HomeVault account.
 pub struct HostAccountService;
 
@@ -367,6 +381,174 @@ impl HostAccountService {
         Ok(removed)
     }
 
+    /// Provision a bare Linux account for a HomeVault user, without a home
+    /// directory or a login shell.
+    ///
+    /// SMB, FTP and NFS all resolve a *Linux* identity (a Samba passdb entry
+    /// is keyed by the Unix account, FTP authenticates through PAM, and NFS
+    /// compares numeric UIDs). A HomeVault account is database-only by
+    /// default, so the first use of one of those protocols must create the
+    /// Unix half. `-M` keeps the user's real home folder an explicit decision
+    /// (the Users page / `grant_admin` own it) and `nologin` keeps the
+    /// account from becoming a shell login by accident.
+    pub async fn ensure_linux_account(username: &str) -> Result<(), HostAccountError> {
+        Self::validate_username(username)?;
+        if Self::exists(username).await {
+            return Ok(());
+        }
+
+        let mut cmd = Self::command("useradd");
+        cmd.args(["-M", "-s", "/usr/sbin/nologin", username]);
+        match Self::run(cmd, "useradd").await {
+            Ok(output) if output.status.success() => {
+                tracing::info!("Provisioned bare Linux account '{}'", username);
+                Ok(())
+            }
+            Ok(output) => {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                // A concurrent provision or a pre-existing account is not a
+                // failure: the caller asked for "the account exists".
+                if stderr.contains("already exists") {
+                    return Ok(());
+                }
+                Err(HostAccountError::Failed {
+                    what: "useradd",
+                    message: stderr.trim().to_string(),
+                })
+            }
+            Err(e) => Err(e),
+        }
+    }
+
+    /// The two-line stdin body `smbpasswd -a -s` expects.
+    ///
+    /// Samba reads the new password and its confirmation from stdin. A
+    /// newline in either copy would inject a second line, so it is rejected
+    /// here — the same guard as [`Self::chpasswd_line`].
+    pub fn smbpasswd_input(password: &str) -> Result<String, HostAccountError> {
+        if password.is_empty() {
+            return Err(HostAccountError::InvalidUsername(
+                "password cannot be empty".to_string(),
+            ));
+        }
+        if password.contains('\n') || password.contains('\r') {
+            return Err(HostAccountError::InvalidUsername(
+                "password cannot contain a line break".to_string(),
+            ));
+        }
+        Ok(format!("{password}\n{password}\n"))
+    }
+
+    /// Create or update the Samba passdb credential for an account.
+    ///
+    /// HomeVault created DB-only users and never called `smbpasswd`, so a
+    /// real SMB login was impossible for every account the appliance itself
+    /// provisioned — the daemon had no password hash for it. This is the
+    /// missing half of user creation / password change. Best-effort callers
+    /// log a failure; the database write is still authoritative for the web
+    /// login.
+    pub async fn set_samba_password(
+        username: &str,
+        password: &str,
+    ) -> Result<(), HostAccountError> {
+        Self::validate_username(username)?;
+        let input = Self::smbpasswd_input(password)?;
+
+        let mut cmd = Self::command("smbpasswd");
+        cmd.args(["-a", "-s", username]);
+        cmd.stdin(std::process::Stdio::piped());
+        cmd.stdout(std::process::Stdio::piped());
+        cmd.stderr(std::process::Stdio::piped());
+        cmd.kill_on_drop(true);
+
+        let mut child = cmd.spawn().map_err(|e| HostAccountError::Io {
+            what: "smbpasswd",
+            message: e.to_string(),
+        })?;
+        if let Some(mut stdin) = child.stdin.take() {
+            stdin
+                .write_all(input.as_bytes())
+                .await
+                .map_err(|e| HostAccountError::Io {
+                    what: "smbpasswd",
+                    message: e.to_string(),
+                })?;
+        }
+
+        let output = match tokio::time::timeout(HOST_OP_TIMEOUT, child.wait_with_output()).await {
+            Ok(Ok(output)) => output,
+            Ok(Err(e)) => {
+                return Err(HostAccountError::Io {
+                    what: "smbpasswd",
+                    message: e.to_string(),
+                })
+            }
+            Err(_) => return Err(HostAccountError::Timeout { what: "smbpasswd" }),
+        };
+
+        if output.status.success() {
+            Ok(())
+        } else {
+            Err(HostAccountError::Failed {
+                what: "smbpasswd",
+                message: String::from_utf8_lossy(&output.stderr).trim().to_string(),
+            })
+        }
+    }
+
+    /// Remove the Samba passdb credential before the Unix account is deleted.
+    pub async fn delete_samba_account(username: &str) -> Result<(), HostAccountError> {
+        Self::validate_username(username)?;
+        let mut cmd = Self::command("smbpasswd");
+        cmd.args(["-x", username]);
+        match Self::run(cmd, "smbpasswd").await {
+            Ok(output) if output.status.success() => Ok(()),
+            Ok(output) => {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                // No passdb entry is the desired end state.
+                if stderr.contains("Failed to find user")
+                    || stderr.contains("does not exist")
+                    || stderr.contains("No such user")
+                {
+                    return Ok(());
+                }
+                Err(HostAccountError::Failed {
+                    what: "smbpasswd",
+                    message: stderr.trim().to_string(),
+                })
+            }
+            Err(e) => Err(e),
+        }
+    }
+
+    /// Disable/enable the Samba credential (`smbpasswd -d/-e`).
+    pub async fn set_samba_locked(
+        username: &str,
+        locked: bool,
+    ) -> Result<(), HostAccountError> {
+        Self::validate_username(username)?;
+        let mut cmd = Self::command("smbpasswd");
+        cmd.arg(if locked { "-d" } else { "-e" });
+        cmd.arg(username);
+        match Self::run(cmd, "smbpasswd").await {
+            Ok(output) if output.status.success() => Ok(()),
+            Ok(output) => {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                if stderr.contains("Failed to find user")
+                    || stderr.contains("does not exist")
+                    || stderr.contains("No such user")
+                {
+                    return Ok(());
+                }
+                Err(HostAccountError::Failed {
+                    what: "smbpasswd",
+                    message: stderr.trim().to_string(),
+                })
+            }
+            Err(e) => Err(e),
+        }
+    }
+
     /// Remove the Linux account, keeping its home directory.
     ///
     /// Home removal is the caller's decision (`DELETE /users/{u}?delete_home_folder`)
@@ -381,6 +563,16 @@ impl HostAccountService {
         };
         if Self::is_system_uid(uid) {
             return Err(HostAccountError::SystemAccount(username.to_string()));
+        }
+
+        // Remove the Samba credential first: `userdel` would leave it behind
+        // and a recreated account could inherit the old SMB password hash.
+        if let Err(e) = Self::delete_samba_account(username).await {
+            tracing::warn!(
+                "Could not remove the Samba credential for '{}': {}",
+                username,
+                e
+            );
         }
 
         let mut cmd = Self::command("userdel");
@@ -653,5 +845,31 @@ mod tests {
                 .await
                 .is_ok()
         );
+    }
+
+    #[test]
+    fn test_smbpasswd_input_is_the_two_confirmation_lines() {
+        assert_eq!(
+            HostAccountService::smbpasswd_input("S3cret-pass").unwrap(),
+            "S3cret-pass\nS3cret-pass\n"
+        );
+    }
+
+    #[test]
+    fn test_smbpasswd_input_rejects_injection_and_empty_password() {
+        assert!(HostAccountService::smbpasswd_input("").is_err());
+        assert!(HostAccountService::smbpasswd_input("pwd\nroot:evil").is_err());
+        assert!(HostAccountService::smbpasswd_input("pwd\rroot:evil").is_err());
+    }
+
+    #[tokio::test]
+    async fn test_samba_sync_is_idempotent_when_samba_is_absent_or_user_missing() {
+        // These must not panic or hang when `smbpasswd`/the account is absent:
+        // the caller (user creation/password change) treats Samba as
+        // best-effort and keeps the database write authoritative.
+        let name = "hv-missing-account-xyz";
+        assert!(HostAccountService::delete_samba_account(name).await.is_ok());
+        assert!(HostAccountService::set_samba_locked(name, true).await.is_ok());
+        assert!(HostAccountService::set_samba_locked(name, false).await.is_ok());
     }
 }

@@ -462,6 +462,36 @@ pub async fn can_access(
         .unwrap_or(false)
 }
 
+/// Whether the **Explorer app** is available to `username`.
+///
+/// Unlike the Docker catalog apps, which are opt-in through a grant, the
+/// Explorer has always been available to every signed-in member. Backward
+/// compatibility therefore makes "no row" mean **allowed**; only an explicit
+/// `app:explorer` grant set to `deny` hides it. Admins are always allowed.
+/// A database failure fails **closed**: the Explorer is a large surface and a
+/// transient DB error must not silently re-open it for a member whose access
+/// was revoked.
+pub async fn explorer_app_allowed(state: &Arc<AppState>, username: &str) -> bool {
+    if is_admin(state, username).await {
+        return true;
+    }
+    match effective_visible_resources(state, username, ResourceKind::App).await {
+        Ok(rows) => rows
+            .into_iter()
+            .find(|(resource, _)| resource == "explorer")
+            .map(|(_, level)| level != ResourcePermission::Deny.as_str())
+            .unwrap_or(true),
+        Err(e) => {
+            tracing::warn!(
+                "Explorer access: could not resolve grants for '{}': {} — refusing",
+                username,
+                e
+            );
+            false
+        }
+    }
+}
+
 /// The member's live OS group names (`id -nG`, filtered to HomeVault groups).
 ///
 /// Blocking call, so it runs on the blocking pool — same pattern as

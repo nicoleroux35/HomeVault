@@ -24,7 +24,7 @@
 
 use crate::handlers::AppState;
 use crate::shares::WebdavConfig;
-use crate::storage::resource_share_repo::{ResourceKind, ResourceShareRepository};
+use crate::storage::resource_share_repo::{ResourceKind, ResourcePermission};
 use crate::webdav::fs::WebdavShare;
 use crate::webdav::vfs::{WebdavCreds, WebdavFs};
 use axum::{
@@ -39,7 +39,7 @@ use dav_server::memls::MemLs;
 use dav_server::{DavHandler, DavMethodSet};
 use http::header::WWW_AUTHENTICATE;
 use http::StatusCode;
-use std::collections::HashSet;
+use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
 
@@ -145,7 +145,7 @@ pub async fn handle_dav(
         let creds = WebdavCreds {
             username: "anonymous".to_string(),
             is_admin: true,
-            granted: Arc::new(HashSet::new()),
+            granted: Arc::new(std::collections::HashMap::new()),
         };
         return into_axum(
             ctx.dav
@@ -189,20 +189,30 @@ fn into_axum(resp: http::Response<dav_server::body::Body>) -> Response {
     Response::from_parts(parts, axum::body::Body::new(body))
 }
 
-/// Builds the per-request credentials: admin flag plus the names of the
-/// shares this member holds a `share` grant for.
+/// Builds the per-request credentials: admin flag plus the *effective*
+/// level (direct ∪ group grants, deny winning) of every share grant.
+///
+/// The previous version only kept the resource names: a `deny` row was
+/// therefore treated as access, a `read` grant allowed writes, and group
+/// grants were invisible. Delegating to `effective_visible_resources` is the
+/// single place that rule lives, so WebDAV cannot drift from the Users page.
 async fn build_creds(state: &Arc<AppState>, username: &str) -> Result<WebdavCreds, String> {
     let is_admin = state.auth.is_admin(username).await;
-    let granted = if is_admin {
-        HashSet::new()
+    let granted: HashMap<String, ResourcePermission> = if is_admin {
+        HashMap::new()
     } else {
-        let repo = ResourceShareRepository::new(state.db.pool());
-        repo.list_for_member(username, Some(ResourceKind::Share))
-            .await
-            .map_err(|e| e.to_string())?
-            .into_iter()
-            .map(|grant| grant.resource)
-            .collect()
+        crate::handlers::resource_shares::effective_visible_resources(
+            state,
+            username,
+            ResourceKind::Share,
+        )
+        .await
+        .map_err(|e| e.to_string())?
+        .into_iter()
+        .filter_map(|(resource, level)| {
+            ResourcePermission::parse(&level).map(|permission| (resource, permission))
+        })
+        .collect()
     };
     Ok(WebdavCreds {
         username: username.to_string(),

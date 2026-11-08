@@ -76,6 +76,7 @@ pub struct AclEntry {
 
 /// ACL tag type: user, group, mask, or other.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "lowercase")]
 pub enum AclTag {
     User,
     Group,
@@ -343,6 +344,70 @@ impl AclService {
         Ok(())
     }
 
+    /// Maximum number of entries one recursive ACL operation walks. A share
+    /// with millions of files must fail with a clear error instead of
+    /// running for hours under a 30 s command deadline.
+    pub const MAX_RECURSIVE_ENTRIES: usize = 100_000;
+
+    fn walk_tree<F>(path: &str, mut visit: F) -> Result<(), AclError>
+    where
+        F: FnMut(&std::path::Path, bool) -> Result<(), AclError>,
+    {
+        let root = std::path::Path::new(path);
+        if !root.exists() {
+            return Err(AclError::NotFound(path.to_string()));
+        }
+        let mut stack = vec![root.to_path_buf()];
+        let mut seen = 0usize;
+        while let Some(current) = stack.pop() {
+            seen += 1;
+            if seen > Self::MAX_RECURSIVE_ENTRIES {
+                return Err(AclError::CommandFailed(format!(
+                    "recursive ACL refused: more than {} entries under {}",
+                    Self::MAX_RECURSIVE_ENTRIES, path
+                )));
+            }
+            let metadata = std::fs::symlink_metadata(&current)?;
+            let is_dir = metadata.is_dir();
+            visit(&current, is_dir)?;
+            if is_dir {
+                for entry in std::fs::read_dir(&current)? {
+                    let entry = entry?;
+                    let child = entry.path();
+                    // `symlink_metadata` is not followed: an ACL must never
+                    // be propagated through a symlink into another share.
+                    if entry.file_type()?.is_dir() {
+                        stack.push(child);
+                    } else if entry.file_type()?.is_file() {
+                        visit(&child, false)?;
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Apply access ACL entries to a path and every descendant.
+    pub fn set_acl_recursive(path: &str, entries: &[AclEntry]) -> Result<(), AclError> {
+        Self::walk_tree(path, |entry, _is_dir| {
+            Self::set_acl(&entry.to_string_lossy(), entries)
+        })
+    }
+
+    /// Apply default ACL entries to a path and every descendant directory
+    /// (default ACLs are meaningless on regular files).
+    pub fn set_default_acl_recursive(
+        path: &str,
+        entries: &[AclEntry],
+    ) -> Result<(), AclError> {
+        Self::walk_tree(path, |entry, is_dir| {
+            if is_dir {
+                Self::set_default_acl(&entry.to_string_lossy(), entries)?;
+            }
+            Ok(())
+        })
+    }
+
     /// Set default ACL entries on a path (inherited by new children).
     pub fn set_default_acl(path: &str, entries: &[AclEntry]) -> Result<(), AclError> {
         Self::validate_acl_path(path)?;
@@ -436,6 +501,24 @@ impl AclService {
         );
 
         Ok(())
+    }
+
+    /// Remove one grantee's ACL from a path and every descendant.
+    pub fn remove_acl_recursive(
+        path: &str,
+        tag: &AclTag,
+        qualifier: Option<&str>,
+    ) -> Result<(), AclError> {
+        Self::walk_tree(path, |entry, _is_dir| {
+            Self::remove_acl(&entry.to_string_lossy(), tag, qualifier)
+        })
+    }
+
+    /// Remove every ACL entry from a path and every descendant.
+    pub fn remove_all_acl_recursive(path: &str) -> Result<(), AclError> {
+        Self::walk_tree(path, |entry, _is_dir| {
+            Self::remove_all_acl(&entry.to_string_lossy())
+        })
     }
 
     /// Remove all ACL entries from a path via `setfacl -b`.
@@ -551,6 +634,34 @@ impl AclService {
         );
 
         format!("{}{}{}", owner, group, other)
+    }
+}
+
+#[cfg(test)]
+mod recursive_tests {
+    use super::*;
+
+    #[test]
+    fn test_walk_tree_visits_every_file_and_directory() {
+        let root = tempfile::tempdir().expect("tempdir");
+        std::fs::create_dir_all(root.path().join("a/b")).unwrap();
+        std::fs::write(root.path().join("a/file.txt"), b"x").unwrap();
+        std::fs::write(root.path().join("a/b/deep.txt"), b"x").unwrap();
+
+        let mut dirs = 0;
+        let mut files = 0;
+        AclService::walk_tree(&root.path().to_string_lossy(), |path, is_dir| {
+            if is_dir {
+                dirs += 1;
+            } else {
+                files += 1;
+            }
+            assert!(path.exists());
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(dirs, 3, "root + a + a/b");
+        assert_eq!(files, 2);
     }
 }
 

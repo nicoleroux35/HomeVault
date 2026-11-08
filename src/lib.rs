@@ -125,6 +125,7 @@ pub mod fan_control;
 pub mod guided_redundancy;
 pub mod local_dns;
 pub mod setup;
+pub mod ftp;
 pub mod sftp;
 pub mod share_quota;
 pub mod shares;

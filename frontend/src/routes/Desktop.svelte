@@ -1066,7 +1066,7 @@
   // `destinations` and `replication` are admin-only on the backend (they drive
   // root-owned units and receive/send data on the admin's behalf), so their
   // tiles are hidden from a member session rather than shown and then 403'd.
-  const ADMIN_ONLY_APP_IDS = new Set(['journal', 'destinations', 'replication', 'traffic-control', 'iscsi', 'directory']);
+  const ADMIN_ONLY_APP_IDS = new Set(['journal', 'destinations', 'replication', 'traffic-control', 'iscsi', 'directory', 'docker']);
 
   // Applications configuration. Structural fields (id/icon/color/category/
   // component) never change; `name`/`desc` below are the English fallback
@@ -2946,6 +2946,7 @@
         </button>
       {/if}
 
+      {#if $isAdmin}
       <!-- Containers (purple gradient) -->
       <button
         class="hv-dock-item"
@@ -2967,6 +2968,8 @@
         {/if}
         {#if $windowManager && hasOpenWindow('docker')}<span class="hv-dock-dot"></span>{/if}
       </button>
+
+      {/if}
 
       <!-- Health (red gradient) -->
       <button

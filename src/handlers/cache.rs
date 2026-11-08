@@ -540,6 +540,9 @@ fn create_or_update_smb_export(share: &CacheShare, mounts: &PoolMounts, cache_po
         enabled: share.enabled,
         comment: format!("HomeVault cache share (mode: {})", share.cache_mode),
         options: vec![],
+        read_only: false,
+        guest_ok: None,
+        restrictions: crate::shares::ShareRestrictions::default(),
     };
 
     // Try update first (in case it already exists), then create.
@@ -551,6 +554,9 @@ fn create_or_update_smb_export(share: &CacheShare, mounts: &PoolMounts, cache_po
             enabled: Some(share.enabled),
             comment: Some(smb_share.comment.clone()),
             options: Some(vec![]),
+            read_only: None,
+            guest_ok: None,
+            restrictions: None,
         },
     )
     .is_err()

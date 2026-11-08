@@ -57,6 +57,11 @@ lives in the [Storage](./storage.md) app's "Virtual disks" tab.
   it is selected. The API names the real problem (`RAID Z3 is a ZFS layout`)
   instead of failing later at device inspection.
 
+**One drive type per virtual disk.** The create handler reads the same
+`lsblk` inventory as the wizard (`ROTA`: spinning vs SSD) and refuses a
+selection that mixes the two, matching DSM's storage-pool rule. The check runs
+after the free-device gate and before any `mdadm`/`zpool`/`mkfs.btrfs` call.
+
 Extra options:
 - `spares` attaches extra checked disks as **hot spares**: mdadm
   `--spare-devices` for ext4/xfs, or a native ZFS `spare` vdev group

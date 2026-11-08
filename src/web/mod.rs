@@ -201,8 +201,13 @@ use crate::handlers::{
         handle_oidc_settings_put, handle_oidc_start, handle_oidc_test,
     },
     permissions::{
-        handle_share_permission_grant, handle_share_permission_revoke,
-        handle_share_permissions_list, handle_share_permissions_sync, handle_user_permissions,
+        handle_share_acl_get, handle_share_acl_set, handle_share_permission_all_grant,
+        handle_share_permission_all_revoke, handle_share_permission_grant,
+        handle_share_permission_revoke, handle_share_permissions_all_list,
+        handle_share_permissions_all_sync, handle_share_permissions_list,
+        handle_share_permissions_matrix, handle_share_permissions_report,
+        handle_share_permissions_sync,
+        handle_user_permissions, handle_user_permissions_effective,
     },
     power::{
         handle_power_action, handle_power_governor_set, handle_power_spindown_apply,
@@ -288,11 +293,16 @@ use crate::handlers::{
     },
     shares::{
         handle_ftp_config_get, handle_ftp_config_update, handle_nfs_config_get,
-        handle_nfs_config_update, handle_sftp_config_get, handle_sftp_config_update,
-        handle_sftp_grantees_list, handle_sftp_key_set, handle_sftp_rebuild, handle_share_create,
-        handle_share_delete, handle_share_get, handle_share_service_restart,
+        handle_nfs_config_update, handle_nfs_rules_get, handle_nfs_rules_set,
+        handle_sftp_config_get, handle_sftp_config_update,
+        handle_sftp_grantees_list, handle_sftp_key_set, handle_sftp_rebuild,
+        handle_share_bind_protocol, handle_share_create, handle_share_definition_create,
+        handle_share_definitions_list, handle_share_delete, handle_share_get,
+        handle_share_service_restart, handle_share_unbind_protocol, handle_smb_domain_join,
+        handle_smb_domain_leave,
         handle_share_service_start, handle_share_service_stop, handle_share_toggle,
         handle_share_update, handle_shares_list, handle_smb_config_get, handle_smb_config_update,
+        handle_smb_previous_versions_list, handle_smb_previous_versions_set,
         handle_smb_recycle_list, handle_smb_recycle_set, handle_smb_time_machine_list,
         handle_smb_time_machine_set, handle_webdav_config_get, handle_webdav_config_update,
     },
@@ -322,9 +332,10 @@ use crate::handlers::{
         handle_disk_smart_test_status, handle_disks_list, handle_import_pool,
         handle_importable_pools_list, handle_partitions_list, handle_raid_arrays_list,
         handle_raid_available_devices, handle_raid_create, handle_raid_rebuild,
-        handle_removable_disks_list, handle_virtual_disk_delete, handle_virtual_disk_grow,
-        handle_virtual_disk_level_options, handle_virtual_disk_migrate_level,
-        handle_virtual_disk_scrub, handle_virtual_disk_scrub_status, handle_virtual_disks_list,
+        handle_removable_disks_list, handle_virtual_disk_delete, handle_virtual_disk_destroy,
+        handle_virtual_disk_grow, handle_virtual_disk_level_options,
+        handle_virtual_disk_migrate_level, handle_virtual_disk_scrub,
+        handle_virtual_disk_scrub_status, handle_virtual_disks_list,
     },
     syncthing::{
         handle_syncthing_config, handle_syncthing_connections, handle_syncthing_create_device,
@@ -1300,6 +1311,11 @@ pub fn create_app(state: AppStateArc) -> Router {
             delete(handle_virtual_disk_delete),
         )
         .route(
+            // Password-confirmed destroy (the UI path; DSM parity).
+            "/api/storage/virtual-disks/{name}/destroy",
+            post(handle_virtual_disk_destroy),
+        )
+        .route(
             "/api/storage/virtual-disks/{name}/scrub",
             post(handle_virtual_disk_scrub),
         )
@@ -1789,6 +1805,15 @@ pub fn create_app(state: AppStateArc) -> Router {
             "/api/explorer/shares/{token}",
             axum::routing::delete(handle_share_link_delete),
         )
+        .route(
+            "/api/explorer/file-requests",
+            get(crate::handlers::file_requests::handle_file_requests_list)
+                .post(crate::handlers::file_requests::handle_file_request_create),
+        )
+        .route(
+            "/api/explorer/file-requests/{token}",
+            axum::routing::delete(crate::handlers::file_requests::handle_file_request_delete),
+        )
         .route("/api/explorer/watch", get(handle_explorer_watch))
         .route(
             "/api/explorer/watch/ticket",
@@ -1819,6 +1844,19 @@ pub fn create_app(state: AppStateArc) -> Router {
         // Shares
         .route("/api/shares", get(handle_shares_list))
         .route("/api/shares", post(handle_share_create))
+        // Logical shares: one folder, several protocol bindings.
+        .route(
+            "/api/shares/definitions",
+            get(handle_share_definitions_list).post(handle_share_definition_create),
+        )
+        .route(
+            "/api/shares/{name}/bind",
+            post(handle_share_bind_protocol),
+        )
+        .route(
+            "/api/shares/{name}/bind/{share_type}",
+            axum::routing::delete(handle_share_unbind_protocol),
+        )
         .route("/api/shares/{name}/{share_type}", get(handle_share_get))
         .route("/api/shares/{name}/{share_type}", put(handle_share_update))
         .route(
@@ -1851,10 +1889,23 @@ pub fn create_app(state: AppStateArc) -> Router {
         )
         .route("/api/shares/smb/config", get(handle_smb_config_get))
         .route("/api/shares/smb/config", put(handle_smb_config_update))
+        .route("/api/shares/smb/domain/join", post(handle_smb_domain_join))
+        .route(
+            "/api/shares/smb/domain/leave",
+            post(handle_smb_domain_leave),
+        )
         .route("/api/shares/smb/recycle", get(handle_smb_recycle_list))
         .route(
             "/api/shares/{name}/smb/recycle",
             put(handle_smb_recycle_set),
+        )
+        .route(
+            "/api/shares/smb/previous-versions",
+            get(handle_smb_previous_versions_list),
+        )
+        .route(
+            "/api/shares/{name}/smb/previous-versions",
+            put(handle_smb_previous_versions_set),
         )
         // Time Machine over SMB (`vfs_fruit`); the mDNS publisher picks up
         // the `_adisk._tcp` advertisement on its next tick.
@@ -1893,6 +1944,8 @@ pub fn create_app(state: AppStateArc) -> Router {
         )
         .route("/api/shares/nfs/config", get(handle_nfs_config_get))
         .route("/api/shares/nfs/config", put(handle_nfs_config_update))
+        .route("/api/shares/{name}/nfs/rules", get(handle_nfs_rules_get))
+        .route("/api/shares/{name}/nfs/rules", put(handle_nfs_rules_set))
         .route("/api/shares/sftp/config", get(handle_sftp_config_get))
         .route("/api/shares/sftp/config", put(handle_sftp_config_update))
         .route("/api/shares/sftp/users", get(handle_sftp_grantees_list))
@@ -1939,6 +1992,18 @@ pub fn create_app(state: AppStateArc) -> Router {
             "/api/snmp/settings",
             get(handle_snmp_settings_get).put(handle_snmp_settings_update),
         )
+        // Logical-share permissions: apply one grant to every protocol
+        // binding of a name instead of repeating it per protocol.
+        .route(
+            "/api/shares/{name}/permissions",
+            get(handle_share_permissions_all_list)
+                .post(handle_share_permission_all_grant)
+                .delete(handle_share_permission_all_revoke),
+        )
+        .route(
+            "/api/shares/{name}/permissions/sync",
+            post(handle_share_permissions_all_sync),
+        )
         // Share Permissions
         .route(
             "/api/shares/{name}/{share_type}/permissions",
@@ -1957,8 +2022,24 @@ pub fn create_app(state: AppStateArc) -> Router {
             post(handle_share_permissions_sync),
         )
         .route(
+            "/api/shares/{name}/{share_type}/acl",
+            get(handle_share_acl_get).put(handle_share_acl_set),
+        )
+        .route(
+            "/api/shares/permissions",
+            get(handle_share_permissions_matrix),
+        )
+        .route(
+            "/api/shares/permissions/report",
+            get(handle_share_permissions_report),
+        )
+        .route(
             "/api/users/{username}/permissions",
             get(handle_user_permissions),
+        )
+        .route(
+            "/api/users/{username}/permissions/effective",
+            get(handle_user_permissions_effective),
         )
         // Users
         .route("/api/users", get(handle_users_list))
@@ -2421,6 +2502,14 @@ pub fn create_app(state: AppStateArc) -> Router {
     let public_share = Router::new()
         .route("/share/{token}", get(handle_share_link_download))
         .route("/share/{token}/unlock", post(handle_share_link_unlock))
+        .route(
+            "/request/{token}",
+            get(crate::handlers::file_requests::handle_file_request_page),
+        )
+        .route(
+            "/request/{token}/upload",
+            post(crate::handlers::file_requests::handle_file_request_upload),
+        )
         .with_state(state.clone());
 
     // ACME HTTP-01 challenge answers. Public by definition — the certificate
@@ -2479,6 +2568,16 @@ pub fn create_app(state: AppStateArc) -> Router {
     let api_with_terminal = api_with_terminal.layer(axum::middleware::from_fn_with_state(
         state.clone(),
         crate::middleware::password_change_guard_middleware,
+    ));
+
+    // Application-level Explorer gate: a member whose `app:explorer` grant is
+    // `deny` is refused every `/api/explorer/*` call, including the ones that
+    // do not carry a path (disks, transfers, trash listing). Per-path grants
+    // decide what is reachable; this decides whether the app is available at
+    // all — DSM's "Application Privileges" layer.
+    let api_with_terminal = api_with_terminal.layer(axum::middleware::from_fn_with_state(
+        state.clone(),
+        crate::middleware::explorer_access_middleware,
     ));
 
     // Cache lifetimes are set per file by the `spa` handlers themselves (see

@@ -77,7 +77,12 @@
   // disabled until the expected string has been typed exactly.
   let requireText = $derived(dlg.requireText ?? '');
   let typedMatches = $derived(requireText !== '' && (dlg.typed ?? '') === requireText);
-  let canConfirm = $derived(requireText === '' || typedMatches);
+  // Password confirmation (irreversible storage wipes, DSM parity): a valid
+  // session alone is not enough; the caller re-types their own password.
+  let requirePassword = $derived(dlg.requirePassword ?? false);
+  let canConfirm = $derived(
+    (requireText === '' || typedMatches) && (!requirePassword || (dlg.password ?? '').length > 0)
+  );
 </script>
 
 <Modal
@@ -104,6 +109,24 @@
         spellcheck="false"
         data-testid="confirm-dialog-typed"
         bind:value={dlg.typed}
+      />
+    </div>
+  {/if}
+  {#if requirePassword}
+    <div class="mt-3 flex flex-col gap-1.5">
+      <label
+        class="text-c-label text-[var(--hv-shell-text-2)]"
+        for="confirm-dialog-password-input"
+      >
+        {translate('common.confirm_password_label')}
+      </label>
+      <input
+        id="confirm-dialog-password-input"
+        class={textInput}
+        type="password"
+        autocomplete="current-password"
+        data-testid="confirm-dialog-password"
+        bind:value={dlg.password}
       />
     </div>
   {/if}

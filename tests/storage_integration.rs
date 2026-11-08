@@ -101,8 +101,8 @@ use homevault::handlers::{
         handle_disk_smart_capabilities, handle_disk_smart_test_start,
         handle_disk_smart_test_status, handle_disks_list, handle_import_pool,
         handle_importable_pools_list, handle_partitions_list, handle_removable_disks_list,
-        handle_virtual_disk_delete, handle_virtual_disk_grow, handle_virtual_disk_scrub,
-        handle_virtual_disk_scrub_status, handle_virtual_disks_list,
+        handle_virtual_disk_delete, handle_virtual_disk_destroy, handle_virtual_disk_grow,
+        handle_virtual_disk_scrub, handle_virtual_disk_scrub_status, handle_virtual_disks_list,
     },
     AppState,
 };
@@ -165,6 +165,10 @@ fn storage_router(state: Arc<AppState>) -> Router {
         .route(
             "/api/storage/virtual-disks/{name}",
             delete(handle_virtual_disk_delete),
+        )
+        .route(
+            "/api/storage/virtual-disks/{name}/destroy",
+            post(handle_virtual_disk_destroy),
         )
         .route(
             "/api/storage/virtual-disks/{name}/scrub",
@@ -1183,4 +1187,54 @@ async fn test_cache_pools_get_returns_an_array_even_with_no_pools() {
     .await;
     assert_eq!(status, StatusCode::OK);
     assert!(body["data"].is_array());
+}
+
+/// The password-confirmed destroy path refuses a mismatched typed name and a
+/// wrong password before it even looks for the disk; a correct password gets
+/// past both gates and then fails on the (deliberately nonexistent) disk.
+#[tokio::test]
+async fn test_virtual_disk_destroy_requires_name_and_password() {
+    let (state, _tmp, _guard) = setup_state().await;
+    create_test_user(&state, "admin1", "Password123!", 2).await;
+    let mut router = storage_router(state);
+    let token = login(&mut router, "admin1", "Password123!").await;
+
+    let (status, body) = send(
+        &mut router,
+        Method::POST,
+        "/api/storage/virtual-disks/hv-missing/destroy",
+        Some(&token),
+        Some(json!({"confirm_name": "other", "password": "Password123!"})),
+    )
+    .await;
+    assert_ne!(status, StatusCode::OK);
+    assert!(body["message"]
+        .as_str()
+        .unwrap_or("")
+        .contains("does not match"));
+
+    let (status, body) = send(
+        &mut router,
+        Method::POST,
+        "/api/storage/virtual-disks/hv-missing/destroy",
+        Some(&token),
+        Some(json!({"confirm_name": "hv-missing", "password": "wrong-password"})),
+    )
+    .await;
+    assert_ne!(status, StatusCode::OK);
+    assert!(body["message"]
+        .as_str()
+        .unwrap_or("")
+        .contains("Password confirmation failed"));
+
+    let (status, body) = send(
+        &mut router,
+        Method::POST,
+        "/api/storage/virtual-disks/hv-missing/destroy",
+        Some(&token),
+        Some(json!({"confirm_name": "hv-missing", "password": "Password123!"})),
+    )
+    .await;
+    assert_ne!(status, StatusCode::OK);
+    assert!(body["message"].as_str().unwrap_or("").contains("not found"));
 }

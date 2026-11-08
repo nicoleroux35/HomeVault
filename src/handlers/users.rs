@@ -1269,6 +1269,7 @@ pub async fn handle_user_delete(
             // inherit it. Best-effort by design, matching every
             // other cleanup call in this branch.
             crate::sftp::SftpJailService::purge_user(&username);
+            crate::ftp::FtpJailService::purge_user(&username);
 
             // Recents are personal data too: a recreated same-name
             // account must not inherit the deleted user's locations.

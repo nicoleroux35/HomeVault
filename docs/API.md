@@ -529,6 +529,7 @@ but reported as not enforced (with a `reason_code`), never as applied. See
 | POST | `/storage/raid` | admin | `handle_raid_create` — creates one virtual disk **as a tracked background job**: `{message, job_id}` immediately, milestones + completion/failure on the progress SSE of `job_id`. Body: `{ name, level (raid0|raid1|raid5|raid6|raid10|raidz3), devices, filesystem (ext4|xfs|btrfs|zfs), spares? (mdadm `--spare-devices`, or a native ZFS `spare` vdev group; Btrfs refuses with an alternative), allow_missing? (degraded create, mdadm redundant levels only) }`. `raidz3` is ZFS-only (four-disk minimum); any other filesystem is a `400` naming the ZFS layout before the device gate. Gates answer 400 synchronously: pure request-shape validation, **server-side device gate** (every device must exist, not host the system disk, and be entirely free) and name-collision pre-check |
 | GET | `/storage/virtual-disks` | auth | `handle_virtual_disks_list` — **all** virtual disks (mdadm + ZFS + Btrfs) |
 | DELETE | `/storage/virtual-disks/{name}` | admin | `handle_virtual_disk_delete` — dispatches mdadm vs ZFS/Btrfs. mdadm: unmount failures abort the destroy before `mdadm --stop`/`--zero-superblock` |
+| POST | `/storage/virtual-disks/{name}/destroy` | admin | `handle_virtual_disk_destroy` — password-confirmed destroy `{confirm_name, password}`; the typed name must match and the admin's own password is re-verified before the wipe (DSM parity). The UI path; `DELETE` stays for API clients |
 | POST | `/storage/virtual-disks/{name}/scrub` | admin | `handle_virtual_disk_scrub` — ZFS/Btrfs scrub, mdadm `sudo mdadm --action check` |
 | GET | `/storage/virtual-disks/{name}/scrub` | auth | `handle_virtual_disk_scrub_status` — current scrub state + `in_progress` |
 | GET | `/storage/importable-pools` | auth | `handle_importable_pools_list` — foreign ZFS/Btrfs pools on attached disks |
@@ -581,29 +582,29 @@ Any refusal answers 400 and keeps the metadata row.
 
 | Method | Path | Auth | Notes |
 |--------|------|------|-------|
-| GET | `/explorer/list` | auth | `?path=`; response has `truncated: bool` (cap `MAX_DIR_ENTRIES = 10_000`) |
-| GET | `/explorer/roots` | auth | `handle_explorer_roots` — labelled sidebar roots (`{path, kind, name}`): the session user's home, each PathGuard root, then every mounted virtual disk (`kind:"virtualdisk"`) |
-| GET | `/explorer/search` | auth | `?path=&query=&max_results=` |
-| GET | `/explorer/disks` | auth | `handle_explorer_disks` — mounted volumes grouped `system\|internal\|raid\|external\|cloud\|network`; per entry `mount_point`/`filesystem`/`size_bytes`/`used_bytes` + optional `label`/`vendor`/`model`/`serial` |
-| POST | `/explorer/mkdir` | auth | `?path=` |
+| GET | `/explorer/list` | auth | `?path=`; response has `truncated: bool` (cap `MAX_DIR_ENTRIES = 10_000`), `permission` (`deny`\|`read`\|`write`\|`full`) and `restrictions` (`disable_browsing`/`disable_modification`/`disable_download`). Listing is refused when the share disables browsing |
+| GET | `/explorer/roots` | auth | `handle_explorer_roots` — labelled sidebar roots (`{path, kind, name, permission}`): the session user's home, each PathGuard root, then every mounted virtual disk (`kind:"virtualdisk"`). A member only sees their home and the grants they hold |
+| GET | `/explorer/search` | auth | `?path=&query=&max_results=&fuzzy=` — refused when the share disables browsing |
+| GET | `/explorer/disks` | auth | `handle_explorer_disks` — mounted volumes grouped `system\|internal\|raid\|external\|cloud\|network`; per entry `mount_point`/`filesystem`/`size_bytes`/`used_bytes` + optional `label`/`vendor`/`model`/`serial`. A member only sees mounts that are their roots or sit inside one |
+| POST | `/explorer/mkdir` | auth | `?path=` — requires `write` |
 | POST | `/explorer/delete` | **admin** | `?path=` — permanent; internal use only now, see `/explorer/trash`. Even for admins the path passes the PathGuard, and deleting a browsing root itself is refused. Since 2026-10-30 a path outside the roots is allowed **only** inside the scratch space (`$TMPDIR`/`/tmp`/`/var/tmp`) |
-| POST | `/explorer/rename` | auth | `?path=&new_name=` — **both** paths are path-guard validated |
-| POST | `/explorer/save` | auth | `handle_explorer_save` — inline text/code editor, atomic temp-file + rename, 5 MB cap |
-| POST | `/explorer/copy` | auth | `?source=&destination=&strategy=overwrite\|keep_both\|skip`; directories return `{job_id, sse_url}`; a single file answers `{message, method, instant, bytes}` where `method` is `clone` \| `kernel_copy` \| `stream` (a clone shares the source's blocks — see *Instant copy* below); every non-clone copy is SHA-256 verified end-to-end |
-| POST | `/explorer/move` | auth | `?source=&destination=&strategy=`; same job pattern; source deleted only after a verified copy. Answers `{message, method, instant}` — `method` is `null` for a same-filesystem atomic rename (nothing was copied) and names the strategy only for the cross-filesystem fallback |
+| POST | `/explorer/rename` | auth | `?path=&new_name=` — **both** paths are path-guard validated and require `write` |
+| POST | `/explorer/save` | auth | `handle_explorer_save` — inline text/code editor, atomic temp-file + rename, 5 MB cap; requires `write` |
+| POST | `/explorer/copy` | auth | `?source=&destination=&strategy=overwrite\|keep_both\|skip`; requires `read` on the source and `write` at the destination (a read-only share can be copied out of). Directories return `{job_id, sse_url}`; a single file answers `{message, method, instant, bytes}` where `method` is `clone` \| `kernel_copy` \| `stream` (a clone shares the source's blocks — see *Instant copy* below); every non-clone copy is SHA-256 verified end-to-end |
+| POST | `/explorer/move` | auth | `?source=&destination=&strategy=`; same job pattern; source deleted only after a verified copy. Answers `{message, method, instant}` — `method` is `null` for a same-filesystem atomic rename (nothing was copied) and names the strategy only for the cross-filesystem fallback. Requires `write` on both sides |
 | GET | `/explorer/instant-copy` | auth | `handle_explorer_instant_copy_get` — `{ mode: "auto"\|"off", mounts: [{ mount_point, fs_type, reflink }] }`; the mounts are evidence for the UI, never a gate |
 | PUT | `/explorer/instant-copy` | **admin** | `handle_explorer_instant_copy_update` — body `{ mode }`; strict parse, an unknown value is refused rather than coerced; persisted in the singleton `instant_copy_policy` row (migration 062) |
 | GET | `/shares/{name}/{share_type}/quota` | **admin** | per-share size ceiling: `backend` (`zfs`/`btrfs`/`xfs_project`/`unsupported`), `supported`, `filesystem`, `reason` (when unsupported), `quota_bytes`, `used_bytes`, `free_bytes`, `percent`, `quota_human`, `used_human` |
 | PUT | `/shares/{name}/{share_type}/quota` | **admin** | `{ quota_bytes }` (`0` removes it); the filesystem is changed **first**, and the row only records what it accepted; `400` under 1 MiB or over 1 PiB, or when the filesystem cannot enforce a limit |
 | DELETE | `/shares/{name}/{share_type}/quota` | **admin** | remove the ceiling (filesystem, then row) |
-| GET/POST | `/explorer/permissions` | auth | `?path=&mode=` — read/set POSIX mode |
-| GET | `/explorer/preview` | auth | text/image preview; `previewable: false` for non-text binaries |
+| GET/POST | `/explorer/permissions` | auth | `?path=&mode=` — read/set POSIX mode. **Changing** the mode requires `full` on the folder (DSM's "Change permissions" right), because `chmod` rewrites the ACL mask SMB/WebDAV see |
+| GET | `/explorer/preview` | auth | text/image preview; `previewable: false` for non-text binaries; refused when the share sets `disable_download` |
 | POST | `/explorer/extract` | auth | `?path=&destination=` — members listed + validated pre-flight (no absolute names, no `..`, no symlink members), extracts into a staging dir verified confined below the destination, `.gz` decompresses straight to disk |
 | POST | `/explorer/compress` | auth | JSON body `{ paths: string[], destination, format? }` — `--` separator before the member names (no argv injection) |
-| GET | `/explorer/download` | auth \| ticket | raw file download; `?ticket=` (single-use, from `/explorer/download-ticket`) *or* `x-session-token` header — **never** the session token in a URL; HTTP `Range` (206), `X-Content-Sha256` digest header for files ≤ 64 MB; 429 if the transfer quota is exhausted, 503 if the quota guard itself cannot answer (fail closed) |
+| GET | `/explorer/download` | auth \| ticket | raw file download; `?ticket=` (single-use, from `/explorer/download-ticket`) *or* `x-session-token` header — **never** the session token in a URL; HTTP `Range` (206), `X-Content-Sha256` digest header for files ≤ 64 MB; 429 if the transfer quota is exhausted, 503 if the quota guard itself cannot answer (fail closed). Refused when the share sets `disable_download` |
 | POST | `/explorer/download-ticket` | auth | `?path=` — mint a single-use 60 s download ticket (checks path + download quota) |
-| GET | `/explorer/thumbnail` | auth \| ticket | image thumbnail; `?ticket=` (multi-use, directory-scoped) or session header |
-| POST | `/explorer/thumbnail-ticket` | auth | `?path=` — mint a multi-use 5 min thumbnail ticket for a directory |
+| GET | `/explorer/thumbnail` | auth \| ticket | image thumbnail; `?ticket=` (multi-use, directory-scoped) or session header; refused when the share sets `disable_download` |
+| POST | `/explorer/thumbnail-ticket` | auth | `?path=` — mint a multi-use 5 min thumbnail ticket for a directory; refused when the share sets `disable_download` |
 | POST | `/explorer/upload` | auth | multipart `file` + `?path=` + `?strategy=`; `fsync`'d before success; SHA-256 in `checksums[]`, `skipped[]` for `strategy=skip`; optional `X-Expected-Sha256` header (single-file) |
 | POST | `/explorer/upload/session` | auth | `?path=&filename=&size=&sha256?=` — open a resumable upload session; owned by the calling user; capped per user (20) and globally (256) **counted in `upload_sessions`**, so a restart does not reset them; 429 beyond, 429 over quota, 503 if the quota guard cannot answer. Answers `{ session_id, offset, expires_in_seconds }`; the row survives a restart (migration 074) |
 | DELETE | `/explorer/upload/session` | auth | `?session_id=` — abort a resumable upload, remove the partial temp file; 403 unless the session belongs to the caller |
@@ -626,14 +627,29 @@ Any refusal answers 400 and keeps the metadata row.
 | GET | `/explorer/snapshots` | auth | `?path=` — lists ZFS snapshots covering that path with a `browse_path` under `.zfs/snapshot/…` (read-only browsing) |
 | POST | `/explorer/eject` | admin | `?path=<mount>` — safe-eject a removable drive (guarded to removable block devices only) |
 | GET | `/explorer/shares` | auth | list the caller's "share by link" links — `protected` (a password is set), `download_count`, `max_downloads` and `exhausted` (the cap is spent); the Argon2 hash and the in-flight reservation are never serialised |
-| POST | `/explorer/shares` | auth | `{ path, mode?, expires_days?, password?, max_downloads? }` — create a download link to a file (`mode`: `anyone` \| `signed_in`; default 30-day expiry, `0` = never). `password` is 8–256 characters and stored as an Argon2id hash; `max_downloads` is 1–100000 and **only counts completed transfers**, so `1` is the one-time link. Only regular files can be shared |
-| DELETE | `/explorer/shares/{token}` | auth | revoke a link (owner or admin); any unlock minted for it stops working immediately |
+| POST | `/explorer/shares` | auth | `{ path, mode?, expires_days?, password?, max_downloads?, allowed_users?, allowed_groups? }` — create a download link to a **file or folder** (`mode`: `anyone` \| `signed_in`; default 30-day expiry, `0` = never). A folder is served as a tar.gz snapshot built at creation. `password` is 8–256 characters, stored as an Argon2id hash; `max_downloads` is 1–100000 and **only counts completed transfers**, so `1` is the one-time link. `allowed_users`/`allowed_groups` (comma-separated, max 32) target a `signed_in` link; empty = any signed-in account. Creation requires `read` on the path and is refused when the share disables downloads |
+| DELETE | `/explorer/shares/{token}` | auth | revoke a link (owner or admin); any unlock minted for it stops working immediately, and a folder link's archive is removed |
+| GET/POST | `/explorer/file-requests` | auth | list the caller's public upload links / `{ path, message?, expires_days?, password?, max_uploads? }` — creates an upload link for a **folder** (requires `write`). The password is 8–256 characters (Argon2id), `max_uploads` 1–100000 counts only completed files |
+| DELETE | `/explorer/file-requests/{token}` | auth | revoke an upload link (owner or admin) |
+| GET | `/request/{token}` | public | public upload page (plain HTML: optional password field, then a multi-file input). Expired/spent/unknown → `404`; spent → `429` |
+| POST | `/request/{token}/upload` | public | multipart upload; the `password` field must precede the `file` field (a file first is refused without writing). Max 2 GiB per file, 4 concurrent uploads, collisions keep both. The owner's `write` grant and Explorer app are re-checked before every upload |
 | POST | `/share/{token}/unlock` | public | `{ password }` → `200` with `Set-Cookie: hv_share_unlock=…` (HttpOnly, SameSite=Lax, `Secure` over TLS, scoped to `Path=/share/{token}`, 15 min). `401` carries `x-hv-share-auth: password`; `429` once 8 wrong passwords were tried inside 5 minutes. A wrong password or an oversized body is refused before Argon2 runs |
 | GET / HEAD | `/share/{token}` | public | **public** download (outside `/api`, before the SPA fallback). A password-protected link accepts either the unlock cookie or an `x-share-password` header — **never** the password in the query string. `signed_in` links accept the `x-session-token` header **or** the `hv_session` login cookie (a navigation cannot send a header), and a `401` carries `x-hv-share-auth: session`. HTTP `Range` (206) + `X-Content-Sha256` for files ≤ 64 MB; per-token bandwidth bucket + global concurrency cap; `Cache-Control: no-store`. `HEAD` spends no download slot, and an expired, revoked or spent link answers `400` (indistinguishable, so the endpoint is not a token oracle). A browser navigation (`Accept: text/html`) that cannot be answered with the file itself receives the SPA page instead of JSON — the password form, or the reason the link is unavailable |
 
 Paths are guarded by `config::PathGuard` (`AppState.path_guard`). See
 [File Explorer](./guides/explorer.md) for the trash/compress/progress-job
 design and everything found+fixed during live verification.
+
+**Authorization (P0 pass, 2026-11-08).** `PathGuard` proves reachability, not a
+grant level. Every mutating Explorer route now also checks the effective
+`resource_shares` level: `write` for create/upload/rename/trash/compress/
+extract/save, `write` on both sides for a move, `read` on the source + `write`
+on the destination for a copy, and `full` for `chmod`. `preview`, `thumbnail`
+and `thumbnail-ticket` honour `disable_download`; `list` honours
+`disable_browsing`. The listing/roots responses carry the level so the UI can
+disable the same actions. A member whose `app:explorer` grant is `deny` is
+refused the whole `/api/explorer/*` surface by
+`middleware::explorer_access_middleware` — DSM's "Application Privileges".
 
 ### Transfer integrity
 
@@ -692,7 +708,21 @@ and `handle_share_get` accepted any non-empty `X-Session-Token`; they now use
 | PUT/DELETE | `/shares/rsync/modules/{name}` | admin | update (toggle / read-only / users) or remove a module |
 | PUT/DELETE | `/shares/rsync/users/{user}/secret` | admin | `handle_rsync_secret_set` — sets an rsync password (write-only) / forgets it |
 | POST | `/shares/{name}/{share_type}/permissions/sync` | admin | re-apply ACLs |
+| GET | `/shares/definitions` | admin | logical shares: one row per `(name, path)`, `protocols[]`, `conflicts[]` |
+| POST | `/shares/definitions` | admin | `{name, path, comment?, protocols[], read_only?, guest_ok?, restrictions?}` — creates every binding, rolls back on failure |
+| POST | `/shares/{name}/bind` | admin | add one protocol binding to an existing logical share (same path) |
+| DELETE | `/shares/{name}/bind/{share_type}` | admin | remove one protocol binding |
+| GET/POST/DELETE | `/shares/{name}/permissions` | admin | one grant applied to every binding of the logical share |
+| POST | `/shares/{name}/permissions/sync` | admin | re-apply the stored ACLs on every binding |
+| GET | `/shares/permissions` | admin | flat permission matrix |
+| GET | `/shares/permissions/report` | admin | CSV report (`text/csv`) |
+| GET/PUT | `/shares/{name}/{share_type}/acl` | admin | live POSIX access/default ACL, `{entries, default_entries, recursive}` |
+| GET/PUT | `/shares/{name}/nfs/rules` | admin | per-client NFS rules `[{client, access, options}]` |
+| GET/PUT | `/shares/smb/previous-versions` and `/shares/{name}/smb/previous-versions` | admin | `shadow_copy2` per SMB share |
+| POST | `/shares/smb/domain/join` | admin | `{username, password}` — joins the configured AD realm (password on stdin) |
+| POST | `/shares/smb/domain/leave` | admin | leaves the current AD domain |
 | GET | `/users/{username}/permissions` | admin | `handle_user_permissions` |
+| GET | `/users/{username}/permissions/effective` | admin/self | direct + group grants (Permission Inspector equivalent) |
 | GET | `/shares/access` | admin | `handle_list_access` — every per-member resource grant (optional `?member=`) |
 | GET | `/shares/access/mine` | auth | `handle_my_access` — the caller's own effective access (`all: true` for admins) |
 | POST | `/shares/access` | admin | `handle_grant_access` — `{member, kind, resource, permission?}` |
@@ -886,7 +916,7 @@ Representative endpoints:
 | GET | `/docker/containers/{name}/logs` | admin | merged stdout+stderr, `?tail=` (1–5000), `?timestamps=` |
 | POST | `/docker/containers/{name}/logs/ticket` | admin | single-use 30 s ticket for the SSE stream (EventSource can't send the token header) |
 | GET | `/docker/containers/{name}/logs/stream` | ticket | SSE `log` / `end` events; 401 on missing, expired or mismatched ticket |
-| POST | `/docker/containers` | admin |
+| POST | `/docker/containers` | admin | create; `no_new_privileges` defaults to true (`--security-opt no-new-privileges:true`), `privileged` is opt-in |
 | DELETE | `/docker/containers/{name}` | admin |
 | POST | `/docker/images/pull` | admin |
 | POST | `/docker/images/build` | admin | body `{context, dockerfile?, tag, no_cache?, pull?, build_args?}`; context through `PathGuard` |

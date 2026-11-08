@@ -875,6 +875,44 @@ except Exception as e:
         self.add_password_to_history(&username, &user.password_hash)
             .await?;
 
+        // A HomeVault account is database-only until a protocol needs a Unix
+        // identity. Provision it now, while the plaintext password is still
+        // available: Samba's passdb cannot be fed an Argon2 hash later, and a
+        // user created today must be able to open an SMB/FTP session without
+        // the admin having to run `smbpasswd` by hand. The systemd unit sets
+        // `HV_HOST_SYNC=1`; a bare test/dev process does not shell out to
+        // `useradd`/`smbpasswd` for every in-memory account.
+        if crate::host_accounts::host_sync_enabled() {
+            if let Err(e) =
+                crate::host_accounts::HostAccountService::ensure_linux_account(&username).await
+            {
+                tracing::warn!(
+                    "User '{}' created but no Linux account could be provisioned: {}",
+                    username,
+                    e
+                );
+            }
+            if let Err(e) =
+                crate::host_accounts::HostAccountService::set_password(&username, &password).await
+            {
+                tracing::warn!(
+                    "User '{}' created but the Linux password could not be set: {}",
+                    username,
+                    e
+                );
+            }
+            if let Err(e) =
+                crate::host_accounts::HostAccountService::set_samba_password(&username, &password)
+                    .await
+            {
+                tracing::warn!(
+                    "User '{}' created but no Samba credential could be provisioned: {}",
+                    username,
+                    e
+                );
+            }
+        }
+
         Ok(())
     }
 
@@ -1265,6 +1303,18 @@ except Exception as e:
                 e
             );
         }
+        if crate::host_accounts::host_sync_enabled() {
+            if let Err(e) =
+                crate::host_accounts::HostAccountService::set_samba_password(username, new_password)
+                    .await
+            {
+                tracing::warn!(
+                    "Password updated for '{}' but the Samba credential could not follow: {}",
+                    username,
+                    e
+                );
+            }
+        }
 
         let session_repo = SessionRepository::new(Arc::clone(&self.pool));
         session_repo.delete_by_username(username).await?;
@@ -1398,6 +1448,18 @@ except Exception as e:
                 if locked { "locked" } else { "unlocked" },
                 e
             );
+        }
+        if crate::host_accounts::host_sync_enabled() {
+            if let Err(e) =
+                crate::host_accounts::HostAccountService::set_samba_locked(username, locked).await
+            {
+                tracing::warn!(
+                    "User '{}' {} in HomeVault but the Samba credential could not follow: {}",
+                    username,
+                    if locked { "locked" } else { "unlocked" },
+                    e
+                );
+            }
         }
 
         Ok(())

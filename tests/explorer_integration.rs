@@ -284,10 +284,20 @@ fn explorer_router(state: Arc<AppState>) -> Router {
             "/api/explorer/watch/ticket",
             post(handle_explorer_watch_ticket),
         )
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            homevault::middleware::explorer_access_middleware,
+        ))
         .with_state(state)
 }
 
 /// `role_id` 2 = admin, 1 = regular.
+///
+/// A regular test user is granted `write` on every `PathGuard` root by
+/// default: the Explorer's real authorization layer is `resource_shares`, and
+/// most suites exercise the success paths. Tests that need a read-only or
+/// denied member use [`create_test_user_without_grant`] instead and add the
+/// exact grant they mean to test.
 async fn create_test_user(state: &AppState, username: &str, password: &str, role_id: i64) {
     let password_hash = state.auth.hash_password(password).unwrap();
     sqlx::query(
@@ -300,6 +310,70 @@ async fn create_test_user(state: &AppState, username: &str, password: &str, role
     .execute(&*state.db.pool())
     .await
     .expect("insert test user");
+
+    if role_id == 1 {
+        for root in state.path_guard.allowed_roots() {
+            grant_folder(state, username, &root.to_string_lossy(), "write").await;
+        }
+    }
+}
+
+/// A regular user with **no** folder grant. Callers add exactly the grant the
+/// scenario is about (usually a `read` one).
+async fn create_test_user_without_grant(
+    state: &AppState,
+    username: &str,
+    password: &str,
+    role_id: i64,
+) {
+    let password_hash = state.auth.hash_password(password).unwrap();
+    sqlx::query(
+        "INSERT INTO users (username, password_hash, fullname, email, role_id, locked, created_at, avatar_seed)
+         VALUES (?, ?, 'Test User', 'test@example.com', ?, false, datetime('now'), 'testseed')",
+    )
+    .bind(username)
+    .bind(&password_hash)
+    .bind(role_id)
+    .execute(&*state.db.pool())
+    .await
+    .expect("insert test user");
+}
+
+/// Inserts/updates one `folder` grant directly — the Explorer suites do not
+/// mount the admin `/api/shares/access` routes.
+async fn grant_folder(state: &AppState, member: &str, path: &str, permission: &str) {
+    sqlx::query(
+        "INSERT INTO resource_shares (owner, member, kind, resource, permission)
+         VALUES (?, ?, 'folder', ?, ?)
+         ON CONFLICT(member, kind, resource) DO UPDATE SET
+             permission = excluded.permission,
+             owner = excluded.owner",
+    )
+    .bind(member)
+    .bind(member)
+    .bind(path)
+    .bind(permission)
+    .execute(&*state.db.pool())
+    .await
+    .expect("insert resource grant");
+}
+
+/// Inserts an `app` grant (used by the Explorer application gate).
+async fn grant_app(state: &AppState, member: &str, app: &str, permission: &str) {
+    sqlx::query(
+        "INSERT INTO resource_shares (owner, member, kind, resource, permission)
+         VALUES (?, ?, 'app', ?, ?)
+         ON CONFLICT(member, kind, resource) DO UPDATE SET
+             permission = excluded.permission,
+             owner = excluded.owner",
+    )
+    .bind(member)
+    .bind(member)
+    .bind(app)
+    .bind(permission)
+    .execute(&*state.db.pool())
+    .await
+    .expect("insert app grant");
 }
 
 async fn login(router: &mut Router, username: &str, password: &str) -> String {
@@ -717,6 +791,279 @@ async fn test_admin_can_read_outside_root_but_still_no_crash() {
     .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["success"], json!(true), "{body}");
+}
+
+// ===========================================================================
+// 2b. Grant levels (read vs write vs full) — P0 authorization matrix
+// ===========================================================================
+
+/// A `read` grant is a read grant: every mutating endpoint must refuse it.
+/// This is the regression the Explorer had before the P0 pass — only some
+/// handlers consulted the grant level, so `save`, `compress`, `extract`,
+/// `chmod`, the trash routes and uploads were reachable from a read-only
+/// share.
+#[tokio::test]
+async fn test_read_only_grant_refuses_every_write_route() {
+    let h = setup().await;
+    create_test_user_without_grant(&h.state, "reader", "Password123!", 1).await;
+    grant_folder(
+        &h.state,
+        "reader",
+        &h.root.to_string_lossy(),
+        "read",
+    )
+    .await;
+    let mut r = explorer_router(h.state.clone());
+    let token = login(&mut r, "reader", "Password123!").await;
+
+    let file = h.root.join("notes.txt");
+    std::fs::write(&file, b"original").unwrap();
+    let file = file.to_string_lossy().to_string();
+
+    // Reading is still allowed.
+    let (status, body) = send(
+        &mut r,
+        Method::GET,
+        &format!("/api/explorer/list?path={}", h.root.display()),
+        Some(&token),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["data"]["permission"], json!("read"), "{body}");
+
+    let (status, body) = send(
+        &mut r,
+        Method::GET,
+        &format!("/api/explorer/preview?path={file}"),
+        Some(&token),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    // Every write path must be a 403 (or the JSON envelope's refusal, never a
+    // 500 and never a success).
+    let mut refusals: Vec<(&str, Method, String, Option<Value>)> = vec![
+        (
+            "mkdir",
+            Method::POST,
+            format!("/api/explorer/mkdir?path={}", h.root.join("nope").display()),
+            None,
+        ),
+        (
+            "rename",
+            Method::POST,
+            format!(
+                "/api/explorer/rename?path={file}&new_name={}",
+                h.root.join("renamed.txt").display()
+            ),
+            None,
+        ),
+        (
+            "copy",
+            Method::POST,
+            format!(
+                "/api/explorer/copy?source={file}&destination={}",
+                h.root.join("copy.txt").display()
+            ),
+            None,
+        ),
+        (
+            "move",
+            Method::POST,
+            format!(
+                "/api/explorer/move?source={file}&destination={}",
+                h.root.join("moved.txt").display()
+            ),
+            None,
+        ),
+        (
+            "trash",
+            Method::POST,
+            format!("/api/explorer/trash?path={file}"),
+            None,
+        ),
+        (
+            "chmod",
+            Method::POST,
+            format!("/api/explorer/permissions?path={file}&mode=600"),
+            None,
+        ),
+        (
+            "save",
+            Method::POST,
+            "/api/explorer/save".to_string(),
+            Some(json!({"path": file.clone(), "content": "overwritten"})),
+        ),
+        (
+            "compress",
+            Method::POST,
+            "/api/explorer/compress".to_string(),
+            Some(json!({
+                "paths": [file.clone()],
+                "destination": h.root.join("archive.tar.gz").to_string_lossy(),
+                "format": "tar.gz"
+            })),
+        ),
+        (
+            "extract",
+            Method::POST,
+            format!(
+                "/api/explorer/extract?path={file}&destination={}",
+                h.root.join("out").display()
+            ),
+            None,
+        ),
+    ];
+    for (name, method, uri, body) in refusals.drain(..) {
+        let (status, json) = send(&mut r, method, &uri, Some(&token), body).await;
+        assert_eq!(
+            status,
+            StatusCode::FORBIDDEN,
+            "{name} must be 403 for a read grant: {json}"
+        );
+        assert_eq!(json["success"], json!(false), "{name}: {json}");
+    }
+
+    // The multipart upload is refused before the file is written.
+    let (status, body) = send_upload(
+        &mut r,
+        &format!("/api/explorer/upload?path={}", h.root.display()),
+        Some(&token),
+        "uploaded.txt",
+        b"nope",
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+    assert!(!h.root.join("uploaded.txt").exists());
+
+    // Nothing above changed the file.
+    assert_eq!(std::fs::read(h.root.join("notes.txt")).unwrap(), b"original");
+}
+
+/// Copying *from* a read-only folder is a read: only the destination needs
+/// `write`. The old code required `write` on both sides, which made a
+/// read-only share impossible to copy out of.
+#[tokio::test]
+async fn test_read_only_source_can_be_copied_to_a_writable_destination() {
+    let h = setup().await;
+    create_test_user_without_grant(&h.state, "reader", "Password123!", 1).await;
+    let src = h.root.join("source");
+    let dst = h.root.join("destination");
+    std::fs::create_dir_all(&src).unwrap();
+    std::fs::create_dir_all(&dst).unwrap();
+    std::fs::write(src.join("file.txt"), b"copy me").unwrap();
+    grant_folder(&h.state, "reader", &src.to_string_lossy(), "read").await;
+    grant_folder(&h.state, "reader", &dst.to_string_lossy(), "write").await;
+
+    let mut r = explorer_router(h.state.clone());
+    let token = login(&mut r, "reader", "Password123!").await;
+
+    let (status, body) = send(
+        &mut r,
+        Method::POST,
+        &format!(
+            "/api/explorer/copy?source={}&destination={}",
+            src.join("file.txt").display(),
+            dst.join("file.txt").display()
+        ),
+        Some(&token),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(std::fs::read(dst.join("file.txt")).unwrap(), b"copy me");
+}
+
+/// The listing reports the caller's effective grant so the UI can disable the
+/// actions the server would refuse (DSM's `privilege` / `readonly` fields).
+#[tokio::test]
+async fn test_listing_and_roots_expose_the_effective_permission() {
+    let h = setup().await;
+    create_test_user_without_grant(&h.state, "reader", "Password123!", 1).await;
+    grant_folder(&h.state, "reader", &h.root.to_string_lossy(), "read").await;
+    let mut r = explorer_router(h.state.clone());
+    let token = login(&mut r, "reader", "Password123!").await;
+
+    let (_, listing) = send(
+        &mut r,
+        Method::GET,
+        &format!("/api/explorer/list?path={}", h.root.display()),
+        Some(&token),
+        None,
+    )
+    .await;
+    assert_eq!(listing["data"]["permission"], json!("read"), "{listing}");
+    assert_eq!(
+        listing["data"]["restrictions"]["disable_modification"],
+        json!(false),
+        "{listing}"
+    );
+
+    let (_, roots) = send(
+        &mut r,
+        Method::GET,
+        "/api/explorer/roots",
+        Some(&token),
+        None,
+    )
+    .await;
+    let root = roots["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|entry| entry["path"] == json!(h.root.to_string_lossy()))
+        .unwrap_or_else(|| panic!("test root missing from roots: {roots}"));
+    assert_eq!(root["permission"], json!("read"), "{roots}");
+
+    // An admin sees `full` everywhere.
+    create_test_user(&h.state, "admin", "Password123!", 2).await;
+    let admin_token = login(&mut r, "admin", "Password123!").await;
+    let (_, listing) = send(
+        &mut r,
+        Method::GET,
+        &format!("/api/explorer/list?path={}", h.root.display()),
+        Some(&admin_token),
+        None,
+    )
+    .await;
+    assert_eq!(listing["data"]["permission"], json!("full"), "{listing}");
+}
+
+/// The application gate (DSM's "Application Privileges"): `app:explorer =
+/// deny` refuses every `/api/explorer/*` route, including the ones that do not
+/// carry a path.
+#[tokio::test]
+async fn test_explorer_app_deny_blocks_every_route() {
+    let h = setup().await;
+    create_test_user_without_grant(&h.state, "reader", "Password123!", 1).await;
+    grant_folder(&h.state, "reader", &h.root.to_string_lossy(), "read").await;
+    grant_app(&h.state, "reader", "explorer", "deny").await;
+    let mut r = explorer_router(h.state.clone());
+    let token = login(&mut r, "reader", "Password123!").await;
+
+    for uri in [
+        format!("/api/explorer/list?path={}", h.root.display()),
+        "/api/explorer/roots".to_string(),
+        "/api/explorer/disks".to_string(),
+    ] {
+        let (status, body) = send(&mut r, Method::GET, &uri, Some(&token), None).await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{uri}: {body}");
+        assert_eq!(body["code"], json!("explorer_access_denied"), "{body}");
+    }
+
+    // A read-level app grant (or no row at all) re-opens the app.
+    grant_app(&h.state, "reader", "explorer", "read").await;
+    let (status, body) = send(
+        &mut r,
+        Method::GET,
+        &format!("/api/explorer/list?path={}", h.root.display()),
+        Some(&token),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
 }
 
 // ===========================================================================
@@ -1201,6 +1548,10 @@ async fn test_search_finds_a_nested_file() {
 async fn test_permissions_get_then_chmod() {
     let h = setup().await;
     create_test_user(&h.state, "bob", "Password123!", 1).await;
+    // `chmod` rewrites the ACL mask; the Explorer gates it behind `full`
+    // (DSM's "Change permissions" ACE). The default test grant is `write`, so
+    // this scenario needs the stronger one.
+    grant_folder(&h.state, "bob", &h.root.to_string_lossy(), "full").await;
     let mut r = explorer_router(h.state.clone());
     let token = login(&mut r, "bob", "Password123!").await;
 

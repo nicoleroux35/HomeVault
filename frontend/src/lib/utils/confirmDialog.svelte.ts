@@ -63,6 +63,10 @@ export interface ConfirmDialogState {
   requireText: string;
   /** What the user has typed into the confirmation field. */
   typed: string;
+  /** When true, the dialog also asks for the caller's password. */
+  requirePassword: boolean;
+  /** The password typed into the confirmation field. Never persisted. */
+  password: string;
   /**
    * Ask a yes/no question; resolves `true` when the user confirms.
    *
@@ -70,7 +74,10 @@ export interface ConfirmDialogState {
    * of the thing about to be destroyed, and the confirm button only enables
    * once it has been typed exactly.
    */
-  ask(msg: string, opts?: { danger?: boolean; requireText?: string }): Promise<boolean>;
+  ask(
+    msg: string,
+    opts?: { danger?: boolean; requireText?: string; requirePassword?: boolean },
+  ): Promise<boolean>;
   /** Show a single-OK notice (replaces `alert()`). */
   notify(msg: string): void;
   /** Close the dialog and (for confirm mode) resolve the pending promise. */
@@ -85,19 +92,23 @@ export function createConfirmState(): ConfirmDialogState {
     mode: 'confirm' as 'confirm' | 'alert',
     requireText: '',
     typed: '',
+    requirePassword: false,
+    password: '',
   });
   let resolve: ((value: boolean) => void) | null = null;
 
   /** Ask a yes/no question; resolves `true` when the user confirms. */
   function ask(
     msg: string,
-    opts: { danger?: boolean; requireText?: string } = {},
+    opts: { danger?: boolean; requireText?: string; requirePassword?: boolean } = {},
   ): Promise<boolean> {
     state.message = msg;
     state.danger = opts.danger ?? true;
     state.mode = 'confirm';
     state.requireText = opts.requireText ?? '';
     state.typed = '';
+    state.requirePassword = opts.requirePassword ?? false;
+    state.password = '';
     state.open = true;
     return new Promise<boolean>((res) => {
       resolve = res;
@@ -111,6 +122,8 @@ export function createConfirmState(): ConfirmDialogState {
     state.mode = 'alert';
     state.requireText = '';
     state.typed = '';
+    state.requirePassword = false;
+    state.password = '';
     state.open = true;
   }
 

@@ -182,6 +182,20 @@ pub const SFTP_BASE_DIR: &str = "/var/lib/homevault-sftp";
 /// Per-user chroot jail roots (`<jail>/<username>/<share_name>` is a bind
 /// mount of that share's real path) for the SFTP app's dedicated sshd
 /// instance.
+/// Per-user FTP chroot roots. Each directory contains one bind mount per
+/// granted FTP share, so vsftpd's per-user `local_root` can expose exactly
+/// the shares the ACL grants name — not the user's home or the whole host.
+pub fn ftp_jails_dir() -> PathBuf {
+    base_dir().join("ftp").join("jails")
+}
+
+/// Per-user vsftpd configuration (`local_root`, `dirlist_enable`,
+/// `download_enable`, `write_enable`). vsftpd reads it through
+/// `user_config_dir`.
+pub fn ftp_user_conf_dir() -> PathBuf {
+    base_dir().join("ftp").join("users")
+}
+
 pub fn sftp_jails_dir() -> PathBuf {
     PathBuf::from(SFTP_BASE_DIR).join("jails")
 }

@@ -80,7 +80,6 @@
   let newGroupKind: Kind = 'app';
   let newGroupResource = '';
   let newGroupPermission: Permission = 'read';
-
   async function load() {
     loading = true;
     error = '';
@@ -169,6 +168,29 @@
 
   const kindLabel = (k: Kind) => translate(`users.access_kind_${k}`);
   const permLabel = (p: Permission) => translate(`users.access_perm_${p}`);
+
+  // The Explorer app itself: `app:explorer = deny` hides the whole app (DSM's
+  // "Application Privileges"). No row means allowed, so the switch is "on"
+  // unless an explicit deny exists.
+  let explorerGrant: Grant | undefined = undefined;
+  let explorerBlocked = false;
+  $: explorerGrant = grants.find(
+    (g) => g.kind === 'app' && g.resource === 'explorer',
+  );
+  $: explorerBlocked = explorerGrant?.permission === 'deny';
+
+  async function setExplorerAvailable(available: boolean) {
+    busy = true;
+    error = '';
+    const res = available
+      ? explorerGrant
+        ? await api.revokeResourceAccess(username, 'app', 'explorer')
+        : { success: true }
+      : await api.grantResourceAccess(username, 'app', 'explorer', 'deny');
+    if (res.success) await load();
+    else error = res.message || res.error || translate('users.access_explorer_failed');
+    busy = false;
+  }
 </script>
 
 <SectionCard data-testid="users-access-card" divider>
@@ -245,6 +267,31 @@
         <IconPlus size={16} stroke={2} /> {$t('users.access_add')}
       </button>
     </form>
+
+    <div class="mt-4 flex items-start justify-between gap-3 rounded-lg border border-[var(--hv-shell-border)] bg-[var(--hv-shell-fill)] px-3 py-2.5" data-testid="users-access-explorer">
+      <div class="min-w-0">
+        <p class="m-0 text-c-base font-semibold text-[var(--hv-shell-text-strong)]">{$t('users.access_explorer_label')}</p>
+        <p class="m-0 text-c-xs text-[var(--hv-shell-text-2)]">{$t('users.access_explorer_hint')}</p>
+      </div>
+      <button
+        type="button"
+        role="switch"
+        aria-checked={!explorerBlocked}
+        aria-label={$t('users.access_explorer_label')}
+        data-testid="users-access-explorer-toggle"
+        class={cn(
+          'inline-flex h-9 flex-none items-center rounded-full px-3 text-c-xs font-bold',
+          explorerBlocked
+            ? 'bg-[var(--hv-error-bg)] text-[var(--hv-error-text)]'
+            : 'bg-[var(--hv-success-bg)] text-[var(--hv-success-text)]',
+          busy && 'opacity-60',
+        )}
+        disabled={busy}
+        onclick={() => setExplorerAvailable(explorerBlocked)}
+      >
+        {explorerBlocked ? $t('users.access_explorer_blocked') : $t('users.access_explorer_allowed')}
+      </button>
+    </div>
   {/if}
 
   {#if !isAdmin}

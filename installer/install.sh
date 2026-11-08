@@ -1782,6 +1782,10 @@ RestartSec=5
 AmbientCapabilities=CAP_NET_BIND_SERVICE
 Environment="PORT=$PORT"
 Environment="DATA_DIRECTORY=$DATA_DIR"
+# Provision the Linux/Samba identity of a new HomeVault account (useradd,
+# chpasswd, smbpasswd). Without this the web login works but SMB/FTP do not
+# have a credential. Tests and a bare `cargo run` leave it unset on purpose.
+Environment="HV_HOST_SYNC=1"
 # Built-in HTTPS is opt-in (Settings > Security > HTTPS/TLS, or set
 # TLS_ENABLED=true here / in /etc/homevault.env). When enabled, HomeVault
 # adds a TLS listener on HTTPS_PORT (default $HTTPS_PORT) alongside HTTP.

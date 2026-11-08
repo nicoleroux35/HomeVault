@@ -88,6 +88,35 @@ pub struct Share {
     pub enabled: bool,
     pub comment: String,
     pub options: Vec<String>,
+    /// SMB only: the share is exported read-only regardless of the POSIX
+    /// write bits. `false` for every other protocol.
+    #[serde(default)]
+    pub read_only: bool,
+    /// SMB only: explicit per-share guest access. `None` means "inherit the
+    /// global `allow_guest` setting"; `Some(false)` is a deliberate per-share
+    /// opt-out, which matters because the global setting otherwise opens
+    /// every share at once.
+    #[serde(default)]
+    pub guest_ok: Option<bool>,
+    /// Per-share advanced restrictions (browse / modify / download). They are
+    /// enforced by the web Explorer, WebDAV and FTP; SMB has no portable
+    /// equivalent, so the SMB client only sees the POSIX/ACL result.
+    #[serde(default)]
+    pub restrictions: ShareRestrictions,
+}
+
+/// Optional per-share restrictions DSM calls "Advanced Share Permissions".
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ShareRestrictions {
+    /// Refuse directory listing (Explorer/WebDAV/FTP `dirlist_enable=NO`).
+    #[serde(default)]
+    pub disable_browsing: bool,
+    /// Refuse PUT/DELETE/MOVE/COPY and FTP writes.
+    #[serde(default)]
+    pub disable_modification: bool,
+    /// Refuse file downloads (Explorer/WebDAV GET, FTP `download_enable=NO`).
+    #[serde(default)]
+    pub disable_download: bool,
 }
 
 /// Fields that can be updated on an existing share.
@@ -97,6 +126,15 @@ pub struct ShareUpdate {
     pub enabled: Option<bool>,
     pub comment: Option<String>,
     pub options: Option<Vec<String>>,
+    #[serde(default)]
+    pub read_only: Option<bool>,
+    /// `Some(Some(value))` sets an explicit per-share value, `Some(None)`
+    /// clears it back to "inherit the global setting", and the field being
+    /// absent leaves it untouched.
+    #[serde(default)]
+    pub guest_ok: Option<Option<bool>>,
+    #[serde(default)]
+    pub restrictions: Option<ShareRestrictions>,
 }
 
 /// A share with additional metadata (creation date, usage, access count).
@@ -168,6 +206,17 @@ pub struct SmbConfig {
     /// is harmless to leave it off on a single-link appliance.
     #[serde(default)]
     pub multichannel: bool,
+    /// AD/LDAP Kerberos realm, e.g. `EXAMPLE.LAN`. Required for
+    /// `security = ads`; `user`/`share` ignore it.
+    #[serde(default)]
+    pub realm: String,
+    /// Winbind idmap range (`idmap config * : range`), e.g. `10000-999999`.
+    #[serde(default = "default_idmap_range")]
+    pub idmap_range: String,
+}
+
+fn default_idmap_range() -> String {
+    "10000-999999".to_string()
 }
 
 impl Default for SmbConfig {
@@ -181,6 +230,8 @@ impl Default for SmbConfig {
             directory_mask: "0755".to_string(),
             additional_params: Vec::new(),
             multichannel: false,
+            realm: String::new(),
+            idmap_range: default_idmap_range(),
         }
     }
 }
@@ -192,7 +243,16 @@ pub struct NfsConfig {
     pub default_access: String,
     pub version: String,
     pub root_squash: String,
+    /// `sys` (AUTH_SYS), or a Kerberos flavor (`krb5`, `krb5i`, `krb5p`).
+    /// A non-`sys` value is rendered as `sec=…` and only accepted with an
+    /// explicit NFSv4 version, because `auto` can still negotiate v3.
+    #[serde(default = "default_nfs_security_flavor")]
+    pub security_flavor: String,
     pub custom_options: Vec<String>,
+}
+
+fn default_nfs_security_flavor() -> String {
+    "sys".to_string()
 }
 
 impl Default for NfsConfig {
@@ -205,9 +265,24 @@ impl Default for NfsConfig {
             // written as `vers=` and therefore enforced.
             version: "auto".to_string(),
             root_squash: "root_squash".to_string(),
+            security_flavor: default_nfs_security_flavor(),
             custom_options: Vec::new(),
         }
     }
+}
+
+/// One NFS client rule attached to a share (DSM's per-share NFS permission).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct NfsClientRule {
+    /// `*`, a CIDR, an IP or a host name. Validated as an `/etc/exports`
+    /// client clause before it reaches the file.
+    pub client: String,
+    /// `rw` or `ro`. It overrides the share/service default for that client.
+    pub access: String,
+    /// Extra export options for this client only (`async`, `crossmnt`,
+    /// `insecure`, `sec=krb5`, …).
+    #[serde(default)]
+    pub options: Vec<String>,
 }
 
 /// Global FTP service configuration persisted to `/etc/homevault/ftp.json`.
@@ -219,6 +294,10 @@ pub struct FtpConfig {
     pub max_clients: u32,
     pub force_tls: bool,
     pub allow_anonymous: bool,
+    /// Directory the anonymous user is chrooted to (DSM's "anonymous root").
+    /// `None` keeps the historical vsftpd default (the `ftp` account's home).
+    #[serde(default)]
+    pub anonymous_root: Option<String>,
     pub chroot: bool,
     pub welcome_message: String,
 }
@@ -305,6 +384,10 @@ fn get_nfs_config_path() -> PathBuf {
 
 fn get_ftp_config_path() -> PathBuf {
     get_config_dir().join("ftp.json")
+}
+
+fn get_nfs_rules_path() -> PathBuf {
+    get_config_dir().join("nfs_rules.json")
 }
 
 fn get_webdav_config_path() -> PathBuf {
@@ -600,17 +683,46 @@ pub(crate) fn validate_smb_config(config: &SmbConfig) -> Result<(), String> {
     let security = config.security_mode.to_lowercase();
     match security.as_str() {
         "user" | "share" => {}
-        // Domain/ADS/server authentication needs winbind, `realm`, idmap and a
-        // keytab, none of which HomeVault configures. Accepting the value used
-        // to write `security = ads` into smb.conf and silently broke SMB.
-        "domain" | "server" | "ads" => {
-            return Err(format!(
-                "security_mode '{security}' is not implemented: domain authentication requires winbind/Kerberos. Use 'user' (local accounts) or 'share'."
-            ))
+        // ADS is accepted only when the realm/idmap it needs are present; a
+        // bare `security = ads` still breaks SMB, so the missing half is a
+        // 400 instead of a silently-broken daemon.
+        "ads" | "domain" => {
+            let realm = config.realm.trim();
+            if realm.is_empty()
+                || !realm.contains('.')
+                || realm.len() > 255
+                || realm.chars().any(|c| {
+                    c.is_whitespace() || c.is_control() || matches!(c, '[' | ']' | ';' | '/')
+                })
+            {
+                return Err(
+                    "security_mode ads requires a DNS realm such as EXAMPLE.LAN".to_string(),
+                );
+            }
+            let range = config.idmap_range.trim();
+            let (low, high) = range
+                .split_once('-')
+                .ok_or_else(|| "idmap_range must be 'low-high' (e.g. 10000-999999)".to_string())?;
+            let low: u32 = low
+                .trim()
+                .parse()
+                .map_err(|_| "idmap_range low bound is not a number".to_string())?;
+            let high: u32 = high
+                .trim()
+                .parse()
+                .map_err(|_| "idmap_range high bound is not a number".to_string())?;
+            if low == 0 || high <= low {
+                return Err("idmap_range must have 0 < low < high".to_string());
+            }
+        }
+        "server" => {
+            return Err(
+                "security_mode 'server' is not implemented; use user, share or ads".to_string(),
+            )
         }
         other => {
             return Err(format!(
-                "security_mode '{other}' is not valid (use user or share)"
+                "security_mode '{other}' is not valid (use user, share or ads)"
             ))
         }
     }
@@ -705,11 +817,24 @@ fn smb_global_params(config: &SmbConfig) -> Vec<String> {
         directory_mask,
         additional_params,
         multichannel,
+        realm,
+        idmap_range,
     } = config;
 
     let mut params = vec![
         format!("  workgroup = {workgroup}"),
         format!("  security = {security_mode}"),
+    ];
+    if matches!(security_mode.to_lowercase().as_str(), "ads" | "domain") {
+        params.push(format!("  realm = {}", realm.trim()));
+        params.push("  idmap config * : backend = tdb".to_string());
+        params.push(format!("  idmap config * : range = {}", idmap_range.trim()));
+        params.push("  winbind use default domain = yes".to_string());
+        params.push("  winbind offline logon = yes".to_string());
+        params.push("  map acl inherit = yes".to_string());
+        params.push("  store dos attributes = yes".to_string());
+    }
+    params.extend([
         format!("  server min protocol = {protocol_version}"),
         "  server max protocol = SMB3".to_string(),
         format!(
@@ -719,7 +844,7 @@ fn smb_global_params(config: &SmbConfig) -> Vec<String> {
         format!("  guest ok = {}", if *allow_guest { "yes" } else { "no" }),
         format!("  create mask = {create_mask}"),
         format!("  directory mask = {directory_mask}"),
-    ];
+    ]);
     let managed_keys: Vec<String> = params
         .iter()
         .filter_map(|param| {
@@ -747,9 +872,12 @@ fn smb_global_params(config: &SmbConfig) -> Vec<String> {
 /// render as an empty select (the option no longer exists) and fail on save.
 fn normalize_smb_config(config: &mut SmbConfig) {
     let security = config.security_mode.to_lowercase();
-    if !matches!(security.as_str(), "user" | "share") {
+    let ads_ready = matches!(security.as_str(), "ads" | "domain")
+        && !config.realm.trim().is_empty()
+        && config.realm.contains('.');
+    if !matches!(security.as_str(), "user" | "share") && !ads_ready {
         warn!(
-            "stored SMB security_mode '{}' is not implemented; falling back to 'user'",
+            "stored SMB security_mode '{}' has no usable realm; falling back to 'user'",
             config.security_mode
         );
         config.security_mode = "user".to_string();
@@ -822,6 +950,14 @@ pub(crate) fn validate_ftp_config(config: &FtpConfig) -> Result<(), String> {
     for user in &config.allowed_users {
         validate_ftp_user(user)?;
     }
+    if let Some(root) = config
+        .anonymous_root
+        .as_deref()
+        .map(str::trim)
+        .filter(|root| !root.is_empty())
+    {
+        validate_share_path(root).map_err(|e| format!("anonymous_root: {e}"))?;
+    }
     Ok(())
 }
 
@@ -865,7 +1001,11 @@ fn ftp_config_text(config: &FtpConfig) -> String {
         max_clients,
         force_tls,
         allow_anonymous,
-        chroot,
+        anonymous_root,
+        // Retained for old `ftp.json` files; the per-user jail is always
+        // chrooted now, because a `local_root` without chroot would expose
+        // the whole host filesystem.
+        chroot: _chroot,
         welcome_message,
     } = config;
 
@@ -885,6 +1025,7 @@ fn ftp_config_text(config: &FtpConfig) -> String {
 listen_port={port}
 anonymous_enable={anon}
 local_enable=YES
+check_shell=NO
 write_enable=YES
 local_umask=022
 dirmessage_enable=YES
@@ -895,21 +1036,28 @@ pasv_enable=YES
 pasv_min_port={pasv_min}
 pasv_max_port={pasv_max}
 max_clients={max_clients}
-chroot_local_user={chroot}
+chroot_local_user=YES
 allow_writeable_chroot=YES
+user_config_dir={user_config_dir}
 userlist_enable={userlist_enable}
 userlist_deny=NO
 userlist_file=/etc/vsftpd.user_list
 ftpd_banner={banner}
 "#,
         anon = if *allow_anonymous { "YES" } else { "NO" },
-        chroot = if *chroot { "YES" } else { "NO" },
+        user_config_dir = crate::config::paths::ftp_user_conf_dir().display(),
         userlist_enable = if allowed_users.is_empty() {
             "NO"
         } else {
             "YES"
         },
     );
+
+    if *allow_anonymous {
+        if let Some(root) = anonymous_root.as_deref().map(str::trim).filter(|r| !r.is_empty()) {
+            text.push_str(&format!("anon_root={root}\n"));
+        }
+    }
 
     if *force_tls {
         text.push_str(
@@ -928,12 +1076,184 @@ rsa_private_key_file=/etc/ssl/private/ssl-cert-snakeoil.key
     text
 }
 
+/// Per-share SMB access generated from the share's grants.
+///
+/// Samba's `valid users` is the share-level gate DSM expresses as RO/RW/NA;
+/// POSIX ACLs remain the file-level gate underneath. The application admin
+/// group is always included so an admin can repair a share whose grants were
+/// all removed, and an empty list is rendered as admin-only rather than as
+/// `valid users =` (which Samba parses as "nobody").
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SmbShareAccess {
+    pub valid_users: Vec<String>,
+    pub read_only: bool,
+    pub guest_ok: Option<bool>,
+}
+
+impl SmbShareAccess {
+    pub fn admin_only() -> Self {
+        Self {
+            valid_users: vec![format!("@{}", crate::storage::database::ADMIN_GROUP_NAME)],
+            read_only: false,
+            guest_ok: None,
+        }
+    }
+
+    /// The managed directives, in a stable order. `guest ok` is only emitted
+    /// when the share carries an explicit value, so a global `allow_guest`
+    /// keeps working for shares that never opted in or out.
+    pub fn render(&self) -> Vec<String> {
+        let mut users = if self.valid_users.is_empty() {
+            vec![format!("@{}", crate::storage::database::ADMIN_GROUP_NAME)]
+        } else {
+            self.valid_users.clone()
+        };
+        // Samba's guest account on Debian/Ubuntu is `nobody`; a per-share
+        // `guest ok = yes` must also let that account pass `valid users`.
+        if self.guest_ok == Some(true) {
+            users.push("nobody".to_string());
+        }
+        users.sort();
+        users.dedup();
+        let mut lines = vec![
+            format!("  valid users = {}", users.join(" ")),
+            format!(
+                "  read only = {}",
+                if self.read_only { "yes" } else { "no" }
+            ),
+        ];
+        if let Some(guest) = self.guest_ok {
+            lines.push(format!("  guest ok = {}", if guest { "yes" } else { "no" }));
+        }
+        lines
+    }
+}
+
+/// Build the SMB share access list from the protocol's grants.
+pub fn smb_valid_users(
+    permissions: &[crate::storage::share_perm_repo::SharePermission],
+) -> Vec<String> {
+    let mut users = vec![format!("@{}", crate::storage::database::ADMIN_GROUP_NAME)];
+    for permission in permissions {
+        if permission.grantee_type == "group" {
+            users.push(format!(
+                "@{}",
+                crate::groups::GroupService::get_full_group_name(&permission.grantee_name)
+            ));
+        } else if permission.grantee_type == "user" {
+            users.push(permission.grantee_name.clone());
+        }
+    }
+    users.sort();
+    users.dedup();
+    users
+}
+
 /// Build the appended smb.conf section for a share (single line per field;
 /// inputs are validated by the caller).
-fn smb_share_section(name: &str, comment: &str, path: &str) -> String {
-    format!(
-        "\n[{name}]\n  comment = {comment}\n  path = {path}\n  browseable = yes\n  read only = no\n  create mask = 0755\n"
-    )
+fn smb_share_section(name: &str, comment: &str, path: &str, access: &SmbShareAccess) -> String {
+    let mut section = format!(
+        "\n[{name}]\n  comment = {comment}\n  path = {path}\n  browseable = yes\n"
+    );
+    for line in access.render() {
+        section.push_str(&line);
+        section.push('\n');
+    }
+    section
+}
+
+/// Set or remove one `key = value` line in a section, leaving every other
+/// line byte-for-byte untouched.
+fn set_smb_managed_line(section: &str, key: &str, value: Option<&str>) -> String {
+    let prefix = format!("{key} =");
+    let mut kept: Vec<String> = section
+        .lines()
+        .filter(|line| !line.trim().starts_with(&prefix))
+        .map(str::to_string)
+        .collect();
+    if let Some(value) = value {
+        kept.push(format!("  {key} = {value}"));
+    }
+    let mut out = kept.join("\n");
+    if section.ends_with('\n') || !out.is_empty() {
+        out.push('\n');
+    }
+    out
+}
+
+/// Replace the managed access directives inside one existing section while
+/// preserving every line the admin added by hand (and the `# homevault-smb-vfs`
+/// block, which is rewritten by its own helper).
+pub fn apply_smb_access_to_section(section: &str, access: &SmbShareAccess) -> String {
+    let mut kept: Vec<&str> = Vec::new();
+    for line in section.lines() {
+        let trimmed = line.trim();
+        let is_managed = trimmed.starts_with("valid users =")
+            || trimmed.starts_with("read only =")
+            || trimmed.starts_with("guest ok =");
+        if !is_managed {
+            kept.push(line);
+        }
+    }
+    let mut out = kept.join("\n");
+    if !out.ends_with('\n') {
+        out.push('\n');
+    }
+    for line in access.render() {
+        out.push_str(&line);
+        out.push('\n');
+    }
+    out
+}
+
+/// Rewrite the `[name]` section of `smb.conf` with a new access list and
+/// reload `smbd`. The caller resolves the grants; this function touches only
+/// that one section, so two shares never rewrite each other.
+pub fn rewrite_smb_share_access(
+    name: &str,
+    access: &SmbShareAccess,
+) -> Result<(), ShareError> {
+    validate_share_name(name).map_err(ShareError::InvalidField)?;
+    let config_path = smb_conf_path();
+    if !std::path::Path::new(&config_path).exists() {
+        return Err(ShareError::ConfigNotFound(config_path));
+    }
+    let config = std::fs::read_to_string(&config_path)?;
+    let header = format!("[{name}]");
+    let mut current_start: Option<usize> = None;
+    let mut start = 0usize;
+    let mut end = config.len();
+    let mut offset = 0usize;
+    for line in config.split_inclusive('\n') {
+        let trimmed = line.trim();
+        if trimmed.starts_with('[') && trimmed.ends_with(']') {
+            if let Some(s) = current_start {
+                end = offset;
+                start = s;
+                break;
+            }
+            if trimmed == header {
+                current_start = Some(offset);
+            }
+        }
+        offset += line.len();
+    }
+    if let Some(s) = current_start {
+        if end == config.len() {
+            start = s;
+        }
+    } else {
+        return Err(ShareError::NotFound(name.to_string()));
+    }
+    let section = &config[start..end];
+    let replaced = apply_smb_access_to_section(section, access);
+    let mut new_config = String::with_capacity(config.len() + replaced.len());
+    new_config.push_str(&config[..start]);
+    new_config.push_str(&replaced);
+    new_config.push_str(&config[end..]);
+    write_config_file(&config_path, &new_config)?;
+    reload_smbd(&format!("rewriting access for share {}", name));
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -969,10 +1289,18 @@ pub const MAX_TIME_MACHINE_QUOTA_GB: u32 = 1_048_576;
 
 /// The VFS features currently enabled on one share, derived from its managed
 /// `smb.conf` block. Serialised as-is for the Shares → SMB tab.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SmbVfsFlags {
     pub recycle: bool,
     pub time_machine: bool,
+    /// SMB "Previous Versions" (`vfs_shadow_copy2`). The snapshot directory
+    /// and name format are the ZFS defaults; a Btrfs host can edit the
+    /// managed block and the values are preserved by the next toggle.
+    pub previous_versions: bool,
+    /// `shadow:snapdir` (ZFS default `.zfs/snapshot`).
+    pub snapdir: String,
+    /// `shadow:format` (ZFS default `%Y-%m-%d_%H:%M:%S`).
+    pub format: String,
 }
 
 /// Time Machine state of one SMB share, as the UI and the mDNS publisher read
@@ -1001,7 +1329,7 @@ pub fn validate_time_machine_quota(quota_gb: u32) -> Result<(), String> {
 /// documents) and `recycle` last, so a delete is offered the fruit-handled
 /// stream before the recycle module captures it.
 fn smb_vfs_block(flags: SmbVfsFlags, quota_gb: u32) -> String {
-    if !flags.recycle && !flags.time_machine {
+    if !flags.recycle && !flags.time_machine && !flags.previous_versions {
         return String::new();
     }
     let mut modules: Vec<&str> = Vec::new();
@@ -1011,6 +1339,9 @@ fn smb_vfs_block(flags: SmbVfsFlags, quota_gb: u32) -> String {
     }
     if flags.recycle {
         modules.push("recycle");
+    }
+    if flags.previous_versions {
+        modules.push("shadow_copy2");
     }
 
     let mut block = format!("{SMB_VFS_BEGIN}\n  vfs objects = {}\n", modules.join(" "));
@@ -1036,6 +1367,21 @@ fn smb_vfs_block(flags: SmbVfsFlags, quota_gb: u32) -> String {
     if flags.recycle {
         block.push_str(&format!(
             "  recycle:repository = {RECYCLE_DIR_NAME}\n  recycle:keeptree = yes\n  recycle:versions = yes\n  recycle:touch = yes\n  recycle:maxsize = 0\n  recycle:exclude = *.tmp, *.temp, *.swp, .DS_Store, Thumbs.db\n  recycle:directory_mode = 0700\n"
+        ));
+    }
+    if flags.previous_versions {
+        let snapdir = if flags.snapdir.trim().is_empty() {
+            ".zfs/snapshot"
+        } else {
+            flags.snapdir.trim()
+        };
+        let format = if flags.format.trim().is_empty() {
+            "%Y-%m-%d_%H:%M:%S"
+        } else {
+            flags.format.trim()
+        };
+        block.push_str(&format!(
+            "  shadow:snapdir = {snapdir}\n  shadow:sort = desc\n  shadow:format = {format}\n  shadow:localtime = yes\n  shadow:snapprefix = .*\n  shadow:delimiter = _\n"
         ));
     }
     block.push_str(SMB_VFS_END);
@@ -1086,6 +1432,14 @@ fn section_vfs_flags(section: &str) -> SmbVfsFlags {
     let mut flags = SmbVfsFlags::default();
     for line in section.lines() {
         let trimmed = line.trim();
+        if let Some(value) = trimmed.strip_prefix("shadow:snapdir =") {
+            flags.snapdir = value.trim().to_string();
+            continue;
+        }
+        if let Some(value) = trimmed.strip_prefix("shadow:format =") {
+            flags.format = value.trim().to_string();
+            continue;
+        }
         let Some(modules) = trimmed
             .strip_prefix("vfs objects =")
             .or_else(|| trimmed.strip_prefix("vfs objects = "))
@@ -1093,6 +1447,7 @@ fn section_vfs_flags(section: &str) -> SmbVfsFlags {
             continue;
         };
         flags.recycle |= modules.split_whitespace().any(|m| m == "recycle");
+        flags.previous_versions |= modules.split_whitespace().any(|m| m == "shadow_copy2");
         flags.time_machine |= modules.split_whitespace().any(|m| m == "fruit")
             && section
                 .lines()
@@ -1125,6 +1480,8 @@ fn smb_recycle_block() -> String {
         SmbVfsFlags {
             recycle: true,
             time_machine: false,
+            previous_versions: false,
+            ..SmbVfsFlags::default()
         },
         0,
     )
@@ -1140,6 +1497,14 @@ fn apply_recycle_to_section(section: &str, enabled: bool) -> String {
 /// Whether `section` (one `smb.conf` share section) carries the recycle module.
 fn section_has_recycle(section: &str) -> bool {
     section_vfs_flags(section).recycle
+}
+
+/// Toggle only the Previous Versions (`shadow_copy2`) feature, leaving the
+/// recycle/Time Machine flags untouched.
+fn apply_previous_versions_to_section(section: &str, enabled: bool) -> String {
+    let mut flags = section_vfs_flags(section);
+    flags.previous_versions = enabled;
+    apply_vfs_to_section(section, flags, section_time_machine_quota(section))
 }
 
 /// Parse the live `smb.conf` into `share name → (VFS flags, Time Machine
@@ -1207,6 +1572,22 @@ pub fn validate_nfs_config(config: &NfsConfig) -> Result<(), String> {
         }
     }
     nfs_version_option(&config.version)?;
+    match config.security_flavor.trim() {
+        "sys" | "" => {}
+        "krb5" | "krb5i" | "krb5p" => {
+            if !matches!(config.version.trim(), "4" | "4.1" | "4.2") {
+                return Err(
+                    "NFS Kerberos requires an explicit NFSv4 version (4, 4.1 or 4.2)"
+                        .to_string(),
+                );
+            }
+        }
+        other => {
+            return Err(format!(
+                "NFS security flavor '{other}' is not valid (use sys, krb5, krb5i or krb5p)"
+            ))
+        }
+    }
     if config.networks.is_empty() {
         return Err("at least one NFS network/client is required (use * for everyone)".to_string());
     }
@@ -1239,6 +1620,26 @@ fn validate_nfs_network(network: &str) -> Result<(), String> {
         return Err(format!(
             "NFS network '{network}' contains a forbidden character (whitespace, control character or one of ( ) , # \" ' [ ] ; \\)"
         ));
+    }
+    Ok(())
+}
+
+/// Validate per-client NFS rules before any line reaches `/etc/exports`.
+pub fn validate_nfs_rules(rules: &[NfsClientRule]) -> Result<(), String> {
+    if rules.len() > 64 {
+        return Err("at most 64 NFS client rules are supported per share".to_string());
+    }
+    let mut seen = std::collections::HashSet::new();
+    for rule in rules {
+        validate_nfs_network(&rule.client)?;
+        if !seen.insert(rule.client.trim().to_string()) {
+            return Err(format!("NFS client '{}' is listed twice", rule.client));
+        }
+        match rule.access.trim() {
+            "rw" | "ro" => {}
+            other => return Err(format!("NFS rule access '{other}' is not valid (use rw or ro)")),
+        }
+        validate_nfs_options(&rule.options)?;
     }
     Ok(())
 }
@@ -1300,7 +1701,12 @@ fn nfs_merge_options(defaults: &[String], overrides: &[String]) -> Vec<String> {
 /// defaults; the share's own options override them by class (access, sync,
 /// subtree, squash, vers, sec). Every token is guarded by
 /// [`validate_nfs_options`] / [`validate_nfs_config`].
-fn nfs_export_line(path: &str, share_options: &[String], config: &NfsConfig) -> String {
+fn nfs_export_line(
+    path: &str,
+    share_options: &[String],
+    config: &NfsConfig,
+    rules: &[NfsClientRule],
+) -> String {
     // Exhaustive destructuring is the NFS half of the P0-4 contract: adding a
     // field to `NfsConfig` without rendering it here is a compile error.
     let NfsConfig {
@@ -1308,6 +1714,7 @@ fn nfs_export_line(path: &str, share_options: &[String], config: &NfsConfig) -> 
         default_access,
         version,
         root_squash,
+        security_flavor,
         custom_options,
     } = config;
 
@@ -1320,13 +1727,37 @@ fn nfs_export_line(path: &str, share_options: &[String], config: &NfsConfig) -> 
     if let Ok(Some(version)) = nfs_version_option(version) {
         defaults.push(version);
     }
+    if !matches!(security_flavor.trim(), "" | "sys") {
+        defaults.push(format!("sec={}", security_flavor.trim()));
+    }
     defaults.extend(custom_options.iter().cloned());
 
-    let opts = nfs_merge_options(&defaults, share_options).join(",");
-    let clauses: Vec<String> = networks
-        .iter()
-        .map(|network| format!("{}({opts})", network.trim()))
-        .collect();
+    // A share with explicit client rules uses one clause per rule; a share
+    // with none keeps the historical "all configured networks, same options"
+    // behaviour. Per-client access overrides the global/list default, and
+    // per-rule options are appended after the merged defaults.
+    let clauses: Vec<String> = if rules.is_empty() {
+        let opts = nfs_merge_options(&defaults, share_options).join(",");
+        networks
+            .iter()
+            .map(|network| format!("{}({opts})", network.trim()))
+            .collect()
+    } else {
+        rules
+            .iter()
+            .map(|rule| {
+                let mut options = nfs_merge_options(&defaults, share_options);
+                options = nfs_merge_options(
+                    &options,
+                    &[rule.access.trim().to_string()]
+                        .into_iter()
+                        .chain(rule.options.iter().cloned())
+                        .collect::<Vec<_>>(),
+                );
+                format!("{}({})", rule.client.trim(), options.join(","))
+            })
+            .collect()
+    };
     format!("{path} {}\n", clauses.join(" "))
 }
 
@@ -1402,7 +1833,50 @@ fn parse_nfs_export_line(raw_line: &str) -> Option<Share> {
         enabled,
         comment: String::new(),
         options,
+        read_only: false,
+        guest_ok: None,
+        restrictions: ShareRestrictions::default(),
     })
+}
+
+/// Join an Active Directory domain with a domain account. The password goes
+/// on stdin, never in argv (where `ps` would expose it).
+pub fn join_smb_domain(username: &str, password: &str) -> Result<(), ShareError> {
+    if username.trim().is_empty() || password.is_empty() || password.contains('\n') {
+        return Err(ShareError::InvalidField(
+            "a domain account and a single-line password are required".to_string(),
+        ));
+    }
+    let mut cmd = Command::new("sudo");
+    cmd.args(["net", "ads", "join", "-U", username.trim()]);
+    let output = run_timed_with_stdin(
+        &mut cmd,
+        SHARES_SERVICE_TIMEOUT,
+        format!("{password}\n").as_bytes(),
+    )
+    .map_err(ShareError::CommandFailed)?;
+    if output.status.success() {
+        Ok(())
+    } else {
+        Err(ShareError::CommandFailed(
+            String::from_utf8_lossy(&output.stderr).trim().to_string(),
+        ))
+    }
+}
+
+/// Leave the currently joined AD domain.
+pub fn leave_smb_domain() -> Result<(), ShareError> {
+    let mut cmd = Command::new("sudo");
+    cmd.args(["net", "ads", "leave"]);
+    let output = run_command(&mut cmd, SHARES_SERVICE_TIMEOUT)
+        .map_err(ShareError::CommandFailed)?;
+    if output.status.success() {
+        Ok(())
+    } else {
+        Err(ShareError::CommandFailed(
+            String::from_utf8_lossy(&output.stderr).trim().to_string(),
+        ))
+    }
 }
 
 /// Service for managing SMB, NFS, FTP, and WebDAV shares.
@@ -1459,6 +1933,16 @@ impl SharesService {
         if let Some(options) = &update.options {
             validate_nfs_options(options).map_err(ShareError::InvalidField)?;
         }
+        if share_type == ShareType::Smb
+            && update
+                .restrictions
+                .is_some_and(|restrictions| restrictions != ShareRestrictions::default())
+        {
+            return Err(ShareError::InvalidField(
+                "advanced restrictions are not supported for SMB; use POSIX/ACL permissions"
+                    .to_string(),
+            ));
+        }
         match share_type {
             ShareType::Smb => Self::update_smb_share(name, update),
             ShareType::Nfs => Self::update_nfs_share(name, update),
@@ -1476,6 +1960,14 @@ impl SharesService {
         validate_share_path(&share.path).map_err(ShareError::InvalidField)?;
         validate_share_comment(&share.comment).map_err(ShareError::InvalidField)?;
         validate_nfs_options(&share.options).map_err(ShareError::InvalidField)?;
+        if share.share_type == ShareType::Smb
+            && share.restrictions != ShareRestrictions::default()
+        {
+            return Err(ShareError::InvalidField(
+                "advanced restrictions are not supported for SMB; use POSIX/ACL permissions"
+                    .to_string(),
+            ));
+        }
         match share.share_type {
             ShareType::Smb => Self::create_smb_share(share),
             ShareType::Nfs => Self::create_nfs_share(share),
@@ -1616,6 +2108,46 @@ impl SharesService {
             name
         ));
 
+        Ok(())
+    }
+
+    /// Map of SMB share name → Previous Versions (`shadow_copy2`) enabled.
+    pub fn get_smb_previous_versions_map() -> HashMap<String, bool> {
+        smb_section_states()
+            .into_iter()
+            .map(|(name, (flags, _))| (name, flags.previous_versions))
+            .collect()
+    }
+
+    /// Enable/disable `vfs_shadow_copy2` on one share so Windows Explorer's
+    /// "Previous Versions" tab lists the host's snapshots.
+    pub fn set_smb_previous_versions(name: &str, enabled: bool) -> Result<(), ShareError> {
+        validate_share_name(name).map_err(ShareError::InvalidField)?;
+        let config_path = smb_conf_path();
+        if !std::path::Path::new(&config_path).exists() {
+            return Err(ShareError::ConfigNotFound(config_path));
+        }
+        let config = std::fs::read_to_string(&config_path)?;
+        let share_section = format!("[{name}]");
+        let Some(start) = config.find(&share_section) else {
+            return Err(ShareError::NotFound(name.to_string()));
+        };
+        let after_section = &config[start..];
+        let end = after_section.find("\n[").unwrap_or(after_section.len());
+        let section = &config[start..start + end];
+        if section_vfs_flags(section).previous_versions == enabled {
+            return Ok(());
+        }
+        let new_section = apply_previous_versions_to_section(section, enabled);
+        let mut new_config = config[..start].to_string();
+        new_config.push_str(&new_section);
+        new_config.push_str(&config[start + end..]);
+        write_config_file(&config_path, &new_config)?;
+        reload_smbd(&format!(
+            "{} Previous Versions on share {}",
+            if enabled { "enabling" } else { "disabling" },
+            name
+        ));
         Ok(())
     }
 
@@ -1818,6 +2350,70 @@ impl SharesService {
         }
     }
 
+    /// Per-share NFS client rules, keyed by share name.
+    pub fn get_all_nfs_rules() -> HashMap<String, Vec<NfsClientRule>> {
+        let path = get_nfs_rules_path();
+        let Ok(data) = fs::read_to_string(path) else {
+            return HashMap::new();
+        };
+        serde_json::from_str(&data).unwrap_or_default()
+    }
+
+    pub fn get_nfs_rules(name: &str) -> Vec<NfsClientRule> {
+        Self::get_all_nfs_rules()
+            .remove(name)
+            .unwrap_or_default()
+    }
+
+    pub fn save_nfs_rules(name: &str, rules: &[NfsClientRule]) -> Result<(), ShareError> {
+        validate_share_name(name).map_err(ShareError::InvalidField)?;
+        validate_nfs_rules(rules).map_err(ShareError::InvalidField)?;
+        let path = get_nfs_rules_path();
+        if let Some(parent) = path.parent() {
+            mkdir_as_root(parent)?;
+        }
+        let mut all = Self::get_all_nfs_rules();
+        if rules.is_empty() {
+            all.remove(name);
+        } else {
+            all.insert(name.to_string(), rules.to_vec());
+        }
+        write_file_as_root(
+            &path.to_string_lossy(),
+            &serde_json::to_string_pretty(&all)?,
+        )?;
+
+        // Re-render the one export line so the NFS server sees the rules now.
+        let config = Self::get_nfs_config().unwrap_or_default();
+        let exports = "/etc/exports";
+        if std::path::Path::new(exports).exists() {
+            let raw = std::fs::read_to_string(exports)?;
+            let mut out = String::new();
+            for line in raw.lines() {
+                match parse_nfs_export_line(line) {
+                    Some(share) if share.name == name => {
+                        let plain = nfs_export_line(
+                            &share.path,
+                            &share.options,
+                            &config,
+                            &Self::get_nfs_rules(name),
+                        );
+                        if share.enabled {
+                            out.push_str(plain.trim_end());
+                        } else {
+                            out.push_str(nfs_disabled_line(&share.name, &plain).trim_end());
+                        }
+                    }
+                    _ => out.push_str(line),
+                }
+                out.push('\n');
+            }
+            write_file_as_root(exports, &out)?;
+        }
+        Self::reload_nfs_exports(name, "save NFS rules");
+        Ok(())
+    }
+
     /// Persist the NFS service config to disk and re-render every export line
     /// so the saved defaults actually apply. Before this, the fields were
     /// persisted and ignored: `/etc/exports` kept `*(rw,sync,no_subtree_check)`
@@ -1847,10 +2443,12 @@ impl SharesService {
             return Ok(());
         }
         let raw = std::fs::read_to_string(exports_path)?;
+        let all_rules = Self::get_all_nfs_rules();
         let mut out = String::new();
         for line in raw.lines() {
             if let Some(share) = parse_nfs_export_line(line) {
-                let plain = nfs_export_line(&share.path, &share.options, config);
+                let rules = all_rules.get(&share.name).map(Vec::as_slice).unwrap_or(&[]);
+                let plain = nfs_export_line(&share.path, &share.options, config, rules);
                 if share.enabled {
                     out.push_str(plain.trim_end());
                 } else {
@@ -2064,7 +2662,12 @@ impl SharesService {
 
     fn create_smb_share(share: &Share) -> Result<(), ShareError> {
         let config_path = smb_conf_path();
-        let share_section = smb_share_section(&share.name, &share.comment, &share.path);
+        let access = SmbShareAccess {
+            valid_users: SmbShareAccess::admin_only().valid_users,
+            read_only: share.read_only,
+            guest_ok: share.guest_ok,
+        };
+        let share_section = smb_share_section(&share.name, &share.comment, &share.path, &access);
 
         append_config_file(&config_path, &share_section)?;
         reload_smbd(&format!("creating share {}", share.name));
@@ -2075,7 +2678,12 @@ impl SharesService {
     fn create_nfs_share(share: &Share) -> Result<(), ShareError> {
         let exports_path = "/etc/exports";
         let nfs_config = Self::get_nfs_config().unwrap_or_default();
-        let export_line = nfs_export_line(&share.path, &share.options, &nfs_config);
+        let export_line = nfs_export_line(
+            &share.path,
+            &share.options,
+            &nfs_config,
+            &Self::get_nfs_rules(&share.name),
+        );
 
         append_file_as_root(exports_path, &export_line)?;
 
@@ -2109,6 +2717,9 @@ impl SharesService {
             "comment": share.comment,
             "enabled": share.enabled,
             "options": share.options,
+            "read_only": share.read_only,
+            "guest_ok": share.guest_ok,
+            "restrictions": share.restrictions,
         });
 
         shares.insert(key, entry);
@@ -2139,6 +2750,9 @@ impl SharesService {
             "comment": share.comment,
             "enabled": share.enabled,
             "options": share.options,
+            "read_only": share.read_only,
+            "guest_ok": share.guest_ok,
+            "restrictions": share.restrictions,
         });
 
         shares.insert(key, entry);
@@ -2169,6 +2783,9 @@ impl SharesService {
             "comment": share.comment,
             "enabled": share.enabled,
             "options": share.options,
+            "read_only": share.read_only,
+            "guest_ok": share.guest_ok,
+            "restrictions": share.restrictions,
         });
 
         shares.insert(key, entry);
@@ -2213,6 +2830,9 @@ impl SharesService {
                         enabled: true,
                         comment: String::new(),
                         options: Vec::new(),
+                        read_only: false,
+                        guest_ok: None,
+                        restrictions: ShareRestrictions::default(),
                     });
                     in_share = true;
                 } else {
@@ -2226,6 +2846,18 @@ impl SharesService {
                         share.comment = stripped.to_string();
                     } else if trimmed == "browseable = no" {
                         share.enabled = false;
+                    } else if trimmed == "read only = yes" {
+                        share.read_only = true;
+                    } else if trimmed == "read only = no" {
+                        share.read_only = false;
+                    } else if trimmed == "guest ok = yes" || trimmed == "public = yes" {
+                        share.guest_ok = Some(true);
+                    } else if trimmed == "guest ok = no" || trimmed == "public = no" {
+                        share.guest_ok = Some(false);
+                    } else if trimmed.starts_with("valid users =") {
+                        // Managed from `share_permissions`; not a user-editable
+                        // option, and rendering it in the UI would invite a
+                        // stale list after a grant/revoke.
                     } else if !trimmed.is_empty()
                         && !trimmed.starts_with(';')
                         && !trimmed.starts_with('#')
@@ -2267,6 +2899,30 @@ impl SharesService {
         }
 
         Ok(shares)
+    }
+
+    /// Read the optional advanced-restriction object from a JSON share entry.
+    /// A missing object means "no restriction", not an error: old files must
+    /// keep loading after an upgrade.
+    fn parse_restrictions(value: &serde_json::Value) -> ShareRestrictions {
+        // (associated so the three protocol parsers share one implementation)
+        let Some(object) = value.get("restrictions").and_then(|v| v.as_object()) else {
+            return ShareRestrictions::default();
+        };
+        ShareRestrictions {
+            disable_browsing: object
+                .get("disable_browsing")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false),
+            disable_modification: object
+                .get("disable_modification")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false),
+            disable_download: object
+                .get("disable_download")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false),
+        }
     }
 
     fn parse_ftp_shares() -> Result<Vec<Share>, ShareError> {
@@ -2312,6 +2968,12 @@ impl SharesService {
                     enabled,
                     comment,
                     options,
+                    read_only: value
+                        .get("read_only")
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(false),
+                    guest_ok: value.get("guest_ok").and_then(|v| v.as_bool()),
+                    restrictions: Self::parse_restrictions(&value),
                 });
             }
         }
@@ -2362,6 +3024,12 @@ impl SharesService {
                     enabled,
                     comment,
                     options,
+                    read_only: value
+                        .get("read_only")
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(false),
+                    guest_ok: value.get("guest_ok").and_then(|v| v.as_bool()),
+                    restrictions: Self::parse_restrictions(&value),
                 });
             }
         }
@@ -2412,6 +3080,12 @@ impl SharesService {
                     enabled,
                     comment,
                     options,
+                    read_only: value
+                        .get("read_only")
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(false),
+                    guest_ok: value.get("guest_ok").and_then(|v| v.as_bool()),
+                    restrictions: Self::parse_restrictions(&value),
                 });
             }
         }
@@ -2617,6 +3291,21 @@ impl SharesService {
                 }
             }
 
+            if let Some(read_only) = update.read_only {
+                new_content = set_smb_managed_line(
+                    &new_content,
+                    "read only",
+                    Some(if read_only { "yes" } else { "no" }),
+                );
+            }
+            if let Some(guest_ok) = update.guest_ok {
+                new_content = set_smb_managed_line(
+                    &new_content,
+                    "guest ok",
+                    guest_ok.map(|v| if v { "yes" } else { "no" }),
+                );
+            }
+
             let mut new_config = config[..start].to_string();
             new_config.push_str(&new_content);
             new_config.push_str(&after_section[end..]);
@@ -2674,10 +3363,12 @@ impl SharesService {
 
         // Preserve the enable/disable state carried by the existing line.
         let nfs_config = Self::get_nfs_config().unwrap_or_default();
+        let rules = Self::get_nfs_rules(name);
+        let rendered = nfs_export_line(&new_path, &new_options, &nfs_config, &rules);
         let replacement = if existing.enabled {
-            nfs_export_line(&new_path, &new_options, &nfs_config)
+            rendered
         } else {
-            nfs_disabled_line(name, &nfs_export_line(&new_path, &new_options, &nfs_config))
+            nfs_disabled_line(name, &rendered)
         };
 
         let mut new_exports = String::new();
@@ -2749,7 +3440,12 @@ impl SharesService {
             if idx == target {
                 let parsed = parse_nfs_export_line(line)
                     .ok_or_else(|| ShareError::NotFound(name.to_string()))?;
-                let plain = nfs_export_line(&parsed.path, &parsed.options, &nfs_config);
+                let plain = nfs_export_line(
+                    &parsed.path,
+                    &parsed.options,
+                    &nfs_config,
+                    &Self::get_nfs_rules(name),
+                );
                 if enabled {
                     // Un-tag: keep the export line as-is.
                     new_exports.push_str(plain.trim_end());
@@ -2790,6 +3486,18 @@ impl SharesService {
             if let Some(options) = update.options {
                 entry["options"] = serde_json::json!(options);
             }
+            if let Some(read_only) = update.read_only {
+                entry["read_only"] = serde_json::json!(read_only);
+            }
+            if let Some(guest_ok) = update.guest_ok {
+                entry["guest_ok"] = match guest_ok {
+                    Some(value) => serde_json::json!(value),
+                    None => serde_json::Value::Null,
+                };
+            }
+            if let Some(restrictions) = update.restrictions {
+                entry["restrictions"] = serde_json::json!(restrictions);
+            }
             write_file_as_root(
                 &shares_path.to_string_lossy(),
                 &serde_json::to_string_pretty(&shares)?,
@@ -2824,6 +3532,18 @@ impl SharesService {
             if let Some(options) = update.options {
                 entry["options"] = serde_json::json!(options);
             }
+            if let Some(read_only) = update.read_only {
+                entry["read_only"] = serde_json::json!(read_only);
+            }
+            if let Some(guest_ok) = update.guest_ok {
+                entry["guest_ok"] = match guest_ok {
+                    Some(value) => serde_json::json!(value),
+                    None => serde_json::Value::Null,
+                };
+            }
+            if let Some(restrictions) = update.restrictions {
+                entry["restrictions"] = serde_json::json!(restrictions);
+            }
             write_file_as_root(
                 &shares_path.to_string_lossy(),
                 &serde_json::to_string_pretty(&shares)?,
@@ -2857,6 +3577,18 @@ impl SharesService {
             }
             if let Some(options) = update.options {
                 entry["options"] = serde_json::json!(options);
+            }
+            if let Some(read_only) = update.read_only {
+                entry["read_only"] = serde_json::json!(read_only);
+            }
+            if let Some(guest_ok) = update.guest_ok {
+                entry["guest_ok"] = match guest_ok {
+                    Some(value) => serde_json::json!(value),
+                    None => serde_json::Value::Null,
+                };
+            }
+            if let Some(restrictions) = update.restrictions {
+                entry["restrictions"] = serde_json::json!(restrictions);
             }
             write_file_as_root(
                 &shares_path.to_string_lossy(),
@@ -2992,6 +3724,9 @@ mod tests {
             enabled: true,
             comment: "family media".to_string(),
             options: vec!["ro".to_string()],
+            read_only: false,
+            guest_ok: None,
+            restrictions: ShareRestrictions::default(),
         };
         let json = serde_json::to_string(&share).unwrap();
         let back: Share = serde_json::from_str(&json).unwrap();
@@ -3180,7 +3915,7 @@ mod tests {
 
     #[test]
     fn test_smb_share_section_is_one_field_per_line() {
-        let section = smb_share_section("media", "Family media", "/mnt/pool/media");
+        let section = smb_share_section("media", "Family media", "/mnt/pool/media", &SmbShareAccess::admin_only());
         assert!(section.contains("\n[media]\n"), "{section:?}");
         assert!(
             section.contains("  comment = Family media\n"),
@@ -3216,7 +3951,7 @@ mod tests {
 
     #[test]
     fn test_apply_recycle_enable_is_idempotent() {
-        let base = smb_share_section("media", "Family media", "/mnt/pool/media");
+        let base = smb_share_section("media", "Family media", "/mnt/pool/media", &SmbShareAccess::admin_only());
         let once = apply_recycle_to_section(&base, true);
         let twice = apply_recycle_to_section(&once, true);
         assert_eq!(once, twice, "enabling twice must not stack blocks");
@@ -3226,7 +3961,7 @@ mod tests {
 
     #[test]
     fn test_apply_recycle_disable_removes_the_block_and_keeps_the_section() {
-        let base = smb_share_section("media", "Family media", "/mnt/pool/media");
+        let base = smb_share_section("media", "Family media", "/mnt/pool/media", &SmbShareAccess::admin_only());
         let enabled = apply_recycle_to_section(&base, true);
         let disabled = apply_recycle_to_section(&enabled, false);
         assert!(!section_has_recycle(&disabled));
@@ -3245,7 +3980,7 @@ mod tests {
     fn test_apply_recycle_preserves_hand_added_lines() {
         let base = format!(
             "{}{}",
-            smb_share_section("media", "Family media", "/mnt/pool/media"),
+            smb_share_section("media", "Family media", "/mnt/pool/media", &SmbShareAccess::admin_only()),
             "  veto files = /lost+found/\n"
         );
         let enabled = apply_recycle_to_section(&base, true);
@@ -3268,6 +4003,8 @@ mod tests {
             SmbVfsFlags {
                 recycle: false,
                 time_machine: true,
+                previous_versions: false,
+                ..SmbVfsFlags::default()
             },
             500,
         );
@@ -3294,6 +4031,8 @@ mod tests {
             SmbVfsFlags {
                 recycle: false,
                 time_machine: true,
+                previous_versions: false,
+                ..SmbVfsFlags::default()
             },
             0,
         );
@@ -3310,6 +4049,8 @@ mod tests {
             SmbVfsFlags {
                 recycle: true,
                 time_machine: true,
+                previous_versions: false,
+                ..SmbVfsFlags::default()
             },
             0,
         );
@@ -3333,12 +4074,14 @@ mod tests {
 
     #[test]
     fn test_toggling_one_feature_keeps_the_other() {
-        let base = smb_share_section("tm", "Mac backups", "/mnt/pool/tm");
+        let base = smb_share_section("tm", "Mac backups", "/mnt/pool/tm", &SmbShareAccess::admin_only());
         let tm = apply_vfs_to_section(
             &base,
             SmbVfsFlags {
                 recycle: false,
                 time_machine: true,
+                previous_versions: false,
+                ..SmbVfsFlags::default()
             },
             120,
         );
@@ -3357,7 +4100,7 @@ mod tests {
 
     #[test]
     fn test_a_legacy_recycle_block_is_upgraded_not_stacked() {
-        let base = smb_share_section("media", "Family media", "/mnt/pool/media");
+        let base = smb_share_section("media", "Family media", "/mnt/pool/media", &SmbShareAccess::admin_only());
         let legacy = format!(
             "{base}{SMB_LEGACY_BEGIN}\n  vfs objects = recycle\n  recycle:repository = {RECYCLE_DIR_NAME}\n{SMB_LEGACY_END}\n"
         );
@@ -3367,6 +4110,8 @@ mod tests {
             SmbVfsFlags {
                 recycle: true,
                 time_machine: true,
+                previous_versions: false,
+                ..SmbVfsFlags::default()
             },
             0,
         );
@@ -3378,12 +4123,14 @@ mod tests {
 
     #[test]
     fn test_disabling_both_features_removes_the_managed_block() {
-        let base = smb_share_section("tm", "Mac backups", "/mnt/pool/tm");
+        let base = smb_share_section("tm", "Mac backups", "/mnt/pool/tm", &SmbShareAccess::admin_only());
         let both = apply_vfs_to_section(
             &base,
             SmbVfsFlags {
                 recycle: true,
                 time_machine: true,
+                previous_versions: false,
+                ..SmbVfsFlags::default()
             },
             0,
         );
@@ -3406,7 +4153,7 @@ mod tests {
         // target: the module and the explicit switch are what count.
         let section = format!(
             "{}\n  fruit:time machine max size = 100G\n",
-            smb_share_section("x", "x", "/mnt/x")
+            smb_share_section("x", "x", "/mnt/x", &SmbShareAccess::admin_only())
         );
         assert!(!section_vfs_flags(&section).time_machine);
         assert_eq!(section_time_machine_quota(&section), 100);
@@ -3416,7 +4163,7 @@ mod tests {
     fn test_nfs_export_line_defaults_and_round_trip() {
         let config = NfsConfig::default();
         assert_eq!(
-            nfs_export_line("/mnt/pool/media", &[], &config),
+            nfs_export_line("/mnt/pool/media", &[], &config, &[]),
             "/mnt/pool/media *(rw,sync,no_subtree_check,root_squash)\n"
         );
 
@@ -3431,7 +4178,7 @@ mod tests {
         );
         // Round-trip: re-serialising the parsed options reproduces the line.
         assert_eq!(
-            nfs_export_line(&parsed.path, &parsed.options, &config),
+            nfs_export_line(&parsed.path, &parsed.options, &config, &[]),
             format!("{line}\n")
         );
     }
@@ -3443,6 +4190,7 @@ mod tests {
             default_access: "ro".to_string(),
             version: "3".to_string(),
             root_squash: "all_squash".to_string(),
+            security_flavor: "sys".to_string(),
             custom_options: vec!["no_wdelay".to_string()],
         };
         let overrides = vec![
@@ -3454,7 +4202,7 @@ mod tests {
         let opts = "rw,async,no_subtree_check,no_root_squash,vers=4.2,no_wdelay";
         let expected = format!("/mnt/pool/media 192.168.1.0/24({opts}) 10.0.0.0/8({opts})\n");
         assert_eq!(
-            nfs_export_line("/mnt/pool/media", &overrides, &config),
+            nfs_export_line("/mnt/pool/media", &overrides, &config, &[]),
             expected
         );
 
@@ -3462,7 +4210,7 @@ mod tests {
         let expected_options: Vec<String> = opts.split(',').map(str::to_string).collect();
         assert_eq!(parsed.options, expected_options);
         assert_eq!(
-            nfs_export_line(&parsed.path, &parsed.options, &config),
+            nfs_export_line(&parsed.path, &parsed.options, &config, &[]),
             expected,
             "the multi-client line must round-trip"
         );
@@ -3474,7 +4222,7 @@ mod tests {
             version: "auto".to_string(),
             ..NfsConfig::default()
         };
-        let line = nfs_export_line("/mnt/pool/media", &[], &config);
+        let line = nfs_export_line("/mnt/pool/media", &[], &config, &[]);
         assert_eq!(
             line,
             "/mnt/pool/media *(rw,sync,no_subtree_check,root_squash)\n"
@@ -3519,7 +4267,7 @@ mod tests {
     #[test]
     fn test_nfs_disabled_tag_round_trips_as_a_disabled_share() {
         let config = NfsConfig::default();
-        let plain = nfs_export_line("/mnt/pool/media", &["rw".to_string()], &config);
+        let plain = nfs_export_line("/mnt/pool/media", &["rw".to_string()], &config, &[]);
         let tagged = nfs_disabled_line("media", &plain);
         assert!(tagged.starts_with(NFS_DISABLED_TAG), "{tagged:?}");
 
@@ -3610,6 +4358,8 @@ mod tests {
                 "deadtime = 30".to_string(),
             ],
             multichannel: true,
+            realm: String::new(),
+            idmap_range: "10000-999999".to_string(),
         };
         let rendered = smb_global_params(&config).join("\n");
         for expected in [
@@ -3677,6 +4427,7 @@ mod tests {
             max_clients: 25,
             force_tls: true,
             allow_anonymous: true,
+            anonymous_root: Some("/srv/public".to_string()),
             chroot: false,
             welcome_message: "Hello".to_string(),
         };
@@ -3687,7 +4438,8 @@ mod tests {
             "pasv_max_port=40100",
             "max_clients=25",
             "anonymous_enable=YES",
-            "chroot_local_user=NO",
+            "anon_root=/srv/public",
+            "chroot_local_user=YES",
             "userlist_enable=YES",
             "userlist_deny=NO",
             "userlist_file=/etc/vsftpd.user_list",
@@ -3741,6 +4493,7 @@ mod tests {
             max_clients: 10,
             force_tls: false,
             allow_anonymous: false,
+            anonymous_root: None,
             chroot: true,
             welcome_message: "Welcome to HomeVault FTP".to_string(),
         }
@@ -3850,5 +4603,167 @@ mod tests {
         assert!(SHARES_WRITE_TIMEOUT >= Duration::from_secs(1));
         assert!(SHARES_SERVICE_TIMEOUT >= SHARES_WRITE_TIMEOUT);
         assert!(SHARES_SERVICE_TIMEOUT <= Duration::from_secs(180));
+    }
+
+    fn permission(grantee_type: &str, grantee_name: &str) -> crate::storage::share_perm_repo::SharePermission {
+        crate::storage::share_perm_repo::SharePermission {
+            id: 0,
+            share_name: "media".to_string(),
+            share_type: "smb".to_string(),
+            grantee_type: grantee_type.to_string(),
+            grantee_name: grantee_name.to_string(),
+            permission: "rw".to_string(),
+            recursive: true,
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+        }
+    }
+
+    #[test]
+    fn test_smb_valid_users_always_keeps_the_admin_group_and_names_groups() {
+        let users = smb_valid_users(&[
+            permission("user", "alice"),
+            permission("group", "family"),
+            permission("user", "alice"),
+        ]);
+        assert_eq!(
+            users,
+            vec![
+                "@homevault_admin".to_string(),
+                "@homevault_family".to_string(),
+                "alice".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn test_smb_share_access_renders_valid_users_read_only_and_guest() {
+        let access = SmbShareAccess {
+            valid_users: vec!["alice".to_string(), "@homevault_admin".to_string()],
+            read_only: true,
+            guest_ok: Some(false),
+        };
+        let rendered = access.render().join("\n");
+        assert!(rendered.contains("valid users = @homevault_admin alice"), "{rendered}");
+        assert!(rendered.contains("read only = yes"), "{rendered}");
+        assert!(rendered.contains("guest ok = no"), "{rendered}");
+    }
+
+    #[test]
+    fn test_apply_smb_access_replaces_only_managed_lines() {
+        let section = "[media]\n  path = /srv/media\n  read only = no\n  veto files = /secret/\n";
+        let access = SmbShareAccess {
+            valid_users: vec!["alice".to_string()],
+            read_only: true,
+            guest_ok: None,
+        };
+        let out = apply_smb_access_to_section(section, &access);
+        assert!(out.contains("path = /srv/media"), "{out}");
+        assert!(out.contains("veto files = /secret/"), "{out}");
+        assert!(!out.contains("read only = no"), "{out}");
+        assert!(out.contains("read only = yes"), "{out}");
+    }
+
+    #[test]
+    fn test_nfs_client_rules_override_per_client_access() {
+        let config = NfsConfig::default();
+        let rules = vec![
+            NfsClientRule {
+                client: "192.168.1.0/24".to_string(),
+                access: "ro".to_string(),
+                options: vec!["sync".to_string()],
+            },
+            NfsClientRule {
+                client: "10.0.0.0/8".to_string(),
+                access: "rw".to_string(),
+                options: vec![],
+            },
+        ];
+        let line = nfs_export_line("/srv/media", &[], &config, &rules);
+        assert!(line.contains("192.168.1.0/24(ro,"), "{line}");
+        assert!(line.contains("10.0.0.0/8(rw,"), "{line}");
+        assert!(!line.contains("*(rw"), "{line}");
+    }
+
+    #[test]
+    fn test_validate_nfs_rules_rejects_duplicate_and_injection() {
+        let duplicate = vec![
+            NfsClientRule {
+                client: "192.168.1.0/24".to_string(),
+                access: "rw".to_string(),
+                options: vec![],
+            },
+            NfsClientRule {
+                client: "192.168.1.0/24".to_string(),
+                access: "ro".to_string(),
+                options: vec![],
+            },
+        ];
+        assert!(validate_nfs_rules(&duplicate).is_err());
+
+        let injection = vec![NfsClientRule {
+            client: "192.168.1.0/24)".to_string(),
+            access: "rw".to_string(),
+            options: vec![],
+        }];
+        assert!(validate_nfs_rules(&injection).is_err());
+    }
+
+    #[test]
+    fn test_smb_ads_renders_realm_idmap_and_acl_mapping() {
+        let config = SmbConfig {
+            security_mode: "ads".to_string(),
+            realm: "EXAMPLE.LAN".to_string(),
+            idmap_range: "10000-999999".to_string(),
+            ..SmbConfig::default()
+        };
+        validate_smb_config(&config).expect("a complete ADS config is valid");
+        let rendered = smb_global_params(&config).join("\n");
+        assert!(rendered.contains("security = ads"), "{rendered}");
+        assert!(rendered.contains("realm = EXAMPLE.LAN"), "{rendered}");
+        assert!(rendered.contains("idmap config * : range = 10000-999999"), "{rendered}");
+        assert!(rendered.contains("map acl inherit = yes"), "{rendered}");
+    }
+
+    #[test]
+    fn test_previous_versions_block_round_trips_and_shares_vfs_line() {
+        let section = smb_share_section(
+            "media",
+            "media",
+            "/srv/media",
+            &SmbShareAccess::admin_only(),
+        );
+        let on = apply_previous_versions_to_section(&section, true);
+        assert!(on.contains("shadow_copy2"), "{on}");
+        assert!(section_vfs_flags(&on).previous_versions);
+        let off = apply_previous_versions_to_section(&on, false);
+        assert!(!section_vfs_flags(&off).previous_versions);
+        assert!(!off.contains("shadow_copy2"), "{off}");
+    }
+
+    #[test]
+    fn test_ftp_anonymous_root_is_rendered_only_when_enabled() {
+        let mut config = ftp_config_fixture();
+        config.allow_anonymous = true;
+        config.anonymous_root = Some("/srv/public".to_string());
+        let text = ftp_config_text(&config);
+        assert!(text.contains("anon_root=/srv/public"), "{text}");
+        config.allow_anonymous = false;
+        let text = ftp_config_text(&config);
+        assert!(!text.contains("anon_root="), "{text}");
+    }
+
+    #[test]
+    fn test_nfs_kerberos_requires_an_explicit_v4_version() {
+        let mut config = NfsConfig {
+            version: "3".to_string(),
+            security_flavor: "krb5".to_string(),
+            ..NfsConfig::default()
+        };
+        assert!(validate_nfs_config(&config).is_err());
+        config.version = "4.2".to_string();
+        assert!(validate_nfs_config(&config).is_ok());
+        let line = nfs_export_line("/srv/media", &[], &config, &[]);
+        assert!(line.contains("sec=krb5"), "{line}");
     }
 }

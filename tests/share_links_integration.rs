@@ -133,6 +133,26 @@ async fn create_test_user(state: &AppState, username: &str, password: &str, role
     .expect("insert test user");
 }
 
+/// One `folder` grant for a non-admin. Share-link creation now requires the
+/// owner to still hold a `read` grant on the path (a `PathGuard` root alone is
+/// not an authorization).
+async fn grant_folder(state: &AppState, member: &str, path: &str, permission: &str) {
+    sqlx::query(
+        "INSERT INTO resource_shares (owner, member, kind, resource, permission)
+         VALUES (?, ?, 'folder', ?, ?)
+         ON CONFLICT(member, kind, resource) DO UPDATE SET
+             permission = excluded.permission,
+             owner = excluded.owner",
+    )
+    .bind(member)
+    .bind(member)
+    .bind(path)
+    .bind(permission)
+    .execute(&*state.db.pool())
+    .await
+    .expect("insert resource grant");
+}
+
 async fn login(router: &mut Router, username: &str, password: &str) -> String {
     let (_, body) = send(
         router,
@@ -363,22 +383,48 @@ async fn test_share_link_password_limit_and_redaction() {
 }
 
 #[tokio::test]
-async fn test_share_link_rejects_directories_and_missing_files() {
+async fn test_share_link_accepts_folders_and_rejects_missing_files() {
     let h = setup().await;
     let mut router = router(h.state.clone());
     create_test_user(&h.state, "admin", "pass", 2).await;
     let admin = login(&mut router, "admin", "pass").await;
 
-    // Directory → 400.
-    let (s, _) = send(
+    // Folder → 200, served as a tar.gz snapshot.
+    let folder = h.root.join("shared-folder");
+    std::fs::create_dir_all(&folder).unwrap();
+    std::fs::write(folder.join("inside.txt"), b"inside").unwrap();
+    let (s, body) = send(
         &mut router,
         Method::POST,
         "/api/explorer/shares",
         Some(&admin),
-        Some(json!({"path": h.root.to_string_lossy().to_string()})),
+        Some(json!({"path": folder.to_string_lossy().to_string()})),
     )
     .await;
-    assert_eq!(s, StatusCode::BAD_REQUEST);
+    assert_eq!(s, StatusCode::OK, "{body}");
+    assert_eq!(body["data"]["is_directory"], json!(true), "{body}");
+    let token = body["data"]["token"].as_str().expect("token").to_string();
+
+    let req = Request::builder()
+        .method(Method::GET)
+        .uri(format!("/share/{token}"))
+        .body(axum::body::Body::empty())
+        .unwrap();
+    let resp = ServiceExt::<Req>::ready(&mut router)
+        .await
+        .unwrap()
+        .call(req)
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert_eq!(
+        resp.headers().get("content-type").unwrap(),
+        "application/gzip"
+    );
+    let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    assert!(!bytes.is_empty(), "the folder archive must not be empty");
 
     // Nonexistent path → 400.
     let (s, _) = send(
@@ -421,6 +467,7 @@ async fn test_share_link_non_admin_path_guard() {
     let mut router = router(h.state.clone());
     create_test_user(&h.state, "admin", "pass", 2).await;
     create_test_user(&h.state, "bob", "pass", 1).await;
+    grant_folder(&h.state, "bob", &h.root.to_string_lossy(), "read").await;
     let bob = login(&mut router, "bob", "pass").await;
 
     // Inside the allowed root: allowed for a regular user.
@@ -446,6 +493,141 @@ async fn test_share_link_non_admin_path_guard() {
     .await;
     assert_eq!(s, StatusCode::FORBIDDEN);
     assert_eq!(body["success"], false);
+}
+
+/// A `PathGuard` root is not an authorization: a member without a `read` grant
+/// on the path may not mint a link to it (this was the share-links hole the P0
+/// pass closed).
+#[tokio::test]
+async fn test_share_link_creation_requires_a_grant() {
+    let h = setup().await;
+    let mut router = router(h.state.clone());
+    create_test_user(&h.state, "bob", "pass", 1).await;
+    let bob = login(&mut router, "bob", "pass").await;
+    let file = make_file(&h.root, "ungranted.txt", "secret");
+
+    let (status, body) = send(
+        &mut router,
+        Method::POST,
+        "/api/explorer/shares",
+        Some(&bob),
+        Some(json!({"path": file})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+    assert_eq!(body["success"], json!(false), "{body}");
+}
+
+/// A `signed_in` link can name the accounts/groups it was minted for; an
+/// unnamed account is refused even though it holds a valid session.
+#[tokio::test]
+async fn test_targeted_signed_in_link_only_opens_for_named_accounts() {
+    let h = setup().await;
+    let mut router = router(h.state.clone());
+    create_test_user(&h.state, "admin", "pass", 2).await;
+    create_test_user(&h.state, "bob", "pass", 1).await;
+    create_test_user(&h.state, "alice", "pass", 1).await;
+    let admin = login(&mut router, "admin", "pass").await;
+    let bob = login(&mut router, "bob", "pass").await;
+    let alice = login(&mut router, "alice", "pass").await;
+    let file = make_file(&h.root, "targeted.txt", "targeted");
+
+    let (status, body) = send(
+        &mut router,
+        Method::POST,
+        "/api/explorer/shares",
+        Some(&admin),
+        Some(json!({
+            "path": file,
+            "mode": "signed_in",
+            "allowed_users": "bob",
+            "allowed_groups": ""
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let token = body["data"]["token"].as_str().expect("token").to_string();
+
+    let (status, _) = send(
+        &mut router,
+        Method::GET,
+        &format!("/share/{token}"),
+        Some(&bob),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "the named account may download");
+
+    let (status, body) = send(
+        &mut router,
+        Method::GET,
+        &format!("/share/{token}"),
+        Some(&alice),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED, "an unnamed account is refused");
+    assert_eq!(body["success"], json!(false), "{body}");
+
+    // A target list on a public link is a 400, not a silently ignored field.
+    let (status, _) = send(
+        &mut router,
+        Method::POST,
+        "/api/explorer/shares",
+        Some(&admin),
+        Some(json!({"path": file, "mode": "anyone", "allowed_users": "bob"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+}
+
+/// Revoking the owner's grant kills the links they already minted: a link is a
+/// standing grant, not a permanent capability.
+#[tokio::test]
+async fn test_revoking_the_owner_grant_kills_an_existing_link() {    let h = setup().await;
+    let mut router = router(h.state.clone());
+    create_test_user(&h.state, "bob", "pass", 1).await;
+    grant_folder(&h.state, "bob", &h.root.to_string_lossy(), "read").await;
+    let bob = login(&mut router, "bob", "pass").await;
+    let file = make_file(&h.root, "shared.txt", "shared data");
+
+    let (status, body) = send(
+        &mut router,
+        Method::POST,
+        "/api/explorer/shares",
+        Some(&bob),
+        Some(json!({"path": file})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let token = body["data"]["token"].as_str().expect("token").to_string();
+
+    // Still downloadable while the grant holds.
+    let (status, _) = send(
+        &mut router,
+        Method::GET,
+        &format!("/share/{token}"),
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    // Revoke the grant, then the same token is gone.
+    sqlx::query("DELETE FROM resource_shares WHERE member = 'bob'")
+        .execute(&*h.state.db.pool())
+        .await
+        .expect("revoke grant");
+    let (status, body) = send(
+        &mut router,
+        Method::GET,
+        &format!("/share/{token}"),
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "a revoked grant kills the link");
+    assert_eq!(body["success"], json!(false), "{body}");
 }
 
 // ---------------------------------------------------------------------------
@@ -797,7 +979,19 @@ async fn test_share_download_reachable_through_production_router() {
     // Mint a link through the repository directly, then hit the full app.
     let repo = homevault::storage::ShareLinkRepository::new(h.state.db.pool());
     let link = repo
-        .create("admin", &"A".repeat(48), &file, "anyone", None, None, None)
+        .create(
+            "admin",
+            &"A".repeat(48),
+            &file,
+            "anyone",
+            None,
+            None,
+            None,
+            false,
+            None,
+            "",
+            "",
+        )
         .await
         .expect("create link");
 
@@ -1381,6 +1575,10 @@ async fn test_share_unlock_reachable_through_production_router() {
             None,
             Some(&hash),
             Some(1),
+            false,
+            None,
+            "",
+            "",
         )
         .await
         .expect("create link");

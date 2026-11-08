@@ -715,6 +715,9 @@ impl CacheService {
             enabled: share.enabled,
             comment: format!("HomeVault cache share (mode: {})", share.cache_mode),
             options: vec![],
+            read_only: false,
+            guest_ok: None,
+            restrictions: crate::shares::ShareRestrictions::default(),
         };
         if SharesService::update_share(
             &share.name,
@@ -724,6 +727,9 @@ impl CacheService {
                 enabled: Some(share.enabled),
                 comment: Some(smb.comment.clone()),
                 options: Some(vec![]),
+                read_only: None,
+                guest_ok: None,
+                restrictions: None,
             },
         )
         .is_err()

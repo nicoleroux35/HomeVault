@@ -37,8 +37,9 @@
   import { explorerIntent } from '$lib/stores/explorerIntent';
   import { get } from 'svelte/store';
   import FolderPicker from '$lib/components/theme/FolderPicker.svelte';
-  import { IconAlertCircle, IconArchive, IconArrowBackUp, IconArrowUp, IconBolt, IconClock, IconCloud, IconCloudCheck, IconCloudUpload, IconCopy, IconDatabase, IconDownload, IconHistory, IconPlayerEject, IconPencil, IconEye, IconFileZip, IconFolderMinus, IconFolderOpen, IconFolderPlus, IconServer, IconHome, IconLayoutGrid, IconList, IconLoader, IconLock, IconPlus, IconRefresh, IconSearch, IconShare, IconShield, IconShieldCheckered, IconStar, IconStarFilled, IconTag, IconTrash, IconUpload, IconUsb, IconX, IconArrowsExchange } from '@tabler/icons-svelte';
+  import { IconAlertCircle, IconArchive, IconArrowBackUp, IconArrowUp, IconBolt, IconClock, IconCloud, IconCloudCheck, IconCloudUpload, IconCopy, IconDatabase, IconDownload, IconHistory, IconInbox, IconPlayerEject, IconPencil, IconEye, IconFileZip, IconFolderMinus, IconFolderOpen, IconFolderPlus, IconLink, IconServer, IconHome, IconLayoutGrid, IconList, IconLoader, IconLock, IconPlus, IconRefresh, IconSearch, IconShare, IconShield, IconShieldCheckered, IconStar, IconStarFilled, IconTag, IconTrash, IconUpload, IconUsb, IconX, IconArrowsExchange } from '@tabler/icons-svelte';
   import ShareLinkModal from '$lib/components/explorer/ShareLinkModal.svelte';
+  import FileRequestModal from '$lib/components/explorer/FileRequestModal.svelte';
   import TransferTray from '$lib/components/explorer/TransferTray.svelte';
   import ExplorerWidget from '$lib/components/explorer/ExplorerWidget.svelte';
   import IsoMountPanel from '$lib/components/explorer/IsoMountPanel.svelte';
@@ -61,6 +62,15 @@
     total_size: number;
     file_count: number;
     directory_count: number;
+    // The caller's effective grant on this directory (`deny`/`read`/`write`/
+    // `full`) and the share's advanced restrictions. The server enforces both;
+    // the UI mirrors them so it never offers an action that will be refused.
+    permission: 'deny' | 'read' | 'write' | 'full';
+    restrictions: {
+      disable_browsing: boolean;
+      disable_modification: boolean;
+      disable_download: boolean;
+    };
     // Set by the backend when the directory held more than 10,000 items and
     // only the first 10,000 (dirs first, then alphabetical) were returned.
     truncated?: boolean;
@@ -142,7 +152,7 @@
   let extractTarget = $state<FileEntry | null>(null);
 
   // Labelled sidebar roots ("My files", "Shares", …) + real-time filesystem watcher.
-  let roots = $state<{ path: string; kind: string; name: string }[]>([]);
+  let roots = $state<{ path: string; kind: string; name: string; permission: string }[]>([]);
   let watchEventSource: EventSource | null = null;
   let watchTicket = '';
 
@@ -185,6 +195,10 @@
   // "Share by link" modal (file rows).
   let showShareLink = $state(false);
   let shareLinkTarget = $state<FileEntry | null>(null);
+
+  // "Request files" modal (folder rows): a public upload link.
+  let showFileRequest = $state(false);
+  let fileRequestTarget = $state<FileEntry | null>(null);
 
   // Copy/move/upload collision prompt (Replace / Keep both / Skip).
   let collisionPrompt = $state<{ name: string } | null>(null);
@@ -1150,7 +1164,7 @@
   }
 
   async function handleMkdir() {
-    if (blockedInSnapshot()) return;
+    if (blockedInSnapshot() || blockedByReadOnly()) return;
     if (!newFolderName.trim()) {
       return;
     }
@@ -1173,7 +1187,7 @@
   }
 
   async function handleRename() {
-    if (blockedInSnapshot()) return;
+    if (blockedInSnapshot() || blockedByReadOnly()) return;
     if (!renameTarget || !renameName.trim()) return;
     const newPath = joinPath(parentPath(renameTarget.path), renameName.trim());
     const result = await api.renameItem(renameTarget.path, newPath);
@@ -1187,7 +1201,7 @@
   }
 
   async function handleDelete(entry?: FileEntry) {
-    if (blockedInSnapshot()) return;
+    if (blockedInSnapshot() || blockedByReadOnly()) return;
     const targets = entry ? [entry] : sortedEntries.filter(e => selected.has(e.path));
     if (targets.length === 0) return;
     const msg = targets.length === 1
@@ -1303,6 +1317,7 @@
     if (entry.is_directory) {
       return;
     }
+    if (blockedByDownloadRestriction()) return;
     const result = await api.downloadFile(entry.path, entry.name);
     if (!result.success) {
       dlg.notify(result.error || translate('explorer.download_failed'));
@@ -1344,6 +1359,10 @@
 
   async function handleChmod() {
     if (blockedInSnapshot()) return;
+    if (!canChangePermissions) {
+      notifyError(null, 'explorer.permission_requires_full');
+      return;
+    }
     if (!chmodTarget) return;
     if (!/^[0-7]{3,4}$/.test(chmodMode)) {
       return;
@@ -1360,6 +1379,7 @@
 
   async function handlePreview(entry: FileEntry) {
     if (entry.is_directory) return;
+    if (blockedByDownloadRestriction()) return;
     const result = await api.previewFile(entry.path);
     if (result.success && result.data) {
       previewContent = result.data;
@@ -1434,9 +1454,16 @@
   }
 
   function openShareLink(entry: FileEntry) {
-    if (blockedInSnapshot() || entry.is_directory) return;
+    if (blockedInSnapshot()) return;
+    if (blockedByDownloadRestriction()) return;
     shareLinkTarget = entry;
     showShareLink = true;
+  }
+
+  function openFileRequest(entry: FileEntry) {
+    if (blockedInSnapshot() || blockedByReadOnly()) return;
+    fileRequestTarget = entry;
+    showFileRequest = true;
   }
 
   // Subscribes to an SSE progress job (used for directory copy/move, see
@@ -1511,7 +1538,7 @@
   }
 
   async function moveSelectedTo(dest: string) {
-    if (blockedInSnapshot()) return;
+    if (blockedInSnapshot() || blockedByReadOnly()) return;
     const items = sortedEntries.filter(e => selected.has(e.path));
     const strategy = await resolveStrategy(items.map(i => i.name), dest);
     if (strategy === null) return;
@@ -1551,7 +1578,7 @@
   }
 
   async function handleCompress() {
-    if (blockedInSnapshot()) return;
+    if (blockedInSnapshot() || blockedByReadOnly()) return;
     const items = sortedEntries.filter(e => selected.has(e.path));
     if (items.length === 0 || !compressName.trim()) return;
     const destination = joinPath(currentPath, compressName.trim());
@@ -1598,6 +1625,10 @@
    *  upload it there). */
   async function uploadFilesTo(files: File[], dest: string) {
     if (blockedInSnapshot()) return;
+    // Uploading into the folder currently shown needs `write` there; a
+    // sidebar destination is checked by the server (the UI does not know its
+    // grant until it is opened).
+    if (dest === currentPath && blockedByReadOnly()) return;
     if (files.length === 0) return;
     const strategy = await resolveStrategy(files.map(f => f.name), dest);
     if (strategy === null) return; // cancelled at the collision prompt
@@ -1737,6 +1768,47 @@
       !previewContent.mime_type.startsWith('image/') &&
       !previewContent.is_truncated,
   );
+
+  // Effective access mirror of the server's decision (`listing.permission` +
+  // restrictions). Mutations are refused server-side; these flags keep the UI
+  // from offering a control that can only fail.
+  let canModify = $derived(
+    !snapshotMode &&
+      !!listing &&
+      listing.permission !== 'deny' &&
+      listing.permission !== 'read' &&
+      !listing.restrictions?.disable_modification,
+  );
+  let canDownload = $derived(
+    !!listing &&
+      listing.permission !== 'deny' &&
+      !listing.restrictions?.disable_download,
+  );
+  let canChangePermissions = $derived(
+    isAdmin || (!!listing && listing.permission === 'full'),
+  );
+  let readOnlyNotice = $derived(
+    !snapshotMode &&
+      !showTrash &&
+      !!listing &&
+      (listing.permission === 'read' ||
+        listing.permission === 'deny' ||
+        !!listing.restrictions?.disable_modification),
+  );
+
+  /** Guard for every mutating action. Returns `true` when it must stop. */
+  function blockedByReadOnly(): boolean {
+    if (canModify) return false;
+    notifyError(null, 'explorer.read_only_action');
+    return true;
+  }
+
+  /** Guard for every byte-returning action (download, preview, link). */
+  function blockedByDownloadRestriction(): boolean {
+    if (canDownload) return false;
+    notifyError(null, 'explorer.download_restricted');
+    return true;
+  }
   const toolbarBtn = 'grid place-items-center w-9 h-9 flex-none rounded-lg border-none bg-transparent text-[var(--hv-shell-text-2)] cursor-pointer hover:bg-[var(--hv-subtle-hover)] hover:text-[var(--hv-shell-text-strong)] hv-ic';
   const efRowAction = 'grid place-items-center w-8 h-8 flex-none rounded-lg border-none bg-transparent text-[var(--hv-shell-text-2)] cursor-pointer hover:bg-[var(--hv-subtle-hover)] hover:text-[var(--hv-shell-text-strong)] hv-ic';
   const efRowDanger = 'hover:bg-[var(--hv-error-bg)] hover:text-[var(--hv-error)]';
@@ -2011,11 +2083,11 @@
     <!-- Page-level actions live in the file toolbar, never in the window
          header bar (which is icon + title + window controls only). -->
     {#if !snapshotMode}
-      <Button onclick={() => showNewFolder = true}>
+      <Button onclick={() => showNewFolder = true} disabled={!canModify}>
         <IconFolderPlus size={16} />
         <span>{$t('explorer.new_folder')}</span>
       </Button>
-      <Button variant="ghost" onclick={triggerUpload} disabled={uploading}>
+      <Button variant="ghost" onclick={triggerUpload} disabled={uploading || !canModify}>
         <IconUpload size={16} />
         <span>{$t('explorer.upload')}</span>
       </Button>
@@ -2058,9 +2130,9 @@
         <span class="text-c-xs text-[var(--hv-shell-text-2)]">{$t('explorer.selected_count', { count: String(selected.size) })}</span>
         <button class={toolbarBtn} onclick={() => promptDestination('copy')} title={snapshotMode ? $t('explorer.restore_here') : $t('explorer.copy')}><IconCopy size={16} /></button>
         {#if !snapshotMode}
-          <button class={toolbarBtn} onclick={() => promptDestination('move')} title={$t('explorer.move')}><IconFolderMinus size={16} /></button>
-          <button data-testid="explorer-compress" class={toolbarBtn} onclick={openCompress} title={$t('explorer.compress_selection')} aria-label={$t('explorer.compress_selection')}><IconFileZip size={16} /></button>
-          <button class={cn(toolbarBtn, 'hover:bg-[var(--hv-error-bg)] hover:text-[var(--hv-error)]')} onclick={() => handleDelete()} title={$t('explorer.delete_to_trash')}><IconTrash size={16} /></button>
+          <button class={toolbarBtn} onclick={() => promptDestination('move')} disabled={!canModify} title={$t('explorer.move')}><IconFolderMinus size={16} /></button>
+          <button data-testid="explorer-compress" class={toolbarBtn} onclick={openCompress} disabled={!canModify} title={$t('explorer.compress_selection')} aria-label={$t('explorer.compress_selection')}><IconFileZip size={16} /></button>
+          <button class={cn(toolbarBtn, 'hover:bg-[var(--hv-error-bg)] hover:text-[var(--hv-error)]')} onclick={() => handleDelete()} disabled={!canModify} title={$t('explorer.delete_to_trash')}><IconTrash size={16} /></button>
         {/if}
       {/if}
       <input type="file" multiple bind:this={fileInputEl} onchange={handleUploadFile} style="display: none;" />
@@ -2072,6 +2144,13 @@
       <IconHistory size={16} />
       <span>{$t('explorer.snapshot_readonly')}</span>
       <Button variant="ghost" onclick={exitSnapshot} class="ml-auto"><IconArrowBackUp size={14} /> {$t('explorer.snapshot_exit')}</Button>
+    </div>
+  {/if}
+
+  {#if readOnlyNotice}
+    <div data-testid="explorer-readonly-banner" class="flex items-center gap-2 px-4 py-2 bg-[var(--hv-warning-bg)] border-b border-[var(--hv-warning)]/30 text-sm text-[var(--hv-shell-text-strong)]" role="status">
+      <IconLock size={16} aria-hidden="true" />
+      <span>{$t('explorer.read_only_notice')}</span>
     </div>
   {/if}
 
@@ -2210,12 +2289,12 @@
               <span class="text-xs text-[var(--hv-shell-text-2)]">{entry.permissions}</span>
               <span class="flex gap-1">
                 {#if !entry.is_directory}
-                  <button class={efRowAction} data-testid="explorer-row-download" onclick={(e) => { e.stopPropagation(); handleDownload(entry); }} title={$t('explorer.download')} aria-label={$t('explorer.download')}><IconDownload size={14} /></button>
+                  <button class={efRowAction} data-testid="explorer-row-download" onclick={(e) => { e.stopPropagation(); handleDownload(entry); }} disabled={!canDownload} title={$t('explorer.download')} aria-label={$t('explorer.download')}><IconDownload size={14} /></button>
                   {#if !snapshotMode}
-                    <button class={efRowAction} data-testid="explorer-row-share-link" onclick={(e) => { e.stopPropagation(); openShareLink(entry); }} title={$t('explorer.share_link')} aria-label={$t('explorer.share_link')}><IconShare size={14} /></button>
+                    <button class={efRowAction} data-testid="explorer-row-share-link" onclick={(e) => { e.stopPropagation(); openShareLink(entry); }} disabled={!canDownload} title={$t('explorer.share_link')} aria-label={$t('explorer.share_link')}><IconShare size={14} /></button>
                   {/if}
                   {#if isText(entry.name) || isImage(entry.name)}
-                    <button class={efRowAction} data-testid="explorer-row-preview" onclick={(e) => { e.stopPropagation(); handlePreview(entry); }} title={$t('explorer.preview')} aria-label={$t('explorer.preview')}><IconEye size={14} /></button>
+                    <button class={efRowAction} data-testid="explorer-row-preview" onclick={(e) => { e.stopPropagation(); handlePreview(entry); }} disabled={!canDownload} title={$t('explorer.preview')} aria-label={$t('explorer.preview')}><IconEye size={14} /></button>
                   {/if}
                   <button class={efRowAction} data-testid="explorer-row-rewind" onclick={(e) => { e.stopPropagation(); openRewindFor(entry.path, entry.name); }} title={$t('explorer.rewind')} aria-label={$t('explorer.rewind')}><IconClock size={14} /></button>
                   {#if isArchive(entry.name) && !snapshotMode}
@@ -2224,11 +2303,13 @@
                 {/if}
                 {#if entry.is_directory && !snapshotMode}
                   <button class={efRowAction} data-testid="explorer-row-share" onclick={(e) => { e.stopPropagation(); shareFolder(entry); }} title={$t('explorer.share')} aria-label={$t('explorer.share')}><IconShare size={14} /></button>
+                  <button class={efRowAction} data-testid="explorer-row-folder-share-link" onclick={(e) => { e.stopPropagation(); openShareLink(entry); }} disabled={!canDownload} title={$t('explorer.share_link')} aria-label={$t('explorer.share_link')}><IconLink size={14} /></button>
+                  <button class={efRowAction} data-testid="explorer-row-file-request" onclick={(e) => { e.stopPropagation(); openFileRequest(entry); }} disabled={!canModify} title={$t('explorer.file_request_title')} aria-label={$t('explorer.file_request_title')}><IconInbox size={14} /></button>
                 {/if}
                 {#if !snapshotMode}
-                  <button class={efRowAction} data-testid="explorer-row-rename" onclick={(e) => { e.stopPropagation(); openRename(entry); }} title={$t('explorer.rename')} aria-label={$t('explorer.rename')}><IconPencil size={14} /></button>
+                  <button class={efRowAction} data-testid="explorer-row-rename" onclick={(e) => { e.stopPropagation(); openRename(entry); }} disabled={!canModify} title={$t('explorer.rename')} aria-label={$t('explorer.rename')}><IconPencil size={14} /></button>
                   <button class={efRowAction} data-testid="explorer-row-permissions" onclick={(e) => { e.stopPropagation(); openPermissions(entry); }} title={$t('explorer.permissions')} aria-label={$t('explorer.permissions')}><IconLock size={14} /></button>
-                  <button class={cn(efRowAction, efRowDanger)} data-testid="explorer-row-delete" onclick={(e) => { e.stopPropagation(); handleDelete(entry); }} title={$t('explorer.delete_to_trash')} aria-label={$t('explorer.delete_to_trash')}><IconTrash size={14} /></button>
+                  <button class={cn(efRowAction, efRowDanger)} data-testid="explorer-row-delete" onclick={(e) => { e.stopPropagation(); handleDelete(entry); }} disabled={!canModify} title={$t('explorer.delete_to_trash')} aria-label={$t('explorer.delete_to_trash')}><IconTrash size={14} /></button>
                 {/if}
               </span>
             </div>
@@ -2335,13 +2416,23 @@
   {#if chmodTarget}
     <p class="m-0 mb-2 text-xs text-[var(--hv-shell-text-2)]">{chmodTarget.path}</p>
     <p class="m-0 mb-2 text-xs text-[var(--hv-shell-text-2)]">{$t('explorer.current_mode', { mode: chmodTarget.permissions })}</p>
-    <input type="text" class="w-full h-11 px-3 border border-[var(--hv-shell-border-strong)] rounded-lg bg-[var(--hv-shell-border-soft)] text-sm outline-none focus:border-[var(--hv-primary)]" bind:value={chmodMode} placeholder="755" onkeydown={(e) => { if (e.key === 'Enter') handleChmod(); }} />
-    <p class="m-0 mt-2 text-xs text-[var(--hv-shell-text-2)]">{$t('explorer.octal_mode_hint')}</p>
+    <p class="m-0 mb-2 text-xs text-[var(--hv-shell-text-2)]" data-testid="explorer-effective-permission">
+      {$t('explorer.effective_permission', { level: listing?.permission ?? 'read' })}
+    </p>
+    {#if canChangePermissions}
+      <input type="text" class="w-full h-11 px-3 border border-[var(--hv-shell-border-strong)] rounded-lg bg-[var(--hv-shell-border-soft)] text-sm outline-none focus:border-[var(--hv-primary)]" bind:value={chmodMode} placeholder="755" onkeydown={(e) => { if (e.key === 'Enter') handleChmod(); }} />
+      <p class="m-0 mt-2 text-xs text-[var(--hv-shell-text-2)]">{$t('explorer.octal_mode_hint')}</p>
+      <p class="m-0 mt-2 text-xs text-[var(--hv-warning)]">{$t('explorer.chmod_acl_warning')}</p>
+    {:else}
+      <p class="m-0 mt-2 text-xs text-[var(--hv-shell-text-2)]">{$t('explorer.permission_requires_full')}</p>
+    {/if}
   {/if}
   {#snippet footer()}
     <div class="flex gap-2.5 justify-end">
       <Button variant="ghost" onclick={() => showPermissions = false}>{$t('common.cancel')}</Button>
-      <Button variant="primary" onclick={handleChmod}>{$t('common.apply')}</Button>
+      {#if canChangePermissions}
+        <Button variant="primary" onclick={handleChmod}>{$t('common.apply')}</Button>
+      {/if}
     </div>
   {/snippet}
 </Modal>
@@ -2415,6 +2506,7 @@
 
 <!-- Share by link -->
 <ShareLinkModal open={showShareLink && !!shareLinkTarget} initialPath={shareLinkTarget?.path ?? ''} onclose={() => { showShareLink = false; shareLinkTarget = null; }} />
+<FileRequestModal open={showFileRequest && !!fileRequestTarget} initialPath={fileRequestTarget?.path ?? ''} onclose={() => { showFileRequest = false; fileRequestTarget = null; }} />
 
 <!-- Rewind: per-file version timeline -->
 <Modal open={showRewind} title={$t('explorer.rewind_title')} size="md" onclose={closeRewind}>

@@ -230,7 +230,7 @@ static SHARE_AUTH: LazyLock<Mutex<ShareAuthState>> =
 /// not a link this server created. Checking it before the token is echoed
 /// anywhere (a cookie `Path`, a header) keeps a crafted path from injecting
 /// into a response header.
-fn token_is_well_formed(token: &str) -> bool {
+pub(crate) fn token_is_well_formed(token: &str) -> bool {
     !token.is_empty()
         && token.len() <= 128
         && token
@@ -412,6 +412,143 @@ pub struct ShareLinkCreateRequest {
     pub expires_days: Option<i64>,
     pub password: Option<String>,
     pub max_downloads: Option<i64>,
+    /// Comma-separated accounts allowed to open a `signed_in` link. Empty =
+    /// any signed-in account.
+    #[serde(default)]
+    pub allowed_users: Option<String>,
+    /// Comma-separated groups allowed to open a `signed_in` link.
+    #[serde(default)]
+    pub allowed_groups: Option<String>,
+}
+
+/// Normalises a comma-separated list of account or group names.
+///
+/// Names are validated against the character set HomeVault itself accepts, so
+/// a crafted value can never reach a log line, a URL or a SQL comparison with
+/// surprising whitespace/control characters. Duplicates collapse; an empty or
+/// absent list means "no restriction".
+fn normalize_targets(input: Option<&str>) -> Result<String, String> {
+    let Some(raw) = input else {
+        return Ok(String::new());
+    };
+    let mut names = std::collections::BTreeSet::new();
+    for part in raw.split(',') {
+        let name = part.trim();
+        if name.is_empty() {
+            continue;
+        }
+        if name.len() > 64 {
+            return Err("An account or group name is too long".to_string());
+        }
+        if !name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || "-_.@".contains(c))
+        {
+            return Err(format!("Invalid account or group name '{name}'"));
+        }
+        names.insert(name.to_string());
+    }
+    if names.len() > 32 {
+        return Err("At most 32 accounts or groups per link".to_string());
+    }
+    Ok(names.into_iter().collect::<Vec<_>>().join(","))
+}
+
+/// Refuses a target list containing an account or group that does not exist:
+/// a typo would otherwise create a link nobody can open.
+async fn validate_targets_exist(
+    state: &Arc<AppState>,
+    users: &str,
+    groups: &str,
+) -> Result<(), String> {
+    for user in users.split(',').filter(|s| !s.is_empty()) {
+        if !state.auth.user_exists(user).await {
+            return Err(format!("Unknown account '{user}'"));
+        }
+    }
+    for group in groups.split(',').filter(|s| !s.is_empty()) {
+        let name = group.to_string();
+        let exists = tokio::task::spawn_blocking(move || {
+            crate::groups::GroupService::get_group(&name).is_ok()
+        })
+        .await
+        .unwrap_or(false);
+        if !exists {
+            return Err(format!("Unknown group '{group}'"));
+        }
+    }
+    Ok(())
+}
+
+/// Whether this session may open a targeted `signed_in` link.
+async fn link_allows_session(link: &ShareLink, username: &str) -> bool {
+    if link.allowed_users.is_empty() && link.allowed_groups.is_empty() {
+        return true;
+    }
+    if link
+        .allowed_users
+        .split(',')
+        .any(|candidate| candidate == username)
+    {
+        return true;
+    }
+    if link.allowed_groups.is_empty() {
+        return false;
+    }
+    let allowed: Vec<String> = link
+        .allowed_groups
+        .split(',')
+        .map(str::to_string)
+        .collect();
+    let user = username.to_string();
+    let groups = tokio::task::spawn_blocking(move || {
+        crate::groups::GroupService::get_user_groups(&user).unwrap_or_default()
+    })
+    .await
+    .unwrap_or_default();
+    groups
+        .iter()
+        .any(|group| allowed.iter().any(|candidate| candidate == group))
+}
+
+/// Builds the tar.gz snapshot a folder link serves.
+///
+/// The archive lives under `{DATA_DIRECTORY}/share-archives/<token>.tar.gz`,
+/// never under the folder itself, so a second request can range-seek it and
+/// the size is real. A folder that contains (or is contained by) the archive
+/// directory is refused rather than producing a self-including archive.
+async fn build_folder_archive(
+    state: &Arc<AppState>,
+    token: &str,
+    dir: &str,
+) -> Result<String, String> {
+    let _ = state;
+    let archive_root = crate::config::paths::base_dir().join("share-archives");
+    let dir_path = std::path::Path::new(dir);
+    if dir_path.starts_with(&archive_root) || archive_root.starts_with(dir_path) {
+        return Err(
+            "This folder cannot be shared by link because it overlaps the appliance archive directory"
+                .to_string(),
+        );
+    }
+    if let Err(e) = tokio::fs::create_dir_all(&archive_root).await {
+        return Err(format!("Failed to prepare the folder archive: {e}"));
+    }
+    let destination = archive_root.join(format!("{token}.tar.gz"));
+    let destination_string = destination.to_string_lossy().into_owned();
+    let source = dir.to_string();
+    let destination_for_job = destination_string.clone();
+    tokio::task::spawn_blocking(move || {
+        crate::browser::FileBrowser::compress_items(
+            &[source],
+            &destination_for_job,
+            "tar.gz",
+        )
+    })
+    .await
+    .map_err(|e| format!("Failed to build the folder archive: {e}"))?
+    .map_err(|e| format!("Failed to build the folder archive: {e}"))?;
+    Ok(destination_string)
 }
 
 #[derive(Debug, Serialize)]
@@ -539,7 +676,7 @@ pub async fn handle_share_link_create(
     // Scope the link to what the caller can actually reach, and store the
     // canonical resolved path so the public download never re-resolves a
     // symlink that could be swapped after the link is minted.
-    let Some(canonical) = validate_path_access(&state, &path, &session) else {
+    let Some(canonical) = crate::handlers::explorer::validate_path_access(&state, &path, &session).await else {
         tracing::warn!(
             "Share link creation blocked: path '{}' outside allowed roots for {}",
             path,
@@ -555,18 +692,29 @@ pub async fn handle_share_link_create(
         .unwrap_or_else(|_| canonical.to_string_lossy().into_owned());
     let path = canonical;
 
+    // A link is a download: a share that forbids downloads must not be able to
+    // mint one, and the owner must still hold a `read` grant on the path.
+    if let Some(resp) = crate::handlers::explorer::restricted_response(
+        &state,
+        &session.username,
+        session.is_admin,
+        std::path::Path::new(&path),
+        false,
+        true,
+        false,
+    )
+    .await
+    {
+        return resp;
+    }
+
     let file_path = std::path::Path::new(&path);
     if !file_path.exists() {
         return ResponseHelper::json_error("File not found".to_string()).into_response();
     }
-    // Only single files are shareable by link — a directory would need an
-    // ad-hoc archive step the current transfer pipeline doesn't offer.
-    if file_path.is_dir() {
-        return ResponseHelper::json_error("Only files can be shared by link".to_string())
-            .into_response();
-    }
-    if !file_path.is_file() {
-        return ResponseHelper::json_error("Only regular files can be shared by link".to_string())
+    let is_directory = file_path.is_dir();
+    if !is_directory && !file_path.is_file() {
+        return ResponseHelper::json_error("Only files and folders can be shared".to_string())
             .into_response();
     }
 
@@ -584,7 +732,32 @@ pub async fn handle_share_link_create(
             .into_response();
     }
 
+    // Targeted internal links: retention is a `signed_in` concept (a public
+    // link has no account to compare against), so refuse a target list on an
+    // `anyone` link rather than silently ignoring it.
+    let allowed_users = match normalize_targets(req.allowed_users.as_deref()) {
+        Ok(value) => value,
+        Err(message) => return ResponseHelper::json_error(message).into_response(),
+    };
+    let allowed_groups = match normalize_targets(req.allowed_groups.as_deref()) {
+        Ok(value) => value,
+        Err(message) => return ResponseHelper::json_error(message).into_response(),
+    };
+    if (!allowed_users.is_empty() || !allowed_groups.is_empty()) && mode != "signed_in" {
+        return ResponseHelper::json_error(
+            "Accounts or groups are only meaningful on a signed-in link".to_string(),
+        )
+        .into_response();
+    }
+    if let Err(message) = validate_targets_exist(&state, &allowed_users, &allowed_groups).await {
+        return ResponseHelper::json_error(message).into_response();
+    }
+
     let repo = ShareLinkRepository::new(state.db.pool());
+    // Opportunistic cleanup: expired rows (and the tar.gz snapshot a folder
+    // link owns) are removed when the owner mints a new link.
+    let now = chrono::Utc::now().to_rfc3339();
+    let _ = repo.delete_expired(&now).await;
     let token = generate_share_token();
     let expires_at = compute_expiry(expires_days);
     if req
@@ -618,6 +791,21 @@ pub async fn handle_share_link_create(
                 .into_response()
         }
     };
+
+    // A folder is shared as a tar.gz snapshot built once, under an
+    // appliance-owned directory. Serving the live folder would need an
+    // ad-hoc archive on every request (and would break ranges and the
+    // download cap), so the snapshot is the honest contract: re-create the
+    // link to refresh it.
+    let archive_path = if is_directory {
+        match build_folder_archive(&state, &token, &path).await {
+            Ok(path) => Some(path),
+            Err(message) => return ResponseHelper::json_error(message).into_response(),
+        }
+    } else {
+        None
+    };
+
     match repo
         .create(
             &session.username,
@@ -627,21 +815,31 @@ pub async fn handle_share_link_create(
             expires_at.as_deref(),
             password_hash.as_deref(),
             req.max_downloads,
+            is_directory,
+            archive_path.as_deref(),
+            &allowed_users,
+            &allowed_groups,
         )
         .await
     {
         Ok(link) => {
             crate::events::log_event(format!(
-                "User '{}' created a share link for file '{}' (mode {}, expires {})",
+                "User '{}' created a share link for {} '{}' (mode {}, expires {})",
                 session.username,
+                if is_directory { "folder" } else { "file" },
                 path,
                 mode,
                 expires_at.as_deref().unwrap_or("never")
             ));
             ResponseHelper::json_success(to_view(link)).into_response()
         }
-        Err(e) => ResponseHelper::json_error(format!("Failed to create share link: {}", e))
-            .into_response(),
+        Err(e) => {
+            if let Some(archive) = archive_path {
+                let _ = std::fs::remove_file(archive);
+            }
+            ResponseHelper::json_error(format!("Failed to create share link: {}", e))
+                .into_response()
+        }
     }
 }
 
@@ -670,6 +868,10 @@ pub async fn handle_share_link_delete(
 
     match repo.delete(&token).await {
         Ok(()) => {
+            // A revoked folder link must not leave its snapshot on disk.
+            if let Some(archive) = link.archive_path.as_deref() {
+                let _ = std::fs::remove_file(archive);
+            }
             // A revoked link must also drop any unlock in flight, so a cookie
             // minted a minute ago cannot outlive the revoke.
             SHARE_AUTH.lock().revoke(&token);
@@ -833,31 +1035,101 @@ pub async fn handle_share_link_download(
             .get("x-session-token")
             .and_then(|h| h.to_str().ok())
             .filter(|token| !token.is_empty());
-        let mut authorised = false;
+        let mut authorised_user: Option<String> = None;
         for candidate in [from_header.map(str::to_string), session_cookie(&headers)]
             .into_iter()
             .flatten()
         {
-            if state.auth.get_session(&candidate).await.is_ok() {
-                authorised = true;
+            if let Ok(session) = state.auth.get_session(&candidate).await {
+                authorised_user = Some(session.username);
                 break;
             }
         }
-        if !authorised {
+        let Some(session_user) = authorised_user else {
             if page {
                 return share_page(nonce).await;
             }
             return share_auth_refusal("This share requires a HomeVault session", "session");
+        };
+        // A targeted link names the accounts/groups it was minted for; empty
+        // lists keep the historical "any signed-in account" behaviour.
+        if !link_allows_session(&link, &session_user).await {
+            if page {
+                return share_page(nonce).await;
+            }
+            return share_auth_refusal(
+                "This share is not available for your account",
+                "account",
+            );
         }
     }
 
-    let file_path = std::path::Path::new(&link.path);
+    // A link is a standing grant issued by its owner: re-check that the owner
+    // can still download the path and still has the Explorer app. Otherwise a
+    // revoked grant (or a disabled account) would keep serving the file until
+    // the link expired.
+    let owner_is_admin = state.auth.is_admin(&link.username).await;
+    let owner_allowed = crate::handlers::resource_shares::explorer_app_allowed(
+        &state,
+        &link.username,
+    )
+    .await
+        && crate::handlers::explorer::restricted_response(
+            &state,
+            &link.username,
+            owner_is_admin,
+            std::path::Path::new(&link.path),
+            false,
+            true,
+            false,
+        )
+        .await
+        .is_none();
+    if !owner_allowed {
+        if page {
+            return share_page(nonce).await;
+        }
+        return share_not_found();
+    }
+
+    // A folder link serves the archive built at creation, never the live
+    // folder. `archive_path` is an appliance path (the client never supplies
+    // it), and a missing archive means the snapshot is gone.
+    let served_path = if link.is_directory {
+        match link.archive_path.as_deref() {
+            Some(path) => path.to_string(),
+            None => {
+                if page {
+                    return share_page(nonce).await;
+                }
+                return ResponseHelper::json_error(
+                    "This folder link has no archive; recreate the link".to_string(),
+                );
+            }
+        }
+    } else {
+        link.path.clone()
+    };
+    let file_path = std::path::Path::new(&served_path);
     if !file_path.exists() || !file_path.is_file() {
         if page {
             return share_page(nonce).await;
         }
         return share_not_found();
     }
+    let display_name = if link.is_directory {
+        let folder = std::path::Path::new(&link.path)
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("folder");
+        format!("{folder}.tar.gz")
+    } else {
+        file_path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("download")
+            .to_string()
+    };
 
     // The cap is checked before reserving so that even a `HEAD` probe reports
     // the truth: a spent link is gone, not "downloadable until you try".
@@ -893,7 +1165,6 @@ pub async fn handle_share_link_download(
     // no session / transfer-quota gating: the link itself is the
     // authorisation. Public streams are instead bounded by the per-token
     // bandwidth bucket and a global concurrency cap.
-    let file_path = std::path::Path::new(&link.path);
     let mut file = match tokio::fs::File::open(file_path).await {
         Ok(f) => f,
         Err(e) => {
@@ -939,11 +1210,12 @@ pub async fn handle_share_link_download(
         None
     };
 
-    let content_type = crate::handlers::explorer::content_type_for_path(file_path);
-    let filename = file_path
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or("download");
+    let content_type = if link.is_directory {
+        "application/gzip"
+    } else {
+        crate::handlers::explorer::content_type_for_path(file_path)
+    };
+    let filename = display_name.as_str();
 
     // Bound concurrent public streams, then build the (range-limited,
     // rate-limited) body.
@@ -1029,21 +1301,6 @@ fn is_expired(link: &ShareLink) -> bool {
     }
 }
 
-/// Same path gate as the Explorer handlers: admins bypass, others are
-/// confined to `PathGuard`'s allowed roots. Returns the canonical validated
-/// path, which callers must use for the actual work (never the raw input).
-fn validate_path_access(
-    state: &Arc<AppState>,
-    path: &str,
-    session: &crate::storage::models::Session,
-) -> Option<std::path::PathBuf> {
-    if session.is_admin {
-        Some(std::path::PathBuf::from(path))
-    } else {
-        state.path_guard.validate(path)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1112,6 +1369,10 @@ mod tests {
             max_downloads,
             download_count,
             active_downloads: 0,
+            is_directory: false,
+            archive_path: None,
+            allowed_users: String::new(),
+            allowed_groups: String::new(),
         }
     }
 
@@ -1207,8 +1468,7 @@ mod tests {
     }
 
     #[test]
-    fn the_password_budget_is_finite_and_refills_after_the_window() {
-        let mut state = ShareAuthState::default();
+    fn the_password_budget_is_finite_and_refills_after_the_window() {        let mut state = ShareAuthState::default();
         let now = Instant::now();
         for attempt in 1..=SHARE_PASSWORD_MAX_FAILURES {
             assert!(
@@ -1229,5 +1489,31 @@ mod tests {
         assert!(state.may_try_password("tok", now));
         // Failures on one link never punish another.
         assert!(state.may_try_password("other", now));
+    }
+
+    // -----------------------------------------------------------------------
+    // Targeted internal links
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn target_lists_are_trimmed_deduplicated_and_validated() {
+        assert_eq!(normalize_targets(None).unwrap(), "");
+        assert_eq!(normalize_targets(Some("")).unwrap(), "");
+        assert_eq!(
+            normalize_targets(Some(" alice, bob ,alice,")).unwrap(),
+            "alice,bob"
+        );
+        assert_eq!(
+            normalize_targets(Some("family,alice")).unwrap(),
+            "alice,family"
+        );
+        assert!(normalize_targets(Some("a b")).is_err());
+        assert!(normalize_targets(Some("alice;bob")).is_err());
+        assert!(normalize_targets(Some(&"x".repeat(65))).is_err());
+        let too_many = (0..33)
+            .map(|i| format!("u{i}"))
+            .collect::<Vec<_>>()
+            .join(",");
+        assert!(normalize_targets(Some(&too_many)).is_err());
     }
 }

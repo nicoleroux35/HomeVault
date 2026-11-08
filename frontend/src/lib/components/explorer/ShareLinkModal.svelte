@@ -56,6 +56,9 @@
     max_downloads: number | null;
     download_count: number;
     exhausted: boolean;
+    is_directory: boolean;
+    allowed_users: string;
+    allowed_groups: string;
   }
 
   let {
@@ -74,6 +77,8 @@
   let password = $state('');
   let limitMode = $state<'none' | 'one' | 'custom'>('none');
   let maxDownloads = $state<number>(10);
+  let allowedUsers = $state('');
+  let allowedGroups = $state('');
   let creating = $state(false);
   let error = $state('');
   let copiedToken = $state('');
@@ -123,6 +128,8 @@
       expiresDays,
       password || undefined,
       maxDownloadLimit,
+      mode === 'signed_in' ? allowedUsers.trim() || undefined : undefined,
+      mode === 'signed_in' ? allowedGroups.trim() || undefined : undefined,
     );
     creating = false;
     if (r.success && r.data) {
@@ -134,6 +141,8 @@
       password = '';
       limitMode = 'none';
       maxDownloads = 10;
+      allowedUsers = '';
+      allowedGroups = '';
     } else {
       error = r.message || r.error || $t('explorer.share_link_create_failed');
     }
@@ -210,6 +219,19 @@
         </select>
       </div>
     </div>
+    {#if mode === 'signed_in'}
+      <div class="mt-3 grid gap-3 @min-[420px]:grid-cols-2">
+        <label class="block text-c-label font-semibold text-[var(--hv-shell-text-strong)]" for="share-allowed-users">
+          {$t('explorer.share_link_allowed_users')}
+          <input id="share-allowed-users" class="mt-1 w-full h-11 px-3 border border-[var(--hv-shell-border-strong)] rounded-lg bg-[var(--hv-shell-card)] text-[var(--hv-shell-text-strong)]" type="text" placeholder={$t('explorer.share_link_allowed_placeholder')} bind:value={allowedUsers} />
+        </label>
+        <label class="block text-c-label font-semibold text-[var(--hv-shell-text-strong)]" for="share-allowed-groups">
+          {$t('explorer.share_link_allowed_groups')}
+          <input id="share-allowed-groups" class="mt-1 w-full h-11 px-3 border border-[var(--hv-shell-border-strong)] rounded-lg bg-[var(--hv-shell-card)] text-[var(--hv-shell-text-strong)]" type="text" placeholder={$t('explorer.share_link_allowed_placeholder')} bind:value={allowedGroups} />
+        </label>
+      </div>
+      <p class="mt-2 text-xs text-[var(--hv-shell-text-2)]">{$t('explorer.share_link_allowed_hint')}</p>
+    {/if}
     <label class="block mt-3 text-c-label font-semibold text-[var(--hv-shell-text-strong)]" for="share-password">
       {$t('explorer.share_link_password')}
       <input id="share-password" class="mt-1 w-full h-11 px-3 border border-[var(--hv-shell-border-strong)] rounded-lg bg-[var(--hv-shell-card)] text-[var(--hv-shell-text-strong)]" type="password" autocomplete="new-password" minlength="8" maxlength="256" bind:value={password} />

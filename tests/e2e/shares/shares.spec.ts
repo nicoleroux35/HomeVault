@@ -268,16 +268,26 @@ test.describe('2 — Form fields', () => {
     await win(page).locator('[data-testid="shares-new"]').click();
     await expect(modal(page)).toBeVisible();
     await expect(modal(page).locator('input').first()).toBeVisible();
-    await expect(modal(page).locator('select')).toBeVisible();
+    // A logical share is created once and bound to one or more protocols;
+    // the protocol control is now a checkbox group, not a single select.
+    await expect(modal(page).locator('input[type="checkbox"]')).toHaveCount(5);
   });
 
-  test('2.2 — the protocol select offers exactly smb/nfs/ftp/webdav/sftp', async ({ page }) => {
+  test('2.2 — the protocol checkboxes offer exactly smb/nfs/ftp/webdav/sftp', async ({ page }) => {
     await gotoShares(page, adminTokens);
     await win(page).locator('[data-testid="shares-new"]').click();
-    const values = await modal(page)
-      .locator('select option')
-      .evaluateAll((opts) => opts.map((o) => (o as HTMLOptionElement).value));
-    expect(values.sort()).toEqual(['ftp', 'nfs', 'sftp', 'smb', 'webdav']);
+    const labels = await modal(page)
+      .locator('input[type="checkbox"]')
+      .evaluateAll((boxes) =>
+        boxes.map((box) => (box.parentElement?.textContent ?? '').trim()),
+      );
+    expect(labels.sort()).toEqual([
+      'FTP',
+      'NFS',
+      'SFTP',
+      'SMB/CIFS',
+      'WebDAV',
+    ]);
   });
 
   test('2.3 — the name and path fields are marked required', async ({ page }) => {
@@ -574,7 +584,7 @@ test.describe('4 — All user interactions', () => {
     const securityValues = await selects.nth(0).locator('option').evaluateAll((options) =>
       options.map((option) => (option as HTMLOptionElement).value),
     );
-    expect(securityValues).toEqual(['user', 'share']);
+    expect(securityValues).toEqual(['user', 'share', 'ads']);
 
     const protocolValues = await selects.nth(1).locator('option').evaluateAll((options) =>
       options.map((option) => (option as HTMLOptionElement).value),

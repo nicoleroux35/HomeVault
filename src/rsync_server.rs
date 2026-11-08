@@ -976,6 +976,9 @@ mod tests {
             enabled: true,
             comment: String::new(),
             options: vec![],
+            read_only: false,
+            guest_ok: None,
+            restrictions: crate::shares::ShareRestrictions::default(),
         };
         assert_eq!(share.path, "/mnt/pool/media");
     }

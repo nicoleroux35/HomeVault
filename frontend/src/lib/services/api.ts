@@ -2580,12 +2580,57 @@ class ApiClient {
     return this.get('/explorer/shares', { cache: false });
   }
 
-  async createShareLink(path: string, mode: 'anyone' | 'signed_in', expiresDays: number, password?: string, maxDownloads?: number) {
-    return this.post('/explorer/shares', { path, mode, expires_days: expiresDays, password, max_downloads: maxDownloads });
+  async createShareLink(
+    path: string,
+    mode: 'anyone' | 'signed_in',
+    expiresDays: number,
+    password?: string,
+    maxDownloads?: number,
+    allowedUsers?: string,
+    allowedGroups?: string,
+  ) {
+    return this.post('/explorer/shares', {
+      path,
+      mode,
+      expires_days: expiresDays,
+      password,
+      max_downloads: maxDownloads,
+      allowed_users: allowedUsers,
+      allowed_groups: allowedGroups,
+    });
   }
 
   async revokeShareLink(token: string) {
     return this.delete(`/explorer/shares/${encodeURIComponent(token)}`);
+  }
+
+  /** Public file-request links (upload into a folder). */
+  async listFileRequests() {
+    return this.get('/explorer/file-requests', { cache: false });
+  }
+
+  async createFileRequest(
+    path: string,
+    message: string,
+    expiresDays: number,
+    password?: string,
+    maxUploads?: number,
+  ) {
+    return this.post('/explorer/file-requests', {
+      path,
+      message,
+      expires_days: expiresDays,
+      password,
+      max_uploads: maxUploads,
+    });
+  }
+
+  async revokeFileRequest(token: string) {
+    return this.delete(`/explorer/file-requests/${encodeURIComponent(token)}`);
+  }
+
+  getFileRequestUrl(requestPath: string) {
+    return `${window.location.origin}${requestPath}`;
   }
 
   /** Absolute URL of a share link, for copy / QR display. */
@@ -3116,6 +3161,17 @@ class ApiClient {
 
   async deleteVirtualDisk(name: string) {
     const res = await this.delete(`/storage/virtual-disks/${encodeURIComponent(name)}`);
+    this.invalidateCache('/storage/virtual-disks');
+    this.invalidateCache('/storage/raid');
+    return res;
+  }
+
+  /** Password-confirmed destroy (the Storage UI path; DSM parity). */
+  async destroyVirtualDisk(name: string, confirmName: string, password: string) {
+    const res = await this.post(`/storage/virtual-disks/${encodeURIComponent(name)}/destroy`, {
+      confirm_name: confirmName,
+      password,
+    });
     this.invalidateCache('/storage/virtual-disks');
     this.invalidateCache('/storage/raid');
     return res;
@@ -3691,6 +3747,98 @@ class ApiClient {
   // ==============================================
   // Share permissions (per-user/group ACLs on a share)
   // ==============================================
+
+  /** Logical shares: one row per name+path with its protocol badges. */
+  async getShareDefinitions() {
+    return this.get('/shares/definitions', { cache: false });
+  }
+
+  async createShareDefinition(body: {
+    name: string;
+    path: string;
+    comment?: string;
+    protocols: string[];
+    read_only?: boolean;
+    guest_ok?: boolean;
+    restrictions?: { disable_browsing: boolean; disable_modification: boolean; disable_download: boolean };
+  }) {
+    return this.post('/shares/definitions', body);
+  }
+
+  async bindShareProtocol(name: string, body: { share_type: string; read_only?: boolean; guest_ok?: boolean }) {
+    return this.post(`/shares/${encodeURIComponent(name)}/bind`, body);
+  }
+
+  async unbindShareProtocol(name: string, shareType: string) {
+    return this.delete(`/shares/${encodeURIComponent(name)}/bind/${encodeURIComponent(shareType)}`);
+  }
+
+  /** One grant applied to every protocol binding of a logical share. */
+  async getSharePermissionsAll(name: string) {
+    return this.get(`/shares/${encodeURIComponent(name)}/permissions`, { cache: false });
+  }
+
+  async grantSharePermissionAll(name: string, body: {
+    grantee_type: string;
+    grantee_name: string;
+    permission: string;
+    recursive?: boolean;
+  }) {
+    return this.post(`/shares/${encodeURIComponent(name)}/permissions`, body);
+  }
+
+  async revokeSharePermissionAll(name: string, body: { grantee_type: string; grantee_name: string }) {
+    return this.delete(`/shares/${encodeURIComponent(name)}/permissions`, body);
+  }
+
+  async syncSharePermissionsAll(name: string) {
+    return this.post(`/shares/${encodeURIComponent(name)}/permissions/sync`);
+  }
+
+  /** Flat matrix of every grant (admin). */
+  async getSharePermissionsMatrix() {
+    return this.get('/shares/permissions', { cache: false });
+  }
+
+  async getSharePermissionsReport(): Promise<Blob> {
+    const res = await fetch(`${this.baseUrl}/shares/permissions/report`, {
+      headers: this.getHeaders(),
+    });
+    if (!res.ok) throw new Error(await res.text());
+    return res.blob();
+  }
+
+  async getNfsRules(name: string) {
+    return this.get(`/shares/${encodeURIComponent(name)}/nfs/rules`, { cache: false });
+  }
+
+  async setNfsRules(name: string, rules: Array<{ client: string; access: string; options: string[] }>) {
+    return this.put(`/shares/${encodeURIComponent(name)}/nfs/rules`, rules);
+  }
+
+  async getSmbPreviousVersions() {
+    return this.get('/shares/smb/previous-versions', { cache: false });
+  }
+
+  async setSmbPreviousVersions(name: string, enabled: boolean) {
+    return this.put(`/shares/${encodeURIComponent(name)}/smb/previous-versions`, { enabled });
+  }
+
+  async getShareAcl(name: string, shareType: string) {
+    return this.get(`/shares/${encodeURIComponent(name)}/${encodeURIComponent(shareType)}/acl`, { cache: false });
+  }
+
+  async setShareAcl(name: string, shareType: string, body: { entries: unknown[]; default_entries: unknown[]; recursive: boolean }) {
+    return this.put(`/shares/${encodeURIComponent(name)}/${encodeURIComponent(shareType)}/acl`, body);
+  }
+
+  async joinSmbDomain(body: { username: string; password: string }) {
+    return this.post('/shares/smb/domain/join', body);
+  }
+
+  async leaveSmbDomain() {
+    return this.post('/shares/smb/domain/leave');
+  }
 
   async getSharePermissions(name: string, shareType: string) {
     return this.get(`/shares/${encodeURIComponent(name)}/${encodeURIComponent(shareType)}/permissions`, { cache: false });

@@ -418,6 +418,7 @@ pub struct CreateContainerRequestRaw {
     pub memory_limit: Option<String>,
     pub cpu_limit: Option<String>,
     pub privileged: Option<bool>,
+    pub no_new_privileges: Option<bool>,
     pub auto_remove: Option<bool>,
     pub dns_servers: Option<Vec<String>>,
     pub hostname: Option<String>,
@@ -465,6 +466,10 @@ impl From<CreateContainerRequestRaw> for CreateContainerRequest {
             memory_limit: raw.memory_limit,
             cpu_limit: raw.cpu_limit,
             privileged: raw.privileged.unwrap_or(false),
+            // Hardened by default, matching the catalog `[security]` block.
+            // The create form exposes the opt-out for the rare image that
+            // genuinely needs setuid escalation.
+            no_new_privileges: raw.no_new_privileges.unwrap_or(true),
             auto_remove: raw.auto_remove.unwrap_or(false),
             dns_servers: raw.dns_servers.unwrap_or_default(),
             hostname: raw.hostname,
@@ -1872,5 +1877,32 @@ pub async fn handle_docker_daemon_config_put(
             ResponseHelper::json_success(message)
         }
         Err(e) => ResponseHelper::json_error(format!("Failed to write daemon.json: {}", e)),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_raw_create_defaults_to_no_new_privileges() {
+        let raw: CreateContainerRequestRaw =
+            serde_json::from_value(serde_json::json!({"name": "demo", "image": "alpine"}))
+                .expect("minimal create body");
+        let req: CreateContainerRequest = raw.into();
+        assert!(req.no_new_privileges, "hardened by default");
+        assert!(!req.privileged);
+    }
+
+    #[test]
+    fn test_raw_create_can_opt_out_of_no_new_privileges() {
+        let raw: CreateContainerRequestRaw = serde_json::from_value(serde_json::json!({
+            "name": "demo",
+            "image": "alpine",
+            "no_new_privileges": false
+        }))
+        .expect("create body");
+        let req: CreateContainerRequest = raw.into();
+        assert!(!req.no_new_privileges);
     }
 }

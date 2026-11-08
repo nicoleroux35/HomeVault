@@ -269,7 +269,8 @@ Widgets can be rearranged by drag-and-drop. Monitor panels (Resource, RAID, Secu
   support it
 - Collision handling on copy/move/upload (overwrite, keep_both, skip)
 - Inline text/code editor for quick edits
-- Share a file by a revocable download link (URL + QR code; 'anyone' or 'signed-in' only; default 30-day expiry). A link can also require a password and allow a limited number of downloads — "one download" is the one-time link, and a download only counts once it has finished, so an interrupted transfer does not use it up. The recipient's page asks for the password only when the link has one, and the password is never put in the URL
+- Share a file or a folder by a revocable download link (URL + QR code; 'anyone' or 'signed-in' only; default 30-day expiry). A link can also require a password and allow a limited number of downloads — "one download" is the one-time link, and a download only counts once it has finished, so an interrupted transfer does not use it up. A folder is served as a tar.gz snapshot built when the link is created. A signed-in link can be limited to named accounts or groups; leaving both empty allows any signed-in account. The owner's own access is re-checked on every download, so revoking their grant kills the link. The recipient's page asks for the password only when the link has one, and the password is never put in the URL
+- Request files: create a public upload link for a folder so someone without a HomeVault account can send files into it. The link can have a password, an expiry and an upload cap; every upload re-checks that the owner still has write access, files are capped at 2 GiB, collisions become a second copy instead of overwriting, and the page is plain HTML with no JavaScript
 - Drag a file onto a folder to move it, or drag a rubber-band box to select several at once
 - Live auto-refresh pushed over SSE when files in the browsed directory change
 - A transfers panel (three zones: uploads, downloads, copies) showing every
@@ -291,7 +292,7 @@ Widgets can be rearranged by drag-and-drop. Monitor panels (Resource, RAID, Secu
   browsing root; resumable upload sessions are private to the user who opened
   them and capped in number
 
-PathGuard restricts non-admin users to their home directory and allowed roots."#.to_string(),
+A signed-in member only reaches their own home and the folders or shares an administrator granted them; a grant is read, write or full, and an explicit "no access" wins over every allow. The page hides the actions that grant does not allow and says why the folder is read-only. A member can also have the File Explorer itself blocked by an administrator, in which case no file-browser request is accepted at all. The filesystem path guard still confines every operation to the configured roots, and an administrator may browse anywhere."#.to_string(),
         },
         FeatureDoc {
             id: "global-search".to_string(),

@@ -128,16 +128,408 @@ pub struct ExplorerSearchQuery {
 /// (`O_NOFOLLOW` on the final `open`, an atomic `rename` into place), which the
 /// delete/rename paths already do; this function's job is to stop handing over
 /// an unexamined path.
-fn validate_path_access(
+pub(crate) async fn validate_path_access(
     state: &Arc<AppState>,
     path: &str,
     session: &crate::storage::models::Session,
 ) -> Option<PathBuf> {
     if session.is_admin {
-        resolve_unconfined(path).or_else(|| Some(PathBuf::from(path)))
-    } else {
-        state.path_guard.validate(path)
+        return resolve_unconfined(path).or_else(|| Some(PathBuf::from(path)));
     }
+
+    // The path must first stay inside the global Explorer roots (traversal
+    // and symlink guard), then inside something this member was actually
+    // granted: their own home, a `folder` grant, or a share root whose name
+    // they hold a `share` grant for. `PathGuard` alone used to be the whole
+    // check, which let any member browse /home, /srv and /mnt.
+    let safe = state.path_guard.validate(path)?;
+    let home = crate::config::paths::user_home_path(&session.username);
+    // Some installs created `/home/<user>` before the `HOMES_BASE_DIR` was
+    // fixed to `/home/homevault`; both spellings are the caller's own home.
+    let legacy_home = PathBuf::from(format!("/home/{}", session.username));
+    if safe.starts_with(&home) || safe.starts_with(&legacy_home) {
+        return Some(safe);
+    }
+    for root in visible_grant_roots(state, &session.username).await {
+        if safe.starts_with(&root) {
+            return Some(safe);
+        }
+    }
+    None
+}
+
+/// Advanced restrictions attached to the share that contains `path`.
+///
+/// The per-share fields are DSM's "Disable directory browsing / modification /
+/// downloading". WebDAV and FTP enforce them in their own processes; the web
+/// Explorer uses this helper on its list/download/write routes.
+async fn restrictions_for_path(
+    _state: &Arc<AppState>,
+    path: &std::path::Path,
+) -> Option<crate::shares::ShareRestrictions> {
+    let shares = tokio::task::spawn_blocking(crate::shares::SharesService::get_shares)
+        .await
+        .ok()
+        .and_then(Result::ok)
+        .unwrap_or_default();
+    let path = path.to_string_lossy();
+    let mut merged = crate::shares::ShareRestrictions::default();
+    let mut found = false;
+    for share in shares {
+        let root = share.path.trim_end_matches('/');
+        if !root.is_empty() && (path == root || path.starts_with(&format!("{root}/"))) {
+            found = true;
+            merged.disable_browsing |= share.restrictions.disable_browsing;
+            merged.disable_modification |= share.restrictions.disable_modification;
+            merged.disable_download |= share.restrictions.disable_download;
+        }
+    }
+    found.then_some(merged)
+}
+
+fn merge_permission_level(
+    best: &mut Option<crate::storage::resource_share_repo::ResourcePermission>,
+    deny: &mut bool,
+    level: &str,
+) {
+    use crate::storage::resource_share_repo::ResourcePermission;
+    match ResourcePermission::parse(level) {
+        Some(ResourcePermission::Deny) => *deny = true,
+        Some(permission) => {
+            if best
+                .map(|current| permission.implies(current))
+                .unwrap_or(true)
+            {
+                *best = Some(permission);
+            }
+        }
+        None => {}
+    }
+}
+
+/// Effective `resource_shares` level for one path: own home is `full`, a
+/// matching folder/share grant supplies its level, and a `deny` anywhere in
+/// the matching chain wins. `None` means "not granted at all".
+pub(crate) async fn effective_path_permission(
+    state: &Arc<AppState>,
+    username: &str,
+    is_admin: bool,
+    path: &std::path::Path,
+) -> Option<crate::storage::resource_share_repo::ResourcePermission> {
+    use crate::storage::resource_share_repo::{ResourceKind, ResourcePermission};
+    if is_admin {
+        return Some(ResourcePermission::Full);
+    }
+    let path = path.to_string_lossy();
+    let home = crate::config::paths::user_home_path(username);
+    if path.starts_with(home.to_string_lossy().as_ref())
+        || path.starts_with(&format!("/home/{username}"))
+    {
+        return Some(ResourcePermission::Full);
+    }
+
+    let mut best: Option<ResourcePermission> = None;
+    let mut deny = false;
+
+    if let Ok(folders) =
+        crate::handlers::resource_shares::effective_visible_resources(state, username, ResourceKind::Folder)
+            .await
+    {
+        for (root, level) in folders {
+            let root = root.trim_end_matches('/');
+            if !root.is_empty() && (path == root || path.starts_with(&format!("{root}/"))) {
+                merge_permission_level(&mut best, &mut deny, &level);
+            }
+        }
+    }
+
+    let shares = crate::handlers::resource_shares::effective_visible_resources(
+        state,
+        username,
+        ResourceKind::Share,
+    )
+    .await
+    .unwrap_or_default();
+    if !shares.is_empty() {
+        let all = tokio::task::spawn_blocking(crate::shares::SharesService::get_shares)
+            .await
+            .ok()
+            .and_then(Result::ok)
+            .unwrap_or_default();
+        for (name, level) in shares {
+            for share in all.iter().filter(|share| share.name == name) {
+                let root = share.path.trim_end_matches('/');
+                if !root.is_empty() && (path == root || path.starts_with(&format!("{root}/"))) {
+                    merge_permission_level(&mut best, &mut deny, &level);
+                }
+            }
+        }
+    }
+    if deny {
+        return Some(ResourcePermission::Deny);
+    }
+    if best.is_none() {
+        // Backward compatibility: before `resource_shares` existed, an
+        // Explorer user reached a share through the POSIX-ACL grant alone.
+        // Existing installs must not lose that access on upgrade.
+        if let Some(level) = legacy_share_permission(state, username, path.as_ref()).await {
+            best = Some(level);
+        }
+    }
+    best
+}
+
+/// Map a legacy `share_permissions` row (the ACL mirror) to an effective
+/// `ResourcePermission`. Returns the strongest direct/group grant.
+async fn legacy_share_permission(
+    state: &Arc<AppState>,
+    username: &str,
+    path: &str,
+) -> Option<crate::storage::resource_share_repo::ResourcePermission> {
+    use crate::storage::resource_share_repo::ResourcePermission;
+    let shares = tokio::task::spawn_blocking(crate::shares::SharesService::get_shares)
+        .await
+        .ok()
+        .and_then(Result::ok)
+        .unwrap_or_default();
+    let groups = tokio::task::spawn_blocking({
+        let username = username.to_string();
+        move || crate::groups::GroupService::get_user_groups(&username).unwrap_or_default()
+    })
+    .await
+    .unwrap_or_default();
+    let repo = crate::storage::SharePermissionRepository::new(state.db.pool());
+    let mut best: Option<ResourcePermission> = None;
+    for share in shares {
+        let root = share.path.trim_end_matches('/');
+        if root.is_empty() || (path != root && !path.starts_with(&format!("{root}/"))) {
+            continue;
+        }
+        let Ok(permissions) = repo
+            .get_for_share(&share.name, share.share_type.as_str())
+            .await
+        else {
+            continue;
+        };
+        for permission in permissions {
+            let matches = (permission.grantee_type == "user"
+                && permission.grantee_name == username)
+                || (permission.grantee_type == "group"
+                    && groups.iter().any(|group| group == &permission.grantee_name));
+            if !matches {
+                continue;
+            }
+            let Ok(acl) = crate::permissions::PermissionService::parse_permission(
+                &permission.permission,
+            ) else {
+                continue;
+            };
+            let level = if acl.write {
+                ResourcePermission::Write
+            } else {
+                ResourcePermission::Read
+            };
+            if best.map(|current| level.implies(current)).unwrap_or(true) {
+                best = Some(level);
+            }
+        }
+    }
+    best
+}
+
+/// Whether a share's advanced restrictions refuse this kind of operation.
+///
+/// Pure so the matrix can be pinned without a share configuration; the
+/// handler only adds the grant level on top. Kept in one place because the
+/// Explorer now passes `download` from `preview` and `thumbnail` too — a
+/// second copy of these three `||` is how the download restriction became
+/// decorative in the first place.
+fn restriction_denied(
+    restrictions: &crate::shares::ShareRestrictions,
+    browse: bool,
+    download: bool,
+    modify: bool,
+) -> bool {
+    (browse && restrictions.disable_browsing)
+        || (download && restrictions.disable_download)
+        || (modify && restrictions.disable_modification)
+}
+
+pub(crate) async fn restricted_response(
+    state: &Arc<AppState>,
+    username: &str,
+    is_admin: bool,
+    path: &std::path::Path,
+    browse: bool,
+    download: bool,
+    modify: bool,
+) -> Option<Response> {
+    use crate::storage::resource_share_repo::ResourcePermission;
+    // DSM's advanced restrictions explicitly exempt administrators.
+    if is_admin {
+        return None;
+    }
+    let Some(level) = effective_path_permission(state, username, is_admin, path).await else {
+        return Some(ResponseHelper::json_forbidden(
+            "You do not have access to this share".to_string(),
+        ));
+    };
+    let required = if modify {
+        ResourcePermission::Write
+    } else {
+        ResourcePermission::Read
+    };
+    if level == ResourcePermission::Deny || !level.implies(required) {
+        return Some(ResponseHelper::json_forbidden(
+            "Your grant does not allow this operation on the share".to_string(),
+        ));
+    }
+    let restrictions = restrictions_for_path(state, path).await?;
+    restriction_denied(&restrictions, browse, download, modify).then(|| {
+        ResponseHelper::json_forbidden(
+            "This share restricts browsing, modification or downloading".to_string(),
+        )
+    })
+}
+
+/// Refuses anything below `full` on `path`.
+///
+/// POSIX mode changes are not an ordinary write: `chmod` rewrites the ACL mask
+/// (which silently changes what SMB and WebDAV see) and can make a share
+/// world-writable. DSM gates this behind the `Change permissions` ACE; the
+/// Explorer has no per-file ACE model, so it gates it behind the strongest
+/// grant it does have. Admins keep the historical unconditional access.
+async fn require_full_response(
+    state: &Arc<AppState>,
+    username: &str,
+    is_admin: bool,
+    path: &std::path::Path,
+) -> Option<Response> {
+    use crate::storage::resource_share_repo::ResourcePermission;
+    if is_admin {
+        return None;
+    }
+    match effective_path_permission(state, username, is_admin, path).await {
+        Some(ResourcePermission::Full) => None,
+        Some(ResourcePermission::Deny) | None => Some(ResponseHelper::json_forbidden(
+            "You do not have access to this share".to_string(),
+        )),
+        Some(_) => Some(ResponseHelper::json_forbidden(
+            "Changing permissions requires full access to this folder".to_string(),
+        )),
+    }
+}
+
+/// Trash roots for one session. The old helper took the global allowed roots,
+/// so a member could list (and purge) every share's `.homevault-trash`; this
+/// one reuses the already-filtered Explorer roots for a member.
+///
+/// `require_write` filters the roots down to the ones the caller may modify.
+/// Restoring, purging and emptying the trash are writes (a purge is
+/// irreversible), so they must not be reachable from a read-only grant; the
+/// listing itself keeps every visible root so the caller can still see what is
+/// in the trash they can read.
+async fn trash_roots_for_session(
+    state: &Arc<AppState>,
+    session: &crate::storage::models::Session,
+    require_write: bool,
+) -> Vec<PathBuf> {
+    if session.is_admin {
+        return crate::trash::roots_for_state(state, true);
+    }
+    let roots = explorer_roots_for_session(state, session, false)
+        .await
+        .unwrap_or_default();
+    let mut paths: Vec<PathBuf> = Vec::new();
+    for root in roots {
+        if require_write
+            && restricted_response(
+                state,
+                &session.username,
+                session.is_admin,
+                std::path::Path::new(&root.path),
+                false,
+                false,
+                true,
+            )
+            .await
+            .is_some()
+        {
+            continue;
+        }
+        paths.push(PathBuf::from(root.path));
+    }
+    crate::trash::roots_from(&paths, &[], false)
+}
+
+/// Roots a non-admin may see: their home plus the effective `folder` and
+/// `share` grants. `deny` rows are excluded, and a share grant resolves to the
+/// share's current path (never a client-supplied string).
+async fn visible_grant_roots(state: &Arc<AppState>, username: &str) -> Vec<PathBuf> {
+    use crate::storage::resource_share_repo::ResourceKind;
+    let mut roots: Vec<PathBuf> = Vec::new();
+
+    if let Ok(folders) =
+        crate::handlers::resource_shares::effective_visible_resources(
+            state,
+            username,
+            ResourceKind::Folder,
+        )
+        .await
+    {
+        for (path, level) in folders {
+            if level != "deny" {
+                roots.push(PathBuf::from(path));
+            }
+        }
+    }
+
+    let shares = crate::handlers::resource_shares::effective_visible_resources(
+        state,
+        username,
+        ResourceKind::Share,
+    )
+    .await
+    .unwrap_or_default();
+    let all = tokio::task::spawn_blocking(crate::shares::SharesService::get_shares)
+        .await
+        .ok()
+        .and_then(Result::ok)
+        .unwrap_or_default();
+    for (name, level) in &shares {
+        if level == "deny" {
+            continue;
+        }
+        for share in all.iter().filter(|share| &share.name == name) {
+            roots.push(PathBuf::from(&share.path));
+        }
+    }
+
+    // Legacy ACL-only grants (pre-`resource_shares` installs) still open the
+    // share root in the Explorer.
+    let repo = crate::storage::SharePermissionRepository::new(state.db.pool());
+    let mut legacy = repo
+        .get_for_grantee("user", username)
+        .await
+        .unwrap_or_default();
+    for group in crate::handlers::resource_shares::member_groups(username).await {
+        legacy.extend(
+            repo.get_for_grantee("group", &group)
+                .await
+                .unwrap_or_default(),
+        );
+    }
+    for permission in legacy {
+        for share in all
+            .iter()
+            .filter(|share| share.name == permission.share_name)
+        {
+            roots.push(PathBuf::from(&share.path));
+        }
+    }
+    roots.sort();
+    roots.dedup();
+    roots
 }
 
 /// The temporary directories the appliance may delete from even outside its
@@ -220,7 +612,7 @@ fn resolve_unconfined(path: &str) -> Option<PathBuf> {
 /// Extracts a safe filename from a client-provided upload name.
 /// Returns `None` if the name is empty, a dot component, or attempts to
 /// escape the target directory (e.g. contains `..` or path separators).
-fn sanitize_upload_filename(name: &str) -> Option<String> {
+pub(crate) fn sanitize_upload_filename(name: &str) -> Option<String> {
     let trimmed = name.trim();
     let file_name = std::path::Path::new(trimmed).file_name()?;
     let file_name = file_name.to_str()?;
@@ -590,7 +982,7 @@ async fn share_quota_for(
 /// the per-file check passes the bytes actually written.
 // `Response` as Err mirrors the guard helpers' shape.
 #[allow(clippy::result_large_err)]
-async fn enforce_share_quota(
+pub(crate) async fn enforce_share_quota(
     state: &AppState,
     destination: &std::path::Path,
     incoming: u64,
@@ -1122,6 +1514,23 @@ pub struct DisksResponse {
     pub network: Vec<DiskInfo>,
 }
 
+/// The directory listing plus the caller's effective access to it.
+///
+/// `DirectoryListing` is produced by `browser.rs` (which knows nothing about
+/// grants), so the access level is attached here. The frontend uses it to hide
+/// or disable the actions the server would refuse — the same role `privilege`
+/// / `readonly` / `is_disable_*` play in DSM's File Station listing.
+#[derive(Debug, serde::Serialize)]
+struct ExplorerListing {
+    #[serde(flatten)]
+    listing: crate::browser::DirectoryListing,
+    /// `deny`, `read`, `write` or `full`.
+    permission: String,
+    /// The share's advanced restrictions. Admins are exempt server-side, so
+    /// their view reports the neutral defaults.
+    restrictions: crate::shares::ShareRestrictions,
+}
+
 /// Lists directory contents at the given path.
 #[axum_macros::debug_handler]
 pub async fn handle_explorer_list(
@@ -1129,6 +1538,8 @@ pub async fn handle_explorer_list(
     Query(params): Query<ExplorerListQuery>,
     headers: HeaderMap,
 ) -> Response {
+    use crate::storage::resource_share_repo::ResourcePermission;
+
     let session_token =
         match crate::handlers::admin_guard::require_session_token(&state, &headers).await {
             Ok(token) => token,
@@ -1136,24 +1547,57 @@ pub async fn handle_explorer_list(
         };
     let path = params.path.unwrap_or_else(|| "/".to_string());
 
-    let safe_path = match state.auth.get_session(&session_token).await {
-        Ok(session) => match validate_path_access(&state, &path, &session) {
-            Some(p) => p,
-            None => {
-                tracing::warn!(
-                    "Explorer list blocked: path '{}' outside allowed roots",
-                    path
-                );
-                return ResponseHelper::json_error(
-                    "Access denied: path outside allowed directory".to_string(),
-                );
-            }
-        },
+    let session = match state.auth.get_session(&session_token).await {
+        Ok(session) => session,
         Err(_) => return ResponseHelper::json_unauthorized("Session invalid".to_string()),
+    };
+    let safe_path = match validate_path_access(&state, &path, &session).await {
+        Some(p) => p,
+        None => {
+            tracing::warn!(
+                "Explorer list blocked: path '{}' outside allowed roots",
+                path
+            );
+            return ResponseHelper::json_error(
+                "Access denied: path outside allowed directory".to_string(),
+            );
+        }
+    };
+
+    // `disable_browsing` is one of DSM's advanced share permissions; listing
+    // is the operation it names, so it is checked on the primary navigation
+    // route too (search already checked it).
+    if let Some(resp) = restricted_response(
+        &state,
+        &session.username,
+        session.is_admin,
+        &safe_path,
+        true,
+        false,
+        false,
+    )
+    .await
+    {
+        return resp;
+    }
+
+    let level = effective_path_permission(&state, &session.username, session.is_admin, &safe_path)
+        .await
+        .unwrap_or(ResourcePermission::Deny);
+    let restrictions = if session.is_admin {
+        crate::shares::ShareRestrictions::default()
+    } else {
+        restrictions_for_path(&state, &safe_path)
+            .await
+            .unwrap_or_default()
     };
 
     match FileBrowser::list_directory(&safe_path.to_string_lossy()).await {
-        Ok(listing) => ResponseHelper::json_success(listing),
+        Ok(listing) => ResponseHelper::json_success(ExplorerListing {
+            listing,
+            permission: level.as_str().to_string(),
+            restrictions,
+        }),
         Err(e) => ResponseHelper::json_error(format!("Failed to list directory: {}", e)),
     }
 }
@@ -1177,7 +1621,7 @@ pub async fn handle_explorer_search(
     };
 
     let safe_path = match state.auth.get_session(&session_token).await {
-        Ok(session) => match validate_path_access(&state, &path, &session) {
+        Ok(session) => match validate_path_access(&state, &path, &session).await {
             Some(p) => p,
             None => {
                 tracing::warn!(
@@ -1191,6 +1635,23 @@ pub async fn handle_explorer_search(
         },
         Err(_) => return ResponseHelper::json_unauthorized("Session invalid".to_string()),
     };
+
+    let Some(session) = state.auth.get_session(&session_token).await.ok() else {
+        return ResponseHelper::json_unauthorized("Session invalid".to_string());
+    };
+    if let Some(resp) = restricted_response(
+        &state,
+        &session.username,
+        session.is_admin,
+        &safe_path,
+        true,
+        false,
+        false,
+    )
+    .await
+    {
+        return resp;
+    }
 
     let max_results = params.max_results.unwrap_or(100);
     let fuzzy = params.fuzzy.unwrap_or(false);
@@ -1235,7 +1696,7 @@ pub async fn handle_explorer_mkdir(
         };
     match state.auth.get_session(&session_token).await {
         Ok(session) => {
-            let validated = match validate_path_access(&state, &params.path, &session) {
+            let validated = match validate_path_access(&state, &params.path, &session).await {
                 Some(p) => p,
                 None => {
                     tracing::warn!(
@@ -1247,11 +1708,31 @@ pub async fn handle_explorer_mkdir(
                     );
                 }
             };
+            if let Some(resp) = restricted_response(
+                &state,
+                &session.username,
+                session.is_admin,
+                &validated,
+                false,
+                false,
+                true,
+            )
+            .await
+            {
+                return resp;
+            }
             let path = validated.to_string_lossy().into_owned();
+            let audit_path = path.clone();
             match tokio::task::spawn_blocking(move || FileBrowser::create_directory(&path)).await {
-                Ok(Ok(_)) => ResponseHelper::json_success(
-                    serde_json::json!({"message": "Directory created successfully"}),
-                ),
+                Ok(Ok(_)) => {
+                    crate::events::log_event(format!(
+                        "User '{}' created folder '{}'",
+                        session.username, audit_path
+                    ));
+                    ResponseHelper::json_success(
+                        serde_json::json!({"message": "Directory created successfully"}),
+                    )
+                }
                 Ok(Err(e)) => {
                     ResponseHelper::json_error(format!("Failed to create directory: {}", e))
                 }
@@ -1301,7 +1782,7 @@ pub async fn handle_explorer_delete(
     // Normalise the leaf the same way every other admin path does, then
     // decide confinement: inside the roots (as before), or outside them but
     // inside the appliance's scratch space.
-    let validated = match validate_path_access(&state, &params.path, &session) {
+    let validated = match validate_path_access(&state, &params.path, &session).await {
         Some(p) => p,
         None => {
             return ResponseHelper::json_error(
@@ -1320,6 +1801,20 @@ pub async fn handle_explorer_delete(
             )
         }
     };
+
+    if let Some(resp) = restricted_response(
+        &state,
+        &session.username,
+        session.is_admin,
+        &path,
+        false,
+        false,
+        true,
+    )
+    .await
+    {
+        return resp;
+    }
 
     // Refusing to delete a browsing root itself — a confirmed click on such a
     // directory is either a UI bug or a forged call, and the consequence
@@ -1387,7 +1882,7 @@ pub async fn handle_explorer_download(
                 return (StatusCode::UNAUTHORIZED, "Session invalid".to_string()).into_response();
             }
         };
-        let Some(validated) = validate_path_access(&state, &params.path, &session) else {
+        let Some(validated) = validate_path_access(&state, &params.path, &session).await else {
             tracing::warn!(
                 "Explorer download blocked: path '{}' outside allowed roots",
                 params.path
@@ -1400,6 +1895,21 @@ pub async fn handle_explorer_download(
         };
         (session.username, validated)
     };
+
+    let is_admin = state.auth.is_admin(&username).await;
+    if let Some(resp) = restricted_response(
+        &state,
+        &username,
+        is_admin,
+        &file_path,
+        false,
+        true,
+        false,
+    )
+    .await
+    {
+        return resp;
+    }
 
     if !path_exists(&file_path).await {
         return (StatusCode::NOT_FOUND, "File not found".to_string()).into_response();
@@ -1451,6 +1961,15 @@ pub async fn handle_explorer_download(
     } else {
         StatusCode::OK
     };
+    // One audit line per transfer, not per seek/resume: a video player issues
+    // dozens of ranged requests for a single viewing.
+    if range.is_none() {
+        crate::events::log_event(format!(
+            "User '{}' downloaded '{}'",
+            username,
+            file_path.display()
+        ));
+    }
     let send_len = match range {
         Some((start, end)) => end - start + 1,
         None => total,
@@ -1549,7 +2068,7 @@ pub async fn handle_explorer_download_ticket(
         Ok(s) => s,
         Err(_) => return ResponseHelper::json_unauthorized("Session invalid".to_string()),
     };
-    let Some(path) = validate_path_access(&state, &params.path, &session) else {
+    let Some(path) = validate_path_access(&state, &params.path, &session).await else {
         tracing::warn!(
             "Download ticket blocked: path '{}' outside allowed roots",
             params.path
@@ -1558,6 +2077,12 @@ pub async fn handle_explorer_download_ticket(
             "Access denied: path outside allowed directory".to_string(),
         );
     };
+    if let Some(resp) =
+        restricted_response(&state, &session.username, session.is_admin, &path, false, true, false)
+            .await
+    {
+        return resp;
+    }
     if !path_is_file(&path).await {
         return ResponseHelper::json_error("File not found".to_string());
     }
@@ -1604,7 +2129,7 @@ pub async fn handle_explorer_upload(
         Ok(session) => session,
         Err(_) => return ResponseHelper::json_unauthorized("Session invalid".to_string()),
     };
-    let upload_path = match validate_path_access(&state, &params.path, &session) {
+    let upload_path = match validate_path_access(&state, &params.path, &session).await {
         Some(p) => p,
         None => {
             tracing::warn!(
@@ -1616,6 +2141,20 @@ pub async fn handle_explorer_upload(
             );
         }
     };
+
+    if let Some(resp) = restricted_response(
+        &state,
+        &session.username,
+        session.is_admin,
+        &upload_path,
+        false,
+        false,
+        true,
+    )
+    .await
+    {
+        return resp;
+    }
 
     // Enforce any upload transfer quota configured on the Users/Groups
     // pages (see src/transfer_quota.rs). Checked once up front against
@@ -1844,6 +2383,11 @@ pub async fn handle_explorer_upload(
             return resp;
         }
 
+        crate::events::log_event(format!(
+            "User '{}' uploaded '{}'",
+            session.username,
+            file_path.display()
+        ));
         uploaded_files.push(filename);
         uploaded_checksums.push(checksum);
     }
@@ -2066,7 +2610,7 @@ pub async fn handle_explorer_upload_session_start(
         Ok(s) => s,
         Err(_) => return ResponseHelper::json_unauthorized("Session invalid".to_string()),
     };
-    let dir = match validate_path_access(&state, &params.path, &session) {
+    let dir = match validate_path_access(&state, &params.path, &session).await {
         Some(p) => p,
         None => {
             tracing::warn!(
@@ -2611,17 +3155,19 @@ pub async fn handle_explorer_rename(
             Ok(token) => token,
             Err(resp) => return resp,
         };
-    let (old_path, new_path) = match state.auth.get_session(&session_token).await {
+    let (old_path, new_path, username, is_admin) = match state.auth.get_session(&session_token).await {
         Ok(session) => {
             // Both the source and the destination are full paths — validate
             // each so a rename can't move a file out of the allowed roots
             // (the raw `new_name` was never checked before), and use the
             // canonical validated paths for the rename itself.
             match (
-                validate_path_access(&state, &params.path, &session),
-                validate_path_access(&state, &params.new_name, &session),
+                validate_path_access(&state, &params.path, &session).await,
+                validate_path_access(&state, &params.new_name, &session).await,
             ) {
-                (Some(old_p), Some(new_p)) => (old_p, new_p),
+                (Some(old_p), Some(new_p)) => {
+                    (old_p, new_p, session.username.clone(), session.is_admin)
+                }
                 _ => {
                     tracing::warn!(
                         "Explorer rename blocked: '{}' -> '{}' outside allowed roots",
@@ -2637,6 +3183,14 @@ pub async fn handle_explorer_rename(
         Err(_) => return ResponseHelper::json_unauthorized("Session invalid".to_string()),
     };
 
+    for candidate in [&old_path, &new_path] {
+        if let Some(resp) =
+            restricted_response(&state, &username, is_admin, candidate, false, false, true).await
+        {
+            return resp;
+        }
+    }
+
     let path = old_path.to_string_lossy().into_owned();
     let new_name = new_path.to_string_lossy().into_owned();
     match tokio::task::spawn_blocking(move || FileBrowser::rename_item(&path, &new_name)).await {
@@ -2646,6 +3200,11 @@ pub async fn handle_explorer_rename(
             let fsync_path = new_path.clone();
             let _ = tokio::task::spawn_blocking(move || FileBrowser::fsync_parent_dir(&fsync_path))
                 .await;
+            crate::events::log_event(format!(
+                "User '{}' renamed '{}'",
+                username,
+                old_path.display()
+            ));
             ResponseHelper::json_success(
                 serde_json::json!({"message": "Item renamed successfully"}),
             )
@@ -2693,15 +3252,16 @@ pub async fn handle_explorer_copy(
             Ok(token) => token,
             Err(resp) => return resp,
         };
-    let (source, destination, username) = match state.auth.get_session(&session_token).await {
+    let (source, destination, username, is_admin) = match state.auth.get_session(&session_token).await {
         Ok(session) => {
-            let src_valid = validate_path_access(&state, &params.source, &session);
-            let dst_valid = validate_path_access(&state, &params.destination, &session);
+            let src_valid = validate_path_access(&state, &params.source, &session).await;
+            let dst_valid = validate_path_access(&state, &params.destination, &session).await;
             match (src_valid, dst_valid) {
                 (Some(src), Some(dst)) => (
                     src.to_string_lossy().into_owned(),
                     dst.to_string_lossy().into_owned(),
                     session.username,
+                    session.is_admin,
                 ),
                 _ => {
                     tracing::warn!("Explorer copy blocked: source='{}' or destination='{}' outside allowed roots",
@@ -2714,6 +3274,37 @@ pub async fn handle_explorer_copy(
         }
         Err(_) => return ResponseHelper::json_unauthorized("Session invalid".to_string()),
     };
+
+    // Copying out of a read-only folder is a read of the source plus a write
+    // at the destination — the same rule as DSM's `List folder/Read data` +
+    // `Create files/Write data`. Requiring `write` on the source made a
+    // read-only share impossible to copy from.
+    if let Some(resp) = restricted_response(
+        &state,
+        &username,
+        is_admin,
+        std::path::Path::new(&source),
+        false,
+        false,
+        false,
+    )
+    .await
+    {
+        return resp;
+    }
+    if let Some(resp) = restricted_response(
+        &state,
+        &username,
+        is_admin,
+        std::path::Path::new(&destination),
+        false,
+        false,
+        true,
+    )
+    .await
+    {
+        return resp;
+    }
 
     // `resolve_dest` stats the destination (and, for `keep_both`, probes for a
     // free name), so it runs on the blocking pool, not on this worker.
@@ -2758,6 +3349,10 @@ pub async fn handle_explorer_copy(
     // Directories go through the tracked-progress job path (see
     // `spawn_tracked_copy_job`) since a large tree can take a long time;
     // single files stay on the fast synchronous path.
+    crate::events::log_event(format!(
+        "User '{}' copied '{}' to '{}'",
+        username, source, destination
+    ));
     if path_is_dir(std::path::Path::new(&source)).await {
         let (job_id, sse_url) =
             spawn_tracked_copy_job(source, destination, username, mode, state.db.pool());
@@ -2840,15 +3435,16 @@ pub async fn handle_explorer_move(
             Ok(token) => token,
             Err(resp) => return resp,
         };
-    let (source, destination, username) = match state.auth.get_session(&session_token).await {
+    let (source, destination, username, is_admin) = match state.auth.get_session(&session_token).await {
         Ok(session) => {
-            let src_valid = validate_path_access(&state, &params.source, &session);
-            let dst_valid = validate_path_access(&state, &params.destination, &session);
+            let src_valid = validate_path_access(&state, &params.source, &session).await;
+            let dst_valid = validate_path_access(&state, &params.destination, &session).await;
             match (src_valid, dst_valid) {
                 (Some(src), Some(dst)) => (
                     src.to_string_lossy().into_owned(),
                     dst.to_string_lossy().into_owned(),
                     session.username,
+                    session.is_admin,
                 ),
                 _ => {
                     tracing::warn!("Explorer move blocked: source='{}' or destination='{}' outside allowed roots",
@@ -2861,6 +3457,17 @@ pub async fn handle_explorer_move(
         }
         Err(_) => return ResponseHelper::json_unauthorized("Session invalid".to_string()),
     };
+
+    for candidate in [
+        std::path::Path::new(&source),
+        std::path::Path::new(&destination),
+    ] {
+        if let Some(resp) =
+            restricted_response(&state, &username, is_admin, candidate, false, false, true).await
+        {
+            return resp;
+        }
+    }
 
     // `resolve_dest` stats the destination (and, for `keep_both`, probes for a
     // free name), so it runs on the blocking pool, not on this worker.
@@ -2889,6 +3496,10 @@ pub async fn handle_explorer_move(
     // size on the same filesystem); only fall back to the tracked-progress
     // copy+delete job (see `spawn_tracked_move_job`) if that fails, e.g.
     // cross-filesystem.
+    crate::events::log_event(format!(
+        "User '{}' moved '{}' to '{}'",
+        username, source, destination
+    ));
     if path_is_dir(std::path::Path::new(&source)).await {
         let rename_src = source.clone();
         let rename_dst = destination.clone();
@@ -2999,7 +3610,7 @@ pub async fn handle_explorer_preview(
         };
     match state.auth.get_session(&session_token).await {
         Ok(session) => {
-            let validated = match validate_path_access(&state, &params.path, &session) {
+            let validated = match validate_path_access(&state, &params.path, &session).await {
                 Some(p) => p,
                 None => {
                     tracing::warn!(
@@ -3011,6 +3622,22 @@ pub async fn handle_explorer_preview(
                     );
                 }
             };
+            // A preview returns the file's bytes, so it is a download in
+            // everything but name: the share's `disable_download` restriction
+            // must cover it (otherwise the restriction is decorative).
+            if let Some(resp) = restricted_response(
+                &state,
+                &session.username,
+                session.is_admin,
+                &validated,
+                false,
+                true,
+                false,
+            )
+            .await
+            {
+                return resp;
+            }
             let path = validated.to_string_lossy().into_owned();
             let result = tokio::task::spawn_blocking(move || {
                 FileBrowser::preview_file(&path, 10 * 1024 * 1024)
@@ -3039,20 +3666,34 @@ pub async fn handle_explorer_permissions(
             Ok(token) => token,
             Err(resp) => return resp,
         };
-    let validated_path = match state.auth.get_session(&session_token).await {
-        Ok(session) => match validate_path_access(&state, &params.path, &session) {
-            Some(p) => p,
-            None => {
-                tracing::warn!(
-                    "Explorer permissions blocked: path '{}' outside allowed roots",
-                    params.path
-                );
-                return ResponseHelper::json_error(
-                    "Access denied: path outside allowed directory".to_string(),
-                );
-            }
-        },
+    let session = match state.auth.get_session(&session_token).await {
+        Ok(session) => session,
         Err(_) => return ResponseHelper::json_unauthorized("Session invalid".to_string()),
+    };
+    let validated_path = match validate_path_access(&state, &params.path, &session).await {
+        Some(p) => {
+            // Reading the mode is an ordinary read; changing it is not.
+            // The check belongs here (before the octal validation) so a
+            // caller without `full` cannot use error wording to probe the
+            // file, and cannot rewrite the ACL mask either.
+            if params.mode.is_some() {
+                if let Some(resp) =
+                    require_full_response(&state, &session.username, session.is_admin, &p).await
+                {
+                    return resp;
+                }
+            }
+            p
+        }
+        None => {
+            tracing::warn!(
+                "Explorer permissions blocked: path '{}' outside allowed roots",
+                params.path
+            );
+            return ResponseHelper::json_error(
+                "Access denied: path outside allowed directory".to_string(),
+            );
+        }
     };
 
     // If mode is provided, try to change permissions
@@ -3065,6 +3706,8 @@ pub async fn handle_explorer_permissions(
             );
         }
 
+        let audit_path = validated_path.to_string_lossy().into_owned();
+        let audit_mode = mode.clone();
         let path = validated_path.to_string_lossy().into_owned();
         let result = tokio::task::spawn_blocking(move || {
             // Try the direct call first: root mode and a file the service
@@ -3089,9 +3732,15 @@ pub async fn handle_explorer_permissions(
         .await;
 
         match result {
-            Ok(Ok(_)) => ResponseHelper::json_success(
-                serde_json::json!({"message": "Permissions changed successfully"}),
-            ),
+            Ok(Ok(_)) => {
+                crate::events::log_event(format!(
+                    "User '{}' changed permissions of '{}' to {}",
+                    session.username, audit_path, audit_mode
+                ));
+                ResponseHelper::json_success(
+                    serde_json::json!({"message": "Permissions changed successfully"}),
+                )
+            }
             Ok(Err(e)) => {
                 ResponseHelper::json_error(format!("Failed to change permissions: {}", e))
             }
@@ -3308,26 +3957,51 @@ pub async fn handle_explorer_extract(
             Ok(token) => token,
             Err(resp) => return resp,
         };
-    let (archive_path, destination) = match state.auth.get_session(&session_token).await {
-        Ok(session) => {
-            let path_valid = validate_path_access(&state, &params.path, &session);
-            let dst_valid = validate_path_access(&state, &params.destination, &session);
-            match (path_valid, dst_valid) {
-                (Some(p), Some(d)) => (
-                    p.to_string_lossy().into_owned(),
-                    d.to_string_lossy().into_owned(),
-                ),
-                _ => {
-                    tracing::warn!("Explorer extract blocked: path='{}' or destination='{}' outside allowed roots",
-                        params.path, params.destination);
-                    return ResponseHelper::json_error(
-                        "Access denied: path outside allowed directory".to_string(),
-                    );
-                }
-            }
-        }
+    let session = match state.auth.get_session(&session_token).await {
+        Ok(session) => session,
         Err(_) => return ResponseHelper::json_unauthorized("Session invalid".to_string()),
     };
+    let path_valid = validate_path_access(&state, &params.path, &session).await;
+    let dst_valid = validate_path_access(&state, &params.destination, &session).await;
+    let (archive_path, destination) = match (path_valid, dst_valid) {
+        (Some(p), Some(d)) => (p, d),
+        _ => {
+            tracing::warn!("Explorer extract blocked: path='{}' or destination='{}' outside allowed roots",
+                params.path, params.destination);
+            return ResponseHelper::json_error(
+                "Access denied: path outside allowed directory".to_string(),
+            );
+        }
+    };
+    if let Some(resp) = restricted_response(
+        &state,
+        &session.username,
+        session.is_admin,
+        &archive_path,
+        false,
+        false,
+        false,
+    )
+    .await
+    {
+        return resp;
+    }
+    if let Some(resp) = restricted_response(
+        &state,
+        &session.username,
+        session.is_admin,
+        &destination,
+        false,
+        false,
+        true,
+    )
+    .await
+    {
+        return resp;
+    }
+    let audit_destination = destination.to_string_lossy().into_owned();
+    let archive_path = archive_path.to_string_lossy().into_owned();
+    let destination = destination.to_string_lossy().into_owned();
 
     let result = tokio::task::spawn_blocking(move || -> Result<(), String> {
         use std::path::Path;
@@ -3606,9 +4280,15 @@ pub async fn handle_explorer_extract(
     .await;
 
     match result {
-        Ok(Ok(())) => ResponseHelper::json_success(
-            serde_json::json!({"message": "Archive extracted successfully"}),
-        ),
+        Ok(Ok(())) => {
+            crate::events::log_event(format!(
+                "User '{}' extracted an archive into '{}'",
+                session.username, audit_destination
+            ));
+            ResponseHelper::json_success(
+                serde_json::json!({"message": "Archive extracted successfully"}),
+            )
+        }
         Ok(Err(e)) => ResponseHelper::json_error(format!("Failed to extract archive: {}", e)),
         Err(e) => ResponseHelper::json_error(format!("Internal error: {}", e)),
     }
@@ -3645,7 +4325,7 @@ pub async fn handle_explorer_thumbnail(
     Query(params): Query<ExplorerThumbnailQuery>,
     headers: HeaderMap,
 ) -> impl IntoResponse {
-    let (file_path, _username) = if let Some(ticket) = params.ticket.as_deref() {
+    let (file_path, username) = if let Some(ticket) = params.ticket.as_deref() {
         match crate::media_ticket::validate_thumbnail_ticket(ticket, &params.path) {
             Some((username, canonical)) => (PathBuf::from(canonical), username),
             None => {
@@ -3675,7 +4355,7 @@ pub async fn handle_explorer_thumbnail(
             }
         };
         // Validate path is within allowed roots
-        let Some(validated) = validate_path_access(&state, &params.path, &session) else {
+        let Some(validated) = validate_path_access(&state, &params.path, &session).await else {
             tracing::warn!(
                 "Explorer thumbnail blocked: path '{}' outside allowed roots",
                 params.path
@@ -3688,6 +4368,15 @@ pub async fn handle_explorer_thumbnail(
         };
         (validated, session.username)
     };
+
+    // A thumbnail is a downscaled copy of the file: `disable_download` has to
+    // cover it, or the gallery view becomes a way around the restriction.
+    let is_admin = state.auth.is_admin(&username).await;
+    if let Some(resp) =
+        restricted_response(&state, &username, is_admin, &file_path, false, true, false).await
+    {
+        return resp.into_response();
+    }
 
     if !path_exists(&file_path).await {
         return (StatusCode::NOT_FOUND, "File not found".to_string()).into_response();
@@ -3774,7 +4463,7 @@ pub async fn handle_explorer_thumbnail_ticket(
         Ok(s) => s,
         Err(_) => return ResponseHelper::json_unauthorized("Session invalid".to_string()),
     };
-    let Some(dir) = validate_path_access(&state, &params.path, &session) else {
+    let Some(dir) = validate_path_access(&state, &params.path, &session).await else {
         tracing::warn!(
             "Thumbnail ticket blocked: path '{}' outside allowed roots",
             params.path
@@ -3783,6 +4472,21 @@ pub async fn handle_explorer_thumbnail_ticket(
             "Access denied: path outside allowed directory".to_string(),
         );
     };
+    // The ticket authorises a whole directory of thumbnails, so a share that
+    // forbids downloads must not mint one.
+    if let Some(resp) = restricted_response(
+        &state,
+        &session.username,
+        session.is_admin,
+        &dir,
+        false,
+        true,
+        false,
+    )
+    .await
+    {
+        return resp;
+    }
     if !path_is_dir(&dir).await {
         return ResponseHelper::json_error("Ticket scope must be a directory".to_string());
     }
@@ -3864,17 +4568,57 @@ pub async fn handle_explorer_disks(
             Err(resp) => return resp,
         };
     match state.auth.get_session(&session_token).await {
-        Ok(_) => {}
-        Err(_) => return ResponseHelper::json_unauthorized("Session invalid".to_string()),
+        Ok(session) => {
+            let visible_roots = if session.is_admin {
+                None
+            } else {
+                Some(
+                    explorer_roots_for_session(&state, &session, false)
+                        .await
+                        .unwrap_or_default()
+                        .into_iter()
+                        .map(|root| root.path)
+                        .collect::<Vec<String>>(),
+                )
+            };
+            // The scan blocks: `/proc` reads, a `stat` per mount, one `lsblk`
+            // pass and one `df` per mount. It runs on the blocking pool — a
+            // disk that stops answering must not park a Tokio worker for every
+            // open Explorer window.
+            match tokio::task::spawn_blocking(collect_disks).await {
+                Ok(mut response) => {
+                    // A member must not learn every filesystem on the box, nor
+                    // be offered a disk whose contents the server will refuse.
+                    // Keep only the mounts that contain (or sit inside) one of
+                    // the caller's roots; an ancestor mount is still useful.
+                    if let Some(roots) = visible_roots {
+                        let keep = |disk: &DiskInfo| disk_visible(&disk.mount_point, &roots);
+                        response.system.retain(keep);
+                        response.internal.retain(keep);
+                        response.raid.retain(keep);
+                        response.external.retain(keep);
+                        response.cloud.retain(keep);
+                        response.network.retain(keep);
+                    }
+                    ResponseHelper::json_success(response)
+                }
+                Err(e) => ResponseHelper::json_error(format!("Failed to list disks: {e}")),
+            }
+        }
+        Err(_) => ResponseHelper::json_unauthorized("Session invalid".to_string()),
     }
+}
 
-    // The scan blocks: `/proc` reads, a `stat` per mount, one `lsblk` pass and
-    // one `df` per mount. It runs on the blocking pool — a disk that stops
-    // answering must not park a Tokio worker for every open Explorer window.
-    match tokio::task::spawn_blocking(collect_disks).await {
-        Ok(response) => ResponseHelper::json_success(response),
-        Err(e) => ResponseHelper::json_error(format!("Failed to list disks: {e}")),
-    }
+/// Whether a mount point is relevant to a caller limited to `roots`: the mount
+/// is one of them or sits inside one of them. An ancestor mount (e.g. `/` for
+/// a home under `/home`) is **not** offered — opening it would be refused by
+/// the server, so showing it would only produce a dead sidebar entry.
+fn disk_visible(mount_point: &str, roots: &[String]) -> bool {
+    let mount = mount_point.trim_end_matches('/');
+    roots.iter().any(|root| {
+        let root = root.trim_end_matches('/');
+        mount == root || mount.starts_with(&format!("{root}/"))
+    })
 }
 
 /// The disk scan behind `GET /explorer/disks`, blocking by design (only ever
@@ -4043,45 +4787,71 @@ pub async fn handle_explorer_compress(
             Ok(token) => token,
             Err(resp) => return resp,
         };
-    let (paths, destination) = match state.auth.get_session(&session_token).await {
-        Ok(session) => {
-            let dest_valid = validate_path_access(&state, &payload.destination, &session);
-            let mut sources_valid: Vec<PathBuf> = Vec::with_capacity(payload.paths.len());
-            for p in &payload.paths {
-                match validate_path_access(&state, p, &session) {
-                    Some(canonical) => sources_valid.push(canonical),
-                    None => {
-                        tracing::warn!(
-                            "Explorer compress blocked: source '{}' outside allowed roots",
-                            p
-                        );
-                        return ResponseHelper::json_error(
-                            "Access denied: path outside allowed directory".to_string(),
-                        );
-                    }
-                }
-            }
-            let Some(dst) = dest_valid else {
+    let session = match state.auth.get_session(&session_token).await {
+        Ok(session) => session,
+        Err(_) => return ResponseHelper::json_unauthorized("Session invalid".to_string()),
+    };
+    let dest_valid = validate_path_access(&state, &payload.destination, &session).await;
+    let mut sources_valid: Vec<PathBuf> = Vec::with_capacity(payload.paths.len());
+    for p in &payload.paths {
+        match validate_path_access(&state, p, &session).await {
+            Some(canonical) => sources_valid.push(canonical),
+            None => {
                 tracing::warn!(
-                    "Explorer compress blocked: destination='{}' outside allowed roots",
-                    payload.destination
+                    "Explorer compress blocked: source '{}' outside allowed roots",
+                    p
                 );
                 return ResponseHelper::json_error(
                     "Access denied: path outside allowed directory".to_string(),
                 );
-            };
-            (
-                sources_valid
-                    .into_iter()
-                    .map(|p| p.to_string_lossy().into_owned())
-                    .collect::<Vec<String>>(),
-                dst.to_string_lossy().into_owned(),
-            )
+            }
         }
-        Err(_) => return ResponseHelper::json_unauthorized("Session invalid".to_string()),
+    }
+    let Some(dst) = dest_valid else {
+        tracing::warn!(
+            "Explorer compress blocked: destination='{}' outside allowed roots",
+            payload.destination
+        );
+        return ResponseHelper::json_error(
+            "Access denied: path outside allowed directory".to_string(),
+        );
     };
+    for source in &sources_valid {
+        if let Some(resp) = restricted_response(
+            &state,
+            &session.username,
+            session.is_admin,
+            source,
+            false,
+            false,
+            false,
+        )
+        .await
+        {
+            return resp;
+        }
+    }
+    if let Some(resp) = restricted_response(
+        &state,
+        &session.username,
+        session.is_admin,
+        &dst,
+        false,
+        false,
+        true,
+    )
+    .await
+    {
+        return resp;
+    }
+    let destination = dst.to_string_lossy().into_owned();
+    let paths: Vec<String> = sources_valid
+        .into_iter()
+        .map(|p| p.to_string_lossy().into_owned())
+        .collect();
 
     let format = payload.format.unwrap_or_else(|| "tar.gz".to_string());
+    let audit_destination = destination.clone();
 
     let result = tokio::task::spawn_blocking(move || -> Result<(), String> {
         if format == "zip" {
@@ -4103,9 +4873,15 @@ pub async fn handle_explorer_compress(
     .await;
 
     match result {
-        Ok(Ok(_)) => ResponseHelper::json_success(
-            serde_json::json!({"message": "Archive created successfully"}),
-        ),
+        Ok(Ok(_)) => {
+            crate::events::log_event(format!(
+                "User '{}' created archive '{}'",
+                session.username, audit_destination
+            ));
+            ResponseHelper::json_success(
+                serde_json::json!({"message": "Archive created successfully"}),
+            )
+        }
         Ok(Err(e)) => ResponseHelper::json_error(format!("Failed to create archive: {}", e)),
         Err(e) => ResponseHelper::json_error(format!("Internal error: {}", e)),
     }
@@ -4128,7 +4904,7 @@ pub async fn handle_explorer_trash(
         };
     match state.auth.get_session(&session_token).await {
         Ok(session) => {
-            let validated = match validate_path_access(&state, &params.path, &session) {
+            let validated = match validate_path_access(&state, &params.path, &session).await {
                 Some(p) => p,
                 None => {
                     tracing::warn!(
@@ -4140,16 +4916,38 @@ pub async fn handle_explorer_trash(
                     );
                 }
             };
+            // Trashing renames the item into `.homevault-trash`: it is a write
+            // on the containing folder, not a read.
+            if let Some(resp) = restricted_response(
+                &state,
+                &session.username,
+                session.is_admin,
+                &validated,
+                false,
+                false,
+                true,
+            )
+            .await
+            {
+                return resp;
+            }
             let trash_root = crate::trash::root_for_state(&state, &validated.to_string_lossy());
+            let audit_path = validated.to_string_lossy().into_owned();
             let path = validated.to_string_lossy().into_owned();
             let result =
                 tokio::task::spawn_blocking(move || FileBrowser::trash_item(&path, &trash_root))
                     .await;
 
             match result {
-                Ok(Ok(_)) => ResponseHelper::json_success(
-                    serde_json::json!({"message": "Item moved to trash"}),
-                ),
+                Ok(Ok(_)) => {
+                    crate::events::log_event(format!(
+                        "User '{}' moved '{}' to the trash",
+                        session.username, audit_path
+                    ));
+                    ResponseHelper::json_success(
+                        serde_json::json!({"message": "Item moved to trash"}),
+                    )
+                }
                 Ok(Err(e)) => {
                     ResponseHelper::json_error(format!("Failed to move item to trash: {}", e))
                 }
@@ -4176,9 +4974,8 @@ pub async fn handle_explorer_trash_list(
         Err(_) => return ResponseHelper::json_unauthorized("Session invalid".to_string()),
     };
 
-    let state_for_roots = state.clone();
+    let roots = trash_roots_for_session(&state, &session, false).await;
     let result = tokio::task::spawn_blocking(move || {
-        let roots = crate::trash::roots_for_state(&state_for_roots, session.is_admin);
         let mut entries = Vec::new();
         for root in roots {
             entries.extend(FileBrowser::list_trash(&root));
@@ -4215,10 +5012,9 @@ pub async fn handle_explorer_trash_restore(
         Err(_) => return ResponseHelper::json_unauthorized("Session invalid".to_string()),
     };
 
-    let state_for_roots = state.clone();
+    let roots = trash_roots_for_session(&state, &session, true).await;
     let id = params.id.clone();
     let result = tokio::task::spawn_blocking(move || {
-        let roots = crate::trash::roots_for_state(&state_for_roots, session.is_admin);
         for root in roots {
             match FileBrowser::restore_trash_item(&root, &id) {
                 Ok(_) => return Ok(()),
@@ -4231,7 +5027,13 @@ pub async fn handle_explorer_trash_restore(
     .await;
 
     match result {
-        Ok(Ok(_)) => ResponseHelper::json_success(serde_json::json!({"message": "Item restored"})),
+        Ok(Ok(_)) => {
+            crate::events::log_event(format!(
+                "User '{}' restored trash item '{}'",
+                session.username, params.id
+            ));
+            ResponseHelper::json_success(serde_json::json!({"message": "Item restored"}))
+        }
         Ok(Err(e)) => ResponseHelper::json_error(format!("Failed to restore item: {}", e)),
         Err(e) => ResponseHelper::json_error(format!("Internal error: {}", e)),
     }
@@ -4254,9 +5056,9 @@ pub async fn handle_explorer_trash_purge(
         Err(_) => return ResponseHelper::json_unauthorized("Session invalid".to_string()),
     };
 
-    let state_for_roots = state.clone();
+    let roots = trash_roots_for_session(&state, &session, true).await;
+    let audit_id = id.clone();
     let result = tokio::task::spawn_blocking(move || {
-        let roots = crate::trash::roots_for_state(&state_for_roots, session.is_admin);
         for root in roots {
             match FileBrowser::purge_trash_item(&root, &id) {
                 Ok(_) => return Ok(()),
@@ -4270,6 +5072,10 @@ pub async fn handle_explorer_trash_purge(
 
     match result {
         Ok(Ok(_)) => {
+            crate::events::log_event(format!(
+                "User '{}' permanently deleted trash item '{}'",
+                session.username, audit_id
+            ));
             ResponseHelper::json_success(serde_json::json!({"message": "Item permanently deleted"}))
         }
         Ok(Err(e)) => ResponseHelper::json_error(format!("Failed to purge item: {}", e)),
@@ -4293,9 +5099,8 @@ pub async fn handle_explorer_trash_empty(
         Err(_) => return ResponseHelper::json_unauthorized("Session invalid".to_string()),
     };
 
-    let state_for_roots = state.clone();
+    let roots = trash_roots_for_session(&state, &session, true).await;
     let result = tokio::task::spawn_blocking(move || {
-        let roots = crate::trash::roots_for_state(&state_for_roots, session.is_admin);
         for root in &roots {
             FileBrowser::empty_trash(root)?;
         }
@@ -4304,7 +5109,13 @@ pub async fn handle_explorer_trash_empty(
     .await;
 
     match result {
-        Ok(Ok(_)) => ResponseHelper::json_success(serde_json::json!({"message": "Trash emptied"})),
+        Ok(Ok(_)) => {
+            crate::events::log_event(format!(
+                "User '{}' emptied the trash",
+                session.username
+            ));
+            ResponseHelper::json_success(serde_json::json!({"message": "Trash emptied"}))
+        }
         Ok(Err(e)) => ResponseHelper::json_error(format!("Failed to empty trash: {}", e)),
         Err(e) => ResponseHelper::json_error(format!("Internal error: {}", e)),
     }
@@ -4513,21 +5324,37 @@ pub async fn handle_explorer_save(
             Ok(token) => token,
             Err(resp) => return resp,
         };
-    let target = match state.auth.get_session(&session_token).await {
-        Ok(session) => match validate_path_access(&state, &payload.path, &session) {
-            Some(p) => p,
-            None => {
-                tracing::warn!(
-                    "Explorer save blocked: path '{}' outside allowed roots",
-                    payload.path
-                );
-                return ResponseHelper::json_error(
-                    "Access denied: path outside allowed directory".to_string(),
-                );
-            }
-        },
+    let session = match state.auth.get_session(&session_token).await {
+        Ok(session) => session,
         Err(_) => return ResponseHelper::json_unauthorized("Session invalid".to_string()),
     };
+    let target = match validate_path_access(&state, &payload.path, &session).await {
+        Some(p) => p,
+        None => {
+            tracing::warn!(
+                "Explorer save blocked: path '{}' outside allowed roots",
+                payload.path
+            );
+            return ResponseHelper::json_error(
+                "Access denied: path outside allowed directory".to_string(),
+            );
+        }
+    };
+    // The inline editor is a write; a `read` grant must not reach it even
+    // though `validate_path_access` (a reachability check) accepted the path.
+    if let Some(resp) = restricted_response(
+        &state,
+        &session.username,
+        session.is_admin,
+        &target,
+        false,
+        false,
+        true,
+    )
+    .await
+    {
+        return resp;
+    }
 
     if payload.content.len() > MAX_EDIT_BYTES {
         return ResponseHelper::json_error("File is too large to edit here".to_string());
@@ -4562,7 +5389,13 @@ pub async fn handle_explorer_save(
     .await;
 
     match result {
-        Ok(Ok(())) => ResponseHelper::json_success(serde_json::json!({"message": "File saved"})),
+        Ok(Ok(())) => {
+            crate::events::log_event(format!(
+                "User '{}' saved file '{}'",
+                session.username, payload.path
+            ));
+            ResponseHelper::json_success(serde_json::json!({"message": "File saved"}))
+        }
         Ok(Err(e)) => ResponseHelper::json_error(format!("Failed to save file: {}", e)),
         Err(e) => ResponseHelper::json_error(format!("Internal error: {}", e)),
     }
@@ -4581,6 +5414,25 @@ pub struct ExplorerRoot {
     pub kind: String,
     /// Last path segment — the label fallback when there is no i18n key.
     pub name: String,
+    /// The caller's effective grant on this root: `deny`, `read`, `write` or
+    /// `full`. The sidebar and the toolbar use it to hide/disable actions the
+    /// server would refuse (DSM's `privilege` field in its own listing).
+    pub permission: String,
+}
+
+/// Computes the effective grant for one root, defaulting to `deny` when the
+/// caller reached it through a path that is no longer granted.
+async fn root_permission(
+    state: &Arc<AppState>,
+    session: &crate::storage::models::Session,
+    path: &str,
+) -> String {
+    use crate::storage::resource_share_repo::ResourcePermission;
+    effective_path_permission(state, &session.username, session.is_admin, std::path::Path::new(path))
+        .await
+        .unwrap_or(ResourcePermission::Deny)
+        .as_str()
+        .to_string()
 }
 
 /// Classifies an allowed root into a `kind` key for the UI.
@@ -4635,13 +5487,40 @@ pub async fn explorer_roots_for_session(
 ) -> Result<Vec<ExplorerRoot>, String> {
     let mut roots: Vec<ExplorerRoot> = Vec::new();
 
-    let home = format!("/home/{}", session.username);
+    let home = crate::config::paths::user_home_path(&session.username);
+    let home = home.to_string_lossy().to_string();
     if path_is_dir(std::path::Path::new(&home)).await {
         roots.push(ExplorerRoot {
             path: home,
             kind: "home".to_string(),
             name: session.username.clone(),
+            permission: "full".to_string(),
         });
+    }
+
+    // A member sees only their home and the folders/shares explicitly
+    // granted to them — not every global Explorer root. Admins keep the
+    // historical full view below.
+    if !session.is_admin {
+        for root in visible_grant_roots(state, &session.username).await {
+            let path = root.to_string_lossy().to_string();
+            if roots.iter().any(|existing| existing.path == path) {
+                continue;
+            }
+            let name = path
+                .rsplit('/')
+                .find(|segment| !segment.is_empty())
+                .unwrap_or(path.as_str())
+                .to_string();
+            let permission = root_permission(state, session, &path).await;
+            roots.push(ExplorerRoot {
+                kind: kind_for_root(&path).to_string(),
+                path,
+                name,
+                permission,
+            });
+        }
+        return Ok(roots);
     }
 
     for root in state.path_guard.allowed_roots() {
@@ -4658,6 +5537,7 @@ pub async fn explorer_roots_for_session(
             kind: kind_for_root(&p).to_string(),
             path: p,
             name,
+            permission: "full".to_string(),
         });
     }
 
@@ -4680,6 +5560,7 @@ pub async fn explorer_roots_for_session(
                         path: mp,
                         kind: "virtualdisk".to_string(),
                         name,
+                        permission: "full".to_string(),
                     });
                 }
             }
@@ -4810,7 +5691,7 @@ pub async fn handle_explorer_snapshots(
         };
     match state.auth.get_session(&session_token).await {
         Ok(session) => {
-            let validated = match validate_path_access(&state, &params.path, &session) {
+            let validated = match validate_path_access(&state, &params.path, &session).await {
                 Some(p) => p,
                 None => {
                     return ResponseHelper::json_error(
@@ -4974,7 +5855,7 @@ pub async fn handle_explorer_favorites_add(
     }
 
     // Favorites must be pinned inside paths the user can actually browse.
-    let stored_path = match validate_path_access(&state, &req.path, &session) {
+    let stored_path = match validate_path_access(&state, &req.path, &session).await {
         Some(p) => p.to_string_lossy().into_owned(),
         None => {
             return ResponseHelper::json_error(
@@ -5055,7 +5936,7 @@ pub async fn handle_explorer_tags_list(
         Err(_) => return ResponseHelper::json_unauthorized("Session invalid".to_string()),
     };
     let path = match params.path.as_deref() {
-        Some(path) => match validate_path_access(&state, path, &session) {
+        Some(path) => match validate_path_access(&state, path, &session).await {
             Some(path) => Some(path.to_string_lossy().into_owned()),
             None => {
                 return ResponseHelper::json_error(
@@ -5087,7 +5968,7 @@ pub async fn handle_explorer_tags_add(
         Ok(session) => session,
         Err(_) => return ResponseHelper::json_unauthorized("Session invalid".to_string()),
     };
-    let validated = match validate_path_access(&state, &req.path, &session) {
+    let validated = match validate_path_access(&state, &req.path, &session).await {
         Some(path) => path,
         None => return ResponseHelper::json_error("Access denied or file not found".to_string()),
     };
@@ -5129,7 +6010,7 @@ pub async fn handle_explorer_tags_remove(
     // reach at the time, and a row that is not the caller's is `NotFound`,
     // which discloses nothing about the other account's paths.
     let repo = crate::storage::FileTagRepository::new(state.db.pool());
-    let candidates = match validate_path_access(&state, &req.path, &session) {
+    let candidates = match validate_path_access(&state, &req.path, &session).await {
         Some(validated) if path_exists(&validated).await => {
             vec![validated.to_string_lossy().into_owned()]
         }
@@ -5188,11 +6069,26 @@ pub async fn handle_explorer_watch_ticket(
         Ok(s) => s,
         Err(_) => return ResponseHelper::json_unauthorized("Session invalid".to_string()),
     };
-    let Some(validated) = validate_path_access(&state, &req.path, &session) else {
+    let Some(validated) = validate_path_access(&state, &req.path, &session).await else {
         return ResponseHelper::json_error(
             "Access denied: path outside allowed directory".to_string(),
         );
     };
+    // Watching a directory is browsing it: a share that disables browsing must
+    // not hand out a change feed instead.
+    if let Some(resp) = restricted_response(
+        &state,
+        &session.username,
+        session.is_admin,
+        &validated,
+        true,
+        false,
+        false,
+    )
+    .await
+    {
+        return resp;
+    }
 
     let ticket =
         crate::sse::file_watcher::issue_ticket(&session.username, &validated.to_string_lossy());
@@ -5309,7 +6205,7 @@ pub async fn handle_explorer_recents_touch(
         Err(_) => return ResponseHelper::json_unauthorized("Session invalid".to_string()),
     };
     // Only record locations the user can actually browse.
-    let stored = match validate_path_access(&state, &req.path, &session) {
+    let stored = match validate_path_access(&state, &req.path, &session).await {
         Some(p) => p.to_string_lossy().into_owned(),
         None => {
             return ResponseHelper::json_error(
@@ -5376,7 +6272,7 @@ pub async fn handle_explorer_history(
         Ok(s) => s,
         Err(_) => return ResponseHelper::json_unauthorized("Session invalid".to_string()),
     };
-    let validated = match validate_path_access(&state, &params.path, &session) {
+    let validated = match validate_path_access(&state, &params.path, &session).await {
         Some(p) => p,
         None => {
             return ResponseHelper::json_error(
@@ -5780,7 +6676,7 @@ pub async fn handle_explorer_checksum(
         Ok(s) => s,
         Err(_) => return ResponseHelper::json_unauthorized("Session invalid".to_string()),
     };
-    let Some(path) = validate_path_access(&state, &payload.path, &session) else {
+    let Some(path) = validate_path_access(&state, &payload.path, &session).await else {
         tracing::warn!(
             "Explorer checksum blocked: path '{}' outside allowed roots",
             payload.path
@@ -5805,7 +6701,7 @@ pub async fn handle_explorer_checksum(
     // second path the caller asks us to read.
     let compare_with = match payload.compare_with.as_deref() {
         None => None,
-        Some(raw) => match validate_path_access(&state, raw, &session) {
+        Some(raw) => match validate_path_access(&state, raw, &session).await {
             Some(p) => Some(p),
             None => {
                 return ResponseHelper::json_error(
@@ -7050,5 +7946,38 @@ Path = stage/inside/link\nFolder = -\nAttributes =  lrwxrwxrwx\n\n";
             MAX_UPLOAD_CHUNK_BYTES < 10 * 1024 * 1024 * 1024,
             "the route cap must be the binding one"
         );
+    }
+
+    /// The restriction matrix is what makes `disable_download` real: preview
+    /// and thumbnail pass `download = true`, so they must be refused too.
+    #[test]
+    fn every_restriction_flag_refuses_only_its_own_operation() {
+        use crate::shares::ShareRestrictions;
+
+        let none = ShareRestrictions::default();
+        assert!(!restriction_denied(&none, true, true, true));
+
+        let no_browse = ShareRestrictions {
+            disable_browsing: true,
+            ..Default::default()
+        };
+        assert!(restriction_denied(&no_browse, true, false, false));
+        assert!(!restriction_denied(&no_browse, false, true, true));
+
+        let no_download = ShareRestrictions {
+            disable_download: true,
+            ..Default::default()
+        };
+        // This is the regression: a preview or a thumbnail is a download in
+        // everything but name.
+        assert!(restriction_denied(&no_download, false, true, false));
+        assert!(!restriction_denied(&no_download, true, false, true));
+
+        let no_modify = ShareRestrictions {
+            disable_modification: true,
+            ..Default::default()
+        };
+        assert!(restriction_denied(&no_modify, false, false, true));
+        assert!(!restriction_denied(&no_modify, true, true, false));
     }
 }

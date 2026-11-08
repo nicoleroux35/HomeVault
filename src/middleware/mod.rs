@@ -31,6 +31,7 @@ pub mod auto_block;
 pub mod contract;
 pub mod csp_nonce;
 pub mod csrf;
+pub mod explorer_access;
 pub mod https_redirect;
 pub mod logging;
 pub mod password_change_guard;
@@ -43,6 +44,7 @@ pub use auto_block::auto_block_middleware;
 pub use contract::contract_middleware;
 pub use csp_nonce::{stamp_nonce, CspNonce, NONCE_PLACEHOLDER};
 pub use csrf::csrf_middleware;
+pub use explorer_access::explorer_access_middleware;
 pub use https_redirect::{https_redirect_middleware, HttpsRedirect};
 pub use logging::logging_middleware;
 pub use password_change_guard::{

@@ -24,6 +24,17 @@ pub struct ShareLink {
     pub download_count: i64,
     #[serde(skip_serializing)]
     pub active_downloads: i64,
+    /// `true` when the link points at a folder and serves the archive built at
+    /// creation time (`archive_path`), not the folder itself.
+    pub is_directory: bool,
+    /// Appliance-owned tar.gz snapshot for a folder link. Never a client path.
+    #[serde(skip_serializing)]
+    pub archive_path: Option<String>,
+    /// Comma-separated account names allowed to open a `signed_in` link.
+    /// Empty means "any signed-in account" (the historical behaviour).
+    pub allowed_users: String,
+    /// Comma-separated group names allowed to open a `signed_in` link.
+    pub allowed_groups: String,
 }
 
 #[derive(Clone)]
@@ -75,9 +86,14 @@ impl ShareLinkRepository {
         expires_at: Option<&str>,
         password_hash: Option<&str>,
         max_downloads: Option<i64>,
+        is_directory: bool,
+        archive_path: Option<&str>,
+        allowed_users: &str,
+        allowed_groups: &str,
     ) -> Result<ShareLink, DbError> {
-        sqlx::query("INSERT INTO explorer_share_links (token, username, path, mode, expires_at, password_hash, max_downloads) VALUES (?, ?, ?, ?, ?, ?, ?)")
+        sqlx::query("INSERT INTO explorer_share_links (token, username, path, mode, expires_at, password_hash, max_downloads, is_directory, archive_path, allowed_users, allowed_groups) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
             .bind(token).bind(username).bind(path).bind(mode).bind(expires_at).bind(password_hash).bind(max_downloads)
+            .bind(is_directory).bind(archive_path).bind(allowed_users).bind(allowed_groups)
             .execute(self.pool.as_ref()).await?;
         self.find_by_token(token).await?.ok_or(DbError::NotFound)
     }
@@ -110,12 +126,24 @@ impl ShareLinkRepository {
     }
 
     pub async fn delete_expired(&self, now: &str) -> Result<u64, DbError> {
+        // Folder links own a tar.gz snapshot; remove it with the row so an
+        // expired link does not leave an orphan archive forever.
+        let archives: Vec<String> = sqlx::query_scalar(
+            "SELECT archive_path FROM explorer_share_links
+             WHERE expires_at IS NOT NULL AND expires_at < ? AND archive_path IS NOT NULL",
+        )
+        .bind(now)
+        .fetch_all(self.pool.as_ref())
+        .await?;
         let result = sqlx::query(
             "DELETE FROM explorer_share_links WHERE expires_at IS NOT NULL AND expires_at < ?",
         )
         .bind(now)
         .execute(self.pool.as_ref())
         .await?;
+        for archive in archives {
+            let _ = std::fs::remove_file(archive);
+        }
         Ok(result.rows_affected())
     }
 }

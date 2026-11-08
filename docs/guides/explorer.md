@@ -1,10 +1,44 @@
 # File Explorer
 
 **Purpose:** Browse, search, upload, and manage files under allowed roots. Path
-access is restricted by `PathGuard`. **Editable since 2026-09-12** —
+access is restricted by `PathGuard`, and *grant levels* are enforced by
+`resource_shares`. **Editable since 2026-09-12** —
 `CLAUDE.md`'s frozen-area registry is gone, so `Explorer.svelte`,
 `src/handlers/explorer.rs`, `src/browser.rs`, the listed `api.ts` methods and
 `[explorer]` i18n are open to edits; the invariants below still bind.
+
+## Access model and enforcement matrix (P0, 2026-11-08)
+
+`PathGuard` answers "is this path inside a root?" — it does **not** answer
+"may this member write here?". The second question is `resource_shares`
+(`deny` < `read` < `write` < `full`; `deny` wins over every allow, direct or
+group). Admins are implicitly `full`.
+
+| Route | Required level | Share restriction honoured |
+|---|---|---|
+| `list` | `read` | `disable_browsing` |
+| `search` | `read` | `disable_browsing` |
+| `download`, `download-ticket` | `read` | `disable_download` |
+| `preview`, `thumbnail`, `thumbnail-ticket` | `read` | `disable_download` (a preview is bytes) |
+| `mkdir`, `upload*`, `rename`, `trash`, `trash/restore`, `trash/{id}`, empty trash, `save`, `compress`, `extract` | `write` | `disable_modification` |
+| `copy` | `read` on source, `write` on destination | both paths |
+| `move` | `write` on both | both paths |
+| `permissions` (GET) | `read` | — |
+| `permissions` (POST/chmod) | `full` | — |
+
+The listing returns `permission` and `restrictions`; `/explorer/roots` returns
+`permission` per root; the UI disables the actions the server would refuse and
+shows a read-only banner. `chmod` is `full` because it rewrites the ACL mask
+SMB/WebDAV see — the same reason DSM gates it behind *Change permissions*.
+
+**Application privilege.** `app:explorer = deny` (direct or group grant) is
+refused for every `/api/explorer/*` route by
+`middleware::explorer_access_middleware`, including path-less routes such as
+`disks`, `transfers` and trash listing. No row means allowed (backward
+compatible); admins are always allowed. The Users detail card exposes an
+"File Explorer: Available / Blocked" switch. Per-IP application privileges
+and delegated admin roles are **not** implemented: HomeVault's positioning is
+a single-owner appliance, and adding a third role would touch every guard.
 
 ## Backend
 
@@ -17,21 +51,22 @@ a real session is always required). Paths are validated against
 anywhere) but not the **shape normalisation**: the admin branch still
 canonicalises the parent and resolves the leaf, so a handler never works on the
 caller's raw string (ROADMAP 10.5, see *Invariants*); non-admins are confined
-to the configured `allowed_roots`.
+to their home and the `folder`/`share` grants they hold, then to the level of
+that grant.
 
 | Endpoint | Method | Body / Query | Notes |
 |----------|--------|--------------|-------|
-| `/explorer/list` | GET | `?path=` | directory listing |
+| `/explorer/list` | GET | `?path=` | directory listing; adds `permission` + `restrictions`; refuses when the share sets `disable_browsing` |
 | `/explorer/search` | GET | `?path=&query=&max_results=&fuzzy=` | recursive search, wired into the UI's search box (see below). `?fuzzy=true` switches to subsequence matching (see *Fuzzy search*) |
-| `/explorer/disks` | GET | — | mounted volumes grouped `system\|internal\|raid\|external\|cloud\|network`; each entry carries `mount_point`, `filesystem`, `size_bytes`, `used_bytes`, plus optional `label` (FS label) + `vendor`/`model`/`serial` of the parent block device (one `lsblk -P` pass, `collect_block_device_meta`, added 2026-09-09 for the folder picker's sidebar). `FolderPicker.svelte` ignores the extra fields. |
+| `/explorer/disks` | GET | — | mounted volumes grouped `system\|internal\|raid\|external\|cloud\|network`; each entry carries `mount_point`, `filesystem`, `size_bytes`, `used_bytes`, plus optional `label`/`vendor`/`model`/`serial`. A member only sees mounts that contain or sit inside one of their roots |
 | `/explorer/mkdir` | POST | `?path=` | create folder |
 | `/explorer/delete` | POST | `?path=` | **admin-only** permanent delete — internal use only now (purge/empty-trash), the UI's Delete button calls `/explorer/trash` instead |
 | `/explorer/rename` | POST | `?path=&new_name=` | rename — **both** the source and the destination (a full path) are path-guard validated, so a rename can't move a file out of the allowed roots |
 | `/explorer/copy` | POST | `?source=&destination=` | copy; for a **directory** source, starts a tracked background job instead of blocking (see Advanced pool/job pattern below). A single file answers `method` (`clone` \| `kernel_copy` \| `stream`), `instant` and `bytes` — see *Instant copy (reflink)* |
 | `/explorer/move` | POST | `?source=&destination=` | move; for a directory, tries an instant atomic rename first, only uses a tracked job as a cross-filesystem fallback. A same-filesystem file move answers `method: null` (an atomic rename copies nothing, so no method is claimed) |
 | `/explorer/instant-copy` | GET / PUT | `{ mode }` (PUT) | instant-copy policy (see *Instant copy (reflink)*); GET any signed-in, PUT admin |
-| `/explorer/permissions` | GET/POST | `?path=&mode=` | read/set POSIX mode |
-| `/explorer/preview` | GET | `?path=` | text/image preview; `previewable: false` (no `content`) for anything that isn't text-like or an image |
+| `/explorer/permissions` | GET/POST | `?path=&mode=` | read/set POSIX mode; POST requires `full` (it rewrites the ACL mask) |
+| `/explorer/preview` | GET | `?path=` | text/image preview; `previewable: false` (no `content`) for anything that isn't text-like or an image; honours `disable_download` |
 | `/explorer/extract` | POST | `?path=&destination=` | extract archive; checks the required tool (`tar`/`unzip`/`7z`/`gunzip`) is installed first and returns a clear error instead of a raw exec failure |
 | `/explorer/compress` | POST (JSON body) | `{ paths: string[], destination, format? }` | create an archive from one or more items sharing the same parent dir; `format` is `"zip"` (only if a `zip` binary is detected) or the default `"tar.gz"` |
 | `/explorer/download` | GET | `?path=&ticket=` | raw file (stream); HTTP `Range` support (206) for resumable downloads / video seeking; `X-Content-Sha256` digest header for files ≤ 64 MB; rejected with 429 before the stream starts if the caller's [transfer quota](./transfer-quotas.md) is exhausted. Auth is either the `x-session-token` header or a short-lived **download ticket** (never the session token in a URL) |
@@ -48,7 +83,7 @@ to the configured `allowed_roots`.
 | `/explorer/trash/{id}` | DELETE | — | permanently delete one trashed item |
 | `/explorer/trash/policy` | GET / PUT | `{ retention_days, max_bytes }` (PUT) | trash retention policy (see *Trash retention & auto-purge*); GET any signed-in, PUT admin |
 | `/explorer/trash/purge-now` | POST (admin) | — | run the retention pass now with the saved policy |
-| `/explorer/roots` | GET | — | labelled sidebar roots: `[{path, kind, name}]` — session user's home, each PathGuard root (`kind` = users/shares/media/appdata/system/storage), then every mounted virtual disk (`kind:"virtualdisk"`) |
+| `/explorer/roots` | GET | — | labelled sidebar roots: `[{path, kind, name, permission}]` — session user's home, each granted root (`kind` = users/shares/media/appdata/system/storage), then every mounted virtual disk (`kind:"virtualdisk"`). A member only sees their home and their grants |
 | `/explorer/save` | POST | `{ path, content }` | inline text/code editor — atomic temp-file + rename, 5 MB cap |
 | `/explorer/snapshots` | GET | `?path=` | ZFS snapshots covering that path, each with a read-only `browse_path` under `.zfs/snapshot/` |
 | `/explorer/eject` | POST (admin) | `?path=<mount>` | safe-eject a removable drive — guarded by `is_removable_block_device` (can never `umount` an internal disk) |
@@ -66,15 +101,20 @@ before the extension). Upload reports `skipped[]`.
 
 Besides the token, a link can carry a **password**, a **download cap** and —
 through that cap — be a **one-time link**. The Explorer can mint a revocable
-download link to a **file** and share it (URL + QR code) outside HomeVault —
-the arozos `file_share.html` pattern. Backend:
+download link to a **file or a folder** and share it (URL + QR code) outside
+HomeVault — the arozos `file_share.html` pattern. A folder link serves a
+tar.gz snapshot built at creation (under `{DATA_DIRECTORY}/share-archives/`),
+so ranges, digests and the cap keep working; re-create the link to refresh it.
+A `signed_in` link can name up to 32 **accounts/groups**; empty means any
+signed-in account. The owner's grant is re-checked on every download, so
+revoking it kills the link. Backend:
 `src/handlers/share_links.rs`; repo `src/storage/share_link_repo.rs` (rows in
-`explorer_share_links`, **migrations 034 + 063**).
+`explorer_share_links`, **migrations 034 + 063 + 084**).
 
 | Endpoint | Method | Body / Query | Notes |
 |----------|--------|--------------|-------|
 | `/explorer/shares` | GET | — | the caller's links, newest first (auth) |
-| `/explorer/shares` | POST | `{ path, mode?, expires_days?, password?, max_downloads? }` | create a link for a file (auth) |
+| `/explorer/shares` | POST | `{ path, mode?, expires_days?, password?, max_downloads?, allowed_users?, allowed_groups? }` | create a link for a file or folder (auth); `allowed_*` only on `signed_in` (comma-separated, max 32) |
 | `/explorer/shares/{token}` | DELETE | — | revoke — owner or admin (auth) |
 | `/share/{token}/unlock` | POST | `{ password }` | **public** — exchanges the password for an unlock cookie |
 | `/share/{token}` | GET / HEAD | — | **public** download (outside `/api`) |
@@ -206,6 +246,34 @@ app gate and the desktop shell.
 
 The E2E suite also cleans up links it created pointing into its `/tmp` work
 dir.
+
+## File requests — public upload links (P3, 2026-11-08)
+
+A folder owner can mint a link that lets someone **without a HomeVault
+account** upload files into that folder. It is the reverse of a share link:
+the token authorises a write, the owner's `write` grant is re-checked on every
+upload, and the request dies with the grant. Backend
+`src/handlers/file_requests.rs`; repo `src/storage/file_request_repo.rs`
+(`explorer_file_requests`, **migration 085**); UI
+`frontend/src/lib/components/explorer/FileRequestModal.svelte`.
+
+| Endpoint | Method | Notes |
+|---|---|---|
+| `/explorer/file-requests` | GET / POST | the caller's links / `{path, message?, expires_days?, password?, max_uploads?}` — the path must be a folder with `write`; password 8–256 chars (Argon2id), expiry 0–3650 days, `max_uploads` 1–100000 |
+| `/explorer/file-requests/{token}` | DELETE | owner or admin |
+| `/request/{token}` | GET (public) | plain HTML form (no JavaScript): the password field comes **before** the file input |
+| `/request/{token}/upload` | POST (public) | multipart; the password field must precede any file field (a file first is refused without writing). Max **2 GiB per file**, **4 concurrent** uploads, empty files refused, collisions become ` (N)` copies. A completed upload is the only thing that spends `max_uploads` |
+
+The public page is intentionally outside `/api` (no CSRF token, no session) and
+is bounded by the same "token is the secret" rule as share links. The message
+is HTML-escaped; the token is never put in a script. An expired link is `404`;
+a spent link is `429`.
+
+**Not implemented in this pass:** ad-hoc CIFS/NFS mounts from the Explorer
+(the system-level mount manager is a separate privileged feature; rclone
+mounts remain the cloud path) and WORM/WriteOnce (HomeVault's immutable
+snapshots are the retention story; a per-file WORM mode would need filesystem
+support and is out of scope for a home appliance).
 
 ## Trash (soft delete)
 
@@ -738,7 +806,14 @@ work, and the last one whose host commands had no deadline.
 ## Frontend
 
 - `frontend/src/routes/Explorer.svelte` — fully wired through `$t()`/
-  `translate()`.
+  `translate()`. It reads `listing.permission` + `listing.restrictions` and
+  disables the actions the server would refuse, showing a read-only banner;
+  `chmod` is offered only at `full` (or to an admin).
+- `frontend/src/lib/components/explorer/ShareLinkModal.svelte` — file and
+  folder links, password, expiry, download cap, targeted accounts/groups, QR,
+  copy and revoke.
+- `frontend/src/lib/components/explorer/FileRequestModal.svelte` — public
+  upload links (password, expiry, upload cap), copy and revoke.
 - `frontend/src/lib/components/explorer/ExplorerWidget.svelte` — the dashboard
   widget that embeds a compact Explorer (roots + recent folders) and opens the
   full app on demand.
@@ -884,7 +959,20 @@ work, and the last one whose host commands had no deadline.
   reported to the caller as progress per chunk; the legacy
   `multipart/form-data` `/upload` endpoint still exists and is what the
   integration tests drive. All non-binary calls use `fetch` via `api.*`.
-- Permissions set/get operates on POSIX mode strings (e.g. `0755`).
+- Permissions set/get operates on POSIX mode strings (e.g. `0755`); POST
+  requires a `full` grant, never just `write`.
+- **`PathGuard` is reachability, not authorization.** Every mutating route and
+  every byte-returning route must call `restricted_response` (or
+  `require_full_response` for `chmod`); adding a handler without it re-opens
+  the read-only hole the P0 pass closed. The matrix is in *Access model and
+  enforcement matrix* above.
+- **A share link is a standing grant issued by its owner.** Creation requires
+  a `read` grant and `disable_download` off; every download re-checks the
+  owner's grant and app access, so revoking either kills the link. Folder
+  links serve the `archive_path` snapshot, never the live folder.
+- **Public file requests are writes.** The password field must precede the file
+  field; a file first is refused without writing. A completed upload is the
+  only thing that spends `max_uploads`.
 - Archive creation defaults to `tar.gz` (always available via core utils);
   `.zip` is only offered if a `zip` binary is actually detected at request
   time. The installer provisions `zip`/`unzip`/`7z` (the `7z` binary comes

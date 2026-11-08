@@ -8,6 +8,40 @@ follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **Explorer authorization, application gate and sharing (2026-11-08,
+  P0–P3).** Every mutating Explorer route now checks the caller's
+  `resource_shares` level, not just `PathGuard`: `write` for
+  create/upload/rename/trash/save/compress/extract, `read` on the source +
+  `write` at the destination for a copy, `write` on both for a move, and
+  `full` for `chmod`. `preview`, `thumbnail` and thumbnail tickets honour
+  `disable_download`; `list` honours `disable_browsing`. Listings and
+  `/explorer/roots` return the effective `permission` and restrictions, and
+  the UI disables the actions the server would refuse (read-only banner).
+  A member whose `app:explorer` grant is `deny` is refused the entire
+  `/api/explorer/*` surface by a new middleware, with an Available/Blocked
+  switch in the Users card. Share links now accept folders (tar.gz snapshot
+  built at creation), can target named accounts/groups on a `signed_in` link,
+  require a `read` grant, honour `disable_download`, and are re-checked
+  against the owner's grant on every download. Public **file requests**
+  (upload links for a folder, password/expiry/cap, 2 GiB per file, plain HTML
+  page) were added. The previous behaviour (write operations reachable from a
+  read grant, and a share-link gate that trusted `PathGuard` alone) is gone.
+  See `docs/guides/explorer.md` → "Access model and enforcement matrix" and
+  "File requests".
+
+- **Shares hardening against DSM 7.4 (2026-11-08, P0/P1/P2).** The share
+  subsystem now provisions the Unix/Samba identity of a new account
+  (`HV_HOST_SYNC=1`), generates SMB `valid users` from the ACL grants so a
+  share is never open to every Samba account, and enforces `resource_shares`
+  (including `deny` and `read` vs `write`) in WebDAV while scoping the
+  non-admin Explorer to its home and grants. FTP entries are real per-user
+  jails (bind mounts + `user_config_dir`), logical shares group protocol
+  bindings under one name/path, NFS rules are per client, recursive ACLs are
+  genuinely recursive and bounded, and a permission matrix/CSV report is
+  available. P2 adds per-share advanced restrictions, `shadow_copy2` Previous
+  Versions, SMB ADS/Kerberos configuration + join/leave, and NFS `sec=…`.
+  See `docs/guides/shares.md` → "Drop-in hardening — P0/P1/P2".
+
 - **Local DNS server (2026-11-05, phase C1).** Settings → Security → **Local
   DNS server** lets the appliance answer the names of your own network instead
   of leaving that to the router — the counterpart of the DHCP server it shares

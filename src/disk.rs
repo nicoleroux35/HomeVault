@@ -2868,7 +2868,7 @@ impl DiskService {
                 "-n",
                 "-P",
                 "-o",
-                "NAME,TYPE,SIZE,VENDOR,MODEL,PKNAME,MOUNTPOINT,FSTYPE",
+                "NAME,TYPE,SIZE,VENDOR,MODEL,PKNAME,MOUNTPOINT,FSTYPE,ROTA",
             ]),
             BLKID_TIMEOUT,
         )
@@ -2890,6 +2890,7 @@ impl DiskService {
                 size: fields.get("SIZE").cloned().unwrap_or_else(|| "0".into()),
                 vendor: fields.get("VENDOR").cloned().unwrap_or_default(),
                 model: fields.get("MODEL").cloned().unwrap_or_default(),
+                rotational: fields.get("ROTA").map(|v| v == "1").unwrap_or(false),
             });
         }
 
@@ -2996,6 +2997,7 @@ impl DiskService {
                     None
                 },
                 smart_status: Some(Self::get_smart_status(&row.name).await),
+                rotational: row.rotational,
             });
         }
 
@@ -5699,6 +5701,8 @@ struct LsblkRow {
     size: String,
     vendor: String,
     model: String,
+    /// `lsblk` ROTA=1 for a spinning disk, 0 for SSD/flash.
+    rotational: bool,
 }
 
 /// Decodes the octal escapes `/proc/mounts` applies to a source or mount
@@ -5819,4 +5823,46 @@ pub struct AvailableDevice {
     /// Overall SMART health (`"Healthy"`, `"Failed"` or `"Unknown"`).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub smart_status: Option<String>,
+    /// `lsblk` ROTA: true for a spinning disk, false for SSD/flash. Used to
+    /// refuse a mixed SSD/HDD virtual disk (DSM requires one drive type).
+    pub rotational: bool,
+}
+
+/// Whether the selected disks mix spinning HDDs and SSDs. DSM refuses to put
+/// both types in one storage pool; HomeVault applies the same rule before
+/// `mdadm`/`zpool`/`mkfs.btrfs` runs.
+pub fn devices_mix_rotational(devices: &[AvailableDevice]) -> bool {
+    devices
+        .windows(2)
+        .any(|w| w[0].rotational != w[1].rotational)
+}
+
+#[cfg(test)]
+mod rotational_tests {
+    use super::*;
+
+    fn dev(name: &str, rotational: bool) -> AvailableDevice {
+        AvailableDevice {
+            name: name.to_string(),
+            size: 1,
+            model: "test".to_string(),
+            in_use: false,
+            reason: None,
+            smart_status: None,
+            rotational,
+        }
+    }
+
+    #[test]
+    fn test_mixed_rotational_detects_ssd_and_hdd() {
+        assert!(!devices_mix_rotational(&[dev("a", true), dev("b", true)]));
+        assert!(!devices_mix_rotational(&[dev("a", false), dev("b", false)]));
+        assert!(devices_mix_rotational(&[dev("a", true), dev("b", false)]));
+        assert!(devices_mix_rotational(&[
+            dev("a", false),
+            dev("b", false),
+            dev("c", true)
+        ]));
+        assert!(!devices_mix_rotational(&[]));
+    }
 }

@@ -124,6 +124,15 @@ not a boundary. `event_visible_to` is the WebSocket whitelist: an event tagged
 with `resource_kind` / `resource` is only delivered to a member who can access
 that resource; untagged events go to everyone.
 
+**Explorer application privilege (2026-11-08).** `app:explorer` is special:
+because the Explorer predates per-resource grants and has always been
+available to every signed-in member, **no row means allowed**. An explicit
+`deny` on `app:explorer` hides the whole app: `middleware::explorer_access_middleware`
+refuses every `/api/explorer/*` call (path-less routes included) with
+`403 {"code":"explorer_access_denied"}`, and the Users detail card shows an
+"Available / Blocked" switch. `resource_shares::explorer_app_allowed` is the
+single decision function. Per-IP privileges are not implemented.
+
 ### Group-level grants (2026-10-20, migration 051)
 
 Re-typing the same grant for every member of a household does not scale, and
@@ -614,3 +623,27 @@ demotion, group validation) are pinned without touching the host in
 - [Groups](./groups.md)
 - [My Account](./account.md)
 - [Authentication](./auth.md)
+
+## Host/Samba identity provisioning (2026-11-08)
+
+Creating a HomeVault account now also provisions the Unix half it needs for SMB,
+FTP and NFS: a shell-less Linux account (`useradd -M -s /usr/sbin/nologin`), its
+Linux password and a Samba passdb credential (`smbpasswd -a -s`). Password
+changes, lock/unlock and deletion update the same three pieces. Host commands
+are best-effort from the account flow (the web login remains authoritative), but
+a failure is logged with the account name — it is never silently swallowed.
+
+A host/PAM account is different: its credential lives in `/etc/shadow` and is
+mirrored, not created; deleting it is refused while the Linux account exists.
+
+The Explorer's non-admin boundary is now `home ∪ effective folder grants ∪
+effective share grants` (`src/handlers/explorer.rs`). `PathGuard` still blocks
+traversal and symlink escapes, but it is no longer the authorization decision.
+A member without any grant sees only their own home, and the Trash list/restore/purge/empty actions use the same filtered roots.
+
+`resource_shares` semantics are the same everywhere they are enforced:
+`deny` wins, then `full > write > read`, direct ∪ group. WebDAV enforces the
+level per operation (read/list vs write) and the Explorer enforces it per path.
+SMB/NFS/FTP continue to use the POSIX ACL (`share_permissions`) as their
+file-level gate; their share-level gate is `valid users` (SMB), the FTP jail
+(FTP) and `/etc/exports` (NFS).

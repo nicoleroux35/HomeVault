@@ -217,6 +217,9 @@ export interface DockerCreateContainerRequest {
   memory_limit?: string | null;
   cpu_limit?: string | null;
   privileged?: boolean;
+  /** Defaults to true on the server; opt out only for an image that needs
+   *  setuid escalation. */
+  no_new_privileges?: boolean;
   auto_remove?: boolean;
 }
 

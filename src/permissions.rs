@@ -187,8 +187,8 @@ impl PermissionService {
         };
 
         if perm.recursive {
-            AclService::set_acl(share_path, std::slice::from_ref(&acl_entry))?;
-            AclService::set_default_acl(share_path, &[acl_entry])?;
+            AclService::set_acl_recursive(share_path, std::slice::from_ref(&acl_entry))?;
+            AclService::set_default_acl_recursive(share_path, &[acl_entry])?;
         } else {
             AclService::set_acl(share_path, &[acl_entry])?;
         }
@@ -197,8 +197,15 @@ impl PermissionService {
     }
 
     /// Remove all ACL entries on a share path.
-    pub fn revoke_all_permissions(share_path: &str) -> Result<(), PermissionError> {
-        AclService::remove_all_acl(share_path)?;
+    pub fn revoke_all_permissions(
+        share_path: &str,
+        recursive: bool,
+    ) -> Result<(), PermissionError> {
+        if recursive {
+            AclService::remove_all_acl_recursive(share_path)?;
+        } else {
+            AclService::remove_all_acl(share_path)?;
+        }
         tracing::info!("Revoked all ACLs for share path: {}", share_path);
         Ok(())
     }
@@ -208,6 +215,7 @@ impl PermissionService {
         share_path: &str,
         grantee_type: &str,
         grantee_name: &str,
+        recursive: bool,
     ) -> Result<(), PermissionError> {
         let tag = if grantee_type == "group" {
             AclTag::Group
@@ -221,7 +229,11 @@ impl PermissionService {
             Some(grantee_name.to_string())
         };
 
-        AclService::remove_acl(share_path, &tag, qualifier.as_deref())?;
+        if recursive {
+            AclService::remove_acl_recursive(share_path, &tag, qualifier.as_deref())?;
+        } else {
+            AclService::remove_acl(share_path, &tag, qualifier.as_deref())?;
+        }
         Ok(())
     }
 
@@ -238,8 +250,25 @@ impl PermissionService {
         share_path: &str,
         pool: Arc<sqlx::SqlitePool>,
     ) -> Result<(), PermissionError> {
-        Self::revoke_all_permissions(share_path)?;
-        Self::apply_share_permissions(share_name, share_type, share_path, pool).await?;
+        Self::revoke_all_permissions(share_path, true)?;
+        Self::apply_share_permissions(share_name, share_type, share_path, Arc::clone(&pool)).await?;
+        if ShareType::parse(share_type) == Some(ShareType::Smb) {
+            Self::refresh_smb_access(share_name, Arc::clone(&pool)).await?;
+        }
+        if ShareType::parse(share_type) == Some(ShareType::Sftp)
+            && crate::host_accounts::host_sync_enabled()
+        {
+            if let Err(e) = crate::sftp::SftpJailService::rebuild_jails(Arc::clone(&pool)).await {
+                tracing::warn!("SFTP jail rebuild after permission change failed: {}", e);
+            }
+        }
+        if ShareType::parse(share_type) == Some(ShareType::Ftp)
+            && crate::host_accounts::host_sync_enabled()
+        {
+            if let Err(e) = crate::ftp::FtpJailService::rebuild_jails(pool).await {
+                tracing::warn!("FTP jail rebuild after sync failed: {}", e);
+            }
+        }
         tracing::info!(
             "Synced permissions for share '{}' ({})",
             share_name,
@@ -340,6 +369,24 @@ impl PermissionService {
             .await
             .map_err(|e| PermissionError::Share(e.to_string()))?;
 
+        if ShareType::parse(share_type) == Some(ShareType::Smb) {
+            Self::refresh_smb_access(share_name, Arc::clone(&pool)).await?;
+        }
+        if ShareType::parse(share_type) == Some(ShareType::Sftp)
+            && crate::host_accounts::host_sync_enabled()
+        {
+            if let Err(e) = crate::sftp::SftpJailService::rebuild_jails(Arc::clone(&pool)).await {
+                tracing::warn!("SFTP jail rebuild after permission change failed: {}", e);
+            }
+        }
+        if ShareType::parse(share_type) == Some(ShareType::Ftp)
+            && crate::host_accounts::host_sync_enabled()
+        {
+            if let Err(e) = crate::ftp::FtpJailService::rebuild_jails(Arc::clone(&pool)).await {
+                tracing::warn!("FTP jail rebuild after grant failed: {}", e);
+            }
+        }
+
         tracing::info!(
             "Granted {} permission on '{}' ({}) to {}:{}",
             permission,
@@ -352,6 +399,35 @@ impl PermissionService {
         Ok(perm)
     }
 
+    /// Re-render the `valid users`/`read only`/`guest ok` directives of one
+    /// SMB share from its database grants.
+    ///
+    /// The POSIX ACL is the file-level gate; `valid users` is the share-level
+    /// gate. Keeping both in step is what makes a grant visible to Samba and
+    /// a revoke actually remove the share from the user's Network view.
+    pub async fn refresh_smb_access(
+        share_name: &str,
+        pool: Arc<sqlx::SqlitePool>,
+    ) -> Result<(), PermissionError> {
+        let repo = SharePermissionRepository::new(pool);
+        let permissions = repo
+            .get_for_share(share_name, "smb")
+            .await
+            .map_err(|e| PermissionError::Share(e.to_string()))?;
+        let share = match SharesService::get_share(share_name, ShareType::Smb) {
+            Ok(share) => share,
+            Err(_) => return Ok(()),
+        };
+        let access = crate::shares::SmbShareAccess {
+            valid_users: crate::shares::smb_valid_users(&permissions),
+            read_only: share.read_only,
+            guest_ok: share.guest_ok,
+        };
+        crate::shares::rewrite_smb_share_access(share_name, &access)
+            .map_err(|e| PermissionError::Share(e.to_string()))?;
+        Ok(())
+    }
+
     /// Revoke a specific user/group permission from a share, removing it from both DB and filesystem.
     pub async fn revoke_permission(
         share_name: &str,
@@ -361,24 +437,65 @@ impl PermissionService {
         grantee_name: &str,
         pool: Arc<sqlx::SqlitePool>,
     ) -> Result<(), PermissionError> {
+        // The stored row says whether the grant was recursive; the filesystem
+        // removal must use the same scope, otherwise a recursive grant leaves
+        // ACLs behind on every child.
+        let repo = SharePermissionRepository::new(Arc::clone(&pool));
+        let recursive = repo
+            .get_for_share(share_name, share_type)
+            .await
+            .ok()
+            .and_then(|permissions| {
+                permissions
+                    .into_iter()
+                    .find(|permission| {
+                        permission.grantee_type == grantee_type
+                            && permission.grantee_name == grantee_name
+                    })
+                    .map(|permission| permission.recursive)
+            })
+            .unwrap_or(false);
+
         // Best-effort: remove the ACL from the real filesystem path first.
         // A failure here (e.g. the path no longer exists, or a stale row from
         // before the grant path-guard fix) must not block deleting the
         // database row — otherwise a stale permission could never be cleaned
         // up from the UI. It's still attempted first so the common case
         // (path exists, ACL present) actually clears the real ACL.
-        if let Err(e) = Self::revoke_grantee_permissions(share_path, grantee_type, grantee_name) {
+        if let Err(e) = Self::revoke_grantee_permissions(
+            share_path,
+            grantee_type,
+            grantee_name,
+            recursive,
+        ) {
             tracing::warn!(
                 "Failed to remove filesystem ACL for {}:{} on '{}' ({}): {} — deleting database record anyway",
                 grantee_type, grantee_name, share_name, share_type, e
             );
         }
 
-        let repo = SharePermissionRepository::new(Arc::clone(&pool));
         let deleted = repo
             .delete(share_name, share_type, grantee_type, grantee_name)
             .await
             .map_err(|e| PermissionError::Share(e.to_string()))?;
+
+        if ShareType::parse(share_type) == Some(ShareType::Smb) {
+            Self::refresh_smb_access(share_name, Arc::clone(&pool)).await?;
+        }
+        if ShareType::parse(share_type) == Some(ShareType::Sftp)
+            && crate::host_accounts::host_sync_enabled()
+        {
+            if let Err(e) = crate::sftp::SftpJailService::rebuild_jails(Arc::clone(&pool)).await {
+                tracing::warn!("SFTP jail rebuild after permission change failed: {}", e);
+            }
+        }
+        if ShareType::parse(share_type) == Some(ShareType::Ftp)
+            && crate::host_accounts::host_sync_enabled()
+        {
+            if let Err(e) = crate::ftp::FtpJailService::rebuild_jails(Arc::clone(&pool)).await {
+                tracing::warn!("FTP jail rebuild after revoke failed: {}", e);
+            }
+        }
 
         if deleted {
             tracing::info!(
@@ -427,9 +544,12 @@ impl PermissionService {
             match ShareType::parse(&perm.share_type) {
                 Some(share_type) => match SharesService::get_share(&perm.share_name, share_type) {
                     Ok(share) => {
-                        if let Err(e) =
-                            Self::revoke_grantee_permissions(&share.path, "user", username)
-                        {
+                        if let Err(e) = Self::revoke_grantee_permissions(
+                            &share.path,
+                            "user",
+                            username,
+                            perm.recursive,
+                        ) {
                             tracing::warn!(
                                 "Failed to remove filesystem ACL for user:{} on '{}' ({}): {} — deleting database record anyway",
                                 username,

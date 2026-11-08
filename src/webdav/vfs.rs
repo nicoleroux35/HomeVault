@@ -39,7 +39,6 @@ use dav_server::fs::{
 };
 use dav_server::localfs::LocalFs;
 use percent_encoding::{utf8_percent_encode, AsciiSet, NON_ALPHANUMERIC};
-use std::collections::HashSet;
 use std::sync::Arc;
 
 /// Everything except RFC 3986 unreserved characters and the path separator.
@@ -61,14 +60,35 @@ const PATH_ENCODE_SET: &AsciiSet = &NON_ALPHANUMERIC
 pub struct WebdavCreds {
     pub username: String,
     pub is_admin: bool,
-    pub granted: Arc<HashSet<String>>,
+    /// Effective level per granted share (`deny` is stored, not dropped, so a
+    /// deny row can never accidentally read as "no row = full access").
+    pub granted: Arc<std::collections::HashMap<String, crate::storage::resource_share_repo::ResourcePermission>>,
 }
 
 impl WebdavCreds {
-    /// Whether this caller may reach `share`.
-    pub fn can_access(&self, share: &str) -> bool {
-        self.is_admin || self.granted.contains(share)
+    /// Whether this caller may reach `share` at the level `need` requires.
+    pub fn can_access(
+        &self,
+        share: &str,
+        need: crate::storage::resource_share_repo::ResourcePermission,
+    ) -> bool {
+        if self.is_admin {
+            return true;
+        }
+        self.granted
+            .get(share)
+            .map(|level| *level != crate::storage::resource_share_repo::ResourcePermission::Deny && level.implies(need))
+            .unwrap_or(false)
     }
+}
+
+/// What a WebDAV operation needs from the member's grant.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Need {
+    Read,
+    List,
+    Write,
+    Download,
 }
 
 /// A WebDAV filesystem restricted to the enabled WebDAV shares and the
@@ -99,13 +119,37 @@ impl WebdavFs {
         &self,
         path: &DavPath,
         creds: &WebdavCreds,
+        need: Need,
     ) -> Result<(Box<LocalFs>, String), FsError> {
+        use crate::storage::resource_share_repo::ResourcePermission;
+        let required = match need {
+            Need::Read | Need::List | Need::Download => ResourcePermission::Read,
+            Need::Write => ResourcePermission::Write,
+        };
         let request = path.as_url_string();
         match resolve_path(&self.shares, &request) {
             ResolvedPath::UnknownShare(_) => Err(FsError::NotFound),
             ResolvedPath::Inside { share, relative } => {
-                if !creds.can_access(&share.name) {
+                if !creds.can_access(&share.name, required) {
                     return Err(FsError::Forbidden);
+                }
+                // Advanced restrictions are share-wide, independent of the
+                // member's level: a read/write grant still cannot download or
+                // browse when the share says so. Admins are exempt, matching
+                // DSM's "administrators always have full control".
+                if !creds.is_admin {
+                    match need {
+                        Need::List if share.restrictions.disable_browsing => {
+                            return Err(FsError::Forbidden)
+                        }
+                        Need::Download if share.restrictions.disable_download => {
+                            return Err(FsError::Forbidden)
+                        }
+                        Need::Write if share.restrictions.disable_modification => {
+                            return Err(FsError::Forbidden)
+                        }
+                        _ => {}
+                    }
                 }
                 let absolute = absolute_path(&share, &relative);
                 if !crate::webdav::fs::is_inside(&share.root, &absolute) {
@@ -152,7 +196,12 @@ impl GuardedFileSystem<WebdavCreds> for WebdavFs {
         creds: &'a WebdavCreds,
     ) -> FsFuture<'a, Box<dyn DavFile>> {
         Box::pin(async move {
-            let (fs, relative) = self.local_for(path, creds)?;
+            let need = if options.write {
+                Need::Write
+            } else {
+                Need::Download
+            };
+            let (fs, relative) = self.local_for(path, creds, need)?;
             fs.open(&davpath_for(&relative), options, &()).await
         })
     }
@@ -164,7 +213,7 @@ impl GuardedFileSystem<WebdavCreds> for WebdavFs {
         creds: &'a WebdavCreds,
     ) -> FsFuture<'a, FsStream<Box<dyn DavDirEntry>>> {
         Box::pin(async move {
-            let (fs, relative) = self.local_for(path, creds)?;
+            let (fs, relative) = self.local_for(path, creds, Need::List)?;
             fs.read_dir(&davpath_for(&relative), meta, &()).await
         })
     }
@@ -175,7 +224,7 @@ impl GuardedFileSystem<WebdavCreds> for WebdavFs {
         creds: &'a WebdavCreds,
     ) -> FsFuture<'a, Box<dyn DavMetaData>> {
         Box::pin(async move {
-            let (fs, relative) = self.local_for(path, creds)?;
+            let (fs, relative) = self.local_for(path, creds, Need::Read)?;
             fs.metadata(&davpath_for(&relative), &()).await
         })
     }
@@ -186,28 +235,28 @@ impl GuardedFileSystem<WebdavCreds> for WebdavFs {
         creds: &'a WebdavCreds,
     ) -> FsFuture<'a, Box<dyn DavMetaData>> {
         Box::pin(async move {
-            let (fs, relative) = self.local_for(path, creds)?;
+            let (fs, relative) = self.local_for(path, creds, Need::Read)?;
             fs.symlink_metadata(&davpath_for(&relative), &()).await
         })
     }
 
     fn create_dir<'a>(&'a self, path: &'a DavPath, creds: &'a WebdavCreds) -> FsFuture<'a, ()> {
         Box::pin(async move {
-            let (fs, relative) = self.local_for(path, creds)?;
+            let (fs, relative) = self.local_for(path, creds, Need::Write)?;
             fs.create_dir(&davpath_for(&relative), &()).await
         })
     }
 
     fn remove_dir<'a>(&'a self, path: &'a DavPath, creds: &'a WebdavCreds) -> FsFuture<'a, ()> {
         Box::pin(async move {
-            let (fs, relative) = self.local_for(path, creds)?;
+            let (fs, relative) = self.local_for(path, creds, Need::Write)?;
             fs.remove_dir(&davpath_for(&relative), &()).await
         })
     }
 
     fn remove_file<'a>(&'a self, path: &'a DavPath, creds: &'a WebdavCreds) -> FsFuture<'a, ()> {
         Box::pin(async move {
-            let (fs, relative) = self.local_for(path, creds)?;
+            let (fs, relative) = self.local_for(path, creds, Need::Write)?;
             fs.remove_file(&davpath_for(&relative), &()).await
         })
     }
@@ -221,8 +270,8 @@ impl GuardedFileSystem<WebdavCreds> for WebdavFs {
         Box::pin(async move {
             // A cross-share MOVE cannot be one `rename`: resolve both sides
             // (each enforcing the grant) and refuse when they differ.
-            let (from_fs, from_rel) = self.local_for(from, creds)?;
-            let (_, to_rel) = self.local_for(to, creds)?;
+            let (from_fs, from_rel) = self.local_for(from, creds, Need::Write)?;
+            let (_, to_rel) = self.local_for(to, creds, Need::Write)?;
             if share_root_of(&self.shares, from) != share_root_of(&self.shares, to) {
                 return Err(FsError::Forbidden);
             }
@@ -239,8 +288,8 @@ impl GuardedFileSystem<WebdavCreds> for WebdavFs {
         creds: &'a WebdavCreds,
     ) -> FsFuture<'a, ()> {
         Box::pin(async move {
-            let (from_fs, from_rel) = self.local_for(from, creds)?;
-            let (_, to_rel) = self.local_for(to, creds)?;
+            let (from_fs, from_rel) = self.local_for(from, creds, Need::Write)?;
+            let (_, to_rel) = self.local_for(to, creds, Need::Write)?;
             if share_root_of(&self.shares, from) != share_root_of(&self.shares, to) {
                 return Err(FsError::Forbidden);
             }
@@ -259,7 +308,7 @@ impl GuardedFileSystem<WebdavCreds> for WebdavFs {
         // The trait ties this future to `'a` but leaves `credentials` with an
         // anonymous lifetime, so the resolution (the only step that reads
         // `creds`) happens eagerly and the future owns its result.
-        let resolved = self.local_for(path, creds);
+        let resolved = self.local_for(path, creds, Need::Write);
         Box::pin(async move {
             let (fs, relative) = resolved?;
             fs.set_accessed(&davpath_for(&relative), tm, &()).await
@@ -273,7 +322,7 @@ impl GuardedFileSystem<WebdavCreds> for WebdavFs {
         creds: &'a WebdavCreds,
     ) -> FsFuture<'a, ()> {
         Box::pin(async move {
-            let (fs, relative) = self.local_for(path, creds)?;
+            let (fs, relative) = self.local_for(path, creds, Need::Write)?;
             fs.set_modified(&davpath_for(&relative), tm, &()).await
         })
     }
@@ -296,6 +345,9 @@ mod tests {
             enabled: true,
             comment: String::new(),
             options: Vec::new(),
+            read_only: false,
+            guest_ok: None,
+            restrictions: crate::shares::ShareRestrictions::default(),
         }
     }
 
@@ -303,7 +355,17 @@ mod tests {
         WebdavCreds {
             username: "alice".to_string(),
             is_admin: admin,
-            granted: Arc::new(granted.iter().map(|s| s.to_string()).collect()),
+            granted: Arc::new(
+                granted
+                    .iter()
+                    .map(|s| {
+                        (
+                            s.to_string(),
+                            crate::storage::resource_share_repo::ResourcePermission::Read,
+                        )
+                    })
+                    .collect(),
+            ),
         }
     }
 
@@ -332,8 +394,47 @@ mod tests {
         let (fs, _dir) = fs_with(&["photos"]);
         let path = DavPath::new("/videos/x").unwrap();
         assert!(matches!(
-            fs.local_for(&path, &creds(false, &["photos"])),
+            fs.local_for(&path, &creds(false, &["photos"]), Need::Read),
             Err(FsError::NotFound)
+        ));
+    }
+
+    fn creds_levels(levels: &[(&str, crate::storage::resource_share_repo::ResourcePermission)]) -> WebdavCreds {
+        WebdavCreds {
+            username: "alice".to_string(),
+            is_admin: false,
+            granted: Arc::new(
+                levels
+                    .iter()
+                    .map(|(name, level)| (name.to_string(), *level))
+                    .collect(),
+            ),
+        }
+    }
+
+    #[test]
+    fn test_deny_wins_and_read_cannot_write() {
+        use crate::storage::resource_share_repo::ResourcePermission;
+        let (fs, _dir) = fs_with(&["photos"]);
+        let path = DavPath::new("/photos/a.txt").unwrap();
+        assert!(matches!(
+            fs.local_for(&path, &creds_levels(&[("photos", ResourcePermission::Deny)]), Need::Read),
+            Err(FsError::Forbidden)
+        ));
+        assert!(fs
+            .local_for(
+                &path,
+                &creds_levels(&[("photos", ResourcePermission::Read)]),
+                Need::Read
+            )
+            .is_ok());
+        assert!(matches!(
+            fs.local_for(
+                &path,
+                &creds_levels(&[("photos", ResourcePermission::Read)]),
+                Need::Write
+            ),
+            Err(FsError::Forbidden)
         ));
     }
 
@@ -342,7 +443,7 @@ mod tests {
         let (fs, _dir) = fs_with(&["photos", "videos"]);
         let path = DavPath::new("/videos/x").unwrap();
         assert!(matches!(
-            fs.local_for(&path, &creds(false, &["photos"])),
+            fs.local_for(&path, &creds(false, &["photos"]), Need::Read),
             Err(FsError::Forbidden)
         ));
     }
@@ -351,7 +452,7 @@ mod tests {
     fn test_admin_reaches_any_share() {
         let (fs, _dir) = fs_with(&["photos", "videos"]);
         let path = DavPath::new("/videos/").unwrap();
-        assert!(fs.local_for(&path, &creds(true, &[])).is_ok());
+        assert!(fs.local_for(&path, &creds(true, &[]), Need::Read).is_ok());
     }
 
     #[test]

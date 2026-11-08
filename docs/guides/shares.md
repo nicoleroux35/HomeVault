@@ -3,6 +3,29 @@
 **Purpose:** Network file-share management for five protocols plus per-user/group
 POSIX-ACL permissions.
 
+## Two authorization layers, on purpose
+
+HomeVault has **two** rights systems and they answer different questions:
+
+| Layer | Stored in | Enforced by | Governs |
+|---|---|---|---|
+| `resource_shares` grants | `resource_shares` / `resource_group_shares` | every Explorer/WebDAV handler (`deny` < `read` < `write` < `full`, deny wins) | the web Explorer, WebDAV, per-app access, and the `app:explorer` gate |
+| POSIX ACL | the filesystem (`setfacl`), mirrored in `share_permissions` | the kernel (Samba, NFS, FTP, SFTP, vsftpd) and the Share permissions card | filesystem access over the network protocols |
+
+A `folder` grant is an Explorer path grant; it is **not** copied to the
+filesystem and does not open SMB. A `share` grant is the web counterpart of the
+share-level ACL; it does not replace the per-user ACL entry the Shares card
+writes. The admin-facing permission card (`/api/permissions`) remains the ACL
+editor, with recursive grants, `getfacl` read-back, a CSV report and the
+effective-permissions inspector. The Explorer's `chmod` is gated behind a
+`full` grant because it rewrites the ACL mask.
+
+This split is deliberate: the network protocols need real kernel ACLs, while
+the web Explorer needs a path-prefix model that can express "this folder inside
+a share". The two must be kept in sync by the admin when a member needs the
+same access over SMB and in the browser. The Explorer never silently widens
+the ACL, and the Shares card never silently widens a web grant.
+
 ## Backend
 
 Handlers in `src/handlers/shares.rs` and `src/handlers/permissions.rs`. ACL logic
@@ -79,7 +102,7 @@ handlers surface them as a `400` naming the offending field.
 | `options` (NFS, per share) | one token each: no whitespace/control/`( ) , # " '`, ≤ 16 entries | merged with the service defaults by class, then written as `path client(opt1,opt2)` |
 | NFS global `networks` | non-empty; `*` or a CIDR/IP/hostname; no whitespace/control/`( ) , # " ' [ ] ; \`, ≤ 64 chars | each entry becomes a client clause; a space or `)` forged another clause |
 | NFS global `default_access` / `root_squash` / `version` | `rw`\|`ro` · `root_squash`\|`no_root_squash`\|`all_squash` · `auto`\|`3`\|`4`\|`4.1`\|`4.2` | written as `ro`/`root_squash`/`vers=…`; an unknown value would be ignored by the kernel |
-| SMB global | `workgroup` one line ≤ 15, `security_mode` ∈ {user, share} (**domain/server/ads refused**), `protocol_version` ∈ {SMB2, SMB3} (**NT1 refused**), masks 3-4 octal digits, `additional_params` = allowlisted `key = value` | `[global]` directives are one line each; domain auth needs winbind/Kerberos and SMB1 is deprecated |
+| SMB global | `workgroup` one line ≤ 15, `security_mode` ∈ {user, share, ads} (`server` refused), `ads` requires a DNS `realm` + valid `idmap_range`, `protocol_version` ∈ {SMB2, SMB3} (**NT1 refused**), masks 3-4 octal digits, `additional_params` = allowlisted `key = value` | `[global]` directives are one line each; ADS now renders realm/idmap/winbind/ACL mapping, SMB1 is deprecated |
 | FTP ports | `port`/passive bounds non-zero u16, `passive_ports` = `min` or `min-max` with min < max, `max_clients` ≥ 1 | parsed then formatted into `vsftpd.conf` |
 
 `PathGuard` still applies downstream (it guards the *filesystem* operations of
@@ -131,20 +154,21 @@ behaviour); an explicit 3/4/4.2 is enforced. `validate_nfs_config` rejects an
 empty network list, an unknown version/squash value, and any network token
 that could open a second client clause.
 
-**SMB.** `security_mode` accepted `domain`, `server` and `ads` while nothing
-configured winbind, `realm`, idmap or a keytab — selecting “ADS” wrote
-`security = ads` into `smb.conf` and broke SMB. Those three values are now
-refused with a message that names the missing capability; the UI only offers
-*User* and *Share*. `protocol_version` accepts **SMB2/SMB3** only (NT1 is
-gone), and `smb.conf` now receives both `server min protocol` and
-`server max protocol = SMB3`. `additional_params` are real `[global]`
-directives behind a short allowlist (`SMB_EXTRA_KEYS`), so `include`,
-section headers and unknown keys are refused. `multichannel` adds the
-`server multi channel support = yes|no` toggle (off by default; the UI explains
-that it needs a switch and two links). A config file written by an older build
-with `ads`/`domain`/`server` or `NT1` is normalized to `user`/`SMB3` when it is
-read (`normalize_smb_config`), with a warning in the log, so the form never
-renders an empty select.
+**SMB.** `security_mode=ads` is now a complete configuration, not a string
+that broke the daemon: `realm`, `idmap config *`, `winbind`, `map acl inherit`
+and `store dos attributes` are rendered, a DNS realm and a valid idmap range
+are required, and `POST /shares/smb/domain/join|leave` drives `net ads` with
+the password on stdin. `server` remains refused (it has no implementation).
+`protocol_version` accepts **SMB2/SMB3** only (NT1 is gone), and `smb.conf`
+receives both `server min protocol` and `server max protocol = SMB3`.
+`additional_params` are real `[global]` directives behind a short allowlist
+(`SMB_EXTRA_KEYS`), so `include`, section headers and unknown keys are refused.
+`multichannel` adds the `server multi channel support = yes|no` toggle (off by
+default; the UI explains that it needs a switch and two links). A config file
+written by an older build with `ads`/`domain`/`server` or `NT1` is normalized
+to `user`/`SMB3` when it is read (`normalize_smb_config`) unless the ADS realm
+is usable, with a warning in the log, so the form never renders an empty
+select.
 
 **FTP.** `allowed_users` was the same kind of ghost: persisted in `ftp.json`
 and never read. It is now written to `/etc/vsftpd.user_list` and wired through
@@ -376,6 +400,10 @@ stderr or only care that the reload ran). A source guard
   (`src/permissions.rs`) forces the execute bit on when the share path is a
   directory, in the ACL actually written to disk only — the persisted
   `permission` string (what the UI shows) is untouched.
+  **Since 2026-11-08 the recursive grant really walks the tree**:
+  `set_acl_recursive` / `set_default_acl_recursive` / `remove_acl_recursive`
+  replace the old root-only behaviour, still bounded by
+  `MAX_RECURSIVE_ENTRIES` and never following symlinks.
 - `handle_user_delete` (`src/handlers/users.rs`) calls
   `SftpJailService::purge_user` directly rather than via `rebuild_jails`,
   because `rebuild_jails` only reconciles jails for users that still exist.
@@ -460,3 +488,88 @@ run, and lists/restores only the snapshots that cover that share. See
 
 - [Explorer](./explorer.md), [Storage](./storage.md),
   [Snapshots](./snapshots.md), [API Contract](../API.md)
+
+## Drop-in hardening — P0/P1/P2 (2026-11-08)
+
+This pass closes the gaps found by comparing the code with DSM 7.4's shared
+folder model. The persisted model is still one record per protocol; the new
+**logical share** layer groups records by `(name, path)` for the UI and the
+grant API.
+
+### P0 — identity, SMB access and real enforcement
+
+| Change | Where | Behaviour |
+|---|---|---|
+| Samba credential provisioning | `src/host_accounts.rs`, `src/auth/service.rs` | User creation provisions a bare Linux account, sets its Linux password and creates/updates the Samba passdb entry (`smbpasswd -a -s`). Password change, lock/unlock and delete keep the Samba side in step. Failures are logged, never silently treated as success. |
+| Per-share SMB access | `src/shares.rs` (`SmbShareAccess`, `smb_valid_users`) | Every `[share]` gets `valid users = @homevault_admin <users/groups>` generated from `share_permissions`, plus `read only` and an optional per-share `guest ok`. Grant/revoke rewrites just that section and reloads `smbd`. A share with no grants is admin-only, never open. The global `allow_guest` no longer silently opens every share: guest access is opt-in per share (and adds the Samba `nobody` guest account to `valid users`). |
+| `resource_shares` enforcement | `src/webdav/serve.rs`, `src/webdav/vfs.rs`, `src/handlers/explorer.rs` | WebDAV uses the effective level (direct ∪ group, `deny` wins) and distinguishes `Read` from `Write`; `deny`, `read`, `write` and `full` now mean what they say. A non-admin Explorer session is limited to its own home plus effective `folder`/`share` grants — `PathGuard` alone is no longer the boundary — and list/download require `read` while upload/mkdir/rename/copy/move require `write`/`full`. A legacy `share_permissions` row (the ACL mirror) is still honoured as a fallback when no `resource_shares` row exists, so an upgrade does not silently revoke an ACL-only user. |
+| FTP jails | `src/ftp.rs`, `src/config/paths.rs` | Each FTP grantee gets `/var/lib/homevault/ftp/jails/<user>/<share>` bind mounts of exactly the granted FTP shares and a vsftpd `user_config_dir` entry (`local_root`, `chroot_local_user=YES`, `write_enable`, `dirlist_enable`, `download_enable`). The old `ftp_shares.json` entries are no longer decorative. `chroot` is forced on: a `local_root` without it would expose the whole host. Because vsftpd has one boolean per user, a grantee with several shares gets the strictest value (`write_enable`/`dirlist_enable`/`download_enable` are enabled only when every mounted share allows it). |
+| Guardrails | `src/setup.rs` | Sudoers grants for `smbpasswd`, `net ads join/leave`, the FTP jail/user-conf globs and the ACL paths; no unscoped binary. |
+
+### P1 — logical shares, NFS rules, POSIX ACL editor, matrix
+
+| Endpoint | Auth | Notes |
+|---|---|---|
+| `GET /api/shares/definitions` | admin | one row per `(name, path)` with `protocols[]`, `enabled`, `conflicts[]` |
+| `POST /api/shares/definitions` | admin | `{name,path,comment?,protocols:[…],read_only?,guest_ok?,restrictions?}` — creates every binding, rolls back on failure, refuses a second path for an existing name. The Shares page uses it for the create form, which now shows one checkbox per protocol instead of a single select. |
+| `POST /api/shares/{name}/bind` | admin | adds one protocol to an existing logical share (same path) |
+| `DELETE /api/shares/{name}/bind/{type}` | admin | removes one binding, leaves the folder and other bindings |
+| `GET/POST/DELETE /api/shares/{name}/permissions` | admin | one grant applied to **every** binding of that logical share |
+| `POST /api/shares/{name}/permissions/sync` | admin | re-applies the stored ACLs on every binding |
+| `GET /api/shares/permissions` | admin | flat matrix of every grant |
+| `GET /api/shares/permissions/report` | admin | CSV export (`text/csv`, quoted fields) |
+| `GET/PUT /api/shares/{name}/{type}/acl` | admin | live POSIX access + default ACL editor; `recursive` walks the tree |
+| `GET/PUT /api/shares/{name}/nfs/rules` | admin | per-client NFS rules `{client, access, options}`; `[]` restores the global networks |
+| `GET /api/users/{username}/permissions/effective` | admin/self | direct + group grants (Permission Inspector equivalent) |
+
+**Recursive means recursive.** `PermissionService::apply_permission_to_path`
+now calls `set_acl_recursive` and `set_default_acl_recursive`; revoke and sync
+use the same scope. `AclService::MAX_RECURSIVE_ENTRIES` (100,000) refuses a
+pathological tree with a clear error instead of running past the deadline.
+The editor is POSIX-only by design: Windows ACLs are not simulated. A future
+Windows ACL layer must not be presented as a POSIX ACL with a different label.
+
+**NFS rules.** `nfs_export_line` emits one client clause per rule when a
+share has rules, and falls back to the global `networks` list otherwise.
+Per-client `ro`/`rw` overrides the default; extra options are validated by
+`validate_nfs_options`. `security_flavor` (`sys|krb5|krb5i|krb5p`) is rendered
+as `sec=…` and refused with `version=auto`/`3`.
+
+### P2 — advanced restrictions, Previous Versions, AD/Kerberos
+
+- **Advanced restrictions** (`ShareRestrictions`, `disable_browsing`,
+  `disable_modification`, `disable_download`) are stored with the share and
+  enforced by WebDAV (every guarded operation), FTP (`dirlist_enable`,
+  `write_enable`, `download_enable`) and the Explorer's list/download/upload/
+  delete routes. SMB has no portable equivalent; POSIX/ACL remains the SMB
+  result. Administrators are exempt, matching DSM.
+- **Previous Versions** adds a managed `shadow_copy2` block per SMB share
+  (`GET /api/shares/smb/previous-versions`,
+  `PUT /api/shares/{name}/smb/previous-versions`). The defaults target ZFS
+  (`.zfs/snapshot`, `%Y-%m-%d_%H:%M:%S`); a Btrfs host can edit those two
+  lines in the managed block and the next toggle preserves them.
+- **AD/Kerberos SMB** accepts `security_mode=ads` only with a DNS realm and a
+  valid idmap range, renders `realm`, `idmap config *`, winbind and ACL mapping
+  directives, and exposes `POST /api/shares/smb/domain/join|leave` (password on
+  stdin, never argv). A real DC/keytab validation remains an acceptance test
+  for hardware, not a claim of this guide.
+- **NFSv4 Kerberos** adds the `security_flavor` field and `sec=` rendering; it
+  refuses Kerberos with `auto`/v3 and documents the keytab requirement.
+
+### Invariants added by this pass
+
+- A grant/revoke always updates Samba's `valid users` for SMB and rebuilds the
+  FTP jails for FTP; the database row alone is not the feature.
+- The WebDAV `deny` level is never treated as "no row": a present `deny` is a
+  refusal, a missing row is a refusal, and only `read`/`write`/`full` allow.
+- The Explorer's non-admin roots are `home ∪ folder grants ∪ share grants`.
+  Never fall back to `PathGuard.allowed_roots()` for a member. The Trash
+  list/restore/purge/empty handlers use the same filtered set
+  (`trash_roots_for_session`), so a member cannot list another share's
+  `.homevault-trash`.
+- A logical share has exactly one path. `POST /shares/definitions` refuses a
+  name already used at a different path; use `bind` to add protocols.
+- `setfacl -R` is never used as a blanket; recursive walks are bounded and
+  never follow symlinks out of the share.
+- `shadow_copy2` is a per-share managed block; enabling it never deletes a
+  hand-added `vfs objects` line.

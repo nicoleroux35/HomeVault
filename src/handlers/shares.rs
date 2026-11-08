@@ -98,6 +98,26 @@ async fn rebuild_sftp_jails_best_effort(state: &AppState) {
     }
 }
 
+/// Best-effort FTP jail rebuild after a grant or FTP share change.
+async fn rebuild_ftp_jails_best_effort(state: &AppState) {
+    if !crate::host_accounts::host_sync_enabled() {
+        return;
+    }
+    match tokio::time::timeout(
+        crate::ftp::FTP_REBUILD_TIMEOUT,
+        crate::ftp::FtpJailService::rebuild_jails(state.db.pool()),
+    )
+    .await
+    {
+        Ok(Ok(())) => {}
+        Ok(Err(e)) => tracing::warn!("FTP: jail rebuild failed: {}", e),
+        Err(_) => tracing::warn!(
+            "FTP: jail rebuild timed out after {}s",
+            crate::ftp::FTP_REBUILD_TIMEOUT.as_secs()
+        ),
+    }
+}
+
 /// Rebuilds the in-process WebDAV listener after a share change, so a new or
 /// renamed share is reachable immediately.
 ///
@@ -105,6 +125,49 @@ async fn rebuild_sftp_jails_best_effort(state: &AppState) {
 /// editing shares must never start a service the admin had turned off.
 async fn reload_webdav_best_effort(state: &std::sync::Arc<AppState>) {
     crate::webdav::reload_if_running(state).await;
+}
+
+/// A logical share: one name + one path exposed by one or more protocols.
+///
+/// The persisted model is still one record per protocol; this view is what
+/// the Shares page renders and what the "bind protocol" endpoints act on, so
+/// a home user creates a folder once instead of repeating it per protocol.
+#[derive(serde::Serialize)]
+pub struct ShareDefinition {
+    pub name: String,
+    pub path: String,
+    pub comment: String,
+    pub protocols: Vec<String>,
+    pub enabled: bool,
+    pub conflicts: Vec<String>,
+}
+
+/// Body for creating one logical share over several protocols.
+#[derive(serde::Deserialize)]
+pub struct CreateShareDefinitionRequest {
+    pub name: String,
+    pub path: String,
+    #[serde(default)]
+    pub comment: String,
+    pub protocols: Vec<String>,
+    #[serde(default)]
+    pub read_only: Option<bool>,
+    #[serde(default)]
+    pub guest_ok: Option<bool>,
+    #[serde(default)]
+    pub restrictions: Option<crate::shares::ShareRestrictions>,
+}
+
+/// Body for binding one more protocol to an existing logical share.
+#[derive(serde::Deserialize)]
+pub struct BindProtocolRequest {
+    pub share_type: String,
+    #[serde(default)]
+    pub read_only: Option<bool>,
+    #[serde(default)]
+    pub guest_ok: Option<bool>,
+    #[serde(default)]
+    pub restrictions: Option<crate::shares::ShareRestrictions>,
 }
 
 /// Body for creating a new share.
@@ -115,6 +178,12 @@ pub struct CreateShareRequest {
     pub path: String,
     pub comment: String,
     pub options: Option<Vec<String>>,
+    #[serde(default)]
+    pub read_only: Option<bool>,
+    #[serde(default)]
+    pub guest_ok: Option<bool>,
+    #[serde(default)]
+    pub restrictions: Option<crate::shares::ShareRestrictions>,
 }
 
 /// Body for updating an existing share. All fields are optional.
@@ -124,6 +193,12 @@ pub struct UpdateShareRequest {
     pub enabled: Option<bool>,
     pub comment: Option<String>,
     pub options: Option<Vec<String>>,
+    #[serde(default)]
+    pub read_only: Option<bool>,
+    #[serde(default)]
+    pub guest_ok: Option<Option<bool>>,
+    #[serde(default)]
+    pub restrictions: Option<crate::shares::ShareRestrictions>,
 }
 
 /// Lists all Samba/NFS shares.
@@ -139,6 +214,366 @@ pub async fn handle_shares_list(
     match run_share_op("list shares", SharesService::get_shares).await {
         Ok(shares) => ResponseHelper::json_success(shares),
         Err(e) => ResponseHelper::json_error(format!("Failed to list shares: {}", e)),
+    }
+}
+
+/// Groups the per-protocol records into the logical shares the UI shows.
+fn group_definitions(shares: Vec<Share>) -> Vec<ShareDefinition> {
+    use std::collections::BTreeMap;
+    let mut by_key: BTreeMap<(String, String), ShareDefinition> = BTreeMap::new();
+    let mut paths_by_name: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for share in &shares {
+        paths_by_name
+            .entry(share.name.clone())
+            .or_default()
+            .push(share.path.clone());
+    }
+    for share in shares {
+        let key = (share.name.clone(), share.path.clone());
+        let entry = by_key.entry(key).or_insert_with(|| ShareDefinition {
+            name: share.name.clone(),
+            path: share.path.clone(),
+            comment: share.comment.clone(),
+            protocols: Vec::new(),
+            enabled: false,
+            conflicts: Vec::new(),
+        });
+        entry.enabled |= share.enabled;
+        if !entry.protocols.contains(&share.share_type.as_str().to_string()) {
+            entry.protocols.push(share.share_type.as_str().to_string());
+        }
+        if entry.comment.is_empty() && !share.comment.is_empty() {
+            entry.comment = share.comment.clone();
+        }
+    }
+    for definition in by_key.values_mut() {
+        definition.protocols.sort();
+        let mut paths = paths_by_name
+            .get(&definition.name)
+            .cloned()
+            .unwrap_or_default();
+        paths.sort();
+        paths.dedup();
+        definition.conflicts = paths
+            .into_iter()
+            .filter(|path| path != &definition.path)
+            .collect();
+    }
+    by_key.into_values().collect()
+}
+
+/// Lists logical shares (one row per name + path, with its protocol badges).
+#[axum_macros::debug_handler]
+pub async fn handle_share_definitions_list(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Response {
+    if let Err(resp) = crate::handlers::admin_guard::require_admin(&state, &headers).await {
+        return resp;
+    }
+    match run_share_op("list share definitions", SharesService::get_shares).await {
+        Ok(shares) => ResponseHelper::json_success(group_definitions(shares)),
+        Err(e) => ResponseHelper::json_error(format!("Failed to list shares: {e}")),
+    }
+}
+
+/// Creates the same folder once and binds it to several protocols.
+#[axum_macros::debug_handler]
+pub async fn handle_share_definition_create(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    req: axum::extract::Json<CreateShareDefinitionRequest>,
+) -> Response {
+    let admin = match crate::handlers::admin_guard::require_admin(&state, &headers).await {
+        Ok(username) => username,
+        Err(resp) => return resp,
+    };
+    if let Err(e) = crate::shares::validate_share_name(&req.name) {
+        return ResponseHelper::json_error(format!("name: {e}"));
+    }
+    if let Err(e) = crate::shares::validate_share_path(&req.path) {
+        return ResponseHelper::json_error(format!("path: {e}"));
+    }
+    if let Err(e) = crate::shares::validate_share_comment(&req.comment) {
+        return ResponseHelper::json_error(format!("comment: {e}"));
+    }
+    let mut protocols: Vec<ShareType> = Vec::new();
+    for raw in &req.protocols {
+        let Some(kind) = ShareType::parse(raw) else {
+            return ResponseHelper::json_error(format!("Invalid share type '{raw}'"));
+        };
+        if protocols.contains(&kind) {
+            return ResponseHelper::json_error(format!("Duplicate share type '{raw}'"));
+        }
+        protocols.push(kind);
+    }
+    if protocols.is_empty() {
+        return ResponseHelper::json_error("At least one protocol is required".to_string());
+    }
+
+    // A logical share has one path. Refusing a second path for the same name
+    // is what makes "create once, bind many protocols" safe instead of
+    // silently producing two folders with the same name and different data.
+    let name = req.name.clone();
+    let path = req.path.clone();
+    let existing = match run_share_op("list shares", SharesService::get_shares).await {
+        Ok(shares) => shares,
+        Err(e) => return ResponseHelper::json_error(format!("Failed to list shares: {e}")),
+    };
+    if let Some(other) = existing
+        .iter()
+        .find(|share| share.name == name && share.path != path)
+    {
+        return ResponseHelper::json_error(format!(
+            "Share name '{}' already exists at '{}'; a logical share has one path",
+            name, other.path
+        ));
+    }
+
+    let mut created: Vec<ShareType> = Vec::new();
+    for kind in &protocols {
+        let share = Share {
+            name: req.name.clone(),
+            share_type: kind.clone(),
+            path: req.path.clone(),
+            enabled: true,
+            comment: req.comment.clone(),
+            options: Vec::new(),
+            read_only: req.read_only.unwrap_or(false),
+            guest_ok: req.guest_ok,
+            restrictions: req.restrictions.unwrap_or_default(),
+        };
+        if let Err(e) = run_share_op("create share", move || SharesService::create_share(&share)).await
+        {
+            let rollback_name = req.name.clone();
+            for kind in created {
+                let rollback_name = rollback_name.clone();
+                let _ = run_share_op("rollback share", move || {
+                    SharesService::delete_share(&rollback_name, kind)
+                })
+                .await;
+            }
+            return ResponseHelper::json_error(format!("Failed to create share: {e}"));
+        }
+        created.push(kind.clone());
+    }
+
+    crate::events::log_event(format!(
+        "Admin '{}' created logical share '{}' at '{}' over {:?}",
+        admin, req.name, req.path, created
+    ));
+    if created.contains(&ShareType::Sftp) {
+        rebuild_sftp_jails_best_effort(&state).await;
+    }
+    if created.contains(&ShareType::Webdav) {
+        reload_webdav_best_effort(&state).await;
+    }
+    if created.contains(&ShareType::Ftp) {
+        rebuild_ftp_jails_best_effort(&state).await;
+    }
+    ResponseHelper::json_success("Share created successfully".to_string())
+}
+
+/// Binds one more protocol to an existing logical share.
+#[axum_macros::debug_handler]
+pub async fn handle_share_bind_protocol(
+    State(state): State<Arc<AppState>>,
+    Path(name): Path<String>,
+    headers: HeaderMap,
+    req: axum::extract::Json<BindProtocolRequest>,
+) -> Response {
+    if let Err(resp) = crate::handlers::admin_guard::require_admin(&state, &headers).await {
+        return resp;
+    }
+    let Some(kind) = ShareType::parse(&req.share_type) else {
+        return ResponseHelper::json_error("Invalid share type".to_string());
+    };
+    let existing = match run_share_op("list shares", SharesService::get_shares).await {
+        Ok(shares) => shares,
+        Err(e) => return ResponseHelper::json_error(format!("Failed to list shares: {e}")),
+    };
+    let Some(source) = existing.iter().find(|share| share.name == name) else {
+        return ResponseHelper::json_error(format!("Share '{name}' not found"));
+    };
+    if existing
+        .iter()
+        .any(|share| share.name == name && share.share_type == kind)
+    {
+        return ResponseHelper::json_error(format!(
+            "Share '{name}' already has a {} binding",
+            req.share_type
+        ));
+    }
+    let share = Share {
+        name: name.clone(),
+        share_type: kind.clone(),
+        path: source.path.clone(),
+        enabled: true,
+        comment: source.comment.clone(),
+        options: Vec::new(),
+        read_only: req.read_only.unwrap_or(false),
+        guest_ok: req.guest_ok,
+        restrictions: req.restrictions.unwrap_or_default(),
+    };
+    match run_share_op("bind share protocol", move || SharesService::create_share(&share)).await {
+        Ok(_) => {
+            if kind == ShareType::Sftp {
+                rebuild_sftp_jails_best_effort(&state).await;
+            }
+            if kind == ShareType::Webdav {
+                reload_webdav_best_effort(&state).await;
+            }
+            if kind == ShareType::Ftp {
+                rebuild_ftp_jails_best_effort(&state).await;
+            }
+            if kind == ShareType::Smb {
+                if let Err(e) =
+                    crate::permissions::PermissionService::refresh_smb_access(
+                        &name,
+                        state.db.pool(),
+                    )
+                    .await
+                {
+                    tracing::warn!("Failed to refresh SMB access for '{}': {}", name, e);
+                }
+            }
+            ResponseHelper::json_success("Protocol bound".to_string())
+        }
+        Err(e) => ResponseHelper::json_error(format!("Failed to bind protocol: {e}")),
+    }
+}
+
+/// Removes one protocol binding from a logical share, leaving the folder and
+/// the other protocol bindings untouched.
+#[axum_macros::debug_handler]
+pub async fn handle_share_unbind_protocol(
+    State(state): State<Arc<AppState>>,
+    Path((name, share_type)): Path<(String, String)>,
+    headers: HeaderMap,
+) -> Response {
+    if let Err(resp) = crate::handlers::admin_guard::require_admin(&state, &headers).await {
+        return resp;
+    }
+    let Some(kind) = ShareType::parse(&share_type) else {
+        return ResponseHelper::json_error("Invalid share type".to_string());
+    };
+    let name_for_op = name.clone();
+    let kind_for_op = kind.clone();
+    match run_share_op("unbind share protocol", move || {
+        SharesService::delete_share(&name_for_op, kind_for_op)
+    })
+    .await
+    {
+        Ok(_) => {
+            if kind == ShareType::Sftp {
+                rebuild_sftp_jails_best_effort(&state).await;
+            }
+            if kind == ShareType::Webdav {
+                reload_webdav_best_effort(&state).await;
+            }
+            if kind == ShareType::Ftp {
+                rebuild_ftp_jails_best_effort(&state).await;
+            }
+            ResponseHelper::json_success("Protocol unbound".to_string())
+        }
+        Err(e) => ResponseHelper::json_error(format!("Failed to unbind protocol: {e}")),
+    }
+}
+
+/// Body for joining an AD domain.
+#[derive(serde::Deserialize)]
+pub struct DomainJoinRequest {
+    pub username: String,
+    pub password: String,
+}
+
+/// Joins the configured AD realm with a domain account.
+#[axum_macros::debug_handler]
+pub async fn handle_smb_domain_join(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    req: axum::extract::Json<DomainJoinRequest>,
+) -> Response {
+    if let Err(resp) = crate::handlers::admin_guard::require_admin(&state, &headers).await {
+        return resp;
+    }
+    let config = match run_share_op("load SMB config", SharesService::get_smb_config).await {
+        Ok(config) => config,
+        Err(e) => return ResponseHelper::json_error(format!("Failed to load SMB config: {e}")),
+    };
+    if !matches!(
+        config.security_mode.to_lowercase().as_str(),
+        "ads" | "domain"
+    ) || config.realm.trim().is_empty()
+    {
+        return ResponseHelper::json_error(
+            "Configure security_mode=ads and a realm before joining a domain".to_string(),
+        );
+    }
+    match run_share_op("join AD domain", move || {
+        crate::shares::join_smb_domain(&req.username, &req.password)
+    })
+    .await
+    {
+        Ok(_) => ResponseHelper::json_success("Domain joined".to_string()),
+        Err(e) => ResponseHelper::json_error(format!("Domain join failed: {e}")),
+    }
+}
+
+/// Leaves the current AD domain.
+#[axum_macros::debug_handler]
+pub async fn handle_smb_domain_leave(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Response {
+    if let Err(resp) = crate::handlers::admin_guard::require_admin(&state, &headers).await {
+        return resp;
+    }
+    match run_share_op("leave AD domain", crate::shares::leave_smb_domain).await {
+        Ok(_) => ResponseHelper::json_success("Domain left".to_string()),
+        Err(e) => ResponseHelper::json_error(format!("Domain leave failed: {e}")),
+    }
+}
+
+/// Returns one NFS share's per-client rules.
+#[axum_macros::debug_handler]
+pub async fn handle_nfs_rules_get(
+    State(state): State<Arc<AppState>>,
+    Path(name): Path<String>,
+    headers: HeaderMap,
+) -> Response {
+    if let Err(resp) = crate::handlers::admin_guard::require_admin(&state, &headers).await {
+        return resp;
+    }
+    match run_share_op("load NFS rules", move || {
+        Ok::<_, crate::shares::ShareError>(SharesService::get_nfs_rules(&name))
+    })
+    .await
+    {
+        Ok(rules) => ResponseHelper::json_success(rules),
+        Err(e) => ResponseHelper::json_error(format!("Failed to load NFS rules: {e}")),
+    }
+}
+
+/// Replaces one NFS share's per-client rules (`[]` restores the global set).
+#[axum_macros::debug_handler]
+pub async fn handle_nfs_rules_set(
+    State(state): State<Arc<AppState>>,
+    Path(name): Path<String>,
+    headers: HeaderMap,
+    req: axum::extract::Json<Vec<crate::shares::NfsClientRule>>,
+) -> Response {
+    if let Err(resp) = crate::handlers::admin_guard::require_admin(&state, &headers).await {
+        return resp;
+    }
+    let rules = req.0;
+    match run_share_op("save NFS rules", move || {
+        SharesService::save_nfs_rules(&name, &rules)
+    })
+    .await
+    {
+        Ok(_) => ResponseHelper::json_success("NFS rules updated".to_string()),
+        Err(e) => ResponseHelper::json_error(format!("Failed to save NFS rules: {e}")),
     }
 }
 
@@ -190,6 +625,9 @@ pub async fn handle_share_update(
         enabled: req.enabled,
         comment: req.comment.clone(),
         options: req.options.clone(),
+        read_only: req.read_only,
+        guest_ok: req.guest_ok,
+        restrictions: req.restrictions,
     };
 
     let name_for_op = name.clone();
@@ -205,6 +643,17 @@ pub async fn handle_share_update(
             }
             if share_type == ShareType::Webdav {
                 reload_webdav_best_effort(&state).await;
+            }
+            if share_type == ShareType::Smb {
+                if let Err(e) =
+                    crate::permissions::PermissionService::refresh_smb_access(&name, state.db.pool())
+                        .await
+                {
+                    tracing::warn!("Failed to refresh SMB access for '{}': {}", name, e);
+                }
+            }
+            if share_type == ShareType::Ftp {
+                rebuild_ftp_jails_best_effort(&state).await;
             }
             ResponseHelper::json_success("Share updated successfully".to_string())
         }
@@ -237,6 +686,9 @@ pub async fn handle_share_create(
         enabled: true,
         comment: req.comment.clone(),
         options: req.options.clone().unwrap_or_default(),
+        read_only: req.read_only.unwrap_or(false),
+        guest_ok: req.guest_ok,
+        restrictions: req.restrictions.unwrap_or_default(),
     };
 
     match run_share_op("create share", move || SharesService::create_share(&share)).await {
@@ -253,6 +705,9 @@ pub async fn handle_share_create(
             }
             if share_type == ShareType::Webdav {
                 reload_webdav_best_effort(&state).await;
+            }
+            if share_type == ShareType::Ftp {
+                rebuild_ftp_jails_best_effort(&state).await;
             }
             ResponseHelper::json_success("Share created successfully".to_string())
         }
@@ -291,6 +746,9 @@ pub async fn handle_share_delete(
             if share_type == ShareType::Webdav {
                 reload_webdav_best_effort(&state).await;
             }
+            if share_type == ShareType::Ftp {
+                rebuild_ftp_jails_best_effort(&state).await;
+            }
             ResponseHelper::json_success("Share deleted successfully".to_string())
         }
         Err(e) => ResponseHelper::json_error(format!("Failed to delete share: {}", e)),
@@ -322,6 +780,9 @@ pub async fn handle_share_toggle(
         Ok(_) => {
             if share_type == ShareType::Sftp {
                 rebuild_sftp_jails_best_effort(&state).await;
+            }
+            if share_type == ShareType::Ftp {
+                rebuild_ftp_jails_best_effort(&state).await;
             }
             let msg = if enabled {
                 "Share enabled"
@@ -442,6 +903,47 @@ pub async fn handle_smb_recycle_set(
 
 /// Returns every SMB share's Time Machine state (toggle + quota), derived from
 /// the live `smb.conf` like the recycle map.
+/// Lists which SMB shares expose Previous Versions.
+#[axum_macros::debug_handler]
+pub async fn handle_smb_previous_versions_list(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Response {
+    if let Err(resp) = crate::handlers::admin_guard::require_admin(&state, &headers).await {
+        return resp;
+    }
+    match run_share_op("load SMB Previous Versions state", || {
+        Ok::<_, crate::shares::ShareError>(SharesService::get_smb_previous_versions_map())
+    })
+    .await
+    {
+        Ok(map) => ResponseHelper::json_success(map),
+        Err(e) => ResponseHelper::json_error(format!("Failed to load Previous Versions: {e}")),
+    }
+}
+
+/// Turns Previous Versions on/off for one SMB share.
+#[axum_macros::debug_handler]
+pub async fn handle_smb_previous_versions_set(
+    State(state): State<Arc<AppState>>,
+    Path(name): Path<String>,
+    headers: HeaderMap,
+    req: axum::extract::Json<RecycleToggleRequest>,
+) -> Response {
+    if let Err(resp) = crate::handlers::admin_guard::require_admin(&state, &headers).await {
+        return resp;
+    }
+    let enabled = req.enabled;
+    match run_share_op("set SMB Previous Versions", move || {
+        SharesService::set_smb_previous_versions(&name, enabled)
+    })
+    .await
+    {
+        Ok(_) => ResponseHelper::json_success(serde_json::json!({ "enabled": enabled })),
+        Err(e) => ResponseHelper::json_error(format!("Failed to set Previous Versions: {e}")),
+    }
+}
+
 #[axum_macros::debug_handler]
 pub async fn handle_smb_time_machine_list(
     State(state): State<Arc<AppState>>,
@@ -691,7 +1193,10 @@ pub async fn handle_ftp_config_update(
     })
     .await
     {
-        Ok(_) => ResponseHelper::json_success("FTP config updated".to_string()),
+        Ok(_) => {
+            rebuild_ftp_jails_best_effort(&state).await;
+            ResponseHelper::json_success("FTP config updated".to_string())
+        }
         Err(e) => ResponseHelper::json_error(format!("Failed to save FTP config: {}", e)),
     }
 }

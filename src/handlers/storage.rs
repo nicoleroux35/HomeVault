@@ -252,6 +252,28 @@ pub async fn handle_raid_create(
         return ResponseHelper::json_error(format!("Failed to create virtual disk: {}", e));
     }
 
+    // DSM refuses a pool that mixes spinning disks and SSDs. Fetch the same
+    // inventory the wizard saw and apply that rule before any tool runs.
+    match DiskService::get_available_devices().await {
+        Ok(inventory) => {
+            let selected: Vec<_> = inventory
+                .into_iter()
+                .filter(|d| all_devices.contains(&d.name))
+                .collect();
+            if selected.len() >= 2 && crate::disk::devices_mix_rotational(&selected) {
+                return ResponseHelper::json_error(
+                    "All disks in a virtual disk must be the same type (SSD or HDD)".to_string(),
+                );
+            }
+        }
+        Err(e) => {
+            return ResponseHelper::json_error(format!(
+                "Failed to inspect the selected disks: {}",
+                e
+            ));
+        }
+    }
+
     // Duplicate names used to fail only after mdadm ran: catch them upfront.
     if DiskService::array_name_taken(&req.name).await {
         return ResponseHelper::json_error(format!(
@@ -532,6 +554,31 @@ async fn virtual_disk_type(name: &str) -> Option<crate::pools::PoolType> {
 /// Destroys a virtual disk, dispatching to the right teardown for its
 /// technology (mdadm → `DiskService::delete_raid`, which also cleans
 /// `mdadm.conf`/`fstab`; ZFS/Btrfs → `PoolService::delete_pool`).
+async fn destroy_virtual_disk(state: &Arc<AppState>, name: &str) -> Result<(), String> {
+    let kind = virtual_disk_type(name)
+        .await
+        .ok_or_else(|| format!("Virtual disk '{}' not found", name))?;
+
+    match kind {
+        crate::pools::PoolType::Mdadm => DiskService::delete_raid(name)
+            .await
+            .map_err(|e| e.to_string()),
+        crate::pools::PoolType::Zfs | crate::pools::PoolType::Btrfs => {
+            let n = name.to_string();
+            let k = kind.clone();
+            tokio::task::spawn_blocking(move || {
+                crate::pools::PoolService::delete_pool(&n, k).map_err(|e| e.to_string())
+            })
+            .await
+            .unwrap_or_else(|e| Err(e.to_string()))
+        }
+        crate::pools::PoolType::Unknown => Err("Unknown virtual disk type".to_string()),
+    }
+}
+
+/// Legacy DELETE: kept for API clients, no password re-authentication. The
+/// UI uses [`handle_virtual_disk_destroy`] so a destructive wipe asks for the
+/// administrator's password again, like DSM.
 #[axum_macros::debug_handler]
 pub async fn handle_virtual_disk_delete(
     State(state): State<Arc<AppState>>,
@@ -543,31 +590,66 @@ pub async fn handle_virtual_disk_delete(
         Err(response) => return response,
     };
 
-    let kind = match virtual_disk_type(&name).await {
-        Some(k) => k,
-        None => return ResponseHelper::json_error(format!("Virtual disk '{}' not found", name)),
-    };
-
-    let result = match kind {
-        crate::pools::PoolType::Mdadm => DiskService::delete_raid(&name)
-            .await
-            .map_err(|e| e.to_string()),
-        crate::pools::PoolType::Zfs | crate::pools::PoolType::Btrfs => {
-            let n = name.clone();
-            let k = kind.clone();
-            tokio::task::spawn_blocking(move || {
-                crate::pools::PoolService::delete_pool(&n, k).map_err(|e| e.to_string())
-            })
-            .await
-            .unwrap_or_else(|e| Err(e.to_string()))
-        }
-        crate::pools::PoolType::Unknown => Err("Unknown virtual disk type".to_string()),
-    };
-
-    match result {
-        Ok(_) => {
+    match destroy_virtual_disk(&state, &name).await {
+        Ok(()) => {
             crate::events::log_event_warn(format!(
                 "Admin '{}' destroyed virtual disk '{}'",
+                admin_username, name
+            ));
+            ResponseHelper::json_success(serde_json::json!({ "message": "Virtual disk destroyed" }))
+        }
+        Err(e) => ResponseHelper::json_error(format!("Failed to destroy virtual disk: {}", e)),
+    }
+}
+
+#[derive(serde::Deserialize)]
+pub struct DestroyVirtualDiskRequest {
+    /// The disk name, typed by the admin. Checked server-side so a stale
+    /// dialog cannot destroy a different disk.
+    pub confirm_name: String,
+    /// The administrator's own password, re-verified before the wipe.
+    pub password: String,
+}
+
+/// Password-confirmed destroy used by the Storage UI. This is the safer
+/// entry point: a valid session alone is not enough for an irreversible
+/// `wipefs`/`zpool destroy`/`btrfs` wipe.
+#[axum_macros::debug_handler]
+pub async fn handle_virtual_disk_destroy(
+    State(state): State<Arc<AppState>>,
+    axum::extract::Path(name): axum::extract::Path<String>,
+    headers: HeaderMap,
+    peer: crate::middleware::PeerAddr,
+    req: axum::extract::Json<DestroyVirtualDiskRequest>,
+) -> Response {
+    let admin_username = match require_admin(&state, &headers).await {
+        Ok(u) => u,
+        Err(response) => return response,
+    };
+    if req.confirm_name != name {
+        return ResponseHelper::json_error(
+            "The typed disk name does not match the selected disk".to_string(),
+        );
+    }
+
+    let ip = crate::handlers::auth::client_ip(&headers, peer.0);
+    match state
+        .auth
+        .authenticate(&admin_username, &req.password, &ip, None)
+        .await
+    {
+        Ok(true) => {}
+        Ok(false) | Err(_) => {
+            return ResponseHelper::json_error(
+                "Password confirmation failed — the disk was not touched".to_string(),
+            )
+        }
+    }
+
+    match destroy_virtual_disk(&state, &name).await {
+        Ok(()) => {
+            crate::events::log_event_warn(format!(
+                "Admin '{}' destroyed virtual disk '{}' (password confirmed)",
                 admin_username, name
             ));
             ResponseHelper::json_success(serde_json::json!({ "message": "Virtual disk destroyed" }))

@@ -859,6 +859,12 @@ impl SetupService {
         // password, but sudoers itself cannot enforce that constraint —
         // this grant is only as safe as `src/sftp.rs`'s own call discipline.
         let chpasswd = Self::resolve_bin("chpasswd", "/usr/sbin/chpasswd");
+        // Samba passdb credentials (`src/host_accounts.rs`). HomeVault users
+        // are DB-only; without this grant a created user has no SMB password
+        // and `smbpasswd` fails at the sudo prompt. Each verb is scoped to
+        // one username; the password travels on stdin, never argv.
+        let smbpasswd = Self::resolve_bin("smbpasswd", "/usr/bin/smbpasswd");
+        let net = Self::resolve_bin("net", "/usr/bin/net");
         // `rm -f` deletes a purged user's own authorized_keys file
         // (`SftpJailService::purge_user`, called from `handle_user_delete`);
         // scoped to the exact glob, not the whole `rm` binary — an
@@ -871,6 +877,10 @@ impl SetupService {
         let sftp_config_dir = "/etc/homevault-sftp";
         let sftp_conf = "/etc/homevault-sftp/sshd_config";
         let sftp_service = "/etc/systemd/system/homevault-sftp.service";
+        let ftp_jails_base = crate::config::paths::ftp_jails_dir().display().to_string();
+        let ftp_users_base = crate::config::paths::ftp_user_conf_dir().display().to_string();
+        let ftp_jails_glob = format!("{ftp_jails_base}/*");
+        let ftp_users_glob = format!("{ftp_users_base}/*");
         // DHCP + local DNS share one root-owned dnsmasq drop-in
         // (`src/dhcp_server.rs::DROPIN_PATH`); the service writes/removes it
         // and restarts the daemon through `sudo`.
@@ -1195,6 +1205,12 @@ homevault ALL=(root) NOPASSWD: {dmidecode} -s *, {dmidecode} --type 17
 # `gpasswd` are resolved for why these are scoped to exact arguments.
 homevault ALL=(root) NOPASSWD: {groupadd} homevault-sftp, {mkdir} -p {sftp_config_dir}, {tee} {sftp_conf}, {tee} {sftp_service}, {useradd} -M -s /usr/sbin/nologin -G homevault-sftp *, {usermod_sftp} -a -G homevault-sftp *, {gpasswd} -d * homevault-sftp, {chmod} 644 {sftp_keys_glob}, {chpasswd}, {rm} -f {sftp_keys_glob}
 
+# FTP jails (`src/ftp.rs`) — one chroot root per grantee and one bind mount
+# per granted share, plus the per-user vsftpd config. Scoped to the jail and
+# user-conf globs; the mount source is deliberately `*` because it is an
+# already-configured share path, and the target is confined to the jail.
+homevault ALL=(root) NOPASSWD: {mkdir} -p {ftp_jails_base}, {mkdir} -p {ftp_users_base}, {mkdir} -p {ftp_jails_glob}, {mkdir} -p {ftp_jails_glob}/*, {tee} {ftp_users_glob}, {mount} --bind * {ftp_jails_glob}/*, {umount} {ftp_jails_glob}/*, {rmdir} {ftp_jails_glob}/*, {rmdir} {ftp_jails_glob}, {rm} -f {ftp_users_glob}
+
 # DHCP + local DNS (`src/dhcp_server.rs`, `src/local_dns.rs`) share the
 # dnsmasq drop-in; `systemctl` is scoped to that one unit, never the daemon
 # family, and `rm -f` only removes the file HomeVault itself wrote.
@@ -1253,6 +1269,16 @@ homevault ALL=(root) NOPASSWD: {setquota} -u * * * * * *, {repquota} -u *, {quot
 # scoped `usermod`/`gpasswd` grant above for that, one group at a time.
 homevault ALL=(root) NOPASSWD: {useradd} -M -s /usr/sbin/nologin *
 
+# Samba passdb (`src/host_accounts.rs`) — a HomeVault user needs a matching
+# Samba credential before SMB can authenticate them. The password is written
+# on stdin; the grant names only the four verbs and one username so it cannot
+# be used to read or reset an arbitrary file.
+homevault ALL=(root) NOPASSWD: {smbpasswd} -a -s *, {smbpasswd} -x *, {smbpasswd} -d *, {smbpasswd} -e *
+
+# AD domain join/leave (`src/shares.rs`). The domain password is fed on
+# stdin; `net ads` is the only supported verb pair.
+homevault ALL=(root) NOPASSWD: {net} ads join -U *, {net} ads leave
+
 # Settings page "server name" field - see the comment above where
 # `hostnamectl` is resolved for why this is scoped to just `set-hostname`.
 homevault ALL=(root) NOPASSWD: {hostnamectl} set-hostname *
@@ -1303,6 +1329,12 @@ homevault ALL=(root) NOPASSWD: {power_grants}
             chmod = chmod,
             setfacl = setfacl,
             chown = chown,
+            mkdir = mkdir,
+            rmdir = rmdir,
+            ftp_jails_base = ftp_jails_base,
+            ftp_users_base = ftp_users_base,
+            ftp_jails_glob = ftp_jails_glob,
+            ftp_users_glob = ftp_users_glob,
             udisksctl = udisksctl,
             mount = mount_bin,
             umount = umount_bin,
@@ -1331,6 +1363,8 @@ homevault ALL=(root) NOPASSWD: {power_grants}
             usermod_sftp = usermod_sftp,
             gpasswd = gpasswd,
             chpasswd = chpasswd,
+            smbpasswd = smbpasswd,
+            net = net,
             rm = rm,
             sftp_keys_glob = sftp_keys_glob,
             sftp_config_dir = sftp_config_dir,

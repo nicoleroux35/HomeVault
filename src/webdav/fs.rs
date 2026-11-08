@@ -40,6 +40,8 @@ pub struct WebdavShare {
     pub name: String,
     /// The absolute directory the share maps to, e.g. `/srv/photos`.
     pub root: PathBuf,
+    /// Per-share advanced restrictions (browse / modify / download).
+    pub restrictions: crate::shares::ShareRestrictions,
 }
 
 impl WebdavShare {
@@ -50,6 +52,7 @@ impl WebdavShare {
         Self {
             name: share.name.clone(),
             root: normalize_root(&share.path),
+            restrictions: share.restrictions,
         }
     }
 }
@@ -76,6 +79,7 @@ pub fn servable_shares(all: Vec<Share>) -> Vec<WebdavShare> {
         out.push(WebdavShare {
             name: share.name,
             root,
+            restrictions: share.restrictions,
         });
     }
     out
@@ -230,6 +234,9 @@ mod tests {
             enabled: true,
             comment: String::new(),
             options: Vec::new(),
+            read_only: false,
+            guest_ok: None,
+            restrictions: crate::shares::ShareRestrictions::default(),
         }
     }
 
@@ -343,6 +350,7 @@ mod tests {
         let shares = vec![WebdavShare {
             name: "photos".to_string(),
             root: PathBuf::from("/srv/photos"),
+            restrictions: crate::shares::ShareRestrictions::default(),
         }];
         assert_eq!(
             resolve_path(&shares, "/photos/a/b.txt"),
@@ -368,6 +376,7 @@ mod tests {
         let share = WebdavShare {
             name: "s".to_string(),
             root: PathBuf::from("/srv/s"),
+            restrictions: crate::shares::ShareRestrictions::default(),
         };
         assert_eq!(absolute_path(&share, ""), PathBuf::from("/srv/s"));
         assert_eq!(absolute_path(&share, "a/b"), PathBuf::from("/srv/s/a/b"));

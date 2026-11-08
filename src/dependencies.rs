@@ -1777,6 +1777,7 @@ mod tests {
             "Restart=on-failure",
             "Environment=\"PORT=$PORT\"",
             "Environment=\"DATA_DIRECTORY=$DATA_DIR\"",
+            "Environment=\"HV_HOST_SYNC=1\"",
             "EnvironmentFile=-$ENV_FILE",
             "WantedBy=multi-user.target",
         ] {

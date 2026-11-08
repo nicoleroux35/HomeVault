@@ -130,6 +130,14 @@ Catalog phase-B additions on the same package shape (no new manifest file):
   | `vikunja` | commented example of `cap_drop`/`cap_add`/`user`/`read_only` |
   | `pihole`, `home-assistant` | default policy only (host networking is a compose-level choice, not a privilege) |
 
+- **Raw container creation is hardened by default.** `POST /docker/containers`
+  adds `--security-opt no-new-privileges:true` unless the request explicitly
+  sets `no_new_privileges: false`; the create form exposes that opt-out next
+  to the `privileged` switch. `--privileged` remains available but is a
+  deliberate, admin-only choice (and is journaled like every other privileged
+  action). Compose projects keep the author's YAML, so a project can still
+  opt out explicitly — the default only applies to the simple create form.
+
   `cap_drop = ["ALL"]` is **not** applied globally: images that need
   `NET_BIND_SERVICE` or `CHOWN` would break, so it stays an explicit,
   per-app decision.

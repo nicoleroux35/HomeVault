@@ -850,10 +850,15 @@
   async function destroyVirtualDisk(v: VirtualDisk) {
     // Irreversible: every file on the disk is lost and the member superblocks
     // are erased, so the confirmation names the disk and requires its name to
-    // be typed before the button enables (ROADMAP 7.3).
-    if (!(await dlg.ask(translate('storage.vd_destroy_confirm', { name: v.name }), { requireText: v.name }))) return;
+    // be typed before the button enables (ROADMAP 7.3). Like DSM, it also asks
+    // for the administrator's own password; the server re-verifies it before
+    // touching the disk.
+    if (!(await dlg.ask(translate('storage.vd_destroy_confirm', { name: v.name }), {
+      requireText: v.name,
+      requirePassword: true,
+    }))) return;
     virtualBusy = v.name;
-    const r = await api.deleteVirtualDisk(v.name);
+    const r = await api.destroyVirtualDisk(v.name, v.name, dlg.password);
     virtualBusy = '';
     if (r.success) { await Promise.all([loadVirtualDisks(), loadDisks()]); }
     else dlg.notify(r.message || r.error || translate('storage.vd_action_failed'));

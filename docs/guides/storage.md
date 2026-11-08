@@ -26,6 +26,7 @@ standalone `/snapshots/*` HTTP endpoints were removed, see
 | `GET /storage/available-home-disks` | auth | home-folder disk picker (with free/total bytes) |
 | `GET /storage/virtual-disks` | auth | **all** virtual disks — mdadm + ZFS + Btrfs (`PoolService::scan_pools`, mdadm `/dev/md/x` normalised to `x`) |
 | `DELETE /storage/virtual-disks/{name}` | admin | destroy — dispatches: mdadm → `DiskService::delete_raid`, ZFS/Btrfs → `PoolService::delete_pool`. **Refuses to go on when unmount fails** (see "Destroying is unmount-gated" below) |
+| `POST /storage/virtual-disks/{name}/destroy` | admin | password-confirmed destroy `{confirm_name, password}` — the typed name must match and the admin's own password is re-verified before the wipe. The UI path; `DELETE` stays for API clients |
 | `POST /storage/virtual-disks/{name}/scrub` | admin | verify — ZFS/Btrfs → `PoolService::start_scrub`; mdadm → `sudo mdadm --action check <array>` |
 | `POST /storage/virtual-disks/{name}/grow` | admin | mdadm only: `{ device }` (a free whole disk) → `DiskService::grow_raid` (`mdadm --add` then `--grow --raid-devices N+1`); raid0/raid10 and ZFS/Btrfs refused; the reshape runs in the background. UI: the "Add disk" modal in Storage's Virtual-disks tab (see [RAID](./raid.md)) |
 | `GET /storage/virtual-disks/{name}/level-options` | auth | mdadm only: current level/member count plus every migration target with `allowed` and the refusal `reason` (`DiskService::raid_level_plan`) |
@@ -114,6 +115,12 @@ still binding:
   and `POST` the same path performs the explicit migration (moves `.snapshots`
   to `@snapshots`, data into `@`, rewrites fstab, remounts); the Storage card
   asks for the pool name. See [Snapshots](./snapshots.md#btrfs-atsnapshots-layout-and-in-place-rollback-p1-13-2026-11-05).
+- **Btrfs compression by default**: new Btrfs pools mount `@` and
+  `@snapshots` with `compress=zstd:3`, and the same option is written to both
+  `/etc/fstab` entries (including imported Btrfs pools). ZFS pools already use
+  `compression=lz4`; existing pools keep the mount options they were created
+  with. This is the compression half of DSM's Btrfs dedup/compression pair —
+  dedup itself is not implemented.
 - **Btrfs raid5/raid6**: metadata is forced to `raid1` even when data uses
   `raid5`/`raid6`, to avoid the known upstream Btrfs raid5/6 write-hole bug —
   surfaced in the create-pool UI as a tooltip, not silent.
@@ -201,6 +208,11 @@ idle box.
   [Disk Encryption](./encryption.md).
 
 ## Invariants
+
+**Destructive deletes are password-confirmed.** The Storage UI calls
+`POST /storage/virtual-disks/{name}/destroy` with the typed disk name and the
+administrator's own password; the server re-verifies it before the wipe. The
+legacy `DELETE` remains for API clients and has no re-auth.
 
 - **A refused action is never silent (ROADMAP X.3, 2026-10-24).** `dlg.notify`
   carries the server's own reason for every failed mutation, including the

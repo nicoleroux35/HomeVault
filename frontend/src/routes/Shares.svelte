@@ -39,6 +39,19 @@
     share_type: string;
     enabled: boolean;
     comment: string;
+    read_only?: boolean;
+    guest_ok?: boolean | null;
+    restrictions?: { disable_browsing: boolean; disable_modification: boolean; disable_download: boolean };
+  }
+
+  /** One logical share: name + path + protocol badges. */
+  interface ShareDefinition {
+    name: string;
+    path: string;
+    comment: string;
+    protocols: string[];
+    enabled: boolean;
+    conflicts: string[];
   }
 
   /**
@@ -111,6 +124,8 @@
     directory_mask: string;
     additional_params: string[];
     multichannel: boolean;
+    realm?: string;
+    idmap_range?: string;
   }
 
   interface NfsConfig {
@@ -118,7 +133,14 @@
     default_access: string;
     version: string;
     root_squash: string;
+    security_flavor?: string;
     custom_options: string[];
+  }
+
+  interface NfsClientRule {
+    client: string;
+    access: string;
+    options: string[];
   }
 
   interface FtpConfig {
@@ -128,6 +150,7 @@
     max_clients: number;
     force_tls: boolean;
     allow_anonymous: boolean;
+    anonymous_root?: string;
     chroot: boolean;
     welcome_message: string;
   }
@@ -169,6 +192,7 @@
   }
 
   let shares = $state<Share[]>([]);
+  let definitions = $state<ShareDefinition[]>([]);
   // Per-share quota state, keyed `<name>:<type>` (the API inspects the
   // filesystem per share, so an unsupported one carries its reason).
   let quotas = $state<Record<string, ShareQuotaState>>({});
@@ -186,7 +210,7 @@
   let newShare = $state({
     name: '',
     path: '',
-    share_type: 'smb',
+    protocols: ['smb'] as string[],
     comment: ''
   });
 
@@ -205,11 +229,12 @@
   let newSftpKey = $state('');
 
   let showPermissionsModal = $state(false);
-  let permissionsShare = $state<Share | null>(null);
+  let permissionsShare = $state<{ name: string } | null>(null);
   let sharePermissions = $state<SharePermission[]>([]);
   let permissionsLoading = $state(false);
   let permissionsSyncing = $state(false);
   let newGrant = $state({ grantee_type: 'user', grantee_name: '', permission: 'r', recursive: true });
+  let granteeOptions = $state<{ users: string[]; groups: string[] }>({ users: [], groups: [] });
 
   /**
    * Fallbacks for the SMB form. The server always answers with every field,
@@ -217,11 +242,16 @@
    * must degrade to one field showing a default, never blank the whole tab
    * (`allow_guest: undefined` used to break the guest switch's binding).
    */
-  const SMB_CONFIG_DEFAULTS: SmbConfig = { workgroup: 'WORKGROUP', security_mode: 'user', protocol_version: 'SMB3', allow_guest: false, create_mask: '0755', directory_mask: '0755', additional_params: [], multichannel: false };
+  const SMB_CONFIG_DEFAULTS: SmbConfig = { workgroup: 'WORKGROUP', security_mode: 'user', protocol_version: 'SMB3', allow_guest: false, create_mask: '0755', directory_mask: '0755', additional_params: [], multichannel: false, realm: '', idmap_range: '10000-999999' };
 
   let smbConfig: SmbConfig = $state({ ...SMB_CONFIG_DEFAULTS });
   let smbRecycle = $state<Record<string, boolean>>({});
   let recycleSaving = $state<string | null>(null);
+  let smbPreviousVersions = $state<Record<string, boolean>>({});
+  let previousVersionsSaving = $state<string | null>(null);
+  let domainUser = $state('');
+  let domainPassword = $state('');
+  let domainBusy = $state(false);
   let smbTimeMachine = $state<Record<string, SmbTimeMachine>>({});
   let tmSaving = $state<string | null>(null);
   let tmQuotaDrafts = $state<Record<string, string>>({});
@@ -237,7 +267,9 @@
   let rsyncBusyName = $state<string | null>(null);
   let rsyncSecretDrafts = $state<Record<string, string>>({});
   let rsyncSecretBusy = $state<string | null>(null);
-  let nfsConfig: NfsConfig = $state({ networks: ['*'], default_access: 'rw', version: 'auto', root_squash: 'root_squash', custom_options: [] });
+  let nfsConfig: NfsConfig = $state({ networks: ['*'], default_access: 'rw', version: 'auto', root_squash: 'root_squash', security_flavor: 'sys', custom_options: [] });
+  let nfsRulesDrafts = $state<Record<string, string>>({});
+  let nfsRulesSaving = $state<string | null>(null);
   let ftpUsers = $state('');
   let ftpConfig: FtpConfig = $state({ port: 21, allowed_users: [], passive_ports: '30000-31000', max_clients: 10, force_tls: false, allow_anonymous: false, chroot: true, welcome_message: 'Welcome to HomeVault FTP' });
   let webdavConfig: WebdavConfig = $state({ port: 8082, path_prefix: '/', require_ssl: false, require_auth: true, compression: false, locking: true, allowed_methods: [] });
@@ -268,10 +300,23 @@
     { id: 'rsync', label: 'Rsync' },
   ];
 
+  async function loadGranteeOptions() {
+    const [users, groups] = await Promise.all([api.get('/users'), api.get('/groups')]);
+    granteeOptions = {
+      users: (users.success && Array.isArray(users.data))
+        ? users.data.map((user: { username: string }) => user.username)
+        : [],
+      groups: (groups.success && Array.isArray(groups.data))
+        ? groups.data.map((group: { name: string }) => group.name)
+        : [],
+    };
+  }
+
   onMount(() => {
     (async () => {
       await loadShares();
       await loadServiceStatus();
+      await loadGranteeOptions();
     })();
 
     // Opened from the File Explorer's "Share this folder" action: pre-fill
@@ -282,7 +327,7 @@
       newShare = {
         name: (intent.path.split('/').filter(Boolean).pop() || '').toLowerCase().replace(/[^a-z0-9_-]+/g, '-'),
         path: intent.path,
-        share_type: 'smb',
+        protocols: ['smb'],
         comment: '',
       };
       showCreateModal = true;
@@ -299,10 +344,16 @@
 
   async function loadShares() {
     loading = true;
-    const response = await api.get('/shares');
+    const [response, defs] = await Promise.all([
+      api.get('/shares'),
+      api.getShareDefinitions(),
+    ]);
     if (response.success && response.data) {
       shares = response.data;
       await loadQuotas();
+    }
+    if (defs.success && defs.data) {
+      definitions = defs.data;
     }
     loading = false;
   }
@@ -421,6 +472,8 @@
     if (resp.success && resp.data) smbConfig = { ...SMB_CONFIG_DEFAULTS, ...resp.data };
     const recycle = await api.get('/shares/smb/recycle');
     if (recycle.success && recycle.data) smbRecycle = recycle.data;
+    const previous = await api.getSmbPreviousVersions();
+    if (previous.success && previous.data) smbPreviousVersions = previous.data;
     await loadSmbTimeMachine();
     configLoading = false;
   }
@@ -600,6 +653,47 @@
     }
   }
 
+  /** Previous Versions (`shadow_copy2`) is optimistic and reverts on refusal. */
+  async function toggleSmbPreviousVersions(name: string, enabled: boolean) {
+    const previous = smbPreviousVersions[name] ?? false;
+    smbPreviousVersions = { ...smbPreviousVersions, [name]: enabled };
+    previousVersionsSaving = name;
+    const resp = await api.setSmbPreviousVersions(name, enabled);
+    previousVersionsSaving = null;
+    if (resp.success) {
+      notifySuccess('common.saved');
+    } else {
+      smbPreviousVersions = { ...smbPreviousVersions, [name]: previous };
+      notifyError(resp);
+    }
+  }
+
+  async function joinDomain() {
+    domainBusy = true;
+    const resp = await api.joinSmbDomain({ username: domainUser, password: domainPassword });
+    domainBusy = false;
+    if (resp.success) {
+      domainPassword = '';
+      notifySuccess('common.saved');
+    } else {
+      notifyError(resp);
+    }
+  }
+
+  async function leaveDomain() {
+    domainBusy = true;
+    const resp = await api.leaveSmbDomain();
+    domainBusy = false;
+    if (resp.success) notifySuccess('common.saved');
+    else notifyError(resp);
+  }
+
+  async function updateSmbShareFlag(name: string, patch: { read_only?: boolean; guest_ok?: boolean | null }) {
+    const resp = await api.put(`/shares/${encodeURIComponent(name)}/smb`, patch);
+    if (resp.success) await loadShares();
+    else notifyError(resp);
+  }
+
   async function saveSmbConfig() {
     const resp = await api.put('/shares/smb/config', smbConfig);
     if (resp.success) notifySuccess('common.saved');
@@ -615,7 +709,40 @@
     } else {
       nfsNetworks = '*';
     }
+    const rules: Record<string, string> = {};
+    await Promise.all(
+      shares
+        .filter((share) => share.share_type.toLowerCase() === 'nfs')
+        .map(async (share) => {
+          const res = await api.getNfsRules(share.name);
+          const list = (res.success && Array.isArray(res.data)) ? (res.data as NfsClientRule[]) : [];
+          rules[share.name] = list
+            .map((rule) => `${rule.client} ${rule.access}${rule.options.length ? ' ' + rule.options.join(',') : ''}`)
+            .join('\n');
+        }),
+    );
+    nfsRulesDrafts = rules;
     configLoading = false;
+  }
+
+  async function saveNfsRules(name: string) {
+    nfsRulesSaving = name;
+    const rules: NfsClientRule[] = (nfsRulesDrafts[name] ?? '')
+      .split('\n')
+      .map((line) => line.trim())
+      .filter(Boolean)
+      .map((line) => {
+        const [client, access, extra] = line.split(/\s+/, 3);
+        return {
+          client,
+          access: access === 'ro' ? 'ro' : 'rw',
+          options: extra ? extra.split(',').map((o) => o.trim()).filter(Boolean) : [],
+        };
+      });
+    const resp = await api.setNfsRules(name, rules);
+    nfsRulesSaving = null;
+    if (resp.success) notifySuccess('common.saved');
+    else notifyError(resp);
   }
 
   function saveNetworks() {
@@ -755,19 +882,18 @@
   }
 
   async function handleCreateShare() {
-    if (!newShare.name || !newShare.path) {
+    if (!newShare.name || !newShare.path || newShare.protocols.length === 0) {
       return;
     }
-    const response = await api.post('/shares', {
+    const response = await api.createShareDefinition({
       name: newShare.name,
       path: newShare.path,
-      share_type: newShare.share_type,
+      protocols: newShare.protocols,
       comment: newShare.comment,
-      options: []
     });
     if (response.success) {
       showCreateModal = false;
-      newShare = { name: '', path: '', share_type: 'smb', comment: '' };
+      newShare = { name: '', path: '', protocols: ['smb'], comment: '' };
       await loadShares();
     } else {
       notifyError(response);
@@ -794,7 +920,7 @@
   }
 
   async function openPermissions(share: Share) {
-    permissionsShare = share;
+    permissionsShare = { name: share.name };
     newGrant = { grantee_type: 'user', grantee_name: '', permission: 'r', recursive: true };
     showPermissionsModal = true;
     await loadSharePermissions();
@@ -809,7 +935,7 @@
   async function loadSharePermissions() {
     if (!permissionsShare) return;
     permissionsLoading = true;
-    const resp = await api.getSharePermissions(permissionsShare.name, permissionsShare.share_type);
+    const resp = await api.getSharePermissionsAll(permissionsShare.name);
     sharePermissions = (resp.success && resp.data) ? resp.data : [];
     permissionsLoading = false;
   }
@@ -819,7 +945,7 @@
     if (!newGrant.grantee_name.trim()) {
       return;
     }
-    const resp = await api.grantSharePermission(permissionsShare.name, permissionsShare.share_type, {
+    const resp = await api.grantSharePermissionAll(permissionsShare.name, {
       grantee_type: newGrant.grantee_type,
       grantee_name: newGrant.grantee_name.trim(),
       permission: newGrant.permission,
@@ -835,7 +961,7 @@
 
   async function handleRevokePermission(perm: SharePermission) {
     if (!permissionsShare) return;
-    const resp = await api.revokeSharePermission(permissionsShare.name, permissionsShare.share_type, {
+    const resp = await api.revokeSharePermissionAll(permissionsShare.name, {
       grantee_type: perm.grantee_type,
       grantee_name: perm.grantee_name,
     });
@@ -846,10 +972,24 @@
     }
   }
 
+  async function exportPermissions() {
+    try {
+      const blob = await api.getSharePermissionsReport();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'homevault-permissions.csv';
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch (e) {
+      notifyError(e as { message?: string });
+    }
+  }
+
   async function handleSyncPermissions() {
     if (!permissionsShare) return;
     permissionsSyncing = true;
-    const resp = await api.syncSharePermissions(permissionsShare.name, permissionsShare.share_type);
+    const resp = await api.syncSharePermissionsAll(permissionsShare.name);
     if (resp.success) {
       await loadSharePermissions();
     } else {
@@ -875,7 +1015,7 @@
 
   function closeCreate() {
     showCreateModal = false;
-    newShare = { name: '', path: '', share_type: 'smb', comment: '' };
+    newShare = { name: '', path: '', protocols: ['smb'], comment: '' };
   }
 
   // Shared shapes (appliance tokens only — the per-app CSS vocabulary is gone).
@@ -1079,7 +1219,19 @@
           <label class={field}><span class={fieldLabel}>{$t('shares.workgroup')}</span><input class={inp} bind:value={smbConfig.workgroup} /></label>
           {@render toggleField($t('shares.guest'), smbConfig.allow_guest, (v) => (smbConfig.allow_guest = v))}
           {#if smbMode === 'advanced'}
-            <label class={field}><span class={fieldLabel}>{$t('shares.security_mode')}</span><select class={inp} bind:value={smbConfig.security_mode}><option value="user">{$t('shares.opt_user')}</option><option value="share">{$t('shares.opt_share')}</option></select></label>
+            <label class={field}><span class={fieldLabel}>{$t('shares.security_mode')}</span><select class={inp} bind:value={smbConfig.security_mode}><option value="user">{$t('shares.opt_user')}</option><option value="share">{$t('shares.opt_share')}</option><option value="ads">AD / Kerberos</option></select></label>
+            {#if smbConfig.security_mode === 'ads'}
+              <label class={field}><span class={fieldLabel}>{$t('shares.realm')}</span><input class={inp} bind:value={smbConfig.realm} placeholder="EXAMPLE.LAN" /></label>
+              <label class={field}><span class={fieldLabel}>{$t('shares.idmap_range')}</span><input class={inp} bind:value={smbConfig.idmap_range} placeholder="10000-999999" /></label>
+              <div class="flex flex-col gap-2 p-3 rounded-xl bg-[var(--hv-shell-border-soft)] border border-[var(--hv-shell-border)]">
+                <label class={field}><span class={fieldLabel}>{$t('shares.domain_user')}</span><input class={inp} bind:value={domainUser} autocomplete="username" /></label>
+                <label class={field}><span class={fieldLabel}>{$t('shares.domain_password')}</span><input class={inp} type="password" bind:value={domainPassword} autocomplete="current-password" /></label>
+                <div class="flex flex-wrap gap-2">
+                  <Button variant="primary" onclick={joinDomain} disabled={domainBusy || !domainUser || !domainPassword}>{$t('shares.domain_join')}</Button>
+                  <Button variant="ghost" onclick={leaveDomain} disabled={domainBusy}>{$t('shares.domain_leave')}</Button>
+                </div>
+              </div>
+            {/if}
             <label class={field}><span class={fieldLabel}>{$t('shares.version')}</span><select class={inp} bind:value={smbConfig.protocol_version}><option value="SMB2">SMB2</option><option value="SMB3">SMB3</option></select></label>
             {@render toggleField($t('shares.multichannel'), smbConfig.multichannel, (v) => (smbConfig.multichannel = v))}
             <p class="m-0 text-c-small text-[var(--hv-shell-text-muted)]">{$t('shares.multichannel_hint')}</p>
@@ -1158,6 +1310,39 @@
             {/each}
           </div>
         </div>
+
+        <div data-testid="shares-previous-versions" class="flex flex-col gap-4 p-5 rounded-2xl bg-[var(--hv-shell-card)] border border-[var(--hv-shell-border)]">
+          <div>
+            <h3 class="m-0 text-c-card-title font-semibold text-[var(--hv-shell-text-strong)]">{$t('shares.pv_title')}</h3>
+            <p class="m-0 mt-1 text-c-base text-[var(--hv-shell-text)] leading-relaxed">{$t('shares.pv_desc')}</p>
+          </div>
+          <div class="flex flex-col gap-3">
+            {#each shares.filter(s => s.share_type.toLowerCase() === 'smb') as share (share.name)}
+              {@const pv = { get checked() { return smbPreviousVersions[share.name] ?? false; }, set checked(v: boolean) { toggleSmbPreviousVersions(share.name, v); } }}
+              <div class="flex items-center justify-between gap-3 flex-wrap p-3 rounded-xl bg-[var(--hv-shell-border-soft)] border border-[var(--hv-shell-border)]">
+                <div class="flex flex-col min-w-0">
+                  <span id={`shares-pv-name-${share.name}`} class="font-semibold text-c-card-title text-[var(--hv-shell-text-strong)] truncate">{share.name}</span>
+                  <code class="font-[family-name:var(--hv-font-mono)] text-c-label text-[var(--hv-shell-text-2)] truncate">{share.path}</code>
+                </div>
+                <Toggle bind:checked={pv.checked} disabled={previousVersionsSaving === share.name} ariaLabelledby={`shares-pv-name-${share.name}`} />
+              </div>
+            {/each}
+          </div>
+        </div>
+
+        <div class="flex flex-col gap-3 p-5 rounded-2xl bg-[var(--hv-shell-card)] border border-[var(--hv-shell-border)]">
+          <div>
+            <h3 class="m-0 text-c-card-title font-semibold text-[var(--hv-shell-text-strong)]">{$t('shares.smb_access_title')}</h3>
+            <p class="m-0 mt-1 text-c-base text-[var(--hv-shell-text)] leading-relaxed">{$t('shares.smb_access_desc')}</p>
+          </div>
+          {#each shares.filter((share) => share.share_type.toLowerCase() === 'smb') as share (share.name)}
+            <div class="flex flex-col gap-2 p-3 rounded-xl bg-[var(--hv-shell-border-soft)] border border-[var(--hv-shell-border)]">
+              <span class="font-semibold text-c-card-title text-[var(--hv-shell-text-strong)]">{share.name}</span>
+              {@render toggleField($t('shares.smb_read_only'), share.read_only ?? false, (v) => updateSmbShareFlag(share.name, { read_only: v }))}
+              {@render toggleField($t('shares.smb_guest'), share.guest_ok ?? false, (v) => updateSmbShareFlag(share.name, { guest_ok: v }))}
+            </div>
+          {/each}
+        </div>
       {/if}
     </div>
 
@@ -1172,8 +1357,31 @@
           {#if nfsMode === 'advanced'}
             <label class={field}><span class={fieldLabel}>{$t('shares.version')}</span><select class={inp} bind:value={nfsConfig.version}><option value="auto">{$t('shares.nfs_version_auto')}</option><option value="3">NFS v3</option><option value="4">NFS v4</option><option value="4.2">NFS v4.2</option></select></label>
             <label class={field}><span class={fieldLabel}>{$t('shares.root_squash')}</span><select class={inp} bind:value={nfsConfig.root_squash}><option value="root_squash">{$t('shares.root_squash')}</option><option value="no_root_squash">{$t('shares.no_root_squash')}</option><option value="all_squash">{$t('shares.all_squash')}</option></select></label>
+            <label class={field}><span class={fieldLabel}>{$t('shares.nfs_security')}</span><select class={inp} bind:value={nfsConfig.security_flavor}><option value="sys">AUTH_SYS</option><option value="krb5">Kerberos (krb5)</option><option value="krb5i">Kerberos integrity (krb5i)</option><option value="krb5p">Kerberos privacy (krb5p)</option></select></label>
           {/if}
           <Button variant="primary" size="lg" onclick={saveNfsConfig}>{$t('common.save')}</Button>
+        </div>
+
+        <div class="flex flex-col gap-3 p-5 rounded-2xl bg-[var(--hv-shell-card)] border border-[var(--hv-shell-border)]" data-testid="shares-nfs-rules">
+          <div>
+            <h3 class="m-0 text-c-card-title font-semibold text-[var(--hv-shell-text-strong)]">{$t('shares.nfs_rules_title')}</h3>
+            <p class="m-0 mt-1 text-c-base text-[var(--hv-shell-text)] leading-relaxed">{$t('shares.nfs_rules_desc')}</p>
+          </div>
+          {#each shares.filter((share) => share.share_type.toLowerCase() === 'nfs') as share (share.name)}
+            <div class="flex flex-col gap-2 p-3 rounded-xl bg-[var(--hv-shell-border-soft)] border border-[var(--hv-shell-border)]">
+              <span class="font-semibold text-c-card-title text-[var(--hv-shell-text-strong)]">{share.name}</span>
+              <code class="text-c-label text-[var(--hv-shell-text-2)]">{share.path}</code>
+              <textarea
+                class={cn(inp, 'h-auto min-h-[76px] py-3 font-[family-name:var(--hv-font-mono)] text-c-base resize-y')}
+                rows="3"
+                placeholder="192.168.1.0/24 ro sync"
+                bind:value={nfsRulesDrafts[share.name]}
+              ></textarea>
+              <Button variant="ghost" onclick={() => saveNfsRules(share.name)} disabled={nfsRulesSaving === share.name}>
+                {$t('common.save')}
+              </Button>
+            </div>
+          {/each}
         </div>
       {/if}
     </div>
@@ -1186,6 +1394,9 @@
         <div data-testid="shares-form" class="flex flex-col gap-4 p-5 rounded-2xl bg-[var(--hv-shell-card)] border border-[var(--hv-shell-border)]">
           {@render toggleField($t('shares.force_tls'), ftpConfig.force_tls, (v) => (ftpConfig.force_tls = v))}
           {@render toggleField($t('shares.anonymous'), ftpConfig.allow_anonymous, (v) => (ftpConfig.allow_anonymous = v))}
+          {#if ftpConfig.allow_anonymous}
+            <label class={field}><span class={fieldLabel}>{$t('shares.anonymous_root')}</span><input class={inp} bind:value={ftpConfig.anonymous_root} placeholder="/srv/public" /></label>
+          {/if}
           <label class={field}><span class={fieldLabel}>{$t('shares.message')}</span><input class={inp} bind:value={ftpConfig.welcome_message} /></label>
           {#if ftpMode === 'advanced'}
             <label class={field}><span class={fieldLabel}>{$t('shares.ftp_port')}</span><input class={inp} type="number" bind:value={ftpConfig.port} /></label>
@@ -1193,7 +1404,7 @@
             <label class={field}><span class={fieldLabel}>{$t('shares.max_clients')}</span><input class={inp} type="number" bind:value={ftpConfig.max_clients} /></label>
             <label class={field}><span class={fieldLabel}>{$t('shares.allowed_users')}</span><textarea class={cn(inp, 'h-auto min-h-[76px] py-3 font-[family-name:var(--hv-font-mono)] text-c-base leading-relaxed resize-y')} bind:value={ftpUsers} rows="3"></textarea></label>
             <p class="m-0 text-c-small text-[var(--hv-shell-text-muted)]">{$t('shares.allowed_users_hint')}</p>
-            {@render toggleField($t('shares.chroot'), ftpConfig.chroot, (v) => (ftpConfig.chroot = v))}
+            <p class="m-0 text-c-small text-[var(--hv-shell-text-muted)]">{$t('shares.ftp_chroot_note')}</p>
           {/if}
           <Button variant="primary" size="lg" onclick={saveFtpConfig}>{$t('common.save')}</Button>
         </div>
@@ -1403,6 +1614,8 @@
     <span data-testid="shares-footer" class="flex items-center gap-2 min-w-0 flex-wrap">
       <span>{totalShares} {$t('shares.stat_total')}</span>
       <span class="text-[var(--hv-shell-text-3)]">&middot;</span>
+      <span>{definitions.length} {$t('shares.stat_logical')}</span>
+      <span class="text-[var(--hv-shell-text-3)]">&middot;</span>
       <span>{smbShares} SMB</span>
       <span class="text-[var(--hv-shell-text-3)]">&middot;</span>
       <span>{nfsShares} NFS</span>
@@ -1463,7 +1676,26 @@
     <div class="flex flex-col gap-4">
       <label data-testid="shares-field" class={field}><span class={fieldLabel}>{$t('shares.name_label')} <span data-testid="shares-req" class="text-[var(--hv-error)]">*</span></span><input data-testid="shares-name-input" class={inp} bind:value={newShare.name} placeholder="mon-partage" /></label>
       <div data-testid="shares-field" class={field}><span class={fieldLabel}>{$t('shares.path')} <span data-testid="shares-req" class="text-[var(--hv-error)]">*</span></span><PathField id="hv-shares-path" bind:value={newShare.path} mode="folder" placeholder="/mnt/donnees" /></div>
-      <label data-testid="shares-field" class={field}><span class={fieldLabel}>{$t('shares.protocol')}</span><select class={inp} bind:value={newShare.share_type}><option value="smb">{$t('shares.opt_smb')}</option><option value="nfs">{$t('shares.opt_nfs')}</option><option value="ftp">{$t('shares.opt_ftp')}</option><option value="webdav">{$t('shares.opt_webdav')}</option><option value="sftp">{$t('shares.opt_sftp')}</option></select></label>
+      <div data-testid="shares-field" class={field}>
+        <span class={fieldLabel}>{$t('shares.protocol')}</span>
+        <div class="flex flex-wrap gap-2">
+          {#each [['smb', $t('shares.opt_smb')], ['nfs', $t('shares.opt_nfs')], ['ftp', $t('shares.opt_ftp')], ['webdav', $t('shares.opt_webdav')], ['sftp', $t('shares.opt_sftp')]] as [value, label] (value)}
+            <label class="inline-flex items-center gap-2 min-h-11 px-3 rounded-lg border border-[var(--hv-shell-border-strong)] bg-[var(--hv-shell-card)] text-c-base text-[var(--hv-shell-text-strong)]">
+              <input
+                type="checkbox"
+                checked={newShare.protocols.includes(value)}
+                onchange={(e) => {
+                  const checked = (e.currentTarget as HTMLInputElement).checked;
+                  newShare.protocols = checked
+                    ? [...newShare.protocols, value]
+                    : newShare.protocols.filter((p) => p !== value);
+                }}
+              />
+              {label}
+            </label>
+          {/each}
+        </div>
+      </div>
       <label data-testid="shares-field" class={field}><span class={fieldLabel}>{$t('shares.comment_label')}</span><input class={inp} bind:value={newShare.comment} placeholder={$t('shares.optional')} /></label>
     </div>
   {/snippet}
@@ -1584,7 +1816,12 @@
           <button class:active={newGrant.grantee_type === 'user'} class={cn(segBtn, newGrant.grantee_type === 'user' && 'bg-[var(--hv-primary-light)] text-[var(--hv-shell-text-strong)]')} onclick={() => (newGrant.grantee_type = 'user')}>{$t('shares.grantee_type_user')}</button>
           <button class:active={newGrant.grantee_type === 'group'} class={cn(segBtn, newGrant.grantee_type === 'group' && 'bg-[var(--hv-primary-light)] text-[var(--hv-shell-text-strong)]')} onclick={() => (newGrant.grantee_type = 'group')}>{$t('shares.grantee_type_group')}</button>
         </div>
-        <input class={inp} bind:value={newGrant.grantee_name} placeholder={$t('shares.grantee_name_placeholder')} />
+        <input class={inp} list="shares-grantee-options" bind:value={newGrant.grantee_name} placeholder={$t('shares.grantee_name_placeholder')} />
+        <datalist id="shares-grantee-options">
+          {#each (newGrant.grantee_type === 'group' ? granteeOptions.groups : granteeOptions.users) as name (name)}
+            <option value={name}></option>
+          {/each}
+        </datalist>
         <div class="flex gap-1.5 p-1.5 rounded-lg bg-[var(--hv-shell-border-soft)]">
           <button class:active={newGrant.permission === 'r'} class={cn(segBtn, newGrant.permission === 'r' && 'bg-[var(--hv-primary-light)] text-[var(--hv-shell-text-strong)]')} onclick={() => (newGrant.permission = 'r')}>{$t('shares.permission_r')}</button>
           <button class:active={newGrant.permission === 'rw'} class={cn(segBtn, newGrant.permission === 'rw' && 'bg-[var(--hv-primary-light)] text-[var(--hv-shell-text-strong)]')} onclick={() => (newGrant.permission = 'rw')}>{$t('shares.permission_rw')}</button>
@@ -1596,9 +1833,14 @@
 
       <div class="flex flex-col gap-3 items-start mt-4 pt-4 border-t border-[var(--hv-shell-border-soft)]">
         <p class="m-0 text-c-base text-[var(--hv-shell-text)] leading-relaxed">{$t('shares.sync_desc')}</p>
-        <Button variant="ghost" onclick={handleSyncPermissions} disabled={permissionsSyncing}>
-          <IconRefresh size={15} /> {permissionsSyncing ? $t('shares.syncing') : $t('shares.sync_button')}
-        </Button>
+        <div class="flex flex-wrap gap-2">
+          <Button variant="ghost" onclick={handleSyncPermissions} disabled={permissionsSyncing}>
+            <IconRefresh size={15} /> {permissionsSyncing ? $t('shares.syncing') : $t('shares.sync_button')}
+          </Button>
+          <Button variant="ghost" onclick={exportPermissions}>
+            <IconShield size={15} /> {$t('shares.export_permissions')}
+          </Button>
+        </div>
       </div>
     {/if}
   {/snippet}

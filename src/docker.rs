@@ -62,6 +62,11 @@ pub struct CreateContainerRequest {
     pub cpu_limit: Option<String>,
     #[serde(default)]
     pub privileged: bool,
+    /// Add `security_opt: no-new-privileges:true`. Defaults to **true** for a
+    /// container created from the Docker page, matching the catalog apps; an
+    /// admin who really needs setuid escalation must opt out explicitly.
+    #[serde(default = "default_true")]
+    pub no_new_privileges: bool,
     #[serde(default)]
     pub auto_remove: bool,
     #[serde(default)]
@@ -81,6 +86,10 @@ pub struct PortMappingRequest {
 
 fn default_protocol() -> String {
     "tcp".to_string()
+}
+
+fn default_true() -> bool {
+    true
 }
 
 /// A bind-mount volume between host and container.
@@ -978,6 +987,14 @@ impl DockerService {
         // Add privileged mode
         if req.privileged {
             args.push("--privileged".to_string());
+        }
+
+        // Hardened by default. `--privileged` and `no-new-privileges` are not
+        // contradictory: the flag still prevents gaining privileges through
+        // setuid binaries, which is the common container escape vector.
+        if req.no_new_privileges {
+            args.push("--security-opt".to_string());
+            args.push("no-new-privileges:true".to_string());
         }
 
         // Add auto-remove

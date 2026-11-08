@@ -77,7 +77,7 @@
   $: raidTypes = [
     { id: 'raid0', name: 'RAID 0', description: $t('raid.raid0.desc'), protection: $t('raid.manager.failure_raid0'), minDisks: 2, protects: false, recommended: false, zfsOnly: false },
     { id: 'raid1', name: 'RAID 1', description: $t('raid.raid1.desc'), protection: $t('raid.manager.failure_raid1'), minDisks: 2, protects: true, recommended: false, zfsOnly: false },
-    { id: 'raid5', name: 'RAID 5', description: $t('raid.raid5.desc'), protection: $t('raid.manager.failure_raid5'), minDisks: 3, protects: true, recommended: true, zfsOnly: false },
+    { id: 'raid5', name: 'RAID 5', description: $t('raid.raid5.desc'), protection: $t('raid.manager.failure_raid5'), minDisks: 3, protects: true, recommended: false, zfsOnly: false },
     { id: 'raid6', name: 'RAID 6', description: $t('raid.raid6.desc'), protection: $t('raid.manager.failure_raid6'), minDisks: 4, protects: true, recommended: false, zfsOnly: false },
     { id: 'raid10', name: 'RAID 10', description: $t('raid.raid10.desc'), protection: $t('raid.manager.failure_raid10'), minDisks: 4, protects: true, recommended: false, zfsOnly: false },
     // P1-9: ZFS-only triple-parity layout. It is shown with the other levels
@@ -98,6 +98,12 @@
   $: stepName = currentStep === 1 ? $t('raid.manager.step_type') : currentStep === 2 ? $t('raid.manager.step_disks') : $t('raid.manager.step_configure');
 
   $: minDisks = selectedRaid?.minDisks ?? 2;
+  // DSM's SHR-style "recommended for your drives": pick the safest sensible
+  // level for the number of free disks, without hiding the manual choice.
+  $: freeDiskCount = availableDevices.filter((d) => !d.inUse).length;
+  $: recommendedRaidId =
+    freeDiskCount >= 5 ? 'raid6' : freeDiskCount >= 3 ? 'raid5' : freeDiskCount >= 2 ? 'raid1' : null;
+  $: recommendedRaid = raidTypes.find((r) => r.id === recommendedRaidId) || null;
   $: mdTechnologies = selectedFilesystem === 'ext4' || selectedFilesystem === 'xfs';
   $: zfsSelected = selectedFilesystem === 'zfs';
   // Hot spares: mdadm has `--spare-devices`, ZFS has a native `spare` vdev
@@ -422,6 +428,30 @@
       <div class="px-5 py-4 flex flex-col gap-4">
         <!-- Step 1 — pick a level -->
         {#if currentStep === 1}
+          {#if recommendedRaid}
+            <div
+              data-testid="raid-recommendation"
+              class="flex flex-col @min-[540px]:flex-row @min-[540px]:items-center gap-3 rounded-xl border border-[var(--hv-primary)]/35 bg-[var(--hv-primary-light)] px-4 py-3"
+            >
+              <p class="m-0 flex-1 text-xs text-[var(--hv-text-secondary)] leading-relaxed">
+                {$t('raid.manager.recommended_for_disks', {
+                  count: String(freeDiskCount),
+                  level: recommendedRaid.name
+                })}
+              </p>
+              <Button
+                size="sm"
+                variant="secondary"
+                onclick={() => selectRaidType(recommendedRaidId!)}
+              >
+                {$t('raid.manager.use_recommended', { level: recommendedRaid.name })}
+              </Button>
+            </div>
+          {:else if freeDiskCount > 0}
+            <p data-testid="raid-no-recommendation" class="m-0 text-xs text-[var(--hv-text-secondary)]">
+              {$t('raid.manager.no_recommendation')}
+            </p>
+          {/if}
           <div data-testid="raid-type-grid" class="grid grid-cols-1 gap-3 @min-[540px]:grid-cols-3">
             {#each raidTypes as type}
               <button
@@ -431,7 +461,7 @@
                 aria-pressed={selectedRaidType === type.id}
                 onclick={() => selectRaidType(type.id)}
               >
-                {#if type.recommended}
+                {#if type.id === recommendedRaidId}
                   <span data-testid="raid-recommended" class="absolute -top-2.5 right-4 bg-[var(--hv-primary)] text-white text-micro font-bold uppercase tracking-[0.06em] px-2.5 py-1 rounded-full">
                     {$t('raid.manager.recommended')}
                   </span>
