@@ -733,7 +733,7 @@ The screen refreshes on tab switch, on window focus and every 45 s
    - **Remote syslog** — forward the audit events to a collector: UDP/TCP/TLS, RFC 5424 or 3164, facility, the pinned CA for TLS, live queue counters (waiting/sent/dropped) and a "send a test message" probe that reports the collector's own error
    - **Power** — CPU scaling governor, host reboot/shutdown/suspend and per-disk spindown (hdparm APM + idle timer)
    - _(the per-group "File quotas" card was removed on 2026-09-09 — quotas are managed from Users/Groups)_
-8. **System** — Software updates (frequency, current/latest version) + system information (IP/port, platform, version) + data management (settings export/import/reset) + privacy (local processing, cookies, offline)
+8. **System** — Software updates (frequency, current/latest version, and the **last update result**: applied / rolled back / failed with the version concerned, read from the installer's signed/atomic engine) + system information (IP/port, platform, version) + data management (settings export/import/reset) + privacy (local processing, cookies, offline)
 
 ---
 

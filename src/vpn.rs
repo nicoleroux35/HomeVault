@@ -2,14 +2,14 @@
  * File          : vpn.rs
  * Author        : Nicolas Le Roux
  * Created       : 28/09/2026
- * Last modified : 21/10/2026 by Nicolas Le Roux
- * Version       : 1.0.0
+ * Last modified : 08/11/2026 by Nicolas Le Roux
+ * Version       : 1.0.1
  *
  * Description:
- *   VPN engine service for WireGuard and OpenVPN: server setup and
- *   capability detection, peer provisioning (keys, config files),
- *   tunnel start/stop, and live status — always reading the host state
- *   (wg show) as the source of truth.
+ *   VPN engine service for WireGuard (server + client) and OpenVPN
+ *   (client-only, imported profiles): capability detection, peer
+ *   provisioning (keys, config files), tunnel start/stop, and live
+ *   status — always reading the host state (wg show) as the source of truth.
  *
  * Dependencies:
  *   - serde (>= 1.0)

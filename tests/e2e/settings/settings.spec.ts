@@ -1309,6 +1309,22 @@ test.describe('8 — Updates', () => {
 
     await page.unroute('**/api/settings/version**');
   });
+
+  test('8.5 — last update row is translated, never a raw i18n key', async ({ page }) => {
+    await openSettings(page, admin);
+    await openCategory(page, 'updates');
+    const row = set(page).locator('[data-testid="settings-last-update"]');
+    // A fresh test instance has no result file, so the row is legitimately
+    // absent. Once the installer wrote one, it must render a translated
+    // status — never the literal `settings.update_status_*` key, which is what
+    // a missing i18n entry would show.
+    if ((await row.count()) > 0) {
+      await expect(set(page).locator('[data-testid="settings-last-update-status"]')).toHaveText(
+        /^(Applied|Rolled back|Failed)$/,
+      );
+      await expect(row).toContainText(/v\d+\.\d+/);
+    }
+  });
 });
 
 // ===========================================================================

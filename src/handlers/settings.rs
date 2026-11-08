@@ -708,6 +708,32 @@ pub struct UpdateCheckResult {
     pub release_date: Option<String>,
     pub release_notes: Option<String>,
     pub error: Option<String>,
+    /// Result of the last install-time update, as written by
+    /// `installer/install.sh` (`data/updates/last-result.json`, P2-8).
+    /// Absent on a fresh install or when the engine never ran.
+    #[serde(default)]
+    pub last_update: Option<LastUpdateResult>,
+}
+
+/// One line of the installer's update history. Mirrors the JSON written by
+/// `hv_write_result` in `installer/install.sh`; keep the field names in sync.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct LastUpdateResult {
+    pub status: String,
+    pub version: String,
+    pub previous_version: String,
+    pub message: String,
+    pub finished_at: String,
+}
+
+/// Reads the installer's last-result file. Best-effort: a missing or malformed
+/// file is simply "no result", never an error that breaks the version endpoint.
+fn read_last_update_result() -> Option<LastUpdateResult> {
+    let path = crate::config::paths::base_dir()
+        .join("updates")
+        .join("last-result.json");
+    let raw = std::fs::read_to_string(path).ok()?;
+    serde_json::from_str(&raw).ok()
 }
 
 // Public settings accessors for external modules
@@ -1428,6 +1454,7 @@ async fn fetch_latest_version() -> Result<UpdateCheckResult, String> {
         release_date,
         release_notes: body,
         error: None,
+        last_update: read_last_update_result(),
     })
 }
 
@@ -1494,6 +1521,7 @@ fn bare_version_info() -> UpdateCheckResult {
         release_date: None,
         release_notes: None,
         error: None,
+        last_update: read_last_update_result(),
     }
 }
 
@@ -1536,20 +1564,24 @@ async fn serve_version_info(state: Arc<AppState>, headers: HeaderMap, force: boo
     }
 
     if force || should_check_for_updates() {
-        return match fetch_latest_version().await {
+        let mut result = match fetch_latest_version().await {
             Ok(fetched) => {
                 mark_update_check_attempted();
                 *CACHED_UPDATE_RESULT.write() = Some(fetched.clone());
-                ResponseHelper::json_success(&fetched)
+                fetched
             }
             Err(e) => {
                 tracing::warn!("Version check failed: {}", e);
                 mark_update_check_attempted();
                 let mut result = bare_version_info();
                 result.error = Some("Could not check for updates".to_string());
-                ResponseHelper::json_success(&result)
+                result
             }
         };
+        // Always fresh: the installer writes this file between requests, and a
+        // stale copy would hide a rollback.
+        result.last_update = read_last_update_result();
+        return ResponseHelper::json_success(&result);
     }
 
     // No check due: serve the cache, refreshed against the version we are
@@ -1565,6 +1597,7 @@ async fn serve_version_info(state: Arc<AppState>, headers: HeaderMap, force: boo
         None => true,
     };
     result.error = None;
+    result.last_update = read_last_update_result();
 
     ResponseHelper::json_success(&result)
 }

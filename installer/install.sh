@@ -37,9 +37,13 @@ HV_SELF="$(readlink -f -- "${BASH_SOURCE[0]:-}" 2>/dev/null || true)"
 [[ -n "$HV_SELF" && -f "$HV_SELF" ]] || HV_SELF=""
 
 HV_BOOTSTRAP=1
+# `HV_LIB_ONLY=1` turns this file into a function library for
+# `installer/tests/update-engine.test.sh`: no elevation, no terminal relaunch,
+# no filesystem change.
+if [[ "${HV_LIB_ONLY:-0}" == "1" ]]; then HV_BOOTSTRAP=0; fi
 for _hv_arg in "$@"; do
     case "$_hv_arg" in
-        --package|-p|--dry-run|--help|-h) HV_BOOTSTRAP=0 ;;
+        --package|-p|--dry-run|--verify-manifest|--help|-h) HV_BOOTSTRAP=0 ;;
         # Known flags: accepted here so an unknown one is rejected *before*
         # any elevation or terminal relaunch happens.
         --uninstall|--rollback|--purge|--cli|--tui|--yes|-y|--non-interactive) ;;
@@ -103,6 +107,7 @@ if [[ "$HV_BOOTSTRAP" -eq 1 && $EUID -ne 0 ]]; then
     fi
     _hv_envs=(HV_INSTALLER_STAGE=reexec)
     for _hv_v in HV_RELEASE_BASE HV_RELEASE_URL HV_RELEASE_SHA256 HV_RELEASE_TOKEN \
+                 HV_RELEASE_MANIFEST HV_RELEASE_SIGNATURE HV_RELEASE_PUBKEY \
                  HV_MODE HV_YES HV_SKIP_OPTIONAL HV_SERVICE_USER DATA_DIRECTORY PORT HTTPS_PORT; do
         if [[ -n "${!_hv_v:-}" ]]; then _hv_envs+=("$_hv_v=${!_hv_v}"); fi
     done
@@ -211,7 +216,45 @@ if [[ "${1:-}" == "--package" || "${1:-}" == "-p" ]]; then
     sha256sum "$ASSET" | awk '{print $1}' > "${ASSET}.sha256"
     echo "✓ $ASSET"
     echo "  sha256: $(cat "${ASSET}.sha256")"
-    echo "  Publish it as a GitHub Release asset so the default install URL resolves."
+
+    # Signed release manifest (P2-8). The manifest is what the installer
+    # verifies before it downloads anything; without `HV_SIGNING_KEY` it is
+    # written unsigned and the installer will say so.
+    HV_VERSION=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n 1)
+    if [[ -z "$HV_VERSION" ]]; then
+        echo "Error: cannot read the package version from Cargo.toml." >&2
+        exit 1
+    fi
+    MANIFEST="installer/release/homevault-${PKG_ARCH}.json"
+    HV_ARCHIVE_SHA=$(cat "${ASSET}.sha256")
+    HV_ARCHIVE_SIZE=$(stat -c %s "$ASSET")
+    cat > "$MANIFEST" <<EOF
+{
+  "version": "$HV_VERSION",
+  "arch": "$PKG_ARCH",
+  "url": "${HV_RELEASE_BASE:-https://github.com/nicoleroux35/HomeVault/releases/latest/download}/homevault-${PKG_ARCH}.tar.gz",
+  "sha256": "$HV_ARCHIVE_SHA",
+  "size": $HV_ARCHIVE_SIZE,
+  "min_version": "1.0.0",
+  "released_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+}
+EOF
+    echo "✓ $MANIFEST"
+    if [[ -n "${HV_SIGNING_KEY:-}" ]]; then
+        if openssl pkeyutl -sign -inkey "$HV_SIGNING_KEY" -rawin \
+                -in "$MANIFEST" -out "${MANIFEST}.sig" 2>/dev/null \
+                || openssl dgst -sha256 -sign "$HV_SIGNING_KEY" \
+                    -out "${MANIFEST}.sig" "$MANIFEST"; then
+            echo "  signature: ${MANIFEST}.sig"
+        else
+            echo "Error: HV_SIGNING_KEY is set but signing failed." >&2
+            exit 1
+        fi
+    else
+        echo "  unsigned manifest — set HV_SIGNING_KEY to sign it before publishing"
+    fi
+    echo "  Publish the archive, its .sha256, the .json and the .json.sig as"
+    echo "  GitHub Release assets so the default install URL resolves."
     exit 0
 fi
 
@@ -258,6 +301,7 @@ Lifecycle:
   --uninstall --purge   also delete /var/lib/homevault and /etc/homevault.env
   --rollback            swap back to /opt/homevault/homevault.previous
   --dry-run             print what would happen, change nothing (no root)
+  --verify-manifest     verify HV_RELEASE_MANIFEST's signature and exit (no root)
   --package, -p         maintainer: build installer/release/homevault-<arch>.tar.gz
   --help, -h            this text
 
@@ -265,6 +309,13 @@ Environment:
   HV_RELEASE_URL        override the download URL (mirror, pinned version)
   HV_RELEASE_SHA256     pin the archive checksum
   HV_RELEASE_TOKEN      token for a private-repository release
+  HV_RELEASE_MANIFEST   signed release manifest (path or URL); pins version,
+                        arch, sha256 and size. Refused if the signature is bad.
+  HV_RELEASE_SIGNATURE  detached signature (default: <manifest>.sig)
+  HV_RELEASE_PUBKEY     release trust anchor, PEM (default:
+                        /usr/local/lib/homevault/release-key.pem)
+  HV_SIGNING_KEY        maintainer: private key used by --package to sign the
+                        manifest it writes (never commit this file)
   HV_YES=1              same as --yes
   HV_MODE=cli|tui       same as --cli / --tui
   HV_SERVICE_USER       root (default) or homevault
@@ -288,6 +339,7 @@ for arg in "$@"; do
     case "$arg" in
         --uninstall) MODE="uninstall" ;;
         --rollback)  MODE="rollback" ;;
+        --verify-manifest) MODE="verify-manifest" ;;
         --purge)     PURGE=1 ;;
         --dry-run)   DRY_RUN=1 ;;
         --cli)       UI_REQUEST="cli" ;;
@@ -312,6 +364,353 @@ run() {
     fi
 }
 
+# ---------------------------------------------------------------------------
+# Update engine (P2-8) — signed manifests, atomic swap, automatic rollback.
+#
+# Everything below is side-effect free until `hv_swap_binary` /
+# `hv_rollback_binary` / `hv_write_result`. `installer/tests/update-engine.test.sh`
+# sources this file with `HV_LIB_ONLY=1` and exercises these functions without
+# touching the host. Keep them dependency-light: bash, coreutils, python3,
+# openssl and curl are already required by the installer.
+# ---------------------------------------------------------------------------
+
+hv_die() {
+    echo "update: $*" >&2
+    return 1
+}
+
+# Returns 0 when dotted version $1 is >= $2. Missing/non-numeric parts count as
+# 0, so "1.2" >= "1.2.0" and "1.2.3-beta" == "1.2.3".
+hv_version_ge() {
+    local a="$1" b="$2"
+    local IFS='.'
+    local -a av=() bv=()
+    read -r -a av <<< "$a"
+    read -r -a bv <<< "$b"
+    local n=${#av[@]}
+    if (( ${#bv[@]} > n )); then n=${#bv[@]}; fi
+    local i x y
+    for ((i = 0; i < n; i++)); do
+        x="${av[i]:-0}"
+        y="${bv[i]:-0}"
+        x="${x%%[!0-9]*}"
+        y="${y%%[!0-9]*}"
+        x="${x:-0}"
+        y="${y:-0}"
+        if (( 10#$x > 10#$y )); then return 0; fi
+        if (( 10#$x < 10#$y )); then return 1; fi
+    done
+    return 0
+}
+
+hv_sha256() {
+    sha256sum -- "$1" | awk '{print $1}'
+}
+
+hv_size() {
+    stat -c %s -- "$1"
+}
+
+# Prints one field from a JSON manifest. Exits non-zero when the field is
+# absent, so callers can distinguish "0" from "not set".
+hv_manifest_field() {
+    local manifest="$1" field="$2"
+    if ! command -v python3 >/dev/null 2>&1; then
+        hv_die "python3 is required to read a signed manifest"
+        return 1
+    fi
+    python3 - "$manifest" "$field" <<'PY'
+import json
+import sys
+
+try:
+    with open(sys.argv[1], encoding="utf-8") as fh:
+        data = json.load(fh)
+except Exception as exc:  # noqa: BLE001 - reported to the operator
+    print("invalid manifest: %s" % exc, file=sys.stderr)
+    sys.exit(1)
+
+value = data.get(sys.argv[2])
+if value is None:
+    sys.exit(1)
+if isinstance(value, bool):
+    print("true" if value else "false")
+else:
+    print(value)
+PY
+}
+
+# Verifies a detached signature over the exact manifest bytes. Tries Ed25519
+# without a pre-hash first (OpenSSL 3), then RSA/ECDSA with SHA-256 (works on
+# OpenSSL 1.1.1 too). Returns 0 only for a valid signature.
+hv_verify_signature() {
+    local manifest="$1" signature="$2" pubkey="$3"
+    if [[ ! -s "$manifest" || ! -s "$signature" || ! -s "$pubkey" ]]; then
+        return 1
+    fi
+    if openssl pkeyutl -verify -pubin -inkey "$pubkey" -rawin \
+            -in "$manifest" -sigfile "$signature" >/dev/null 2>&1; then
+        return 0
+    fi
+    if openssl dgst -sha256 -verify "$pubkey" \
+            -signature "$signature" "$manifest" >/dev/null 2>&1; then
+        return 0
+    fi
+    return 1
+}
+
+# Copies a local path or downloads an http(s) URL.
+hv_fetch() {
+    local src="$1" dst="$2"
+    case "$src" in
+        http://*|https://*)
+            local -a auth=()
+            if [[ -n "${RELEASE_TOKEN:-}" ]]; then
+                auth=(-H "Authorization: Bearer $RELEASE_TOKEN")
+            fi
+            curl -fL --retry 3 --retry-delay 2 "${auth[@]}" -o "$dst" "$src" ;;
+        *)
+            cp -f -- "$src" "$dst" ;;
+    esac
+}
+
+# Fetches and verifies a signed manifest, then exports HV_MANIFEST_* globals.
+hv_load_manifest() {
+    local manifest_src="$1" signature_src="$2" pubkey="$3" workdir="$4"
+    local manifest="$workdir/manifest.json"
+    local signature="$workdir/manifest.json.sig"
+
+    if [[ -z "$manifest_src" ]]; then
+        hv_die "no manifest supplied"
+        return 1
+    fi
+    if [[ -z "$signature_src" ]]; then
+        signature_src="${manifest_src}.sig"
+    fi
+    if [[ ! -f "$pubkey" ]]; then
+        hv_die "release public key not found: $pubkey"
+        return 1
+    fi
+    if ! hv_fetch "$manifest_src" "$manifest"; then
+        hv_die "could not fetch the manifest"
+        return 1
+    fi
+    if [[ "$signature_src" == http://* || "$signature_src" == https://* ]]; then
+        if ! hv_fetch "$signature_src" "$signature"; then
+            hv_die "could not fetch the signature"
+            return 1
+        fi
+    elif [[ -f "$signature_src" ]]; then
+        cp -f -- "$signature_src" "$signature"
+    else
+        hv_die "signature not found: $signature_src"
+        return 1
+    fi
+    if ! hv_verify_signature "$manifest" "$signature" "$pubkey"; then
+        hv_die "manifest signature is invalid — refusing the update"
+        return 1
+    fi
+
+    HV_MANIFEST_FILE="$manifest"
+    if ! HV_MANIFEST_VERSION=$(hv_manifest_field "$manifest" version); then
+        hv_die "manifest has no version"
+        return 1
+    fi
+    HV_MANIFEST_ARCH=$(hv_manifest_field "$manifest" arch 2>/dev/null || true)
+    HV_MANIFEST_URL=$(hv_manifest_field "$manifest" url 2>/dev/null || true)
+    HV_MANIFEST_SHA256=$(hv_manifest_field "$manifest" sha256 2>/dev/null || true)
+    HV_MANIFEST_SIZE=$(hv_manifest_field "$manifest" size 2>/dev/null || true)
+    return 0
+}
+
+# Checks the archive against the manifest's size and SHA-256 (either may be
+# omitted; at least one should be present in a production manifest).
+hv_verify_archive() {
+    local archive="$1" expected_sha="$2" expected_size="$3"
+    if [[ ! -f "$archive" ]]; then
+        hv_die "archive not found: $archive"
+        return 1
+    fi
+    if [[ -n "$expected_size" ]]; then
+        local actual_size
+        actual_size=$(hv_size "$archive")
+        if [[ "$actual_size" != "$expected_size" ]]; then
+            hv_die "archive size mismatch (expected $expected_size, got $actual_size)"
+            return 1
+        fi
+    fi
+    if [[ -n "$expected_sha" ]]; then
+        local actual_sha
+        actual_sha=$(hv_sha256 "$archive")
+        if [[ "${actual_sha,,}" != "${expected_sha,,}" ]]; then
+            hv_die "archive SHA-256 mismatch"
+            return 1
+        fi
+    fi
+    return 0
+}
+
+# Runs the staged binary before it can replace anything. Sets
+# HV_STAGED_VERSION from `homevault X.Y.Z`.
+hv_smoke_binary() {
+    local binary="$1" want_version="$2" out=""
+    if [[ ! -x "$binary" ]]; then
+        hv_die "staged binary is not executable"
+        return 1
+    fi
+    if ! out=$(timeout 10 "$binary" --version 2>/dev/null); then
+        hv_die "staged binary failed its --version smoke test"
+        return 1
+    fi
+    if [[ -n "$want_version" && "$out" != *"$want_version"* ]]; then
+        hv_die "staged binary reports '$out', manifest says '$want_version'"
+        return 1
+    fi
+    HV_STAGED_VERSION="${out#* }"
+    return 0
+}
+
+# Replaces $install_dir/homevault atomically, keeping exactly one previous
+# build. It does NOT touch the service: the caller restarts it, health-checks,
+# and calls hv_rollback_binary on failure.
+hv_swap_binary() {
+    local staged="$1" install_dir="$2"
+    local current="$install_dir/homevault"
+    local previous="$install_dir/homevault.previous"
+    local incoming="$install_dir/.homevault.new"
+
+    if [[ ! -x "$staged" ]]; then
+        hv_die "staged binary is missing or not executable"
+        return 1
+    fi
+    if ! install -m 0755 -- "$staged" "$incoming"; then
+        hv_die "cannot stage the new binary"
+        return 1
+    fi
+    sync
+    if [[ -x "$current" ]]; then
+        if ! cp -f -- "$current" "$previous"; then
+            hv_die "cannot keep the previous build"
+            rm -f -- "$incoming"
+            return 1
+        fi
+    fi
+    if ! mv -f -- "$incoming" "$current"; then
+        hv_die "cannot install the new binary"
+        rm -f -- "$incoming"
+        return 1
+    fi
+    sync
+    return 0
+}
+
+# Restores homevault.previous over homevault. The failed build is kept as
+# homevault.failed for inspection.
+hv_rollback_binary() {
+    local install_dir="$1"
+    local current="$install_dir/homevault"
+    local previous="$install_dir/homevault.previous"
+    local failed="$install_dir/homevault.failed"
+
+    if [[ ! -x "$previous" ]]; then
+        hv_die "no previous build to roll back to"
+        return 1
+    fi
+    if [[ -e "$current" ]]; then
+        mv -f -- "$current" "$failed" 2>/dev/null || true
+    fi
+    if ! mv -f -- "$previous" "$current"; then
+        hv_die "cannot restore the previous build"
+        return 1
+    fi
+    chmod 0755 -- "$current" 2>/dev/null || true
+    sync
+    return 0
+}
+
+# Polls a readiness URL until it answers 2xx or the deadline passes.
+hv_wait_healthy() {
+    local url="$1" timeout_s="${2:-20}"
+    local deadline=$(( $(date +%s) + timeout_s ))
+    while (( $(date +%s) <= deadline )); do
+        if curl -fsS --max-time 2 -- "$url" >/dev/null 2>&1; then
+            return 0
+        fi
+        sleep 1
+    done
+    return 1
+}
+
+# Writes the last update result and appends it to a history log. Best-effort:
+# a failed write must never turn a successful update into a failure.
+hv_write_result() {
+    local data_dir="$1" status="$2" version="$3" previous="$4" message="$5"
+    local dir="$data_dir/updates"
+    mkdir -p "$dir" 2>/dev/null || return 0
+    command -v python3 >/dev/null 2>&1 || return 0
+    local ts
+    ts=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+    python3 - "$dir/last-result.json" "$dir/history.jsonl" \
+        "$status" "$version" "$previous" "$message" "$ts" <<'PY'
+import json
+import os
+import sys
+
+result_path, history_path, status, version, previous, message, ts = sys.argv[1:8]
+doc = {
+    "status": status,
+    "version": version,
+    "previous_version": previous,
+    "message": message,
+    "finished_at": ts,
+}
+tmp = result_path + ".tmp"
+with open(tmp, "w", encoding="utf-8") as fh:
+    json.dump(doc, fh, ensure_ascii=False, indent=2)
+    fh.write("\n")
+os.replace(tmp, result_path)
+try:
+    with open(result_path, encoding="utf-8") as fh:
+        line = fh.read()
+    with open(history_path, "a", encoding="utf-8") as fh:
+        fh.write(line)
+except OSError:
+    pass
+PY
+    return 0
+}
+
+# Sourced by `installer/tests/update-engine.test.sh`: stop here.
+if [[ "${HV_LIB_ONLY:-0}" == "1" ]]; then
+    return 0 2>/dev/null || exit 0
+fi
+
+
+if [[ "$MODE" == "verify-manifest" ]]; then
+    MANIFEST_SRC="${HV_RELEASE_MANIFEST:-}"
+    MANIFEST_PUBKEY="${HV_RELEASE_PUBKEY:-/usr/local/lib/homevault/release-key.pem}"
+    if [[ -z "$MANIFEST_SRC" ]]; then
+        echo "Usage: HV_RELEASE_MANIFEST=<path|url> [HV_RELEASE_PUBKEY=<pem>] $0 --verify-manifest" >&2
+        exit 2
+    fi
+    VERIFY_WORK=$(mktemp -d /tmp/homevault-verify.XXXXXX)
+    trap 'rm -rf "$VERIFY_WORK"' EXIT
+    if ! hv_load_manifest "$MANIFEST_SRC" "${HV_RELEASE_SIGNATURE:-}" \
+            "$MANIFEST_PUBKEY" "$VERIFY_WORK"; then
+        echo "✗ Manifest verification failed — refuse to trust this release." >&2
+        exit 1
+    fi
+    echo "✓ Signed manifest verified"
+    echo "  version: $HV_MANIFEST_VERSION"
+    echo "  arch   : ${HV_MANIFEST_ARCH:-<unspecified>}"
+    if [[ -n "${HV_MANIFEST_SHA256:-}" ]]; then
+        echo "  sha256 : $HV_MANIFEST_SHA256"
+    fi
+    if [[ -n "${HV_MANIFEST_SIZE:-}" ]]; then
+        echo "  size   : $HV_MANIFEST_SIZE bytes"
+    fi
+    exit 0
+fi
 
 if [[ "$MODE" == "uninstall" ]]; then
     # A dry run changes nothing, so it does not need root — that is what makes
@@ -468,6 +867,16 @@ RELEASE_BASE="${HV_RELEASE_BASE:-https://github.com/nicoleroux35/HomeVault/relea
 RELEASE_URL="${HV_RELEASE_URL:-}"
 RELEASE_SHA256="${HV_RELEASE_SHA256:-}"
 RELEASE_TOKEN="${HV_RELEASE_TOKEN:-}"
+# Signed release channel (P2-8). When HV_RELEASE_MANIFEST is set, its signature
+# is verified before anything is downloaded, and its version/arch/sha256/size
+# are enforced. Without it, the installer keeps the pre-existing behaviour
+# (optional pinned checksum) and says so instead of implying a signature.
+RELEASE_MANIFEST="${HV_RELEASE_MANIFEST:-}"
+RELEASE_SIGNATURE="${HV_RELEASE_SIGNATURE:-}"
+RELEASE_PUBKEY="${HV_RELEASE_PUBKEY:-/usr/local/lib/homevault/release-key.pem}"
+# Readiness endpoint used by the automatic rollback. `/api/health/ready` is
+# public and proves the database is reachable, not just that the process is up.
+HEALTH_URL_DEFAULT="http://127.0.0.1:${PORT}/api/health/ready"
 
 # Avoid apt/debconf ever popping an interactive prompt mid-install (a
 # headless box or a `curl | sudo bash` pipe has no one to answer it, so a
@@ -1636,6 +2045,51 @@ step "Downloading and installing the HomeVault application"
 
 # Resolve the archive: use a local file if one was passed as `$1`, otherwise
 # download the published release archive.
+
+# --- Signed manifest (P2-8) -------------------------------------------------
+# Verified *before* the download so a tampered manifest cannot point us at an
+# attacker-controlled archive, and so the manifest's URL/sha256/size become the
+# only accepted values.
+MANIFEST_WORK=""
+MANIFEST_VERSION=""
+MANIFEST_EXPECTED_SIZE=""
+if [[ -n "$RELEASE_MANIFEST" ]]; then
+    MANIFEST_WORK=$(mktemp -d /tmp/homevault-manifest.XXXXXX)
+    if ! hv_load_manifest "$RELEASE_MANIFEST" "$RELEASE_SIGNATURE" \
+            "$RELEASE_PUBKEY" "$MANIFEST_WORK"; then
+        rm -rf "$MANIFEST_WORK"
+        err "Update refused: the signed manifest is invalid."
+        echo -e "  A manifest must be signed by the release key, and the key must be trusted."
+        exit 1
+    fi
+    if [[ -n "$HV_MANIFEST_ARCH" && "$HV_MANIFEST_ARCH" != "$ARCH" ]]; then
+        rm -rf "$MANIFEST_WORK"
+        err "Update refused: the manifest is for '$HV_MANIFEST_ARCH', this host is '$ARCH'."
+        exit 1
+    fi
+    # A signed manifest that pins no digest only authenticates its own fields,
+    # not the bytes at the URL — refuse it.
+    if [[ -z "$HV_MANIFEST_SHA256" ]]; then
+        rm -rf "$MANIFEST_WORK"
+        err "Update refused: the signed manifest does not pin a SHA-256."
+        exit 1
+    fi
+    if [[ -z "$RELEASE_URL" && -n "$HV_MANIFEST_URL" ]]; then
+        RELEASE_URL="$HV_MANIFEST_URL"
+    fi
+    if [[ -z "$RELEASE_SHA256" && -n "$HV_MANIFEST_SHA256" ]]; then
+        RELEASE_SHA256="$HV_MANIFEST_SHA256"
+    fi
+    MANIFEST_VERSION="$HV_MANIFEST_VERSION"
+    MANIFEST_EXPECTED_SIZE="$HV_MANIFEST_SIZE"
+    ok "Signed manifest verified (version $MANIFEST_VERSION)"
+elif [[ -n "$RELEASE_SHA256" ]]; then
+    info "No signed manifest supplied — relying on the pinned SHA-256."
+else
+    warn "No signed manifest and no pinned checksum: this download is not authenticated."
+    echo -e "  For a verified release, pass ${C_BOLD}HV_RELEASE_MANIFEST=<url>${C_RESET}."
+fi
+
 PACKAGE=""
 if [[ $# -ge 1 ]] && [[ -f "$1" ]]; then
     PACKAGE="$1"
@@ -1650,7 +2104,9 @@ if [[ -z "$PACKAGE" ]]; then
     PACKAGE="$TMP_ARCHIVE"
     info "Downloading HomeVault ($ARCH) from $RELEASE_URL ..."
     CURL_AUTH=()
-    [[ -n "$RELEASE_TOKEN" ]] && CURL_AUTH=(-H "Authorization: Bearer $RELEASE_TOKEN")
+    if [[ -n "$RELEASE_TOKEN" ]]; then
+        CURL_AUTH=(-H "Authorization: Bearer $RELEASE_TOKEN")
+    fi
     if ! curl -fL --retry 3 --retry-delay 2 "${CURL_AUTH[@]}" -o "$PACKAGE" "$RELEASE_URL"; then
         err "Failed to download HomeVault from $RELEASE_URL"
         # A private GitHub repository answers 404 to an anonymous request, so
@@ -1674,12 +2130,19 @@ if ! tar -tzf "$PACKAGE" &> /dev/null; then
 fi
 ok "Archive found and valid: $PACKAGE"
 
-# Optional integrity check — the publisher can ship a `<asset>.sha256` sidecar
-# (see `install.sh --package`) and the admin passes its digest here. Verified
-# before anything is extracted into /opt/homevault.
-if [[ -n "$RELEASE_SHA256" ]]; then
+# Integrity check. A signed manifest pins both the size and the SHA-256; the
+# legacy path only pins the SHA-256 when the admin supplied one.
+if [[ -n "$MANIFEST_VERSION" ]]; then
+    if ! hv_verify_archive "$PACKAGE" "$RELEASE_SHA256" "$MANIFEST_EXPECTED_SIZE"; then
+        rm -f "$PACKAGE"
+        [[ -n "$MANIFEST_WORK" ]] && rm -rf "$MANIFEST_WORK"
+        err "Update refused: the archive does not match its signed manifest."
+        exit 1
+    fi
+    ok "Archive matches the signed manifest (SHA-256 + size)"
+elif [[ -n "$RELEASE_SHA256" ]]; then
     ACTUAL_SHA=$(sha256sum "$PACKAGE" | awk '{print $1}')
-    if [[ "$ACTUAL_SHA" != "$RELEASE_SHA256" ]]; then
+    if [[ "${ACTUAL_SHA,,}" != "${RELEASE_SHA256,,}" ]]; then
         err "SHA-256 mismatch for the downloaded archive."
         echo -e "  expected: $RELEASE_SHA256"
         echo -e "  actual:   $ACTUAL_SHA"
@@ -1690,21 +2153,68 @@ if [[ -n "$RELEASE_SHA256" ]]; then
 fi
 
 UPGRADE=0
+CURRENT_VERSION=""
 if [[ -f "$SERVICE_FILE" ]]; then
     UPGRADE=1
     info "Existing installation detected — updating the application (your data is kept)"
-    # Keep the running binary so `--rollback` has something to go back to. Only
-    # one previous build is retained: more would just accumulate disk usage
-    # without a way to choose between them.
     if [[ -x "$INSTALL_DIR/homevault" ]]; then
-        cp -f "$INSTALL_DIR/homevault" "$INSTALL_DIR/homevault.previous"
-        ok "Previous build kept for rollback ($INSTALL_DIR/homevault.previous)"
+        # `timeout` matters when the *installed* build predates the
+        # `--version` flag (added 2026-11-08): an unknown flag used to start
+        # the server, which would hang the installer here.
+        CURRENT_VERSION=$(timeout 5 "$INSTALL_DIR/homevault" --version 2>/dev/null \
+            | awk '{print $NF}' || true)
     fi
 fi
 
-tar -xzf "$PACKAGE" -C "$INSTALL_DIR"
-chmod +x "$INSTALL_DIR/homevault"
-ok "Application extracted to $INSTALL_DIR"
+# Extract to a staging directory, never over the live binary. The old
+# `tar -xzf … -C $INSTALL_DIR` truncated the running executable in place.
+STAGE_DIR=$(mktemp -d /tmp/homevault-stage.XXXXXX)
+if ! tar -xzf "$PACKAGE" -C "$STAGE_DIR"; then
+    rm -rf "$STAGE_DIR"
+    [[ -n "$MANIFEST_WORK" ]] && rm -rf "$MANIFEST_WORK"
+    err "Could not extract the update archive."
+    exit 1
+fi
+if [[ ! -x "$STAGE_DIR/homevault" ]]; then
+    rm -rf "$STAGE_DIR"
+    [[ -n "$MANIFEST_WORK" ]] && rm -rf "$MANIFEST_WORK"
+    err "The archive does not contain an executable 'homevault'."
+    exit 1
+fi
+if ! hv_smoke_binary "$STAGE_DIR/homevault" "$MANIFEST_VERSION"; then
+    rm -rf "$STAGE_DIR"
+    [[ -n "$MANIFEST_WORK" ]] && rm -rf "$MANIFEST_WORK"
+    err "The staged binary failed its smoke test — nothing was changed."
+    exit 1
+fi
+ok "Staged build $HV_STAGED_VERSION passed its smoke test"
+
+# Idempotence: a signed manifest older than or equal to the running build is a
+# no-op, not a downgrade.
+if [[ "$UPGRADE" -eq 1 && -n "$MANIFEST_VERSION" && -n "$CURRENT_VERSION" ]]; then
+    if hv_version_ge "$CURRENT_VERSION" "$MANIFEST_VERSION"; then
+        ok "Already at $CURRENT_VERSION; the signed manifest is not newer. Nothing to do."
+        rm -rf "$STAGE_DIR"
+        [[ -n "$MANIFEST_WORK" ]] && rm -rf "$MANIFEST_WORK"
+        [[ -n "${TMP_ARCHIVE:-}" && "$PACKAGE" == "$TMP_ARCHIVE" ]] && rm -f "$PACKAGE"
+        exit 0
+    fi
+fi
+
+if [[ "$UPGRADE" -eq 1 ]]; then
+    if ! hv_swap_binary "$STAGE_DIR/homevault" "$INSTALL_DIR"; then
+        rm -rf "$STAGE_DIR"
+        [[ -n "$MANIFEST_WORK" ]] && rm -rf "$MANIFEST_WORK"
+        err "Atomic swap failed — the running build was left untouched."
+        exit 1
+    fi
+    ok "New build swapped in atomically (previous build kept for rollback)"
+else
+    install -m 0755 "$STAGE_DIR/homevault" "$INSTALL_DIR/homevault"
+    ok "Application installed to $INSTALL_DIR"
+fi
+rm -rf "$STAGE_DIR"
+[[ -n "$MANIFEST_WORK" ]] && rm -rf "$MANIFEST_WORK"
 
 # Optional non-root deployment: create the service account, hand it the state
 # it writes directly, and let the binary render its own scoped sudoers file.
@@ -1988,20 +2498,49 @@ else
 fi
 
 HV_READY=0
+HV_ROLLED_BACK=0
 info "Waiting for the server to respond..."
-for _ in $(seq 1 20); do
-    if curl -fsS "http://127.0.0.1:${PORT}/api/auth/setup-status" > /dev/null 2>&1; then
-        HV_READY=1
-        break
-    fi
-    sleep 1
-done
-if [[ "$HV_READY" -eq 1 ]]; then
+if hv_wait_healthy "http://127.0.0.1:${PORT}/api/auth/setup-status" 20; then
+    HV_READY=1
     ok "HomeVault is responding on port $PORT"
+elif [[ "$UPGRADE" -eq 1 && -x "$INSTALL_DIR/homevault.previous" ]]; then
+    # Automatic rollback (P2-8): an update that does not become ready is not a
+    # successful update. Restore the previous build and prove it starts again.
+    warn "The new build did not answer within 20 s — rolling back automatically."
+    systemctl stop "$SERVICE_NAME" >/dev/null 2>&1 || true
+    if hv_rollback_binary "$INSTALL_DIR"; then
+        systemctl start "$SERVICE_NAME" >/dev/null 2>&1 || true
+        if hv_wait_healthy "http://127.0.0.1:${PORT}/api/auth/setup-status" 20; then
+            HV_READY=1
+            HV_ROLLED_BACK=1
+        fi
+    fi
+    if [[ "$HV_ROLLED_BACK" -eq 1 ]]; then
+        warn "Rolled back to ${CURRENT_VERSION:-the previous build}. The failed build is at $INSTALL_DIR/homevault.failed."
+        hv_write_result "$DATA_DIR" "rolled_back" \
+            "${MANIFEST_VERSION:-$HV_STAGED_VERSION}" "${CURRENT_VERSION:-unknown}" \
+            "health check failed after update; previous build restored"
+    else
+        VFAIL=1
+        err "The update failed and the automatic rollback could not bring the service back."
+        echo -e "  See: ${C_BOLD}journalctl -u $SERVICE_NAME -e${C_RESET}"
+        hv_write_result "$DATA_DIR" "failed" \
+            "${MANIFEST_VERSION:-$HV_STAGED_VERSION}" "${CURRENT_VERSION:-unknown}" \
+            "health check failed and rollback failed"
+    fi
 else
     VFAIL=1
     err "HomeVault is still not responding after 20 seconds."
     echo -e "  See: ${C_BOLD}journalctl -u $SERVICE_NAME -e${C_RESET}"
+    hv_write_result "$DATA_DIR" "failed" \
+        "${MANIFEST_VERSION:-$HV_STAGED_VERSION}" "${CURRENT_VERSION:-unknown}" \
+        "service did not become ready"
+fi
+
+# A healthy upgrade is recorded so Settings can show the last update result.
+if [[ "$UPGRADE" -eq 1 && "$HV_READY" -eq 1 && "$HV_ROLLED_BACK" -eq 0 ]]; then
+    hv_write_result "$DATA_DIR" "succeeded" "$HV_STAGED_VERSION" \
+        "${CURRENT_VERSION:-unknown}" "update applied and health check passed"
 fi
 
 for svc_pair in "smbd:Samba" "nfs-kernel-server:NFS" "vsftpd:FTP" "docker:Docker" "snmpd:SNMP"; do
@@ -2032,7 +2571,11 @@ PUBLIC_IP=$(timeout 5 curl -fsSL --max-time 4 https://api.ipify.org 2>/dev/null 
             echo "")
 
 echo ""
-if [[ "$HV_READY" -eq 1 ]] && [[ "$VFAIL" -eq 0 ]]; then
+if [[ "${HV_ROLLED_BACK:-0}" -eq 1 ]]; then
+    echo -e "${C_BOLD}${C_YELLOW}The update did not become ready and was rolled back automatically.${C_RESET}"
+    echo -e "  HomeVault is running ${CURRENT_VERSION:-the previous build}. The failed build is"
+    echo -e "  kept at ${C_BOLD}$INSTALL_DIR/homevault.failed${C_RESET} for inspection."
+elif [[ "$HV_READY" -eq 1 ]] && [[ "$VFAIL" -eq 0 ]]; then
     echo -e "${C_BOLD}${C_GREEN}HomeVault has been installed and started successfully.${C_RESET}"
 elif [[ "$HV_READY" -eq 1 ]]; then
     echo -e "${C_BOLD}${C_YELLOW}HomeVault is installed and running, but some optional components are missing.${C_RESET}"

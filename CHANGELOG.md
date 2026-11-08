@@ -8,6 +8,21 @@ follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **Signed, atomic updates with automatic rollback (2026-11-08, P2-8).** The
+  installer now verifies a signed release manifest (Ed25519 on OpenSSL 3,
+  RSA/ECDSA SHA-256 otherwise) before downloading anything, enforces its
+  `version`/`arch`/`sha256`/`size`, extracts to a staging directory and runs
+  `homevault --version` on the staged binary before an atomic rename — the live
+  executable is never overwritten in place. The previous build is kept as
+  `homevault.previous`; if `/api/auth/setup-status` does not answer within 20 s
+  the installer rolls back automatically, keeps the failed build as
+  `homevault.failed` and records the outcome. Results are written to
+  `data/updates/last-result.json`, exposed by `GET /settings/version` as
+  `last_update` and shown in Settings. New `--verify-manifest` mode (no root)
+  and `HV_SIGNING_KEY` signing during `--package`. The binary gained
+  `--version`. Tests are in `installer/tests/update-engine.test.sh`; docs in
+  `docs/guides/settings.md` → "System → Signed, atomic updates".
+
 - **Explorer authorization, application gate and sharing (2026-11-08,
   P0–P3).** Every mutating Explorer route now checks the caller's
   `resource_shares` level, not just `PathGuard`: `write` for

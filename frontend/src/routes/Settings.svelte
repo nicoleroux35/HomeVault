@@ -165,7 +165,16 @@
     latest_version: null as string | null,
     up_to_date: true,
     release_date: null as string | null,
-    error: null as string | null
+    error: null as string | null,
+    // Result of the last install-time update, written by the installer's
+    // signed/atomic engine (P2-8). Absent until one has run.
+    last_update: null as {
+      status: string;
+      version: string;
+      previous_version: string;
+      message: string;
+      finished_at: string;
+    } | null
   };
 
   // Server info
@@ -1421,6 +1430,15 @@
               <div class="settings-version-row flex justify-between text-sm py-1"><span class="text-[var(--hv-settings-label)]">{$t('settings.latest_version')}</span><span class="font-semibold text-[var(--hv-settings-title)]">v{versionInfo.latest_version}{#if !versionInfo.up_to_date}<span class="ml-1 px-1.5 py-0.5 rounded bg-[var(--hv-warning-bg)] text-[var(--hv-warning)] text-micro font-bold uppercase">{$t('settings.update_available_badge')}</span>{/if}</span></div>
             {/if}
             {#if versionInfo.release_date}<div class="settings-version-row flex justify-between text-sm py-1"><span class="text-[var(--hv-settings-label)]">{$t('settings.release_date2')}</span><span class="font-semibold text-[var(--hv-settings-title)]">{versionInfo.release_date}</span></div>{/if}
+            {#if versionInfo.last_update}
+              <div data-testid="settings-last-update" class="settings-version-row flex justify-between gap-3 text-sm py-1">
+                <span class="text-[var(--hv-settings-label)]">{$t('settings.last_update')}</span>
+                <span class="font-semibold text-[var(--hv-settings-title)] text-right">
+                  <span data-testid="settings-last-update-status">{$t(`settings.update_status_${versionInfo.last_update.status}`)}</span>
+                  <span class="text-[var(--hv-settings-label)] font-normal"> v{versionInfo.last_update.version}</span>
+                </span>
+              </div>
+            {/if}
             {#if !versionInfo.latest_version}<p data-testid="version-no-check-hint" class="m-0 mt-1 text-xs text-[var(--hv-settings-label)]">{$t('settings.update_auto_hint')}</p>{/if}
             {#if versionInfo.error}<div class="settings-version-row flex items-center gap-1.5 text-xs text-[var(--hv-error)]"><IconAlertTriangle size={16} /> <span>{versionInfo.error}</span></div>{/if}
           </div>

@@ -716,7 +716,10 @@ Security: protected-device blocklist prevents operating on the boot disk. Path t
 - Email: SMTP configuration for notifications
 - Notifications: alert thresholds
 - AI Assistant: model selection, Ollama configuration
-- Update: check for updates manually or on schedule
+- Update: check for updates manually or on schedule; a system update verifies a
+  signed release manifest, swaps the program atomically, keeps the previous
+  version, and rolls back automatically if the new build does not become ready.
+  The last update result (applied, rolled back or failed) is shown on the screen
 - Outbound proxy: route internet calls (certificates, dynamic DNS, update
   checks, alerts, Web Push) through an HTTP or HTTPS proxy, with a bypass list
   that always includes local addresses; proxy credentials are not accepted

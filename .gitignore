@@ -5,6 +5,10 @@
 /installer/target/
 /installer/Cargo.lock
 /installer/release/
+# Release signing keys: the private half must never be committed. The public
+# trust anchor is installed at /usr/local/lib/homevault/release-key.pem.
+/release-key*.pem
+/*-signing-key*.pem
 *.db
 *.db-journal
 .env

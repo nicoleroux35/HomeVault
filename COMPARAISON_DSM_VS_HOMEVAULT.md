@@ -1,0 +1,355 @@
+# Comparatif HomeVault ↔ DSM 7.4.1 — apps et améliorations
+
+> **Document de comparaison** — racine du dépôt, à la demande explicite du
+> mainteneur. Il ne remplace ni `CLAUDE.md` ni `docs/`, qui restent la source de
+> vérité. Il complète `ANALYSE-DSM-vs-HOMEVAULT.md` en se concentrant sur le
+> **comparatif par application** et sur les **améliorations à mener**.
+>
+> **Règle de lecture (2026‑11‑08).** Les sections §1–§2 décrivent ce que DSM
+> possède — c'est un **constat**, pas une feuille de route. La **décision**
+> (garder / recadrer / geler / rejeter) est en §3, et le cadre d'évaluation en
+> §6. **§6 fait foi** en cas d'ambiguïté, et la revue de valeur du backlog
+> (`HOMEVAULT_TASKLIST_A_FAIRE.md` §1bis) reste la référence opérationnelle.
+
+| Champ | Valeur |
+|---|---|
+| Baseline HomeVault | commit `6cc87ed`, 08/11/2026 |
+| Firmware DSM analysé | 7.4.1‑90080 (DS925+), image `/media/nicolas/500GB/Projets/DSM7/DSM_DS925+_90080` |
+| Périmètre | 30 apps intégrées du launcher + 15 apps du catalogue Docker |
+| Méthode | Vérification du code (`src/`, `frontend/`, `catalog/`), des guides `docs/guides/` et du backlog `HOMEVAULT_TASKLIST_A_FAIRE.md` |
+| Légende | ⭐ HomeVault au‑delà · ✅ parité · 🟡 partiel · ❌ absent |
+| Revue de valeur | 2026‑11‑08 — filtre §6, aligné sur le backlog §1bis |
+
+---
+
+## 0. Mise à jour par rapport à `ANALYSE-DSM-vs-HOMEVAULT.md`
+
+L'analyse du 04/11/2026 (baseline `c37c803`) est en partie périmée. Ces manques
+qu'elle listait sont **désormais livrés** et ne doivent plus être comptés :
+
+| Ancien « manque » | État réel au HEAD `6cc87ed` |
+|---|---|
+| Routes statiques, proxy sortant, client WireGuard | ✅ livrés (P1‑7, P1‑8, P1‑17) |
+| GeoIP, rétention métriques, expiration mot de passe | ✅ livrés (P1‑14, P1‑3, P1‑2) |
+| Migration de niveau RAID, `restic mount` | ✅ livrés (P1‑11, P1‑10) |
+| Snapshots par partage, rollback Btrfs, snapshots immuables | ✅ livrés (P1‑12, P1‑13, P2‑5) |
+| SMB multicanal, AD/Kerberos (config + join), NFS `sec=krb5` | ✅ livrés (P2 partiel assumé) |
+| ACL par partage, quotas par partage, Previous Versions, Time Machine, serveur rsync | ✅ livrés |
+| OpenAPI, DDNS 7 fournisseurs, SNMP v3 | ✅ livrés |
+| Table d'audit, isolation d'exécution | ❌ toujours ouverts (voir §3) |
+| Signature + atomicité de mise à jour | 🟡 **installeur livré le 2026‑11‑08** (P2‑8 partiel : déclenchement UI restant) |
+
+**Ce que la revue du 2026‑11‑08 ajoute.** Le diagnostic de ce document reste
+juste : les vrais manques sont la **confiance** (mise à jour, isolation, audit,
+restauration), pas les fonctionnalités. En revanche, plusieurs écarts DSM listés
+en §1–§2 ne sont **pas** des objectifs pour HomeVault : ce sont des parités
+d'entreprise, de niche ou de dette. Le §3 révisé les classe explicitement, et le
+§6 fournit le filtre qui doit s'appliquer à **toute future implémentation**. En
+cas de désaccord avec le backlog, `HOMEVAULT_TASKLIST_A_FAIRE.md` §1bis gagne.
+
+---
+
+## 1. Apps intégrées — comparatif
+
+> **Constat, pas engagement.** La colonne « Ce qu'il faut améliorer » liste les
+> écarts fonctionnels constatés face à DSM. Toute décision d'implémentation est
+> prise en §3 / §6 — une ligne présente ici n'est pas, à elle seule, une raison
+> de coder.
+
+### 1.1 Stockage et fichiers
+
+| App HomeVault | Équivalent DSM 7.4 | Verdict | Ce qu'il faut améliorer |
+|---|---|---|---|
+| **Storage** | Storage Manager | 🟡 | SHR/SHR2, thin provisioning complet (seuls les zvol ZFS sont couverts), déduplication (design seulement), cache SSD L2ARC/SLOG (le « cache » actuel est un mover de pool), KMIP, WORM, extension DX525, mise à jour firmware disques |
+| **RAID** | Storage Manager (création de volume) / Storage Advisor | 🟡 | SHR/SHR2, ajout automatique de spare, extension à chaud, RAID F1, vitesse et moniteur de resync (migration de niveau déjà faite) |
+| **Explorer** | File Station | ⭐ / 🟡 | **Montages VFS distants (CIFS/NFS/cloud)** absents ; vignettes **images seulement** (pas de vidéo/PDF) ; historique de versions **ZFS seulement** (pas Btrfs) ; ACL Windows ; favoris ; transcodage |
+| **Shares** | Control Panel > Dossier partagé + Services de fichiers | 🟡 | ACL Windows non simulées (POSIX uniquement) ; validation réelle DC/keytab AD ; NFSv4 Kerberos à valider sur matériel ; WS‑Discovery absent ; SMB multicanal, chiffrement, Previous Versions, Time Machine, rsync, FTP jails : **faits** |
+| **Quotas** | Control Panel > Quota | ✅ | Parité solide (utilisateur, partage, transfert). Ajouter historique/alertes de dépassement |
+| **USB Copy** | USB Copy | ✅ | Ajouter déclenchement physique one‑touch et règles multiples si le matériel le permet |
+| **iSCSI** | SAN Manager | 🟡 | Snapshots/clones de LUN, LUN thin, Fibre Channel, multipath, VAAI. CHAP et apply‑now sont faits |
+| **Backup** | Hyper Backup | 🟡 | Pas d'image **bare‑metal/block‑level**, pas d'agent ABB (Windows/Linux/M365), pas de C2. Restic, dédup, chiffrement, rétention, `mount`, vérification : faits |
+| **Backup destination** | Hyper Backup Vault | ✅ | Ajouter multi‑protocole (rsync/WebDAV) et limite de bande passante par tenant |
+| **Replication** | Snapshot Replication | ✅ / 🟡 | Basculement/reprise, granularité par partage (faite), destinations multiples, planification de bande passante |
+| **Rescue** | Storage Manager (réparation) / Synology Assistant | ⭐ | Ajouter un parcours guidé « réparer un pool » au‑dessus de ddrescue/TestDisk/mdadm |
+
+### 1.2 Système, réseau, identité
+
+| App HomeVault | Équivalent DSM 7.4 | Verdict | Ce qu'il faut améliorer |
+|---|---|---|---|
+| **Dashboard** | Bureau DSM / Info Center | ✅ | Widget sauvegarde/scrub/UPS et alerte unifiée ; le reste est au niveau |
+| **Network** | Control Panel > Réseau | 🟡 | DHCPv6‑PD/RA, OVS, modes de bond (2 seulement), PPPoE (rejeté volontairement). Routes statiques, proxy, diagnostic : faits |
+| **VPN** | VPN Server + VPN Client | 🟡 | **Serveur OpenVPN absent** (seul le client existe), L2TP/IPSec, site‑à‑site. WireGuard serveur + client : faits |
+| **Traffic control** | Control Panel > Trafic | 🟡 | Classification par app/protocole, DSCP, shaping entrant (aujourd'hui egress seulement) |
+| **Docker** | Container Manager | ⭐ / ✅ | Mises à jour planifiées/auto, graphiques ressources, compose (fait), registries privés (fait), exec/logs (fait) |
+| **Virtual Machines** | Virtual Machine Manager | 🟡 | Export/import OVA, migration à chaud, HA, switches virtuels, passthrough USB/PCI. Clone, snapshots, VNC, cloud‑init : faits |
+| **Scheduled Tasks** | Task Scheduler | 🟡 | Seulement **4 types** (`command`, `snapshot`, `smart_test`, `power`). Ajouter backup, scrub, purge corbeille, Docker, notification, rsync, historique |
+| **Settings** | Control Panel | 🟡 | **MAJ signée + atomique + rollback absente** (seul un « update check » existe), portail de connexion personnalisé, options régionales, périphériques externes, LED/bip/LCM |
+| **Users** | Control Panel > Utilisateur & Groupe | ✅ | Groupes imbriqués, historique de mots de passe, verrouillage d'inactivité. Expiration, quotas, grants, managers délégués, sync Samba : faits |
+| **Groups** | Control Panel > Utilisateur & Groupe | ✅ | Groupes imbriqués, quotas de groupe |
+| **Directory sign-in** | Domaine/LDAP + SSO Server | 🟡 | CAS/Azure/Entra/WebSphere, **serveur LDAP/RADIUS**, fournisseur OAuth, SCIM. LDAP/AD/OIDC/SAML + mapping groupe→rôle : faits |
+| **Account** | Paramètres personnels | ✅ | Pas de manque bloquant |
+| **Terminal** | (pas d'équivalent web DSM) | ⭐ | Ajouter audit/enregistrement de session si usage administrateur intensif |
+
+### 1.3 Supervision et productivité
+
+| App HomeVault | Équivalent DSM 7.4 | Verdict | Ce qu'il faut améliorer |
+|---|---|---|---|
+| **Health** | Resource Monitor + Security Advisor + Active Insight | ✅ / 🟡 | Top processus, I/O disque, capteurs matériels, seuils/alertes. Security Advisor : au niveau |
+| **Metrics** | Resource Monitor | ✅ | Par processus, I/O disque/volume, rapports planifiés. Rétention configurable : faite |
+| **Journal** | Log Center | 🟡 | **Table d'audit interrogeable absente** (P1‑18) ; filtres sauvegardés, alertes, export. Syslog distant TLS : fait |
+| **Widgets / Edit Widgets** | Widgets DSM | ✅ | Widgets backup/UPS/interface réseau/croissance stockage |
+| **Cloud Sync** | Cloud Sync | ✅ | Remotes chiffrés (rclone crypt), présets fournisseurs, limites de bande passante |
+| **Syncthing** | Synology Drive | 🟡 | **Navigateur de versions/restauration**, sync sélective/à la demande, dossiers d'équipe, apps mobiles, verrouillage de fichiers |
+| **Downloader** | Download Station | 🟡 | **NZB, eMule, RSS, planification, limites par tâche, extraction auto, ratio**. HTTP/HTTPS/FTP/SFTP/magnet seulement aujourd'hui |
+| **AI Assistant** | (pas d'équivalent dans l'image) | ⭐ | GPU, davantage de sources RAG. Déjà au‑delà |
+| **PublicShare** | File Station (liens de partage) | ⭐ | Page de marque, statistiques de consultation. File requests et liens dossier : déjà au‑delà |
+
+---
+
+## 2. Catalogue d'apps vs paquets DSM
+
+HomeVault propose **15 apps** ; DSM référence **63 paquets** (19 installés d'usine
+dans l'image).
+
+| Catégorie | HomeVault (catalogue) | Paquet DSM | Verdict | À améliorer |
+|---|---|---|---|---|
+| Photos/vidéos | **Immich** | Synology Photos | ✅ / ⭐ | Installation 1‑clic, stockage sur partage, sauvegarde automatique, transcodage matériel |
+| Vidéo | **Jellyfin** | Video Station | ✅ | Transcodage HW, DLNA, accès distant |
+| Musique | **Navidrome** | Audio Station | ✅ | DLNA/AirPlay |
+| Docs/notes | **BookStack, Paperless‑ngx** | Note Station, Documents | 🟡 | OCR/scan, édition collaborative, import |
+| Drive/sync | **ownCloud, Syncthing** | Synology Drive | 🟡 | Sync sélective, versions, apps mobiles, édition en ligne |
+| Git/dev | **Gitea** | Git Server | ✅ | SSO, sauvegarde |
+| Monitoring | **Grafana, Uptime Kuma** | Resource Monitor / Active Insight | ⭐ | Intégration des métriques HomeVault |
+| Automatisation/IoT | **n8n, Home Assistant** | (aucun équivalent) | ⭐ | Connecteurs HomeVault |
+| Mots de passe | **Vaultwarden** | Secure SignIn | ⭐ | SSO/passkeys |
+| Tâches/RSS/DNS | **Vikunja, FreshRSS, Pi‑hole** | Calendar / DNS Server | ✅ / 🟡 | **Calendrier manquant** |
+| **Absents** | — | MailPlus Server, Calendar, Contacts, Synology Office, Chat (équipe), Surveillance Station, Web Station, Directory Server, RADIUS Server, C2/Hybrid Share, ABB Agent, CMS, Migration Assistant, DLNA | ❌ | Décider pour chaque : app catalogue vs développement natif vs non‑objectif assumé |
+
+> Le « Chat » de HomeVault est un **assistant IA**, pas la messagerie d'équipe de
+> DSM. Ne pas confondre les deux dans un comparatif.
+
+> **Décision par défaut sur les « absents » : catalogue, pas natif.** Le backlog
+> §6 acte déjà le rejet des photothèques, mail, calendrier, NVR et PHP **en
+> natif**, assumés via le catalogue Docker. Une app manquante se traite donc en
+> priorité par une entrée de catalogue (ex. calendrier → Radicale/Baïkal), pas
+> par un nouveau sous-système dans le binaire. Les exceptions sont listées en §3
+> et §6.
+
+---
+
+## 3. Tableau priorisé — décisions
+
+Chaque ligne est passée au filtre §6. La priorité mesure la **valeur pour la
+cible** (NAS domestique, 1–3 utilisateurs), pas la présence du bouton chez DSM.
+Référence opérationnelle : `HOMEVAULT_TASKLIST_A_FAIRE.md` §1bis.
+
+### 3.1 À garder — vraie avancée (confiance d'abord)
+
+| Priorité | Chantier | Apps | Valeur réelle | Garde‑fou | Effort | Réf. |
+|---|---|---|---|---|---|---|
+| **P0** | Mise à jour **atomique + rollback**, puis **signée** | Settings / installeur | Seul maillon de confiance faible : pas de retour arrière aujourd'hui | Atomicité d'abord ; la signature dépend de l'infra de release | L/XL | P2‑8 |
+| **P0** | **Isolation d'exécution** (systemd durci, AppArmor) | Backend / installeur | Défense en profondeur ; l'app utilise `sudo` | Mesurer, ne rien casser côté `sudo`/Samba | L | P2‑7 |
+| **P0** | **Table d'audit interrogeable** | Journal | Accountability RGPD + enquête après incident | Admin‑only, rétention bornée, **jamais de contenu de fichier** | M | P1‑18 |
+| **P0** | **Restauration bare‑metal testée** | Backup / DR | Reprise après sinistre réellement prouvée | Runbook + VM d'abord, pas d'usine à images | L | P2‑9 |
+| **P1** | **SMB WS‑Discovery** | Shares | Découverte Windows sans configuration | Protocole de découverte, aucune donnée exposée | S | nouveau |
+| **P1** | **MAJ Docker planifiées/auto** | Docker | Hygiène de patch = sécurité | Opt‑in, jamais de redémarrage surprise | S/M | nouveau |
+| **P1** | **Historique/alertes quotas + filtres/export Journal** | Quotas, Journal | Visibilité sans surveillance | — | S | nouveau |
+| **P1** | **WireGuard UX** (QR, 1‑clic, DDNS) | VPN | L'accès distant est le vrai besoin domestique | Remplacer « serveur OpenVPN », pas l'ajouter | S/M | nouveau |
+| **P1** | **Unifier les tâches planifiées** sur les ordonnanceurs existants | Scheduled Tasks | 4 types exposés contre 13 boucles déjà présentes | **Un seul moteur** : exposer/rediriger, ne pas dupliquer | S/M | nouveau |
+
+**État au 2026‑11‑08.** P2‑8 est livré côté **installeur** : manifeste signé
+vérifié avant téléchargement, application atomique, `homevault.previous`
+conservé, rollback automatique si le service ne devient pas prêt, résultat
+exposé dans Settings (`last_update`). Le **déclenchement depuis l'UI** reste à
+faire, ainsi que la publication de la clé publique de production. P2‑7,
+P1‑18 et P2‑9 restent ouverts.
+
+### 3.2 À recadrer — bon objectif, mauvais périmètre
+
+| Priorité | Proposition initiale | Recadrage retenu | Pourquoi | Effort | Réf. |
+|---|---|---|---|---|---|
+| **P1** | « Média first‑class » (apps natives) | **Intégration média** : installation 1‑clic + **binding sur un partage** + backup/rétention + reverse‑proxy + accès distant + détection transcodage HW | Le backlog §6 rejette le natif ; l'usage n°1 d'un NAS reste à couvrir par le catalogue | M | nouveau |
+| **P1** | Explorer : CIFS/NFS/cloud, vignettes vidéo/PDF, versions Btrfs, favoris | **CIFS/NFS + favoris + versions Btrfs** en P1 ; cloud via rclone existant ; **vignettes vidéo/PDF en P2 opt‑in** (ffmpeg/poppler = surface + CPU) | Dernier vrai écart avec File Station | M | nouveau |
+| **P1** | Téléchargeur : NZB, RSS, planification, limites, extraction | **RSS + planification + limites/tâche + extraction auto** ; **NZB/eMule rejetés** | Niche, credentials, exposition légale | M | nouveau |
+| **P2** | Cache SSD L2ARC/SLOG | **Opt‑in ZFS**, jamais par défaut (exige un SSD) | Gain réel seulement sur matériel adapté | M | nouveau |
+| **P2** | iSCSI snapshots/clones de LUN, thin LUN | **P2 home‑lab** ; le thin zvol existe déjà | Usage domestique marginal | M | nouveau |
+| **P2** | VM export/import OVA | **P2** en s'appuyant sur `incus export` natif | Portabilité/backup, pas un sous‑système | M | nouveau |
+| **P2** | Syncthing navigateur de versions | **P2** intégration UI seule (Syncthing gère déjà les versions) | Faible effort, pas de nouveau moteur | S/M | nouveau |
+| **P2** | Calendrier/Contacts manquants | **App catalogue** (Radicale/Baïkal), pas natif | Cohérent avec le backlog §6 | S | nouveau |
+
+### 3.3 Geler ou rejeter — parité sans valeur pour la cible
+
+| Proposition | Décision | Raison |
+|---|---|---|
+| **Validation DC/Kerberos + ACL Windows en P0** | **Geler** | Cible entreprise non confirmée ; déjà gelé au §1bis |
+| **Serveur OpenVPN + L2TP** | **Rejeter** | WireGuard serveur couvre le besoin, en plus simple/rapide ; L2TP = legacy |
+| **NZB / eMule** | **Rejeter** | Niche, credentials, exposition légale |
+| **SHR / SHR2** | **Rejeter** | Abstraction propriétaire ; ZFS raidz + mdadm suffisent |
+| **Déduplication / thin overcommit** | **Geler** | Saturation imprévisible ; déjà tranché |
+| **KMIP / WORM** | **Rejeter** | Dépendance réseau au boot / verrouillage admin ; déjà tranché |
+| **Suite productivité native** (mail, office, NVR, chat d'équipe, Web Station) | **Rejeter en natif** | Contredit le backlog §6 ; surface d'attaque énorme → catalogue |
+| **Identité d'entreprise** (RADIUS/LDAP server, CAS/Azure/Entra, SCIM) | **Geler** | Hors cible ; le client OIDC/SAML suffit |
+| **Apps mobiles natives** | **Rejeter** | Contredit « rien à installer » → **PWA** |
+| **21 locales** | **Rejeter** | Dette de maintenance (déjà backlog §6) |
+| **HA cluster / IDS‑IPS** | **Rejeter** | Déjà backlog §6 |
+
+### 3.4 Ce qu'il ne faut pas copier de DSM
+
+QuickConnect, Active Insight/SynoAnalytics, le canal gRPC de SupportService
+(actions distantes), ExtJS 3.4, la prolifération de paquets, le verrouillage
+C2/Hybrid Share, le noyau 4.4 patché, PostgreSQL 11/OpenSSL 1.1.1/Samba 4.15/
+PHP 8.1/Redis 4.0.
+
+---
+
+## 4. Verdict global
+
+1. **HomeVault n'est plus « en retard fonctionnel »** sur l'essentiel d'un NAS
+   domestique : fichiers, partages, snapshots, sauvegarde, réplication, réseau,
+   DNS/DHCP, VPN, Docker, VM, supervision, sécurité produit. Sur plusieurs axes
+   il est **au‑delà** (passkeys, snapshots immuables, anti‑ransomware, file
+   requests, RAG/MCP, accessibilité, sobriété).
+2. **Les vrais écarts restants sont peu nombreux mais structurants** : chaîne de
+   mise à jour, isolation d'exécution, audit requêtable, restauration
+   bare‑metal — c'est‑à‑dire la **confiance** plus que les fonctionnalités.
+3. **Le plus gros écart « visible pour l'utilisateur » est le média** : photos,
+   vidéo, musique passent aujourd'hui par le catalogue Docker, sans binding sur
+   un partage ni sauvegarde associée. Le chantier P1 est donc une **intégration
+   média** (1‑clic, partage, backup, proxy, transcodage HW), **pas** des apps
+   natives — voir §3.2.
+4. **Les écarts entreprise et de niche sont gelés ou rejetés**, pas reportés
+   indéfiniment : AD/Kerberos/ACL Windows, serveur OpenVPN, L2TP, SHR/SHR2,
+   NZB/eMule, KMIP/WORM, HA, IDS. Les traiter comme des régressions serait
+   confondre parité et progrès.
+5. **DSM garde l'avantage** sur la profondeur stockage (SHR/SHR2, extents,
+   dédup, cache noyau), l'écosystème de paquets, l'identité d'entreprise, la
+   chaîne de mise à jour et la suite média/productivité. **HomeVault garde
+   l'avantage** sur la simplicité, la sécurité produit, l'intégrité des données,
+   l'IA et la testabilité — et **choisit de ne pas copier** ce qui contredit ces
+   avantages.
+
+---
+
+## 5. Preuves principales dans le code
+
+- Apps et catégories : `frontend/src/routes/Desktop.svelte:1077-1108`
+- SMB AD/Kerberos, NFS `sec=`, multicanal : `src/shares.rs:204-247, 686-689, 766-775, 1577-1731` ;
+  guide `docs/guides/shares.md:492-575`
+- Vignettes images uniquement : `src/handlers/explorer.rs:4297-4319`
+- Protocoles du téléchargeur : `src/handlers/downloader.rs:78`
+- Types de tâches : `src/scheduled_tasks_scheduler.rs:83-160`
+- Clone VM : `src/handlers/vm.rs:163` ; routes VM : `src/web/mod.rs:2355-2426`
+- Absence d'audit/signature/isolation : aucune occurrence dans
+  `sqlx/migrations/`, `src/app_catalog/`, `installer/install.sh`
+  (unité principale sans `ProtectSystem`)
+- Catalogue : `catalog/*/homevault-app.toml` (15 apps)
+- Apps catalogue **non liées aux partages** : le compose ne binde que
+  `/srv/apps/<app>` (`src/app_catalog/mod.rs:261-270`) — d'où le chantier
+  « binding sur un partage » du §3.2
+- **13 ordonnanceurs déjà existants** (`src/web/mod.rs:2809-2850`) : une
+  « tâche planifiée backup/scrub/corbeille » doit les exposer, pas les dupliquer
+- Serveur OpenVPN absent, client seul : `src/handlers/vpn.rs:953-1002` ;
+  le commentaire d'en‑tête `src/vpn.rs:9` a été corrigé le 2026‑11‑08
+- Backlog à jour : `HOMEVAULT_TASKLIST_A_FAIRE.md` (§1, §1bis et §6)
+
+---
+
+## 6. Filtre de valeur — applicable à toute future implémentation
+
+HomeVault est un **NAS domestique accessible, simple, fiable, sécurisé et
+respectueux de la vie privée**. Une fonctionnalité ne devient du travail que si
+elle sert cette phrase. Le filtre ci‑dessous s'applique **avant** d'ouvrir un
+item dans le backlog, et se relit **à la livraison**.
+
+### 6.1 Les six questions
+
+| # | Question | Échec typique |
+|---|---|---|
+| 1 | **Usage** — un foyer la rencontre‑t‑il dans le premier mois ? | fonction d'entreprise ou de home‑lab avancé |
+| 2 | **Simplicité** — retire‑t‑elle une étape ou un doute, au lieu d'ajouter un concept ? | nouvel écran, nouvel acronyme, nouveau mode |
+| 3 | **Fiabilité** — survit‑elle à une coupure, un disque HS, une restauration ? | état en mémoire, écriture non atomique, job non reprenable |
+| 4 | **Vie privée/sécurité** — évite‑t‑elle un appel sortant, un démon root ou un stock de secrets en plus ? | télémétrie, cloud par défaut, PKI inutile |
+| 5 | **Testabilité/reversibilité** — couvrable aux 3 niveaux, avec retour arrière ? | « vérifié » sans test de corruption, pas de rollback |
+| 6 | **Bon endroit** — natif ou catalogue Docker ? | réimplémenter une app qui existe déjà |
+
+**Règle de décision :** au moins **4 « oui » sur 6** pour entrer dans le
+backlog ; **3 échecs ou plus = rejet**. Un « oui » obtenu en dégradant une autre
+réponse ne compte pas.
+
+### 6.2 Les trois pièges à refuser
+
+1. **La parité comme objectif.** « DSM a un bouton » n'est pas une raison. Une
+   case cochée uniquement pour égaler DSM est de la dette déguisée en roadmap.
+2. **La fonctionnalité qui ajoute un mode de panne.** Un nouveau démon root, un
+   nouveau stock de secrets, un nouveau protocole réseau : chacun doit être
+   justifié par un usage domestique réel, sinon il est rejeté ou opt‑in.
+3. **Le natif par réflexe.** Le §6 du backlog tranche : photothèque, mail,
+   calendrier, NVR, PHP → **catalogue**. Le natif est réservé à ce qui doit
+   partager l'identité, les partages, la sauvegarde ou la supervision.
+
+### 6.3 Impact vie privée — à documenter dans le même changement
+
+Tout item retenu qui touche des données personnelles met à jour `PRIVACY.md` :
+
+| Item | Donnée | Garde‑fou obligatoire |
+|---|---|---|
+| Table d'audit (P1‑18) | acteur, IP, action, horodatage | admin‑only, rétention bornée, pas de contenu de fichier |
+| Intégration média | photos/vidéos, métadonnées, visages (ML Immich) | traitement **local**, aucune API cloud, opt‑in |
+| Montages CIFS/NFS | credentials distants | stockage chiffré/0600, opt‑in, documenté |
+| Téléchargeur RSS/scheduling | URLs, credentials éventuels | pas de télémétrie, limites par tâche |
+| WireGuard UX | clés privées | jamais loguées, jamais renvoyées en clair |
+
+### 6.4 Définition d'une « vraie avancée »
+
+Un item est terminé quand : il passe les 6 questions ; il a ses tests unit +
+intégration + E2E ; il est réversible ou accompagné d'un rollback ; il n'ajoute
+aucun appel sortant non documenté ; sa doc (`docs/guides/`, `FeatureDoc`,
+`TESTING.md`, `PRIVACY.md` si applicable) est à jour dans le même changement.
+Tout le reste est un prototype, pas une livraison.
+
+---
+
+## 7. Corrections appliquées le 2026‑11‑08
+
+- §3 réécrit en **décisions** (garder / recadrer / geler‑rejeter) ; les écarts
+  de parité ne sont plus promus en P0/P1 par défaut.
+- §6 ajouté : filtre de valeur, pièges, impact vie privée, définition de
+  « vraie avancée ».
+- `src/vpn.rs:9` : commentaire d'en‑tête corrigé (« OpenVPN client‑only »).
+- `HOMEVAULT_TASKLIST_A_FAIRE.md` : §1bis renvoie désormais à ce document, et
+  le §6 du backlog acte le rejet explicite de SHR/SHR2, serveur OpenVPN,
+  NZB/eMule et de la suite productivité native.
+
+### Travail d'implémentation démarré le 2026‑11‑08
+
+**P2‑8 — mise à jour signée + atomique + rollback automatique (partiel, côté
+installeur).**
+
+- `installer/install.sh` accepte `HV_RELEASE_MANIFEST` (chemin ou URL) et
+  vérifie une signature détachée **avant** tout téléchargement :
+  Ed25519 (`pkeyutl -rawin`, OpenSSL 3) puis RSA/ECDSA SHA‑256 en repli. Le
+  manifeste fixe `version`, `arch`, `url`, `sha256`, `size` ; toute divergence
+  refuse l'update sans toucher au binaire en service.
+- Extraction en staging, smoke test `homevault --version` (nouveau drapeau
+  `--version` dans `src/bin/server.rs`), puis remplacement atomique par rename
+  et conservation de `homevault.previous`.
+- Rollback **automatique** si `/api/auth/setup-status` ne répond pas en 20 s ;
+  le binaire fautif est conservé en `homevault.failed`, le service est relancé
+  sur la version précédente, et l'échec est enregistré.
+- Résultat + historique écrits dans `data/updates/last-result.json` et
+  `history.jsonl` ; `GET /settings/version` expose `last_update` et l'écran
+  Settings affiche *Applied / Rolled back / Failed*.
+- Nouveau mode `--verify-manifest` (sans root) et signature du manifeste au
+  `--package` via `HV_SIGNING_KEY` (la clé privée n'est jamais commitée).
+- Tests écrits mais **non exécutés** :
+  `installer/tests/update-engine.test.sh` (comparaison de versions, signature
+  et altération, champs du manifeste, digest/taille, smoke test, swap,
+  rollback, résultat/historique).
+- Docs : `docs/guides/settings.md` → « System → Signed, atomic updates »,
+  `docs/API.md`, `docs/guides/settings.md` (tableau des endpoints), FeatureDoc
+  `settings` dans `src/rag_indexers.rs`.
+
+**Reste sur P2‑8** : bouton *Apply update* dans Settings (le bouton actuel ne
+fait que vérifier), appel privilégié du moteur, et publication de la clé
+publique de production. Les autres P0 gardent leur ordre : P2‑7 isolation,
+P1‑18 table d'audit, P2‑9 restauration bare‑metal.

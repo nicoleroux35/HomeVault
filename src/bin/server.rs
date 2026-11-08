@@ -21,6 +21,18 @@ use std::error::Error;
 
 /// Entry point — starts the Tokio runtime and launches the async server.
 fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
+    // `--version` is the update chain's smoke test (P2-8): the installer runs
+    // the staged binary before swapping it in, and the running server exposes
+    // the same string in Settings. Keep the format stable — `homevault X.Y.Z`
+    // — because `installer/install.sh` parses the last word.
+    if matches!(
+        std::env::args().nth(1).as_deref(),
+        Some("--version") | Some("-V")
+    ) {
+        println!("homevault {}", env!("CARGO_PKG_VERSION"));
+        return Ok(());
+    }
+
     // Installer hook for the optional non-root deployment (`HV_SERVICE_USER=
     // homevault`): the installer runs this as root *before* starting the
     // unprivileged unit, so the service account gets the scoped sudoers file

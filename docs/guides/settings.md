@@ -32,7 +32,7 @@ Handlers in `src/handlers/settings.rs`. Persistence via
 | `GET /settings/appearance` | **any session** | the appliance look: `wallpaper` (one of the 44 bundled — no upload) + `accent_color`. Read by every account's boot hydration (ROADMAP 26.1); carries nothing else — no e-mail, SMTP, update or notification field |
 | `PUT /settings/appearance` | admin | same two fields, validated (see below). `theme` / `density` no longer exist (ROADMAP 26.2) |
 | `GET/PUT /settings/update` | auth / admin | update-check frequency — **default `Manual`** since 2026-09-07 (G2: no automatic outbound call to GitHub) |
-| `GET /settings/version` | auth | current version + last **cached** check. Contacts the update endpoint only when the saved frequency says a scheduled check is due — opening Settings is never an outbound call by itself |
+| `GET /settings/version` | auth | current version + last **cached** check + `last_update` (the installer's last result, read from `data/updates/last-result.json`, absent until one ran). Contacts the update endpoint only when the saved frequency says a scheduled check is due — opening Settings is never an outbound call by itself |
 | `POST /settings/version/check` | admin | "Check now": the only path that **forces** an outbound check, whatever the saved frequency |
 | `GET /settings/export` | admin | JSON dump, stamped with `schema_version` |
 | `POST /settings/import` | admin | JSON import; schema version and every field are validated first |
@@ -438,6 +438,91 @@ wording already exists there — no duplicated string.
     real `/etc/nut/ups.conf` + systemd.
 - ~~`QuotaCard.svelte`~~ — deleted 2026-09-09 with the per-group filesystem
   quota feature; see [Disk Quotas](./quotas.md).
+
+## System → Signed, atomic updates (P2-8, 2026-11-08)
+
+The **System** category shows the result of the last system update next to the
+version rows: *Applied*, *Rolled back* or *Failed*, with the version concerned.
+The value is read from `data/updates/last-result.json`, which the installer
+writes; the server never invents it. A fresh install has no result and the row
+is simply absent.
+
+### Trust chain
+
+The installer (`installer/install.sh`) is the update path. It accepts a signed
+release **manifest** (`HV_RELEASE_MANIFEST`, local path or URL) and verifies it
+*before* downloading the archive:
+
+| Field | Meaning |
+|---|---|
+| `version` | dotted version the archive must report from `homevault --version` |
+| `arch` | `uname -m` of the target (`x86_64`, `aarch64`, `armv7l`) |
+| `url` | archive URL; overrides `HV_RELEASE_URL` |
+| `sha256` | archive digest, enforced after download |
+| `size` | archive length, enforced after download |
+| `min_version`, `released_at` | informational |
+
+The detached signature (`HV_RELEASE_SIGNATURE`, default `<manifest>.sig`) is
+checked with the trust anchor at `HV_RELEASE_PUBKEY`
+(`/usr/local/lib/homevault/release-key.pem` by default). Ed25519 (OpenSSL 3,
+`pkeyutl -rawin`) is tried first; RSA/ECDSA with SHA-256 is the fallback. A bad
+signature, an architecture mismatch, a size/digest mismatch or a manifest older
+than the running build all **abort before the live binary is touched**. Without
+a manifest the installer keeps the previous behaviour (optional
+`HV_RELEASE_SHA256`) and prints that the download is not authenticated — it
+never claims a signature it did not verify.
+
+### Atomic apply and rollback
+
+1. The archive is extracted to a staging directory, never over the running
+   executable.
+2. `homevault --version` is run on the staged binary and must match the
+   manifest (smoke test).
+3. The live binary is replaced by a same-filesystem rename; the previous build
+   is copied to `homevault.previous` first.
+4. The service is restarted and `/api/auth/setup-status` is polled for 20 s.
+5. If it does not answer, the installer stops the service, restores
+   `homevault.previous`, keeps the failed build as `homevault.failed`, starts
+   again, re-checks, and records `rolled_back` (or `failed` if the rollback
+   itself cannot start).
+
+`sudo ./install.sh --rollback` remains the manual escape hatch. As before, the
+database is not restored by a binary rollback: migrations are append-only, so
+use the pre-migration snapshot named in the message.
+
+### Operator commands
+
+```bash
+# Verify a manifest without root and without installing anything.
+sudo HV_RELEASE_MANIFEST=https://…/homevault-x86_64.json ./install.sh --verify-manifest
+
+# Update from a signed release (verify → download → atomic swap → health check).
+sudo HV_RELEASE_MANIFEST=https://…/homevault-x86_64.json ./install.sh
+
+# Maintainer: build the archive + manifest; sign it when HV_SIGNING_KEY is set.
+HV_SIGNING_KEY=/secure/release-key.pem ./installer/install.sh --package
+```
+
+Never commit the private signing key. Rotate the trust anchor by shipping the
+new public key in the installer (the trust root) and keeping the old key valid
+until every supported release is re-signed.
+
+### Failure modes
+
+- Missing/invalid key or signature → update refused, exit 1, nothing changed.
+- Staged binary crashes or reports another version → update refused.
+- Service does not become ready → automatic rollback, `rolled_back`.
+- Rollback cannot restore service → `failed`, and the operator is pointed at
+  `journalctl -u homevault`.
+- No manifest → unsigned warning; the download is only as trustworthy as the
+  pinned checksum.
+
+### Tests
+
+`installer/tests/update-engine.test.sh` sources the engine with
+`HV_LIB_ONLY=1` and covers version comparison, signature/tamper detection,
+manifest fields, archive digest/size, the smoke test, atomic swap, rollback and
+the result/history file. It is run by hand, not by the installer.
 
 ## System → Database snapshots (2026-10-17)
 

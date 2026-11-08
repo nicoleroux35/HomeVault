@@ -1,5 +1,19 @@
 # HomeVault — Test tracking
 
+## P2-8 signed, atomic updates — 2026-11-08 (not run)
+
+> **Instruction followed: no test command was executed for this change.** The
+> shell engine suite and the new Rust/E2E cases below were written, not run.
+> The shell suite is not part of the three Cargo/Playwright levels; run it by
+> hand on a disposable host: `bash installer/tests/update-engine.test.sh`.
+
+| Coverage | Added / changed |
+|---|---|
+| Update engine (`installer/tests/update-engine.test.sh`) | **new suite** — version comparison; Ed25519 signature + one-byte tamper detection; manifest fields and absent-field status; archive size/SHA-256; staged-binary smoke test (match, mismatch, crash, non-executable); atomic swap (new current, old previous, no staging file left); rollback (restore + keep failed build, refuse with no previous); result/history JSON. Uses `HV_LIB_ONLY=1` to source `installer/install.sh` without running an install step |
+| Settings integration (`tests/settings_core_integration.rs`) | **+1** — `test_version_info_exposes_the_last_update_result`: `last_update` is `null` when absent, verbatim when valid, and `null` (still `200`) when the file is malformed |
+| Settings E2E (`tests/e2e/settings/settings.spec.ts`) | **+1** — `8.5 — last update row is translated, never a raw i18n key` (tolerates absence on a fresh instance; asserts `/Applied|Rolled back|Failed/` and a version when present) |
+| Docs | `docs/guides/settings.md` → "System → Signed, atomic updates", `docs/API.md`, `SCREENS.md`, `CHANGELOG.md`, `HOMEVAULT_TASKLIST_A_FAIRE.md` (P2-8 `[~]`), `COMPARAISON_DSM_VS_HOMEVAULT.md` §3.1/§7, FeatureDoc `settings` in `src/rag_indexers.rs` |
+
 ## P0–P3 Explorer authorization, application gate and sharing — 2026-11-08 (not run)
 
 > **Instruction followed: no test command was executed for this change.** The

@@ -299,7 +299,7 @@ name. `theme` and `density` no longer exist on this resource (ROADMAP 26.2);
 an old client that still sends them is accepted and they are ignored. |
 
 | GET/PUT | `/settings/update` | auth / admin | update-check frequency |
-| GET | `/settings/version` | auth | current version + last cached check (never forces an outbound call) |
+| GET | `/settings/version` | auth | current version + last cached check + `last_update` (`status`, `version`, `previous_version`, `message`, `finished_at`; `null` until the installer's signed/atomic engine ran) — never forces an outbound call |
 | POST | `/settings/version/check` | admin | "Check now" — the only path that forces the outbound update check |
 | GET | `/settings/export` | admin | JSON dump, stamped with `schema_version` (SMTP password redacted) |
 | POST | `/settings/import` | admin | JSON import — refused when `schema_version` is newer than this build or any field is invalid, naming the field |

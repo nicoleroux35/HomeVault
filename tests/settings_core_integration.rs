@@ -1576,6 +1576,73 @@ async fn test_version_info_never_contacts_the_update_endpoint_by_default() {
     clear_update_endpoint();
 }
 
+/// P2-8: the version payload carries the installer's last update result, read
+/// from `data/updates/last-result.json`. A missing or malformed file must
+/// degrade to `null`, never fail the endpoint.
+#[tokio::test]
+async fn test_version_info_exposes_the_last_update_result() {
+    let (state, tmp, _guard) = setup_state().await;
+    reset_update_check_state();
+    let (url, _hits) = spawn_fake_update_endpoint().await;
+    use_update_endpoint(&url);
+
+    create_test_user(&state, "admin1", "Password123!", 2).await;
+    let mut router = settings_router(state);
+    let token = login(&mut router, "admin1", "Password123!").await;
+
+    // No result yet → null, not an error.
+    let (status, body) = send(
+        &mut router,
+        Method::GET,
+        "/api/settings/version",
+        Some(&token),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["data"]["last_update"], json!(null));
+
+    // A valid result is surfaced verbatim.
+    let dir = tmp.path().join("updates");
+    std::fs::create_dir_all(&dir).expect("updates dir");
+    std::fs::write(
+        dir.join("last-result.json"),
+        r#"{"status":"rolled_back","version":"1.2.3","previous_version":"1.2.2","message":"health check failed","finished_at":"2026-11-08T20:00:00Z"}"#,
+    )
+    .expect("write result");
+
+    let (status, body) = send(
+        &mut router,
+        Method::GET,
+        "/api/settings/version",
+        Some(&token),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["data"]["last_update"]["status"], json!("rolled_back"));
+    assert_eq!(body["data"]["last_update"]["version"], json!("1.2.3"));
+    assert_eq!(
+        body["data"]["last_update"]["previous_version"],
+        json!("1.2.2")
+    );
+
+    // A malformed file must not break the endpoint.
+    std::fs::write(dir.join("last-result.json"), "{not json").expect("write bad result");
+    let (status, body) = send(
+        &mut router,
+        Method::GET,
+        "/api/settings/version",
+        Some(&token),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["data"]["last_update"], json!(null));
+
+    clear_update_endpoint();
+}
+
 /// `Disabled` is an even harder no: still zero attempts.
 #[tokio::test]
 async fn test_version_info_never_contacts_the_update_endpoint_when_disabled() {
