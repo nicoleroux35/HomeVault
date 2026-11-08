@@ -40,6 +40,7 @@ Handlers in `src/handlers/settings.rs`. Persistence via
 | `GET /settings/backup/db` | admin | snapshots of HomeVault's own database (settings + files on disk + total size) |
 | `PUT /settings/backup/db` | admin | update `interval_hours` / `retain`; a lower retention prunes immediately |
 | `POST /settings/backup/db/now` | admin | take a `VACUUM INTO` snapshot now |
+| `GET/POST /settings/backup/restore-drill` | admin | non-destructive restore drill (P2-9): last report, or run it now (optional `x-backup-passphrase` header for an encrypted configuration archive) |
 | `GET/PUT /snmp/settings` | admin | SNMP community/version (`v1`/`v2c` only) |
 | `GET /snmp/availability\|info\|interfaces\|storage` | admin | SNMP-discoverable device data; `interfaces` accepts `iface` to narrow the result |
 | `GET/PUT /snmp/agent` | admin | the appliance's **own** SNMP agent — see [`snmp-agent.md`](./snmp-agent.md); `503` when `snmpd` is absent |
@@ -549,6 +550,22 @@ of a *scheduled* attempt — which the screen never sees happen — is served in
 success clears it (2026-10-24, ROADMAP 22.2). See
 [backup-restic.md](./backup-restic.md) → *HomeVault's own database* for the
 mechanics, the process-wide serialisation and the restore procedure.
+
+### Verify restore (P2-9, 2026-11-08)
+
+The card also carries **Verify restore**. It runs the non-destructive drill in
+`src/restore_drill.rs` against a temporary copy: the newest `data/backups/*.db`
+is opened read-only for `PRAGMA integrity_check`, the newest configuration
+archive is decoded with per-entry checksums (an encrypted one needs the optional
+passphrase field), and the newest restic job is reported. The verdict is *Ready
+to restore* only when the snapshot and the archive are both fully verified; a
+missing, old or failed restic job is a warning, because replication or immutable
+snapshots may cover the data. The report is persisted to
+`data/restore-drill.json` and served by
+`GET/POST /settings/backup/restore-drill`. The drill never attaches the live
+database and never writes to the data directory. See
+[disaster-recovery.md](./disaster-recovery.md) → *Automated restore drill* for
+the operator procedure.
 
 ## System → Full configuration backup (2026-10-31, QW-11)
 
