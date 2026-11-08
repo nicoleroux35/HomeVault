@@ -224,6 +224,29 @@ test.describe('2 — Source selector', () => {
     await win(page).locator('#jr-source').selectOption('app');
     await expect(win(page).locator('#jr-unit')).toHaveCount(0);
   });
+
+  test('2.4 — the audit source is selectable and its entries request answers', async ({ page }) => {
+    await openJournal(page, adminTokens);
+    const values = await win(page).locator('#jr-source option').evaluateAll((opts) =>
+      opts.map((o) => (o as HTMLOptionElement).value),
+    );
+    expect(values).toContain('audit');
+
+    const [request] = await Promise.all([
+      page.waitForRequest(
+        (r) => r.url().includes('/api/journal/entries') && r.url().includes('source=audit'),
+        { timeout: 15_000 },
+      ),
+      (async () => {
+        await win(page).locator('#jr-source').selectOption('audit');
+        await win(page).locator('[data-testid="journal-apply"]').click();
+      })(),
+    ]);
+    const response = await request.response();
+    expect(response?.status()).toBe(200);
+    // The audit source has no systemd unit/priority filter.
+    await expect(win(page).locator('#jr-unit')).toHaveCount(0);
+  });
 });
 
 // ===========================================================================

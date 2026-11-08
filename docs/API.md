@@ -1564,18 +1564,21 @@ and some did not; `error_message` then names the ones that did not.
 
 ## System Journal — `journal/*`
 
-The `app` source is session-level; **every host source is `admin`** — that is
-the whole `/var/log/auth.log` surface (account names, source addresses, sudo
-attempts), so it is gated per source, not per screen. `GET /journal/sources`
-only advertises what the caller may read. Clear-logs and cleanup-settings
-writes are `admin`. See [System Journal](./guides/journal.md).
+The `app` source is session-level; **every host and audit source is `admin`** —
+that is the whole `/var/log/auth.log` surface and the queryable audit trail
+(account names, source addresses, actions), so it is gated per source, not per
+screen. `GET /journal/sources` only advertises what the caller may read.
+Clear-logs and cleanup-settings writes are `admin`. See
+[System Journal](./guides/journal.md).
 
 | Method | Path | Auth |
 |--------|------|------|
-| GET | `/journal/sources` | auth (lists `app`; adds `system` + the `/var/log` files for an admin) |
-| GET | `/journal/entries` | auth for `?source=app`, admin for `system`/`syslog`/`auth`/`kern`/`daemon` (403 otherwise) |
+| GET | `/journal/sources` | auth (lists `app`; adds `audit`, `system` + the `/var/log` files for an admin) |
+| GET | `/journal/entries` | auth for `?source=app`, admin for `audit`/`system`/`syslog`/`auth`/`kern`/`daemon` (403 otherwise) |
 | DELETE | `/journal/clear` | admin |
 | GET/PUT | `/journal/cleanup-settings` | auth / admin |
+| GET | `/audit` | admin — paged audit trail (`from`, `to`, `severity`, `actor`, `action`, `q`, `limit` ≤ 500, `offset`); returns `entries`, `total`, `retention_days` |
+| GET | `/audit/export` | admin — same filters + `format=csv\|json` (≤ 5 000 rows), returned as a download |
 
 `GET /journal/entries` answers
 `{ "success": true, "data": [ … ], "meta": { "scanned": 200, "limit": 200, "search_truncated": false } }`.

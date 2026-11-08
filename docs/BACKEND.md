@@ -217,12 +217,13 @@ Notable handlers (see `API.md` for the full map):
 ## Storage / repository layer
 
 `src/storage/` holds SQLx repositories. Each repo wraps a pool and provides typed
-async CRUD. Migrations are in `sqlx/migrations/` (**001–075**), embedded in the
+async CRUD. Migrations are in `sqlx/migrations/` (**001–086**), embedded in the
 binary via `include_dir!` and applied at startup. `storage/database.rs::Database::run_migrations`
 runs each pending file once (tracked in `_hv_migrations`); the hand-rolled SQL
 statement splitter tracks `--` line comments explicitly, so a semicolon inside a
 comment doesn't get treated as a statement terminator; `migrate_roles_005` seeds
-default roles. Recent migrations: `027_app_stores.sql`,
+default roles. `086_audit_log.sql` adds the queryable audit trail (P1-18,
+`src/audit.rs`). Recent migrations: `027_app_stores.sql`,
 `028_password_recovery_codes.sql`, `029_drop_password_reset_tokens.sql`
 (the old email reset flow was deleted), (2026-10-20 group rename/description adds **no** migration: it reuses
 `hv_groups` from `008_permissions_schema.sql`),

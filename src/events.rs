@@ -9,8 +9,9 @@
  *   Centralized helper for the user-facing, plain-English audit event log
  *   (logins, user/group/share changes, Docker actions, backup runs,
  *   security alerts). Written through the same tracing pipeline as the
- *   rest of the logs, so the System Journal app's dedicated source can
- *   filter them out.
+ *   rest of the logs, and mirrored into the queryable `audit_log` table
+ *   (P1-18) so the System Journal can filter it by actor/action/severity
+ *   and an admin can export it.
  *
  * Dependencies:
  *   - tracing (>= 0.1)
@@ -31,7 +32,9 @@
 //! — the only thing that sets them apart is a fixed `target` (so they're
 //! easy to grep for) and a convention: always a complete, plain-English
 //! sentence naming the actor and the thing that happened, never a raw
-//! struct dump or a terse technical fragment.
+//! struct dump or a terse technical fragment. Since P1-18 the same sentence
+//! is also queued for the `audit_log` table (see `src/audit.rs`); that push
+//! is non-blocking and never changes the caller's behaviour.
 //!
 //! Always English, regardless of the active UI language — this matches
 //! the project-wide precedent of leaving log/check-style content
@@ -51,6 +54,10 @@ pub fn log_event(message: impl std::fmt::Display) {
     let message = message.to_string();
     tracing::info!(target: EVENT_TARGET, "{}", message);
     forward(&message, crate::syslog_forward::SEVERITY_INFO);
+    // P1-18: also persist the sentence in the queryable audit trail. The call
+    // is a non-blocking channel push; it never delays the mutation that logged
+    // it and is a no-op before `audit::init` runs.
+    crate::audit::record_event(&message, crate::audit::Severity::Info);
 }
 
 /// Record a plain-English application event at warn level — failed logins,
@@ -61,6 +68,40 @@ pub fn log_event_warn(message: impl std::fmt::Display) {
     let message = message.to_string();
     tracing::warn!(target: EVENT_TARGET, "{}", message);
     forward(&message, crate::syslog_forward::SEVERITY_WARNING);
+    crate::audit::record_event(&message, crate::audit::Severity::Warning);
+}
+
+/// Authentication event with the structured fields an investigator needs:
+/// the account, the action (`auth.login`, `auth.login.failed`,
+/// `auth.logout`, …) and the client address. The plain-English sentence is
+/// still the canonical message; this only adds the columns.
+pub fn log_auth_event(
+    message: impl std::fmt::Display,
+    warning: bool,
+    actor: &str,
+    action: &str,
+    client_ip: &str,
+) {
+    let message = message.to_string();
+    if warning {
+        tracing::warn!(target: EVENT_TARGET, "{}", message);
+        forward(&message, crate::syslog_forward::SEVERITY_WARNING);
+    } else {
+        tracing::info!(target: EVENT_TARGET, "{}", message);
+        forward(&message, crate::syslog_forward::SEVERITY_INFO);
+    }
+    crate::audit::record(crate::audit::AuditRecord {
+        severity: if warning {
+            crate::audit::Severity::Warning
+        } else {
+            crate::audit::Severity::Info
+        },
+        actor: Some(actor.to_string()),
+        action: Some(action.to_string()),
+        target: Some(actor.to_string()),
+        client_ip: Some(client_ip.to_string()),
+        message,
+    });
 }
 
 /// Hand the event to the remote-syslog forwarder (QUICK-WIN QW-08).

@@ -8,6 +8,21 @@ follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **Queryable audit trail (2026-11-08, P1-18).** Every application event
+  written through `events::log_event` / `log_event_warn` is now also persisted
+  in the `audit_log` table (migration 086) through a bounded background
+  channel, so logging never waits on SQLite. Authentication events
+  (`auth.login`, `auth.login.trusted`, `auth.login.failed`, `auth.logout`)
+  carry structured actor/action/client-IP columns; the plain-English sentence
+  remains the canonical message, and no file content or secret is stored.
+  Admins can query it with `GET /api/audit` (`from`, `to`, `severity`,
+  `actor`, `action`, `q`, `limit`, `offset`) and download CSV/JSON from
+  `GET /api/audit/export`; the Journal screen exposes the same table as the
+  `audit` source. Rows older than 90 days are pruned at startup and every six
+  hours. Tests: unit in `src/audit.rs`, integration in
+  `tests/audit_integration.rs`, E2E 2.4 in the Journal spec (written, not run).
+  Docs: `docs/guides/journal.md`, `docs/API.md`, `PRIVACY.md`.
+
 - **Signed, atomic updates with automatic rollback (2026-11-08, P2-8).** The
   installer now verifies a signed release manifest (Ed25519 on OpenSSL 3,
   RSA/ECDSA SHA-256 otherwise) before downloading anything, enforces its

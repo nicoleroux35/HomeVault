@@ -6,12 +6,17 @@ user-configurable auto-cleanup schedule for the application log.
 
 ## Sources and who may read them
 
-Three kinds, surfaced by `GET /journal/sources`:
+Four kinds, surfaced by `GET /journal/sources`:
 
 - **`app`** — HomeVault's own log, written by the `tracing_appender`
   file-logging layer set up in `run()` (`src/web/mod.rs`). Always listed.
   **Session-level**: the process owns those files, so reading them grants
   the caller nothing it did not already have.
+- **`audit`** — the queryable audit trail (P1-18, 2026-11-08), a SQLite table
+  written by `events::log_event` / `events::log_auth_event`. Always advertised
+  to an **administrator** because it has no host file or journald dependency.
+  It reuses the Journal search box; structured filters and CSV/JSON export are
+  on `/api/audit` and `/api/audit/export` (see [API.md](../API.md)).
 - **`system`** — the systemd journal, read via `sudo journalctl`.
 - **`/var/log/{syslog,auth.log,kern.log,daemon.log}`** — read via `sudo
   tail`. Each is only advertised if `Path::exists()` confirms it's actually
@@ -19,11 +24,13 @@ Three kinds, surfaced by `GET /journal/sources`:
   modern Debian/Ubuntu increasingly relies on journald alone, so these
   don't exist on every real deployment.
 
-`system` and the four `/var/log` files are **administrator-only**
-(ROADMAP 20.1, 2026-10-23). `/var/log/auth.log` alone lists every account
-name, source address and sudo attempt on the box, so the gate follows the
-data, not the screen:
+`audit`, `system` and the four `/var/log` files are **administrator-only**
+(ROADMAP 20.1, 2026-10-23; audit added 2026-11-08). `/var/log/auth.log` alone
+lists every account name, source address and sudo attempt on the box, so the
+gate follows the data, not the screen:
 
+- `GET /journal/entries?source=audit` answers **403** for a non-admin session;
+  it never reaches the database query.
 - `GET /journal/entries?source=auth` (or `system`/`syslog`/`kern`/`daemon`)
   answers **403** for a non-admin session, before any subprocess runs.
 - `GET /journal/entries?source=app` stays readable for any valid session.
@@ -103,6 +110,52 @@ log/check-style content elsewhere (Health, Downloader, Syncthing).
   leaving it as noise in the message text — without this, a clean sentence
   like `User 'admin' logged in successfully` would render as
   `homevault::handlers::auth: User 'admin' logged in successfully`.
+
+## Queryable audit trail (P1-18, 2026-11-08)
+
+Every `events::log_event` / `log_event_warn` call is written to `audit_log`
+(migration 086) through a bounded channel (`src/audit.rs`). The mutation that
+logs it never waits on SQLite: `record` is a `try_send`, and a full queue drops
+the row and increments `dropped_count()` instead of failing the request.
+
+Columns: `created_at` (RFC 3339 UTC), `severity` (`info`/`warning`), optional
+`actor`, `action`, `target`, `client_ip`, and the plain-English `message`.
+Authentication events (`auth.login`, `auth.login.trusted`, `auth.login.failed`,
+`auth.logout`) fill the structured fields; every other event keeps its sentence.
+No file contents, request bodies or secrets are stored — the same rule as the
+tracing/syslog path.
+
+### Retention and privacy
+
+- Admin-only, both in the Journal source and on every `/api/audit` route.
+- Rows older than **90 days** are deleted by `prune`, at startup and every six
+  hours. The retention is the process constant `AUDIT_RETENTION_DAYS`, chosen to
+  match the journal auto-cleanup default.
+- The records of processing are in `PRIVACY.md` (actor/IP/action, purpose
+  security, 90-day retention).
+- Every row is sanitized: control characters become spaces and the message is
+  truncated on a character boundary (2 000 characters).
+
+### Structured query and export
+
+`GET /api/audit` accepts `from`, `to` (RFC 3339 or `YYYY-MM-DD`), `severity`,
+`actor`, `action`, `q`, `limit` (max 500) and `offset`. `GET /api/audit/export`
+takes the same filters plus `format=csv|json` (max 5 000 rows) and answers as a
+download. An invalid filter is a `400` naming the field, never a silently
+ignored one.
+
+The Journal screen uses the same table as the `audit` source: selecting it and
+pressing Apply runs `GET /journal/entries?source=audit&search=…`. The dedicated
+filters are available through the API today; a Journal filter row for them is a
+follow-up.
+
+### Tests
+
+Unit (`src/audit.rs`): like-pattern escaping, date bounds, filter validation,
+limit/offset clamps, CSV quoting. Integration (`tests/audit_integration.rs`):
+admin gate, ordering, every filter, pagination, CSV/JSON export, prune and the
+Journal source. E2E (`tests/e2e/journal/journal.spec.ts` 2.4): the audit source
+is selectable and its entries request answers `200`.
 
 ## Remote syslog forwarding (Log Center → Log Sending)
 

@@ -236,10 +236,16 @@ pub async fn handle_login(
                 if !trusted {
                     return ResponseHelper::json_2fa_required();
                 }
-                crate::events::log_event(format!(
-                    "User '{}' signed in from a trusted device, second factor skipped",
-                    req.username
-                ));
+                crate::events::log_auth_event(
+                    format!(
+                        "User '{}' signed in from a trusted device, second factor skipped",
+                        req.username
+                    ),
+                    false,
+                    &req.username,
+                    "auth.login.trusted",
+                    &ip_address,
+                );
             }
 
             match state
@@ -248,10 +254,16 @@ pub async fn handle_login(
                 .await
             {
                 Ok(session) => {
-                    crate::events::log_event(format!(
-                        "User '{}' logged in successfully from {}",
-                        session.username, ip_address
-                    ));
+                    crate::events::log_auth_event(
+                        format!(
+                            "User '{}' logged in successfully from {}",
+                            session.username, ip_address
+                        ),
+                        false,
+                        &session.username,
+                        "auth.login",
+                        &ip_address,
+                    );
                     // Keep the audit history truthful: record the successful
                     // login (with the browser fingerprint) now that a session
                     // exists.
@@ -309,10 +321,16 @@ pub async fn handle_login(
             }
         }
         Err(e) => {
-            crate::events::log_event_warn(format!(
-                "Failed login attempt for user '{}' from {}",
-                req.username, ip_address
-            ));
+            crate::events::log_auth_event(
+                format!(
+                    "Failed login attempt for user '{}' from {}",
+                    req.username, ip_address
+                ),
+                true,
+                &req.username,
+                "auth.login.failed",
+                &ip_address,
+            );
             // QW-05: one more failure for this address. The call bans it when the
             // configured window trips, and does nothing while the feature is off
             // (the default) or for a protected address.
@@ -598,7 +616,13 @@ pub async fn handle_logout(State(state): State<Arc<AppState>>, headers: HeaderMa
 
     match state.auth.invalidate_session(&session_token).await {
         Ok(_) => {
-            crate::events::log_event(format!("User '{}' logged out", username));
+            crate::events::log_auth_event(
+                format!("User '{}' logged out", username),
+                false,
+                &username,
+                "auth.logout",
+                &extract_client_ip(&headers),
+            );
             // Drop any app-proxy sessions this user holds, then expire both
             // cookies so a proxied app can't be reached after logout.
             crate::app_proxy::app_auth::APP_AUTH.revoke_user(&username);

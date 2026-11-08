@@ -36,7 +36,7 @@ qu'elle listait sont **désormais livrés** et ne doivent plus être comptés :
 | SMB multicanal, AD/Kerberos (config + join), NFS `sec=krb5` | ✅ livrés (P2 partiel assumé) |
 | ACL par partage, quotas par partage, Previous Versions, Time Machine, serveur rsync | ✅ livrés |
 | OpenAPI, DDNS 7 fournisseurs, SNMP v3 | ✅ livrés |
-| Table d'audit | ❌ toujours ouvert (voir §3) |
+| Table d'audit | ✅ **livrée le 2026‑11‑08** (P1‑18 : table, API, export, source Journal, rétention 90 j ; filtres structurés UI restants) |
 | Signature + atomicité de mise à jour | 🟡 **installeur livré le 2026‑11‑08** (P2‑8 partiel : déclenchement UI restant) |
 | Isolation d'exécution | 🟡 **installeur livré le 2026‑11‑08** (P2‑7 partiel : systemd durci + AppArmor opt‑in ; validation terrain/enforce restante) |
 
@@ -97,7 +97,7 @@ cas de désaccord avec le backlog, `HOMEVAULT_TASKLIST_A_FAIRE.md` §1bis gagne.
 |---|---|---|---|
 | **Health** | Resource Monitor + Security Advisor + Active Insight | ✅ / 🟡 | Top processus, I/O disque, capteurs matériels, seuils/alertes. Security Advisor : au niveau |
 | **Metrics** | Resource Monitor | ✅ | Par processus, I/O disque/volume, rapports planifiés. Rétention configurable : faite |
-| **Journal** | Log Center | 🟡 | **Table d'audit interrogeable absente** (P1‑18) ; filtres sauvegardés, alertes, export. Syslog distant TLS : fait |
+| **Journal** | Log Center | ✅ / ⭐ | **Table d'audit interrogeable livrée** (P1‑18 : filtres API, export CSV/JSON, source `audit`, rétention 90 j) ; restent les filtres structurés dans l'UI et les alertes. Syslog distant TLS : fait |
 | **Widgets / Edit Widgets** | Widgets DSM | ✅ | Widgets backup/UPS/interface réseau/croissance stockage |
 | **Cloud Sync** | Cloud Sync | ✅ | Remotes chiffrés (rclone crypt), présets fournisseurs, limites de bande passante |
 | **Syncthing** | Synology Drive | 🟡 | **Navigateur de versions/restauration**, sync sélective/à la demande, dossiers d'équipe, apps mobiles, verrouillage de fichiers |
@@ -173,7 +173,12 @@ complain (enforce après validation terrain), score `systemd-analyze security`
 dans le journal d'installation. Restent la validation terrain et l'enforce
 AppArmor.
 
-P1‑18 (table d'audit) et P2‑9 (restauration bare‑metal) restent ouverts.
+P1‑18 est **livré** : table `audit_log` (migration 086), écriture non
+bloquante depuis `events::log_event`, champs structurés pour
+l'authentification (acteur/action/IP), API admin `GET /api/audit` +
+`/api/audit/export` (CSV/JSON), source `audit` dans le Journal et purge à
+90 jours. Restent les filtres structurés dans l'UI Journal (l'API les porte
+déjà). P2‑9 (restauration bare‑metal) reste ouvert.
 
 ### 3.2 À recadrer — bon objectif, mauvais périmètre
 
@@ -221,8 +226,10 @@ PHP 8.1/Redis 4.0.
    il est **au‑delà** (passkeys, snapshots immuables, anti‑ransomware, file
    requests, RAG/MCP, accessibilité, sobriété).
 2. **Les vrais écarts restants sont peu nombreux mais structurants** : chaîne de
-   mise à jour, isolation d'exécution, audit requêtable, restauration
-   bare‑metal — c'est‑à‑dire la **confiance** plus que les fonctionnalités.
+   mise à jour (installeur livré, UI restante), isolation d'exécution (livrée,
+   enforcement AppArmor à valider), audit requêtable (**livré**), restauration
+   bare‑metal (ouverte) — c'est‑à‑dire la **confiance** plus que les
+   fonctionnalités.
 3. **Le plus gros écart « visible pour l'utilisateur » est le média** : photos,
    vidéo, musique passent aujourd'hui par le catalogue Docker, sans binding sur
    un partage ni sauvegarde associée. Le chantier P1 est donc une **intégration
@@ -250,7 +257,10 @@ PHP 8.1/Redis 4.0.
 - Protocoles du téléchargeur : `src/handlers/downloader.rs:78`
 - Types de tâches : `src/scheduled_tasks_scheduler.rs:83-160`
 - Clone VM : `src/handlers/vm.rs:163` ; routes VM : `src/web/mod.rs:2355-2426`
-- **Audit** : aucune table dédiée dans `sqlx/migrations/` (P1‑18 ouvert)
+- **Audit** : table `audit_log` (`sqlx/migrations/086_audit_log.sql`),
+  `src/audit.rs` (canal borné, purge 90 j), `src/handlers/audit.rs`
+  (`/api/audit`, `/api/audit/export`) et source `audit` du Journal
+  (`src/handlers/journal.rs`)
 - **Isolation** : `installer/install.sh` → `render_service_unit` (durcissement
   P2‑7) et `render_apparmor_profile` (opt‑in) ; score
   `systemd-analyze security` imprimé par l'installeur
@@ -392,5 +402,29 @@ publique de production.
 
 **Reste sur P2‑7** : passe terrain sur un hôte réel (`systemd-analyze security`
 avant/après, `aa-logprof` puis enforce), et un profil AppArmor resserré après
-cette mesure. Les autres P0 gardent leur ordre : P1‑18 table d'audit, P2‑9
+cette mesure.
+
+**P1‑18 — table d'audit interrogeable (livrée).**
+
+- Migration `086_audit_log.sql` : `created_at`, `severity`, `actor`, `action`,
+  `target`, `client_ip`, `message`, avec index sur la date, la sévérité,
+  l'acteur et l'action.
+- `src/audit.rs` : écriture par canal borné (jamais bloquante, compteur de
+  pertes), normalisation (contrôle, troncature), purge à 90 jours au démarrage
+  et toutes les 6 h.
+- `events::log_event`/`log_event_warn` alimentent la table ; les événements
+  d'authentification (`auth.login`, `auth.login.trusted`,
+  `auth.login.failed`, `auth.logout`) portent acteur/action/IP structurés.
+- API admin : `GET /api/audit` (`from`, `to`, `severity`, `actor`, `action`,
+  `q`, `limit` ≤ 500, `offset`) et `GET /api/audit/export` (CSV/JSON, ≤ 5 000
+  lignes). Toute valeur invalide est un `400` nommé.
+- Journal : nouvelle source `audit`, admin-only, avec la recherche texte
+  existante ; aucune dépendance à journald ou à un fichier hôte.
+- Tests écrits mais **non exécutés** : 9 unitaires (`src/audit.rs`), 5
+  d'intégration (`tests/audit_integration.rs`), E2E Journal 2.4.
+- Docs : `docs/guides/journal.md`, `docs/API.md`, `docs/BACKEND.md`,
+  `SCREENS.md`, `PRIVACY.md` (RoPA ligne 16), FeatureDoc `journal`.
+
+**Reste sur P1‑18** : filtres structurés (acteur/action/date) dans l'UI
+Journal — l'API les porte déjà. Les autres P0 gardent leur ordre : P2‑9
 restauration bare‑metal.

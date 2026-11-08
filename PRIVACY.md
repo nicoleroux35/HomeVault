@@ -69,6 +69,7 @@ or alters a feature touching personal data.
 | 13 | **Notifications** — health/backup/security alert text (broadcast, not per-user) | Inform admins | Legitimate interest | Admin clears them | Local only |
 | 14 | **Virtual-machine login credential** — the username in clear + the password as a **SHA-512 crypt hash** inside the machine's `cloud-init.user-data` (ready-made VMs only; an ISO install has no seeded account) | Let the operator log into a VM/container they created without any Linux knowledge (console + SSH) | Contract / controller's own basis | Lives in the Incus instance config (root-readable on the host only) until the machine is deleted | Local only; the machine is on the operator's own LAN |
 | 15 | **VM graphical screen** — a passwordless VNC server bound to `127.0.0.1` on the host, reachable only through an admin-only, single-use 20 s WebSocket ticket | Show and control the OS installer for an ISO-install VM | Contract / controller's own basis | Only while the VM runs | Local only; never leaves loopback |
+| 16 | **Queryable audit trail** (`audit_log`) — timestamp, severity, optional actor, action, target, client IP and the plain-English event sentence | Accountability and incident investigation (sign-in, permission, share, storage, network and settings changes) | Legitimate interest (security); legal obligation where the controller must keep records | **90 days**, pruned at startup and every 6 hours; deleted with the database | Local only; admin-only reads |
 
 ## Outbound third-party calls
 

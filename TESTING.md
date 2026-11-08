@@ -1,5 +1,17 @@
 # HomeVault — Test tracking
 
+## P1-18 queryable audit trail — 2026-11-08 (not run)
+
+> **Instruction followed: no test command was executed for this change.**
+> Static checks passed: `cargo check --lib` and `cargo check --tests`.
+
+| Coverage | Added / changed |
+|---|---|
+| Unit (`src/audit.rs`) | **+9** — like-pattern escaping, RFC 3339 / `YYYY-MM-DD` bounds, inverted range, severity validation, limit/offset clamps, CSV quoting, empty-CSV header, control-character stripping, character-boundary truncation |
+| Integration (`tests/audit_integration.rs`) | **new suite, 5 tests** — admin gate (401/403/200), ordering + every filter + pagination, CSV/JSON export, retention prune, Journal `audit` source (admin-only, searchable) |
+| E2E (`tests/e2e/journal/journal.spec.ts`) | **+1** — 2.4 the audit source is selectable and its entries request answers `200` |
+| Docs | `docs/guides/journal.md`, `docs/API.md`, `docs/BACKEND.md` (migration range), `SCREENS.md`, `PRIVACY.md` (RoPA row 16), `CHANGELOG.md`, RAG journal FeatureDoc, `HOMEVAULT_TASKLIST_A_FAIRE.md` (P1-18), `COMPARAISON_DSM_VS_HOMEVAULT.md` |
+
 ## P2-7 process isolation — 2026-11-08 (not run)
 
 > **Instruction followed: no test command was executed for this change.** The

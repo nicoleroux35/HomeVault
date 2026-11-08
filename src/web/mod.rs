@@ -2322,6 +2322,16 @@ pub fn create_app(state: AppStateArc) -> Router {
         .route("/api/mcp/tokens/{id}", delete(handle_mcp_revoke_token))
         .route("/mcp", post(handle_mcp_rpc))
         // System Journal
+        // P1-18: queryable audit trail (admin-only). The Journal screen reads
+        // it through the `audit` source; these routes add filters and export.
+        .route(
+            "/api/audit",
+            get(crate::handlers::audit::handle_audit_list),
+        )
+        .route(
+            "/api/audit/export",
+            get(crate::handlers::audit::handle_audit_export),
+        )
         .route("/api/journal/sources", get(handle_journal_sources))
         .route("/api/journal/entries", get(handle_journal_entries))
         .route("/api/journal/clear", delete(handle_journal_clear))
@@ -2756,6 +2766,11 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         Ok(result) => crate::handlers::health_probe::record_integrity_result(&result),
         Err(e) => tracing::warn!(error = %e, "Database integrity check could not run"),
     }
+
+    // P1-18: install the queryable audit writer. It starts only after the
+    // migration created `audit_log`; events emitted before this point keep
+    // going to tracing/syslog as before.
+    crate::audit::init(db.pool());
 
     // Point 1: snapshot the database at startup when the last one is older than
     // the interval. Best-effort — the appliance must still boot if the backup

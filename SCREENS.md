@@ -341,9 +341,9 @@ and in the Groups screen.
 ## 13. System journal (Journal)
 
 **Features:**
-- Source selector: `app` (business event logs), `system` (journald), text files (syslog/auth.log/kern.log/daemon.log)
-- Entry list: timestamp, unit, priority, PID, message
-- Filtering by unit, by priority, text search
+- Source selector: `app` (business event logs), **`audit`** (queryable audit trail: severity, actor/action, 90-day retention), `system` (journald), text files (syslog/auth.log/kern.log/daemon.log)
+- Entry list: timestamp, unit, priority, PID, message; the audit source shows `[action]` before the sentence
+- Filtering by unit, by priority, text search (the audit source supports text search in the Journal; structured filters and CSV/JSON export are on `/api/audit`)
 - Auto-refresh toggle
 - Clearing of logs per source with confirmation
 - Scheduled cleanup settings (enablement, interval in days)

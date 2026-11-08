@@ -165,6 +165,8 @@ enum SourceKind {
     App,
     /// journald and the `/var/log` text files — admin only.
     Host,
+    /// Queryable audit table (P1-18) — admin only, no host process.
+    Audit,
 }
 
 /// Resolve a source id to its privilege level, or `None` if it is not a
@@ -172,6 +174,7 @@ enum SourceKind {
 fn source_kind(source: &str) -> Option<SourceKind> {
     match source {
         "app" => Some(SourceKind::App),
+        "audit" => Some(SourceKind::Audit),
         "system" | "syslog" | "auth" | "kern" | "daemon" => Some(SourceKind::Host),
         _ => None,
     }
@@ -253,6 +256,13 @@ pub async fn handle_journal_sources(
         .into_response();
     }
 
+    // The audit trail is a table, so it is always available to an admin — no
+    // host file to probe and no journald dependency.
+    sources.push(JournalSource {
+        id: "audit".to_string(),
+        label: "Audit trail (queryable)".to_string(),
+    });
+
     sources.push(JournalSource {
         id: "system".to_string(),
         label: "System (journald)".to_string(),
@@ -308,10 +318,60 @@ pub async fn handle_journal_entries(
         Some(kind) => kind,
         None => return ResponseHelper::json_error(format!("Unknown log source: {}", source)),
     };
-    if kind == SourceKind::Host && !state.auth.is_admin(&username).await {
+    if kind != SourceKind::App && !state.auth.is_admin(&username).await {
         return ResponseHelper::json_forbidden(
-            "Host log sources are restricted to administrators".to_string(),
+            "Host and audit sources are restricted to administrators".to_string(),
         );
+    }
+
+    let limit = query.limit.unwrap_or(200).clamp(1, 2000);
+    let search = query.search.clone().filter(|s| !s.trim().is_empty());
+
+    // P1-18: the audit source reads SQLite, not a host process. It reuses the
+    // existing search box and page size, so the Journal screen needs no new
+    // query language to investigate an incident.
+    if kind == SourceKind::Audit {
+        let audit_query = crate::audit::AuditQuery {
+            q: search.clone(),
+            limit: Some(limit as u32),
+            ..Default::default()
+        };
+        return match crate::audit::list(
+            state.db.pool().as_ref(),
+            &audit_query,
+            crate::audit::AUDIT_PAGE_MAX,
+        )
+        .await
+        {
+            Ok(page) => {
+                let entries: Vec<JournalEntry> = page
+                    .entries
+                    .into_iter()
+                    .map(|entry| JournalEntry {
+                        timestamp: Some(entry.timestamp),
+                        unit: Some("homevault".to_string()),
+                        priority: Some(if entry.severity == "warning" { 4 } else { 6 }),
+                        priority_text: Some(entry.severity),
+                        pid: None,
+                        message: match entry.action {
+                            Some(action) => format!("[{}] {}", action, entry.message),
+                            None => entry.message,
+                        },
+                    })
+                    .collect();
+                Json(json!({
+                    "success": true,
+                    "data": entries,
+                    "meta": {
+                        "scanned": page.total,
+                        "limit": limit,
+                        "search_truncated": false,
+                    }
+                }))
+                .into_response()
+            }
+            Err(message) => ResponseHelper::json_error(message),
+        };
     }
 
     // Validate before the value reaches `journalctl`'s argv.
@@ -322,9 +382,6 @@ pub async fn handle_journal_entries(
             }
         }
     }
-
-    let limit = query.limit.unwrap_or(200).clamp(1, 2000);
-    let search = query.search.clone().filter(|s| !s.trim().is_empty());
 
     // Run the blocking subprocess work off the async worker, and hold one of
     // the read slots for its whole duration.

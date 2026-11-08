@@ -43,6 +43,7 @@ pub mod acme;
 pub mod acme_worker;
 pub mod activity_poller;
 pub mod antivirus;
+pub mod audit;
 pub mod antivirus_scheduler;
 pub mod app_catalog;
 pub mod app_proxy;

@@ -52,6 +52,7 @@ pub mod activity;
 pub mod admin_guard;
 pub mod antivirus;
 pub mod app_auth;
+pub mod audit;
 pub mod auth;
 pub mod auto_block;
 pub mod avatars;

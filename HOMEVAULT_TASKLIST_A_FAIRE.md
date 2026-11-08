@@ -110,7 +110,7 @@ justifie.
 | **P1-15** | SNMP v3 (auth/priv) | P1 | M | Supervision d'entreprise |
 | **P1-16** | E‑mail OAuth2 (Gmail/Microsoft) | P1 | M | SMTP moderne sans mot de passe applicatif |
 | **P1-17** | Client WireGuard | P1 | M | Site‑à‑site inverse |
-| **P1-18** | Table d'audit interrogeable | P1 | M | Enquête après incident |
+| **P1-18** | Table d'audit interrogeable — livrée 2026‑11‑08 (filtres structurés UI restants) | P1 | M | Enquête après incident |
 | **P1-19** | `clamd` temps réel (option, hors profil basse conso) — **rejeté pour la cible** (coût RAM permanent) | P1 | M | Antivirus à l'écriture |
 | **P1-20** | PPPoE — **rejeté pour la cible** (la box FAI le fait déjà) | P1 | M | Box en bridge |
 | **P1-21** | RAID : vitesse de resync, moniteur `mdadm`, spare auto sur disque « Critical » — **partiel assumé** (suggestion seulement ; ajout auto rejeté) | P1 | M | Reconstruction contrôlée, alerte avant panne |
@@ -195,7 +195,8 @@ justifie.
 >
 > Les P0 sont fonctionnellement terminés. Après la revue de valeur du
 > 2026‑11‑06 (ci-dessous), la suite prioritaire est **P2-7 (enforce/terrain),
-> P2-8 (UI), P1-18, P2-9 (runbook), P1-16**, puis les finitions P1-27/P1-28.
+> P2-8 (UI), P1-18 (filtres UI), P2-9 (runbook), P1-16**, puis les finitions
+> P1-27/P1-28.
 > Les autres items sont gelés ou rejetés pour la cible actuelle.
 
 ---
@@ -215,7 +216,7 @@ panne majeur.
 
 | Décision | Items | Justification |
 |---|---|---|
-| **Priorité** | **P2-7** isolation d’exécution (**installeur livré 2026‑11‑08**, enforce/terrain restants), **P2-8** mises à jour signées/atomiques (**installeur livré 2026‑11‑08**, UI restante), **P1-18** table d’audit, **P2-9** restauration bare-metal (runbook + test VM) | Sécurité, intégrité de la chaîne et reprise après sinistre : gains réels, sans dépendance externe. |
+| **Priorité** | **P2-7** isolation d’exécution (**installeur livré 2026‑11‑08**, enforce/terrain restants), **P2-8** mises à jour signées/atomiques (**installeur livré 2026‑11‑08**, UI restante), **P1-18** table d’audit (**livrée 2026‑11‑08**, filtres UI restants), **P2-9** restauration bare-metal (runbook + test VM) | Sécurité, intégrité de la chaîne et reprise après sinistre : gains réels, sans dépendance externe. |
 | **À faire, plus tard** | **P1-16** OAuth2 e-mail | Gmail/Microsoft retirent les mots de passe applicatifs ; les alertes peuvent cesser de partir. Coût modéré. |
 | **Finitions seulement** | **P1-27** signature du catalogue (pas de pinning obligatoire), **P1-28** avertissement installateur (pas de carte UI), **P1-21** suggestion de spare (pas d’ajout auto) | Le cœur est déjà livré ; le reste ajoute du risque ou peu de valeur. |
 | **Gelé au stade partiel** | **P2-1** SMB AD, **P2-2** NFS Kerberos, **P2-3** thin provisioning, **P2-4** déduplication, **P2-15** witness | Utiles seulement en entreprise/multi-site ou après benchmark ; ne pas investir sans cible explicite. |
@@ -1378,13 +1379,27 @@ survivent au reboot comme les règles manuelles.
   `frontend/src/lib/services/api.ts`, `src/i18n/*.toml`,
   `tests/vpn_integration.rs`, `tests/e2e/vpn/vpn.spec.ts`.
 
-### [ ] P1-18 — Table d'audit · M
+### [x] P1-18 — Table d'audit · M
 
 - Aujourd'hui les événements partent dans `tracing`/syslog
   (`src/events.rs:1`).
 - Migration `audit_log` (horodatage, acteur, action, cible, résultat, IP),
   écriture pour les mutations admin, rétention, endpoint paginé + export.
 - Tests : écriture sur chaque mutation critique, non‑répudiation, purge.
+
+**Livré 2026‑11‑08.** Migration `086_audit_log.sql` ; `src/audit.rs` écrit
+chaque `events::log_event`/`log_event_warn` via un canal borné (jamais
+bloquant, compteur de pertes) et purge à 90 jours au démarrage puis toutes les
+6 h. Les événements d'authentification (`auth.login`, `auth.login.trusted`,
+`auth.login.failed`, `auth.logout`) portent acteur/action/IP structurés. API
+admin : `GET /api/audit` (filtres `from`, `to`, `severity`, `actor`, `action`,
+`q`, pagination) et `GET /api/audit/export` (CSV/JSON). Le Journal expose la
+même table comme source `audit` (recherche texte). Tests : 9 unitaires
+(`src/audit.rs`), suite d'intégration `tests/audit_integration.rs` (5),
+E2E Journal 2.4 — écrits, non exécutés. Docs : `journal.md`, `API.md`,
+`BACKEND.md`, `PRIVACY.md` (RoPA ligne 16), `SCREENS.md`. **Reste** : filtres
+structurés (acteur/action/date) dans l'UI Journal ; aujourd'hui l'API les porte
+et le Journal offre la recherche texte.
 
 ### [-] P1-19 — `clamd` temps réel · M
 
@@ -2068,7 +2083,7 @@ Shares, docs et `TESTING.md` à jour.
   de P0-7, `x-systemd.*`, température sur 3 échantillons, backoff et
   notification `backup.jobs` sont livrés). Après la **revue de valeur du
   2026‑11‑06**, les prochains chantiers ouverts sont **P2-7 (enforce +
-  terrain), P2-8 (UI), P1-18, P2-9 (runbook), P1-16**, puis les finitions
+  terrain), P2-8 (UI), P1-18 (filtres UI), P2-9 (runbook), P1-16**, puis les finitions
   P1-27/P1-28 ; les autres items sont gelés ou rejetés.
 - **Tests** : `cargo check --lib`, `cargo test --lib --no-run` et les
   `--no-run` de `replication_integration`, `iscsi_integration`,

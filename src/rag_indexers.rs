@@ -731,6 +731,10 @@ Settings are exported/imported as JSON (SMTP passwords redacted in export). The 
             title: "System Journal".to_string(),
             content: r#"View system and application logs:
 - Application log: structured HomeVault events (login, CRUD, security)
+- Audit trail: every application event is also stored in a queryable table with
+  a severity and, for sign-in events, the account, the action and the client
+  address; an administrator can filter it and export CSV or JSON, and entries
+  older than 90 days are pruned automatically
 - System logs: syslog, auth.log, kern.log, daemon.log
 - journalctl entries with unit/priority filters
 - Search/filter entries
