@@ -8,6 +8,26 @@ follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **Structured filters in the System Journal (2026-11-09, P1-18 UI).** The
+  queryable audit trail is now investigable from the screen, not just from the
+  API:
+  - selecting the **audit** source reveals labelled **severity**, **user**,
+    **action**, **from** and **to** filters next to the free-text search, plus
+    **Clear filters**;
+  - the filters combine with the search term and reach
+    `GET /journal/entries?source=audit&…`; the footer shows the exact match
+    count and a Previous/Next pager (200 per page);
+  - entry rows show the structured `actor`, `target` and `client_ip` badges;
+  - **Export CSV** carries the same structured filters;
+  - a structured filter on `app`/`system`/`/var/log` answers `400` naming the
+    field instead of returning unfiltered rows that look filtered; an inverted
+    date range is refused client-side with a message, and the API answers `400`
+    if it is called directly;
+  - `meta.total` is now returned by the audit source so the pager has a real
+    count.
+  Tests: 2 unit (filter detection + mapping), 5 integration (filters, paging,
+  refusal, bad values, export) and 5 E2E §13 (written, not run).
+
 - **Apply a signed update from Settings (2026-11-09, P2-8 UI half).** The
   installer's signed/atomic engine is now reachable from the web UI instead of
   a terminal:

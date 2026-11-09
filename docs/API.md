@@ -1628,7 +1628,17 @@ Clear-logs and cleanup-settings writes are `admin`. See
 | GET | `/audit` | admin — paged audit trail (`from`, `to`, `severity`, `actor`, `action`, `q`, `limit` ≤ 500, `offset`); returns `entries`, `total`, `retention_days` |
 | GET | `/audit/export` | admin — same filters + `format=csv\|json` (≤ 5 000 rows), returned as a download |
 
-`GET /journal/entries` answers
+`GET /journal/entries` accepts `source` (default `app`), `unit` (only for
+`system`), `priority` (only for `system`), `search`, `limit`, and — for
+`source=audit` only — `from`, `to`, `severity`, `actor`, `action` and `offset`.
+A structured filter on any other source is a `400` naming the field. The audit
+source answers `{ "success": true, "data": [ … ], "meta": { "total": 12,
+"scanned": 12, "limit": 200, "offset": 0, "search_truncated": false } }`, where
+`total` is the exact match count the pager uses. `GET /journal/export` accepts
+the same parameters (ignoring `offset`, capped at 5 000 rows) and refuses a
+structured filter on a non-audit source instead of writing a misleading file.
+
+`GET /journal/entries` answers for the host sources
 `{ "success": true, "data": [ … ], "meta": { "scanned": 200, "limit": 200, "search_truncated": false } }`.
 `search_truncated` is `true` when a search filter filled the bounded scan
 window (`limit × 20`, at most 10 000 lines), i.e. older matching entries exist

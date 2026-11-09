@@ -628,3 +628,120 @@ test.describe('12 — Memory regression', () => {
     }
   });
 });
+
+// ===========================================================================
+// 13. Audit structured filters (P1-18)
+//
+// The audit source is a table, so its filters are exact matches instead of the
+// free-text search. These tests prove the controls exist only on that source,
+// that they reach the request, that Clear removes them, and that an inverted
+// date range is refused client-side (with a message) instead of returning a
+// misleading empty page.
+// ===========================================================================
+
+test.describe('13 — Audit structured filters', () => {
+  test('13.1 — the filter panel appears only for the audit source', async ({ page }) => {
+    await openJournal(page, adminTokens);
+    const panel = win(page).locator('[data-testid="journal-audit-filters"]');
+    await expect(panel).toHaveCount(0);
+
+    await win(page).locator('#jr-source').selectOption('audit');
+    await expect(panel).toBeVisible();
+    // Every control carries a visible label (accessibility baseline).
+    for (const id of [
+      'jr-audit-severity',
+      'jr-audit-actor',
+      'jr-audit-action',
+      'jr-audit-from',
+      'jr-audit-to',
+    ]) {
+      await expect(win(page).locator(`label[for="${id}"]`)).toBeVisible();
+    }
+
+    await win(page).locator('#jr-source').selectOption('app');
+    await expect(panel).toHaveCount(0);
+  });
+
+  test('13.2 — every filter reaches the request', async ({ page }) => {
+    await openJournal(page, adminTokens);
+    let queried = '';
+    page.on('request', (r) => {
+      const m = r.url().match(/\/api\/journal\/entries\?([^#]*)/);
+      if (m && m[1].includes('source=audit')) queried = decodeURIComponent(m[1]);
+    });
+
+    await win(page).locator('#jr-source').selectOption('audit');
+    await win(page).locator('[data-testid="journal-audit-severity"]').selectOption('warning');
+    await win(page).locator('[data-testid="journal-audit-actor"]').fill('alice');
+    await win(page).locator('[data-testid="journal-audit-action"]').fill('auth.login');
+    await win(page).locator('[data-testid="journal-audit-from"]').fill('2026-11-01');
+    await win(page).locator('[data-testid="journal-audit-to"]').fill('2026-11-09');
+    await win(page).locator('[data-testid="journal-apply"]').click();
+
+    await expect.poll(() => queried, { timeout: 8000 }).toContain('severity=warning');
+    expect(queried).toContain('actor=alice');
+    expect(queried).toContain('action=auth.login');
+    expect(queried).toContain('from=2026-11-01');
+    expect(queried).toContain('to=2026-11-09');
+    // The first page is always requested on Apply.
+    expect(queried).toContain('offset=0');
+  });
+
+  test('13.3 — Clear removes every structured filter', async ({ page }) => {
+    await openJournal(page, adminTokens);
+    await win(page).locator('#jr-source').selectOption('audit');
+    await win(page).locator('[data-testid="journal-audit-actor"]').fill('alice');
+    await win(page).locator('[data-testid="journal-audit-severity"]').selectOption('warning');
+
+    let queried = '';
+    page.on('request', (r) => {
+      const m = r.url().match(/\/api\/journal\/entries\?([^#]*)/);
+      if (m && m[1].includes('source=audit')) queried = m[1];
+    });
+    await win(page).locator('[data-testid="journal-audit-clear"]').click();
+
+    await expect(win(page).locator('[data-testid="journal-audit-actor"]')).toHaveValue('');
+    await expect(win(page).locator('[data-testid="journal-audit-severity"]')).toHaveValue('');
+    await expect.poll(() => queried, { timeout: 8000 }).not.toContain('actor=');
+    expect(queried).not.toContain('severity=');
+  });
+
+  test('13.4 — an inverted date range is refused before the request', async ({ page }) => {
+    await openJournal(page, adminTokens);
+    await win(page).locator('#jr-source').selectOption('audit');
+
+    let auditRequests = 0;
+    page.on('request', (r) => {
+      if (r.url().includes('/api/journal/entries') && r.url().includes('source=audit')) {
+        auditRequests += 1;
+      }
+    });
+
+    // Fill from/to directly: the `min`/`max` attributes would block the picker,
+    // but typing is still possible and the guard must not depend on the UI.
+    await win(page).locator('[data-testid="journal-audit-from"]').fill('2026-11-09');
+    await win(page).locator('[data-testid="journal-audit-to"]').fill('2026-11-01');
+    const before = auditRequests;
+    await win(page).locator('[data-testid="journal-apply"]').click();
+
+    await expect(page.locator('[data-testid="journal-action-error"]')).toBeVisible();
+    expect(auditRequests).toBe(before);
+  });
+
+  test('13.5 — the export carries the same structured filters', async ({ page }) => {
+    await openJournal(page, adminTokens);
+    await win(page).locator('#jr-source').selectOption('audit');
+    await win(page).locator('[data-testid="journal-audit-actor"]').fill('alice');
+    await win(page).locator('[data-testid="journal-audit-severity"]').selectOption('warning');
+
+    let exportUrl = '';
+    page.on('request', (r) => {
+      if (r.url().includes('/api/journal/export')) exportUrl = decodeURIComponent(r.url());
+    });
+    await win(page).locator('[data-testid="journal-export"]').click();
+
+    await expect.poll(() => exportUrl, { timeout: 8000 }).toContain('source=audit');
+    expect(exportUrl).toContain('actor=alice');
+    expect(exportUrl).toContain('severity=warning');
+  });
+});

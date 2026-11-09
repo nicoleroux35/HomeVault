@@ -37,7 +37,15 @@
     priority_text?: string | null;
     pid?: string | null;
     message: string;
+    // Audit source only (P1-18): the structured fields the filters match on.
+    actor?: string | null;
+    action?: string | null;
+    target?: string | null;
+    client_ip?: string | null;
   }
+
+  /** Audit page size. The backend caps an interactive page at 500. */
+  const AUDIT_PAGE_SIZE = 200;
 
   let sources: JournalSource[] = [];
   let entries: JournalEntry[] = [];
@@ -51,6 +59,17 @@
   let autoRefreshInterval: ReturnType<typeof setInterval> | null = null;
   let showClearConfirm = false;
   let clearing = false;
+
+  // Structured audit filters (P1-18). Only sent for the `audit` source; the
+  // server refuses them on a source that has no such column rather than
+  // silently returning unfiltered rows.
+  let auditSeverity = '';
+  let auditActor = '';
+  let auditAction = '';
+  let auditFrom = '';
+  let auditTo = '';
+  let auditOffset = 0;
+  let auditTotal = 0;
 
   let showCleanupSettings = false;
   let cleanupEnabled = false;
@@ -162,21 +181,34 @@
   async function loadEntries() {
     loading = true;
     if (!sourcesFailed) loadError = '';
+    const isAudit = selectedSource === 'audit';
     const res = await api.getJournalEntries({
       source: selectedSource,
       unit: selectedSource === 'system' ? unitFilter || undefined : undefined,
       priority: selectedSource === 'system' ? priorityFilter : undefined,
-      limit: 200,
+      limit: isAudit ? AUDIT_PAGE_SIZE : 200,
       search: searchFilter || undefined,
+      // The audit filters are only meaningful for that source; sending them
+      // elsewhere is a 400 by design, so the screen does not send them.
+      from: isAudit ? auditFrom || undefined : undefined,
+      to: isAudit ? auditTo || undefined : undefined,
+      severity: isAudit ? auditSeverity || undefined : undefined,
+      actor: isAudit ? auditActor.trim() || undefined : undefined,
+      action: isAudit ? auditAction.trim() || undefined : undefined,
+      offset: isAudit ? auditOffset : undefined,
     });
     if (res.success && res.data) {
       entries = res.data;
       // The backend scans a bounded window wider than the page; when it filled
       // up under a search, older matches exist beyond it and the screen says so.
       searchTruncated = !!res.meta?.search_truncated;
+      // The audit source is a table, so it knows the exact match count and the
+      // pager can show "page 2 of 4" with no guessing.
+      auditTotal = isAudit ? Number(res.meta?.total ?? entries.length) : 0;
     } else {
       entries = [];
       searchTruncated = false;
+      auditTotal = 0;
       loadError = res.error || res.message || translate('journal.load_failed');
     }
     loading = false;
@@ -188,6 +220,31 @@
   }
 
   function applyFilters() {
+    // A new filter is a new result set: start at the first page.
+    auditOffset = 0;
+    actionError = '';
+    if (selectedSource === 'audit' && auditFrom && auditTo && auditFrom > auditTo) {
+      actionError = translate('journal.date_range_invalid');
+      return;
+    }
+    loadEntries();
+  }
+
+  /** Clear every structured audit filter in one action. */
+  function clearAuditFilters() {
+    auditSeverity = '';
+    auditActor = '';
+    auditAction = '';
+    auditFrom = '';
+    auditTo = '';
+    applyFilters();
+  }
+
+  /** Move the audit page. The date and actor filters stay applied. */
+  function auditPage(direction: -1 | 1) {
+    const next = auditOffset + direction * AUDIT_PAGE_SIZE;
+    if (next < 0 || (direction === 1 && next >= auditTotal)) return;
+    auditOffset = next;
     loadEntries();
   }
 
@@ -202,6 +259,13 @@
     if (selectedSource === 'system') {
       if (unitFilter.trim()) params.set('unit', unitFilter.trim());
       params.set('priority', String(priorityFilter));
+    }
+    if (selectedSource === 'audit') {
+      if (auditFrom) params.set('from', auditFrom);
+      if (auditTo) params.set('to', auditTo);
+      if (auditSeverity) params.set('severity', auditSeverity);
+      if (auditActor.trim()) params.set('actor', auditActor.trim());
+      if (auditAction.trim()) params.set('action', auditAction.trim());
     }
     try {
       const headers: Record<string, string> = {};
@@ -344,6 +408,50 @@
         </div>
       {/if}
 
+      {#if selectedSource === 'audit'}
+        <!-- Structured filters for the queryable audit trail (P1-18). They are
+             exact-match fields, so an incident query is reproducible and
+             exportable instead of relying on free text alone. -->
+        <div
+          class="flex flex-wrap items-end gap-3 w-full rounded-[var(--hv-radius-default)] border border-[var(--hv-shell-border-soft)] p-2.5"
+          data-testid="journal-audit-filters"
+        >
+          <div class="flex flex-col gap-1 text-c-sm text-muted-foreground">
+            <label for="jr-audit-severity" class="font-semibold uppercase tracking-wide">{$t('journal.severity')}</label>
+            <select id="jr-audit-severity" class={fieldInput} bind:value={auditSeverity} onchange={applyFilters} data-testid="journal-audit-severity">
+              <option value="">{$t('journal.severity_any')}</option>
+              <option value="info">{$t('journal.severity_info')}</option>
+              <option value="warning">{$t('journal.severity_warning')}</option>
+            </select>
+          </div>
+
+          <div class="flex flex-col gap-1 text-c-sm text-muted-foreground">
+            <label for="jr-audit-actor" class="font-semibold uppercase tracking-wide">{$t('journal.actor')}</label>
+            <input id="jr-audit-actor" type="text" class={fieldInput} placeholder={$t('journal.actor_placeholder')} bind:value={auditActor} onchange={applyFilters} data-testid="journal-audit-actor" />
+          </div>
+
+          <div class="flex flex-col gap-1 text-c-sm text-muted-foreground">
+            <label for="jr-audit-action" class="font-semibold uppercase tracking-wide">{$t('journal.action')}</label>
+            <input id="jr-audit-action" type="text" class={fieldInput} placeholder={$t('journal.action_placeholder')} bind:value={auditAction} onchange={applyFilters} data-testid="journal-audit-action" />
+          </div>
+
+          <div class="flex flex-col gap-1 text-c-sm text-muted-foreground">
+            <label for="jr-audit-from" class="font-semibold uppercase tracking-wide">{$t('journal.date_from')}</label>
+            <input id="jr-audit-from" type="date" class={cn(fieldInput, 'min-w-[140px]')} bind:value={auditFrom} max={auditTo || undefined} onchange={applyFilters} data-testid="journal-audit-from" />
+          </div>
+
+          <div class="flex flex-col gap-1 text-c-sm text-muted-foreground">
+            <label for="jr-audit-to" class="font-semibold uppercase tracking-wide">{$t('journal.date_to')}</label>
+            <input id="jr-audit-to" type="date" class={cn(fieldInput, 'min-w-[140px]')} bind:value={auditTo} min={auditFrom || undefined} onchange={applyFilters} data-testid="journal-audit-to" />
+          </div>
+
+          <Button variant="ghost" onclick={clearAuditFilters} data-testid="journal-audit-clear">
+            {$t('journal.clear_filters')}
+          </Button>
+          <p class="w-full m-0 text-c-xs text-muted-foreground">{$t('journal.source_audit_hint')}</p>
+        </div>
+      {/if}
+
       <div class="flex flex-col gap-1 text-c-sm text-muted-foreground min-w-[200px] flex-1">
         <label for="jr-search" class="font-semibold uppercase tracking-wide"><IconSearch size="14" /></label>
         <input id="jr-search" type="text" class={cn(fieldInput, 'w-full')} placeholder={$t('journal.search_placeholder')} bind:value={searchFilter} onkeydown={(e) => e.key === 'Enter' && applyFilters()} />
@@ -417,6 +525,9 @@
             {#if entry.unit}<span>{entry.unit}</span>{/if}
             {#if entry.priority_text}<span class="uppercase font-bold">{entry.priority_text}</span>{/if}
             {#if entry.pid}<span>pid {entry.pid}</span>{/if}
+            {#if entry.actor}<span data-testid="journal-entry-actor">{$t('journal.actor')}: {entry.actor}</span>{/if}
+            {#if entry.target}<span data-testid="journal-entry-target">{$t('journal.target')}: {entry.target}</span>{/if}
+            {#if entry.client_ip}<span data-testid="journal-entry-client">{entry.client_ip}</span>{/if}
           </div>
           <div class="whitespace-pre-wrap break-words text-foreground font-[family-name:var(--hv-font-mono)] text-c-base">{entry.message}</div>
         </div>
@@ -425,9 +536,44 @@
   {/if}
 
   {#snippet footer()}
-    <span data-testid="journal-foot" class="text-c-sm text-muted-foreground">
-      {entries.length} {$t('journal.entries_shown')}
-    </span>
+    <div class="flex flex-wrap items-center justify-between gap-3 w-full" data-testid="journal-footer">
+      <span data-testid="journal-foot" class="text-c-sm text-muted-foreground">
+        {#if selectedSource === 'audit' && auditTotal > 0}
+          {translate('journal.entries_of_total', {
+            shown: String(entries.length),
+            total: String(auditTotal)
+          })}
+        {:else}
+          {entries.length} {$t('journal.entries_shown')}
+        {/if}
+      </span>
+      {#if selectedSource === 'audit' && auditTotal > AUDIT_PAGE_SIZE}
+        <div class="flex items-center gap-2">
+          <Button
+            variant="ghost"
+            onclick={() => auditPage(-1)}
+            disabled={auditOffset === 0 || loading}
+            data-testid="journal-page-prev"
+          >
+            {$t('journal.page_prev')}
+          </Button>
+          <span class="text-c-sm text-muted-foreground" data-testid="journal-page-position">
+            {translate('journal.page_of', {
+              page: String(Math.floor(auditOffset / AUDIT_PAGE_SIZE) + 1),
+              pages: String(Math.ceil(auditTotal / AUDIT_PAGE_SIZE))
+            })}
+          </span>
+          <Button
+            variant="ghost"
+            onclick={() => auditPage(1)}
+            disabled={auditOffset + AUDIT_PAGE_SIZE >= auditTotal || loading}
+            data-testid="journal-page-next"
+          >
+            {$t('journal.page_next')}
+          </Button>
+        </div>
+      {/if}
+    </div>
   {/snippet}
 </PageLayout>
 

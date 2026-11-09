@@ -770,7 +770,12 @@ Settings are exported/imported as JSON (SMTP passwords redacted in export). The 
 - Audit trail: every application event is also stored in a queryable table with
   a severity and, for sign-in events, the account, the action and the client
   address; an administrator can filter it and export CSV or JSON, and entries
-  older than 90 days are pruned automatically
+  older than 90 days are pruned automatically. Selecting the audit source in the
+  Journal shows labelled filters — severity, user, action, from and to dates —
+  next to the free-text search; the footer gives the exact match count and a
+  Previous/Next pager, and the CSV export carries the same filters. A structured
+  filter is refused with a clear message on a log source that has no such
+  column, so a result is never silently unfiltered
 - System logs: syslog, auth.log, kern.log, daemon.log
 - journalctl entries with unit/priority filters
 - Search/filter entries

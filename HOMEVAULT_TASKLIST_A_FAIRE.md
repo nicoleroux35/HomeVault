@@ -110,7 +110,7 @@ justifie.
 | **P1-15** | SNMP v3 (auth/priv) | P1 | M | Supervision d'entreprise |
 | **P1-16** | E‑mail OAuth2 (Gmail/Microsoft) | P1 | M | SMTP moderne sans mot de passe applicatif |
 | **P1-17** | Client WireGuard | P1 | M | Site‑à‑site inverse |
-| **P1-18** | Table d'audit interrogeable — livrée 2026‑11‑08 (filtres structurés UI restants) | P1 | M | Enquête après incident |
+| **P1-18** | Table d'audit interrogeable — livrée 2026‑11‑08, **filtres structurés UI livrés 2026‑11‑09** | P1 | M | Enquête après incident |
 | **P1-19** | `clamd` temps réel (option, hors profil basse conso) — **rejeté pour la cible** (coût RAM permanent) | P1 | M | Antivirus à l'écriture |
 | **P1-20** | PPPoE — **rejeté pour la cible** (la box FAI le fait déjà) | P1 | M | Box en bridge |
 | **P1-21** | RAID : vitesse de resync, moniteur `mdadm`, spare auto sur disque « Critical » — **partiel assumé** (suggestion seulement ; ajout auto rejeté) | P1 | M | Reconstruction contrôlée, alerte avant panne |
@@ -208,7 +208,7 @@ justifie.
 >
 > Les P0 sont fonctionnellement terminés. Après la revue de valeur du
 > 2026‑11‑06 (ci-dessous), la suite prioritaire est **P2-7 (enforce/terrain),
-> P2-8 (UI), P1-18 (filtres UI), P2-9 (test VM), P1-16**, puis les finitions
+> P2-8 (reste la clé de production), P2-9 (test VM), P1-16**, puis les finitions
 > P1-27/P1-28.
 > Les autres items sont gelés ou rejetés pour la cible actuelle.
 
@@ -229,7 +229,7 @@ panne majeur.
 
 | Décision | Items | Justification |
 |---|---|---|
-| **Priorité** | **P2-7** isolation d’exécution (**installeur livré 2026‑11‑08**, enforce/terrain restants), **P2-8** mises à jour signées/atomiques (**installeur livré 2026‑11‑08**, UI restante), **P1-18** table d’audit (**livrée 2026‑11‑08**, filtres UI restants), **P2-9** restauration bare-metal (**drill livré 2026‑11‑08**, test VM restant) | Sécurité, intégrité de la chaîne et reprise après sinistre : gains réels, sans dépendance externe. |
+| **Priorité** | **P2-7** isolation d’exécution (**installeur livré 2026‑11‑08**, enforce/terrain restants), **P2-8** mises à jour signées/atomiques (**livré 2026‑11‑09**, reste la clé de production), **P1-18** table d’audit **livrée 2026‑11‑09** (filtres UI compris), **P2-9** restauration bare-metal (**drill livré 2026‑11‑08**, test VM restant) | Sécurité, intégrité de la chaîne et reprise après sinistre : gains réels, sans dépendance externe. |
 | **À faire, plus tard** | **P1-16** OAuth2 e-mail | Gmail/Microsoft retirent les mots de passe applicatifs ; les alertes peuvent cesser de partir. Coût modéré. |
 | **Finitions seulement** | **P1-27** signature du catalogue (pas de pinning obligatoire), **P1-28** avertissement installateur (pas de carte UI), **P1-21** suggestion de spare (pas d’ajout auto) | Le cœur est déjà livré ; le reste ajoute du risque ou peu de valeur. |
 | **Gelé au stade partiel** | **P2-1** SMB AD, **P2-2** NFS Kerberos, **P2-3** thin provisioning, **P2-4** déduplication, **P2-15** witness | Utiles seulement en entreprise/multi-site ou après benchmark ; ne pas investir sans cible explicite. |
@@ -257,10 +257,11 @@ panne majeur.
 - **P2-1/P2-2 : gelés au partiel.** La configuration et les validations sont
   livrées ; la validation DC/KDC réelle n’a de sens que si la cible
   entreprise est confirmée.
-- **P2-7/P2-8 : cœur livré côté installeur le 2026‑11‑08**, avec tests de
-  non-régression (HomeVault utilise `sudo`, donc l’isolation doit être mesurée,
-  pas supposée). Restent l’enforce AppArmor + la passe terrain pour P2-7, et le
-  déclenchement UI + la clé de production pour P2-8.
+- **P2-7/P2-8 : cœur livré**, avec tests de non-régression (HomeVault utilise
+  `sudo`, donc l’isolation doit être mesurée, pas supposée). P2-8 est complet
+  depuis le 2026‑11‑09 (installeur + **Apply update** dans Settings) ; restent
+  la clé de production et la validation terrain. P2-7 reste à l’enforce
+  AppArmor + passe terrain.
 - **P2-9 : runbook + drill d’abord (livrés le 2026‑11‑08).** Le drill vérifie
   le snapshot DB et l'archive de configuration sans toucher aux données ; reste
   le test de reconstruction complète sur VM, qui vaut mieux qu’une usine à gaz
@@ -1412,9 +1413,20 @@ admin : `GET /api/audit` (filtres `from`, `to`, `severity`, `actor`, `action`,
 même table comme source `audit` (recherche texte). Tests : 9 unitaires
 (`src/audit.rs`), suite d'intégration `tests/audit_integration.rs` (5),
 E2E Journal 2.4 — écrits, non exécutés. Docs : `journal.md`, `API.md`,
-`BACKEND.md`, `PRIVACY.md` (RoPA ligne 16), `SCREENS.md`. **Reste** : filtres
-structurés (acteur/action/date) dans l'UI Journal ; aujourd'hui l'API les porte
-et le Journal offre la recherche texte.
+`BACKEND.md`, `PRIVACY.md` (RoPA ligne 16), `SCREENS.md`.
+
+**Livré 2026‑11‑09 (filtres UI).** La source `audit` du Journal affiche une
+rangée de filtres étiquetés — **gravité**, **utilisateur** (`actor`),
+**action**, **du** et **au** — à côté de la recherche texte, plus **Effacer les
+filtres**. Ils se combinent avec la recherche, atteignent
+`GET /journal/entries?source=audit&…`, et le pied de page donne le nombre exact
+de résultats avec un paginateur précédent/suivant (200 par page). Les lignes
+affichent `actor`/`target`/`client_ip` en badges et l'export CSV reprend les
+mêmes filtres. Un filtre structuré sur `app`/`system`/`/var/log` est un `400`
+nommant le champ (jamais des lignes non filtrées qui semblent filtrées), et une
+plage de dates inversée est refusée côté écran avec un message (et côté API).
+`meta.total` est renvoyé par la source `audit` pour le paginateur. Tests :
+2 unitaires, 5 d'intégration, E2E Journal §13 (5) — écrits, non exécutés.
 
 ### [-] P1-19 — `clamd` temps réel · M
 
@@ -2340,7 +2352,7 @@ Shares, docs et `TESTING.md` à jour.
 - [~] P2-1 AD/Kerberos (gelé au partiel : config ADS + join/leave)
 - [~] P2-2 NFSv4/Kerberos (gelé au partiel : flavor + validation keytab)
 - [~] P2-7 isolation d'exécution — installeur livré 2026‑11‑08, enforce/terrain restants
-- [~] P2-8 mises à jour signées — installeur livré 2026‑11‑08, déclenchement UI restant
+- [~] P2-8 mises à jour signées — livré 2026‑11‑09 (installeur + Apply update), reste la clé de production
 - [~] P2-9 restauration bare-metal — drill livré 2026‑11‑08, test VM restant
 - [~] P2-3 thin (gelé au support zvol ; overcommit rejeté)
 - [~] P2-4 déduplication (design conservé ; exécution gelée)
@@ -2421,7 +2433,7 @@ Shares, docs et `TESTING.md` à jour.
   de P0-7, `x-systemd.*`, température sur 3 échantillons, backoff et
   notification `backup.jobs` sont livrés). Après la **revue de valeur du
   2026‑11‑06**, les prochains chantiers ouverts sont **P2-7 (enforce +
-  terrain), P2-8 (UI), P1-18 (filtres UI), P2-9 (test VM), P1-16**, puis les finitions
+  terrain), P2-8 (clé de production), P2-9 (test VM), P1-16**, puis les finitions
   P1-27/P1-28 ; les autres items sont gelés ou rejetés.
 - **Tests** : `cargo check --lib`, `cargo test --lib --no-run` et les
   `--no-run` de `replication_integration`, `iscsi_integration`,

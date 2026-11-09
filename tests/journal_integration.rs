@@ -842,3 +842,254 @@ async fn journal_export_csv_and_json_for_the_audit_source() {
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
 }
+
+// ---------------------------------------------------------------------------
+// P1-18 — structured filters on the audit source
+//
+// The audit table is seeded directly so the assertions are deterministic
+// (the background writer is not involved). Each test proves a filter either
+// narrows the page to exactly the matching rows or is refused with a 400 —
+// never silently ignored.
+// ---------------------------------------------------------------------------
+
+async fn seed_audit_rows(state: &AppState) {
+    for (created_at, severity, actor, action, target, client_ip, message) in [
+        (
+            "2026-11-01T08:00:00+00:00",
+            "info",
+            "alice",
+            "auth.login",
+            "alice",
+            "192.0.2.1",
+            "User 'alice' logged in",
+        ),
+        (
+            "2026-11-02T09:00:00+00:00",
+            "warning",
+            "alice",
+            "share.update",
+            "photos",
+            "192.0.2.1",
+            "Share 'photos' permissions changed",
+        ),
+        (
+            "2026-11-03T10:00:00+00:00",
+            "info",
+            "bob",
+            "app.install",
+            "jellyfin",
+            "198.51.100.7",
+            "App 'jellyfin' installed",
+        ),
+    ] {
+        sqlx::query(
+            "INSERT INTO audit_log
+             (created_at, severity, actor, action, target, client_ip, message)
+             VALUES (?, ?, ?, ?, ?, ?, ?)",
+        )
+        .bind(created_at)
+        .bind(severity)
+        .bind(actor)
+        .bind(action)
+        .bind(target)
+        .bind(client_ip)
+        .bind(message)
+        .execute(state.db.pool().as_ref())
+        .await
+        .unwrap();
+    }
+}
+
+#[tokio::test]
+async fn audit_source_honours_actor_action_and_severity_filters() {
+    let h = setup().await;
+    create_test_user(&h.state, "admin1", "Password123!", 2).await;
+    seed_audit_rows(&h.state).await;
+    let mut router = journal_router(h.state.clone());
+    let admin = login(&mut router, "admin1", "Password123!").await;
+
+    let (status, body) = send(
+        &mut router,
+        Method::GET,
+        "/api/journal/entries?source=audit&actor=alice",
+        Some(&admin),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let entries = body["data"].as_array().unwrap();
+    assert_eq!(entries.len(), 2, "{body}");
+    assert!(entries.iter().all(|entry| entry["actor"] == json!("alice")));
+    assert_eq!(body["meta"]["total"], json!(2));
+    assert_eq!(body["meta"]["offset"], json!(0));
+
+    let (status, body) = send(
+        &mut router,
+        Method::GET,
+        "/api/journal/entries?source=audit&actor=alice&severity=warning",
+        Some(&admin),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["data"].as_array().unwrap().len(), 1, "{body}");
+    assert_eq!(body["data"][0]["action"], json!("share.update"));
+    // The structured fields reach the screen, not just the filter.
+    assert_eq!(body["data"][0]["target"], json!("photos"));
+    assert_eq!(body["data"][0]["client_ip"], json!("192.0.2.1"));
+
+    let (status, body) = send(
+        &mut router,
+        Method::GET,
+        "/api/journal/entries?source=audit&action=app.install",
+        Some(&admin),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["data"].as_array().unwrap().len(), 1, "{body}");
+    assert_eq!(body["data"][0]["actor"], json!("bob"));
+}
+
+#[tokio::test]
+async fn audit_source_honours_the_date_range_and_pages_with_offset() {
+    let h = setup().await;
+    create_test_user(&h.state, "admin1", "Password123!", 2).await;
+    seed_audit_rows(&h.state).await;
+    let mut router = journal_router(h.state.clone());
+    let admin = login(&mut router, "admin1", "Password123!").await;
+
+    // A whole-day bound includes that day's rows (end of day for `to`).
+    let (status, body) = send(
+        &mut router,
+        Method::GET,
+        "/api/journal/entries?source=audit&from=2026-11-02&to=2026-11-02",
+        Some(&admin),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["data"].as_array().unwrap().len(), 1, "{body}");
+    assert_eq!(body["data"][0]["actor"], json!("alice"));
+    assert_eq!(body["meta"]["total"], json!(1));
+
+    // Newest first, and the offset moves through the same ordered set.
+    let (status, body) = send(
+        &mut router,
+        Method::GET,
+        "/api/journal/entries?source=audit&limit=1&offset=1",
+        Some(&admin),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["data"].as_array().unwrap().len(), 1, "{body}");
+    assert_eq!(body["meta"]["total"], json!(3));
+    assert_eq!(body["meta"]["limit"], json!(1));
+    assert_eq!(body["meta"]["offset"], json!(1));
+    // Newest first: offset 1 of [install, share.update, login] is share.update.
+    assert_eq!(body["data"][0]["action"], json!("share.update"));
+}
+
+#[tokio::test]
+async fn structured_filters_are_refused_on_sources_that_cannot_honour_them() {
+    let h = setup().await;
+    create_test_user(&h.state, "admin1", "Password123!", 2).await;
+    h.write_log(
+        "homevault.log",
+        "2026-11-09T10:00:00Z  INFO homevault::event: hello\n",
+    );
+    let mut router = journal_router(h.state.clone());
+    let admin = login(&mut router, "admin1", "Password123!").await;
+
+    for (uri, field) in [
+        ("/api/journal/entries?source=app&actor=alice", "actor"),
+        (
+            "/api/journal/entries?source=app&severity=warning",
+            "severity",
+        ),
+        ("/api/journal/entries?source=app&from=2026-11-01", "from"),
+        (
+            "/api/journal/entries?source=system&action=auth.login",
+            "action",
+        ),
+        ("/api/journal/entries?source=system&to=2026-11-09", "to"),
+    ] {
+        let (status, body) = send(&mut router, Method::GET, uri, Some(&admin), None).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{uri}: {body}");
+        assert!(
+            body["message"].as_str().unwrap_or("").contains(field),
+            "{uri}: {body}"
+        );
+    }
+
+    // Export applies the same rule instead of writing a misleading file.
+    let (status, body) = send(
+        &mut router,
+        Method::GET,
+        "/api/journal/export?source=app&format=csv&actor=alice",
+        Some(&admin),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+}
+
+#[tokio::test]
+async fn audit_source_rejects_a_malformed_date_or_severity() {
+    let h = setup().await;
+    create_test_user(&h.state, "admin1", "Password123!", 2).await;
+    let mut router = journal_router(h.state.clone());
+    let admin = login(&mut router, "admin1", "Password123!").await;
+
+    for uri in [
+        "/api/journal/entries?source=audit&from=not-a-date",
+        "/api/journal/entries?source=audit&severity=fatal",
+        // An inverted range is a client error, not an empty page.
+        "/api/journal/entries?source=audit&from=2026-11-09&to=2026-11-01",
+    ] {
+        let (status, body) = send(&mut router, Method::GET, uri, Some(&admin), None).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{uri}: {body}");
+        assert!(
+            body["message"].as_str().is_some_and(|m| !m.is_empty()),
+            "{uri}: {body}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn audit_export_honours_the_structured_filters() {
+    let h = setup().await;
+    create_test_user(&h.state, "admin1", "Password123!", 2).await;
+    seed_audit_rows(&h.state).await;
+    let mut router = journal_router(h.state.clone());
+    let admin = login(&mut router, "admin1", "Password123!").await;
+
+    let (status, _, body) = send_raw(
+        &mut router,
+        Method::GET,
+        "/api/journal/export?source=audit&format=csv&actor=alice&severity=warning",
+        Some(&admin),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        body.contains("Share 'photos' permissions changed"),
+        "{body}"
+    );
+    assert!(!body.contains("logged in"), "{body}");
+    assert!(!body.contains("jellyfin"), "{body}");
+
+    // The free-text search still combines with the structured filters.
+    let (status, body) = send(
+        &mut router,
+        Method::GET,
+        "/api/journal/entries?source=audit&actor=alice&search=permissions",
+        Some(&admin),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["data"].as_array().unwrap().len(), 1, "{body}");
+    assert_eq!(body["data"][0]["action"], json!("share.update"));
+}

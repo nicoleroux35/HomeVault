@@ -1,5 +1,19 @@
 # HomeVault — Test tracking
 
+## P1-18 UI — structured filters in the System Journal — 2026-11-09 (not run)
+
+> **Instruction followed: no test command was executed for this change.**
+> Static checks passed: `cargo check --lib`, `cargo check --tests`,
+> `cd frontend && npm run check`, `npm run build` and
+> `npx playwright test --list`.
+
+| Coverage | Added / changed |
+|---|---|
+| Unit (`src/handlers/journal.rs`) | **+2** — `structured_filter_used` names the first offending field (from/to/severity/actor/action) and treats blank values as absent; `audit_query_from_journal` trims every filter, drops blanks and carries the limit/offset |
+| Integration (`tests/journal_integration.rs`) | **+5** — the audit source filters by actor/action/severity and returns the structured fields; the date range is inclusive and `offset` pages the same ordered set with `meta.total`; a structured filter on `app`/`system` is a `400` naming the field (and so is the export); a malformed date, an unknown severity and an inverted range are `400`; the export honours the structured filters and still combines with the free-text search |
+| E2E (`tests/e2e/journal/journal.spec.ts`) | **+5** — §13.1 the filter panel appears only on the audit source and every control has a label; §13.2 every filter reaches the request with `offset=0`; §13.3 Clear removes them; §13.4 an inverted range shows the error and sends no request; §13.5 the CSV export carries the same filters |
+| Docs | `docs/guides/journal.md` (new "Structured filters in the Journal screen" section), `docs/API.md`, `SCREENS.md`, `CHANGELOG.md`, RAG `journal`, `HOMEVAULT_TASKLIST_A_FAIRE.md`, `COMPARAISON_DSM_VS_HOMEVAULT.md` |
+
 ## P2-8 UI half — apply a signed update from Settings — 2026-11-09 (not run)
 
 > **Instruction followed: no test command was executed for this change.**

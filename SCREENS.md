@@ -348,9 +348,9 @@ and in the Groups screen.
 
 **Features:**
 - Source selector: `app` (business event logs), **`audit`** (queryable audit trail: severity, actor/action, 90-day retention), `system` (journald), text files (syslog/auth.log/kern.log/daemon.log)
-- Entry list: timestamp, unit, priority, PID, message; the audit source shows `[action]` before the sentence
-- Filtering by unit, by priority, text search (the audit source supports text search in the Journal; structured filters and CSV/JSON export are on `/api/audit`)
-- **Export CSV** downloads the current source/search/priority view (same privilege model, ≤ 5 000 entries)
+- Entry list: timestamp, unit, priority, PID, message; the audit source shows `[action]` before the sentence, plus the structured **user / target / client IP** badges
+- Filtering by unit, by priority, text search; **on the audit source** a structured row (severity, user, action, from/to dates, Clear) with an exact match count and a Previous/Next pager (200 per page). Those filters are refused with a `400` on a source that has no such column, and the CSV export carries the same filters
+- **Export CSV** downloads the current source/search/priority/audit-filters view (same privilege model, ≤ 5 000 entries)
 - Auto-refresh toggle
 - Clearing of logs per source with confirmation
 - Scheduled cleanup settings (enablement, interval in days)

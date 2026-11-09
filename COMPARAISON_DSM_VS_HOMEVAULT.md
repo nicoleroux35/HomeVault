@@ -36,7 +36,7 @@ qu'elle listait sont **désormais livrés** et ne doivent plus être comptés :
 | SMB multicanal, AD/Kerberos (config + join), NFS `sec=krb5` | ✅ livrés (P2 partiel assumé) |
 | ACL par partage, quotas par partage, Previous Versions, Time Machine, serveur rsync | ✅ livrés |
 | OpenAPI, DDNS 7 fournisseurs, SNMP v3 | ✅ livrés |
-| Table d'audit | ✅ **livrée le 2026‑11‑08** (P1‑18 : table, API, export, source Journal, rétention 90 j ; filtres structurés UI restants) |
+| Table d'audit | ✅ **livrée le 2026‑11‑08, filtres structurés UI le 2026‑11‑09** (P1‑18 : table, API, export, source Journal, filtres gravité/utilisateur/action/dates, pagination, rétention 90 j) |
 | Signature + atomicité de mise à jour | ✅ **installeur 2026‑11‑08 + Apply update dans Settings 2026‑11‑09** (P2‑8 ; reste la clé de production) |
 | Isolation d'exécution | 🟡 **installeur livré le 2026‑11‑08** (P2‑7 partiel : systemd durci + AppArmor opt‑in ; validation terrain/enforce restante) |
 | Restauration bare‑metal | 🟡 **drill non destructif livré le 2026‑11‑08** (P2‑9 partiel : snapshot DB + archive config + état backup vérifiés ; test de reconstruction VM restant) |
@@ -98,7 +98,7 @@ cas de désaccord avec le backlog, `HOMEVAULT_TASKLIST_A_FAIRE.md` §1bis gagne.
 |---|---|---|---|
 | **Health** | Resource Monitor + Security Advisor + Active Insight | ✅ / 🟡 | Top processus, I/O disque, capteurs matériels, seuils/alertes. Security Advisor : au niveau |
 | **Metrics** | Resource Monitor | ✅ | Par processus, I/O disque/volume, rapports planifiés. Rétention configurable : faite |
-| **Journal** | Log Center | ✅ / ⭐ | **Table d'audit interrogeable livrée** (P1‑18 : filtres API, export CSV/JSON, source `audit`, rétention 90 j) **+ Export CSV de la vue courante** (P1‑32) ; restent les filtres structurés dans l'UI et les alertes. Syslog distant TLS : fait |
+| **Journal** | Log Center | ✅ / ⭐ | **Table d'audit interrogeable livrée** (P1‑18 : filtres API, export CSV/JSON, source `audit`, **filtres structurés UI gravité/utilisateur/action/dates + pagination**, rétention 90 j) **+ Export CSV de la vue courante** (P1‑32) ; restent les alertes. Syslog distant TLS : fait |
 | **Widgets / Edit Widgets** | Widgets DSM | ✅ | Widgets backup/UPS/interface réseau/croissance stockage |
 | **Cloud Sync** | Cloud Sync | ✅ | Remotes chiffrés (rclone crypt), présets fournisseurs, limites de bande passante |
 | **Syncthing** | Synology Drive | 🟡 / ✅ | **Navigateur de versions et restauration livrés** (P2‑19, politique du démon éditée depuis HomeVault) ; restent sync sélective/à la demande, dossiers d'équipe, apps mobiles, verrouillage de fichiers |
@@ -379,9 +379,9 @@ PHP 8.1/Redis 4.0.
    il est **au‑delà** (passkeys, snapshots immuables, anti‑ransomware, file
    requests, RAG/MCP, accessibilité, sobriété).
 2. **Les vrais écarts restants sont peu nombreux mais structurants** : chaîne de
-   mise à jour (installeur livré, UI restante), isolation d'exécution (livrée,
-   enforcement AppArmor à valider), audit requêtable (**livré**), restauration
-   bare‑metal (drill livré, test VM restant) — c'est‑à‑dire la **confiance**
+   mise à jour (**livrée**, reste la clé de production), isolation d'exécution
+   (livrée, enforcement AppArmor à valider), audit requêtable (**livré**, filtres
+   UI compris), restauration bare‑metal (drill livré, test VM restant) — c'est‑à‑dire la **confiance**
    plus que les fonctionnalités.
 3. **Le plus gros écart « visible pour l'utilisateur » — le média — est désormais
    comblé côté intégration** : les apps du catalogue s'installent en 1‑clic,
@@ -660,8 +660,27 @@ cette mesure.
 - Docs : `docs/guides/journal.md`, `docs/API.md`, `docs/BACKEND.md`,
   `SCREENS.md`, `PRIVACY.md` (RoPA ligne 16), FeatureDoc `journal`.
 
-**Reste sur P1‑18** : filtres structurés (acteur/action/date) dans l'UI
-Journal — l'API les porte déjà.
+**P1‑18 — filtres structurés livrés dans l'UI le 2026‑11‑09.** La source
+`audit` du Journal expose désormais une rangée de filtres étiquetés —
+**gravité**, **utilisateur**, **action**, **du**, **au** — qui se combinent
+avec la recherche texte et alimentent `GET /journal/entries?source=audit&…` :
+
+- le pied de page montre le nombre exact de résultats (`meta.total`) et un
+  paginateur précédent/suivant (200 par page) ;
+- les lignes affichent `actor`/`target`/`client_ip` en badges, en plus de
+  `[action]` devant la phrase ;
+- l'export CSV reprend les mêmes filtres, donc le fichier ne peut pas
+  contredire l'écran ;
+- un filtre structuré sur `app`/`system`/`/var/log` est un `400` nommant le
+  champ — jamais des lignes non filtrées qui *semblent* filtrées ; une plage
+  de dates inversée est refusée côté écran (message, aucune requête) et côté
+  API.
+
+Implémentation : `JournalQuery` → `audit_query_from_journal`
+(`src/handlers/journal.rs`) ; la validation des dates/gravités reste dans
+`src/audit.rs`, donc la même valeur invalide donne le même message sur
+`/api/audit` et sur `/api/journal/entries`. Tests écrits, non exécutés :
+2 unitaires, 5 d'intégration, E2E Journal §13 (5).
 
 **P2‑9 — restauration bare‑metal (drill livré, test VM restant).**
 

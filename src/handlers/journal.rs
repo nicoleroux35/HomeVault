@@ -46,7 +46,7 @@
 
 use axum::{
     extract::State,
-    http::{HeaderMap, HeaderValue, header},
+    http::{header, HeaderMap, HeaderValue},
     response::{IntoResponse, Response},
     Json,
 };
@@ -93,7 +93,7 @@ static READ_PERMITS: LazyLock<Arc<tokio::sync::Semaphore>> =
     LazyLock::new(|| Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_READS)));
 
 /// One journal entry as returned to the frontend.
-#[derive(Serialize, Clone, Debug)]
+#[derive(Serialize, Clone, Debug, Default)]
 pub struct JournalEntry {
     pub timestamp: Option<String>,
     pub unit: Option<String>,
@@ -101,6 +101,17 @@ pub struct JournalEntry {
     pub priority_text: Option<String>,
     pub pid: Option<String>,
     pub message: String,
+    /// The audit source's structured fields (P1-18). Host and application
+    /// sources leave them out, so the screen can render them only when they
+    /// exist instead of showing four empty badges.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub actor: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub action: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub target: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub client_ip: Option<String>,
 }
 
 /// A single log source the frontend can pick from.
@@ -131,6 +142,30 @@ pub struct JournalQuery {
     /// Free-text case-insensitive substring filter on the message.
     #[serde(default)]
     pub search: Option<String>,
+    // --- Structured audit filters (P1-18) ---------------------------------
+    //
+    // Only the `audit` source carries these: journald and the text logs have
+    // no notion of a user, an action or a severity column, and pretending
+    // otherwise would silently ignore the filter. Any other source answers
+    // `400` naming the field.
+    /// Inclusive lower bound (`YYYY-MM-DD` or RFC 3339).
+    #[serde(default)]
+    pub from: Option<String>,
+    /// Inclusive upper bound (`YYYY-MM-DD` or RFC 3339, whole day for a date).
+    #[serde(default)]
+    pub to: Option<String>,
+    /// `info` or `warning`.
+    #[serde(default)]
+    pub severity: Option<String>,
+    /// Exact actor (username).
+    #[serde(default)]
+    pub actor: Option<String>,
+    /// Exact action id (e.g. `auth.login`).
+    #[serde(default)]
+    pub action: Option<String>,
+    /// Audit page offset; ignored by the host sources.
+    #[serde(default)]
+    pub offset: Option<usize>,
 }
 
 fn priority_text(p: u8) -> &'static str {
@@ -177,6 +212,63 @@ fn source_kind(source: &str) -> Option<SourceKind> {
         "audit" => Some(SourceKind::Audit),
         "system" | "syslog" | "auth" | "kern" | "daemon" => Some(SourceKind::Host),
         _ => None,
+    }
+}
+
+/// The first structured audit filter the caller set, if any.
+///
+/// The host sources have no user, action or severity column, so honouring
+/// these would mean silently returning unfiltered rows. Naming the field in a
+/// `400` is what stops an administrator from believing an incident query was
+/// applied when it was not.
+fn structured_filter_used(query: &JournalQuery) -> Option<&'static str> {
+    let set = |value: &Option<String>| {
+        value
+            .as_deref()
+            .map(str::trim)
+            .is_some_and(|value| !value.is_empty())
+    };
+    if set(&query.from) {
+        Some("from")
+    } else if set(&query.to) {
+        Some("to")
+    } else if set(&query.severity) {
+        Some("severity")
+    } else if set(&query.actor) {
+        Some("actor")
+    } else if set(&query.action) {
+        Some("action")
+    } else {
+        None
+    }
+}
+
+/// Map the Journal query onto the audit reader's query.
+///
+/// Date and severity validation stay in `crate::audit`, so a malformed value
+/// produces the same `400` message whichever endpoint received it. This
+/// function only carries the values across and bounds the page.
+fn audit_query_from_journal(
+    query: &JournalQuery,
+    limit: usize,
+    offset: usize,
+) -> crate::audit::AuditQuery {
+    let text = |value: &Option<String>| {
+        value
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string)
+    };
+    crate::audit::AuditQuery {
+        from: text(&query.from),
+        to: text(&query.to),
+        severity: text(&query.severity),
+        actor: text(&query.actor),
+        action: text(&query.action),
+        q: text(&query.search),
+        limit: Some(limit.min(u32::MAX as usize) as u32),
+        offset: Some(offset.min(u32::MAX as usize) as u32),
     }
 }
 
@@ -324,18 +416,25 @@ pub async fn handle_journal_entries(
         );
     }
 
+    // A structured filter on a source that cannot honour it is a 400, not a
+    // filter silently ignored (the screen would look like it applied it).
+    if kind != SourceKind::Audit {
+        if let Some(field) = structured_filter_used(&query) {
+            return ResponseHelper::json_error(format!(
+                "The '{field}' filter is only available on the audit source"
+            ));
+        }
+    }
+
     let limit = query.limit.unwrap_or(200).clamp(1, 2000);
     let search = query.search.clone().filter(|s| !s.trim().is_empty());
 
-    // P1-18: the audit source reads SQLite, not a host process. It reuses the
-    // existing search box and page size, so the Journal screen needs no new
-    // query language to investigate an incident.
+    // P1-18: the audit source reads SQLite, not a host process. It accepts the
+    // same structured filters as `/api/audit`, so the Journal screen can
+    // investigate an incident without a separate screen or query language.
     if kind == SourceKind::Audit {
-        let audit_query = crate::audit::AuditQuery {
-            q: search.clone(),
-            limit: Some(limit as u32),
-            ..Default::default()
-        };
+        let offset = query.offset.unwrap_or(0).min(1_000_000);
+        let audit_query = audit_query_from_journal(&query, limit, offset);
         return match crate::audit::list(
             state.db.pool().as_ref(),
             &audit_query,
@@ -353,18 +452,26 @@ pub async fn handle_journal_entries(
                         priority: Some(if entry.severity == "warning" { 4 } else { 6 }),
                         priority_text: Some(entry.severity),
                         pid: None,
-                        message: match entry.action {
+                        message: match &entry.action {
                             Some(action) => format!("[{}] {}", action, entry.message),
                             None => entry.message,
                         },
+                        actor: entry.actor,
+                        action: entry.action,
+                        target: entry.target,
+                        client_ip: entry.client_ip,
                     })
                     .collect();
                 Json(json!({
                     "success": true,
                     "data": entries,
                     "meta": {
+                        // `total` is what the pager needs; `scanned` stays for
+                        // the host sources' bounded-window semantics.
                         "scanned": page.total,
-                        "limit": limit,
+                        "total": page.total,
+                        "limit": page.limit,
+                        "offset": page.offset,
                         "search_truncated": false,
                     }
                 }))
@@ -463,6 +570,16 @@ pub async fn handle_journal_export(
         );
     }
 
+    // Same rule as the screen: a structured filter on a source that cannot
+    // honour it is refused, never silently dropped from the exported file.
+    if kind != SourceKind::Audit {
+        if let Some(field) = structured_filter_used(&export.journal) {
+            return ResponseHelper::json_error(format!(
+                "The '{field}' filter is only available on the audit source"
+            ));
+        }
+    }
+
     let format = export
         .format
         .as_deref()
@@ -480,11 +597,8 @@ pub async fn handle_journal_export(
 
     const EXPORT_LIMIT: usize = 5_000;
     let entries: Vec<JournalEntry> = if kind == SourceKind::Audit {
-        let audit_query = crate::audit::AuditQuery {
-            q: search,
-            limit: Some(crate::audit::AUDIT_EXPORT_MAX),
-            ..Default::default()
-        };
+        let audit_query =
+            audit_query_from_journal(&export.journal, crate::audit::AUDIT_EXPORT_MAX as usize, 0);
         match crate::audit::list(
             state.db.pool().as_ref(),
             &audit_query,
@@ -501,10 +615,14 @@ pub async fn handle_journal_export(
                     priority: Some(if entry.severity == "warning" { 4 } else { 6 }),
                     priority_text: Some(entry.severity),
                     pid: None,
-                    message: match entry.action {
+                    message: match &entry.action {
                         Some(action) => format!("[{}] {}", action, entry.message),
                         None => entry.message,
                     },
+                    actor: entry.actor,
+                    action: entry.action,
+                    target: entry.target,
+                    client_ip: entry.client_ip,
                 })
                 .collect(),
             Err(message) => return ResponseHelper::json_error(message),
@@ -523,7 +641,12 @@ pub async fn handle_journal_export(
         let search_for_read = search.clone();
         let result = tokio::task::spawn_blocking(move || {
             let _permit = permit;
-            read_entries(&source_for_read, &query, EXPORT_LIMIT, search_for_read.as_deref())
+            read_entries(
+                &source_for_read,
+                &query,
+                EXPORT_LIMIT,
+                search_for_read.as_deref(),
+            )
         })
         .await;
         match result {
@@ -544,7 +667,8 @@ pub async fn handle_journal_export(
             header::CONTENT_TYPE,
             HeaderValue::from_static("text/csv; charset=utf-8"),
         );
-        let disposition = format!("attachment; filename=\"homevault-journal-{source}-{stamp}.csv\"");
+        let disposition =
+            format!("attachment; filename=\"homevault-journal-{source}-{stamp}.csv\"");
         response_headers.insert(
             header::CONTENT_DISPOSITION,
             HeaderValue::from_str(&disposition)
@@ -556,7 +680,8 @@ pub async fn handle_journal_export(
             header::CONTENT_TYPE,
             HeaderValue::from_static("application/json; charset=utf-8"),
         );
-        let disposition = format!("attachment; filename=\"homevault-journal-{source}-{stamp}.json\"");
+        let disposition =
+            format!("attachment; filename=\"homevault-journal-{source}-{stamp}.json\"");
         response_headers.insert(
             header::CONTENT_DISPOSITION,
             HeaderValue::from_str(&disposition)
@@ -876,12 +1001,8 @@ fn read_app_log_entries(limit: usize, search: Option<&str>) -> Result<JournalRea
 /// e.g. a multi-line panic backtrace continuation.
 fn parse_app_log_line(line: &str) -> JournalEntry {
     let fallback = || JournalEntry {
-        timestamp: None,
-        unit: None,
-        priority: None,
-        priority_text: None,
-        pid: None,
         message: line.to_string(),
+        ..Default::default()
     };
 
     let trimmed = line.trim_start();
@@ -912,8 +1033,8 @@ fn parse_app_log_line(line: &str) -> JournalEntry {
         unit,
         priority: Some(priority),
         priority_text: Some(priority_text(priority).to_string()),
-        pid: None,
         message,
+        ..Default::default()
     }
 }
 
@@ -1049,6 +1170,7 @@ fn read_entries(
                         priority_text,
                         pid,
                         message,
+                        ..Default::default()
                     });
                 }
                 Err(_) => continue,
@@ -1066,12 +1188,8 @@ fn read_entries(
                 }
             }
             entries.push(JournalEntry {
-                timestamp: None,
-                unit: None,
-                priority: None,
-                priority_text: None,
-                pid: None,
                 message: line.to_string(),
+                ..Default::default()
             });
         }
     }
@@ -1417,8 +1535,8 @@ mod tests {
             unit: Some("homevault".to_string()),
             priority: Some(6),
             priority_text: Some("info".to_string()),
-            pid: None,
             message: "a, b \"quoted\"\nnext".to_string(),
+            ..Default::default()
         }];
         let csv = journal_to_csv(&entries);
         assert!(csv.starts_with("timestamp,unit,priority,pid,message\n"));
@@ -1427,9 +1545,98 @@ mod tests {
 
     #[test]
     fn test_journal_csv_writes_the_header_for_an_empty_export() {
-        assert_eq!(
-            journal_to_csv(&[]),
-            "timestamp,unit,priority,pid,message\n"
-        );
+        assert_eq!(journal_to_csv(&[]), "timestamp,unit,priority,pid,message\n");
+    }
+
+    #[test]
+    fn test_structured_filter_is_detected_per_field() {
+        // Each field alone is enough to require the audit source.
+        for (field, query) in [
+            (
+                "from",
+                JournalQuery {
+                    from: Some("2026-11-01".to_string()),
+                    ..Default::default()
+                },
+            ),
+            (
+                "to",
+                JournalQuery {
+                    to: Some("2026-11-09".to_string()),
+                    ..Default::default()
+                },
+            ),
+            (
+                "severity",
+                JournalQuery {
+                    severity: Some("warning".to_string()),
+                    ..Default::default()
+                },
+            ),
+            (
+                "actor",
+                JournalQuery {
+                    actor: Some("alice".to_string()),
+                    ..Default::default()
+                },
+            ),
+            (
+                "action",
+                JournalQuery {
+                    action: Some("auth.login".to_string()),
+                    ..Default::default()
+                },
+            ),
+        ] {
+            assert_eq!(structured_filter_used(&query), Some(field));
+        }
+        // Free text is a plain search, valid on every source.
+        let search_only = JournalQuery {
+            search: Some("error".to_string()),
+            ..Default::default()
+        };
+        assert_eq!(structured_filter_used(&search_only), None);
+        // Whitespace is not a filter.
+        let blank = JournalQuery {
+            actor: Some("   ".to_string()),
+            severity: Some(String::new()),
+            ..Default::default()
+        };
+        assert_eq!(structured_filter_used(&blank), None);
+    }
+
+    #[test]
+    fn test_audit_query_from_journal_carries_every_filter() {
+        let query = JournalQuery {
+            source: Some("audit".to_string()),
+            search: Some("  login  ".to_string()),
+            from: Some("2026-11-01".to_string()),
+            to: Some("2026-11-09".to_string()),
+            severity: Some("warning".to_string()),
+            actor: Some("alice".to_string()),
+            action: Some("auth.login".to_string()),
+            offset: Some(40),
+            ..Default::default()
+        };
+        let audit = audit_query_from_journal(&query, 50, 40);
+        assert_eq!(audit.from.as_deref(), Some("2026-11-01"));
+        assert_eq!(audit.to.as_deref(), Some("2026-11-09"));
+        assert_eq!(audit.severity.as_deref(), Some("warning"));
+        assert_eq!(audit.actor.as_deref(), Some("alice"));
+        assert_eq!(audit.action.as_deref(), Some("auth.login"));
+        // The free-text term is trimmed once, here — not again at the edge.
+        assert_eq!(audit.q.as_deref(), Some("login"));
+        assert_eq!(audit.limit, Some(50));
+        assert_eq!(audit.offset, Some(40));
+
+        // A blank filter is absent, never an empty SQL bind.
+        let blank = JournalQuery {
+            actor: Some("  ".to_string()),
+            search: Some(String::new()),
+            ..Default::default()
+        };
+        let audit = audit_query_from_journal(&blank, 200, 0);
+        assert_eq!(audit.actor, None);
+        assert_eq!(audit.q, None);
     }
 }

@@ -3088,6 +3088,13 @@ class ApiClient {
     priority?: number;
     limit?: number;
     search?: string;
+    /** Audit source only: structured filters (P1-18). */
+    from?: string;
+    to?: string;
+    severity?: string;
+    actor?: string;
+    action?: string;
+    offset?: number;
   }) {
     const qs = new URLSearchParams();
     if (params.source) qs.set('source', params.source);
@@ -3095,6 +3102,12 @@ class ApiClient {
     if (params.priority !== undefined) qs.set('priority', String(params.priority));
     if (params.limit !== undefined) qs.set('limit', String(params.limit));
     if (params.search) qs.set('search', params.search);
+    if (params.from) qs.set('from', params.from);
+    if (params.to) qs.set('to', params.to);
+    if (params.severity) qs.set('severity', params.severity);
+    if (params.actor) qs.set('actor', params.actor);
+    if (params.action) qs.set('action', params.action);
+    if (params.offset !== undefined) qs.set('offset', String(params.offset));
     const query = qs.toString();
     return this.get(`/journal/entries${query ? `?${query}` : ''}`, { cache: false });
   }

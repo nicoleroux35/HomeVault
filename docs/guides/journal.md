@@ -15,8 +15,10 @@ Four kinds, surfaced by `GET /journal/sources`:
 - **`audit`** — the queryable audit trail (P1-18, 2026-11-08), a SQLite table
   written by `events::log_event` / `events::log_auth_event`. Always advertised
   to an **administrator** because it has no host file or journald dependency.
-  It reuses the Journal search box; structured filters and CSV/JSON export are
-  on `/api/audit` and `/api/audit/export` (see [API.md](../API.md)).
+  It has its own labelled filters in the Journal (severity, user, action,
+  from/to dates) plus the free-text search; see *Structured filters in the
+  Journal screen* below. The same data is also available as a dedicated API
+  (`/api/audit`, `/api/audit/export`, see [API.md](../API.md)).
 - **`system`** — the systemd journal, read via `sudo journalctl`.
 - **`/var/log/{syslog,auth.log,kern.log,daemon.log}`** — read via `sudo
   tail`. Each is only advertised if `Path::exists()` confirms it's actually
@@ -144,18 +146,61 @@ takes the same filters plus `format=csv|json` (max 5 000 rows) and answers as a
 download. An invalid filter is a `400` naming the field, never a silently
 ignored one.
 
-The Journal screen uses the same table as the `audit` source: selecting it and
-pressing Apply runs `GET /journal/entries?source=audit&search=…`. The dedicated
-filters are available through the API today; a Journal filter row for them is a
-follow-up.
+The Journal screen uses the same table as the `audit` source. Since
+2026-11-09 it exposes the structured filters directly (see below), so an
+incident query is built from labelled controls instead of a query string.
+
+### Structured filters in the Journal screen (2026-11-09)
+
+Selecting the `audit` source reveals five exact-match filters above the
+search box:
+
+| Control | Query parameter | Meaning |
+|---|---|---|
+| Severity | `severity` | `info` or `warning` (empty = all) |
+| User | `actor` | exact actor (username) |
+| Action | `action` | exact action id, e.g. `auth.login` |
+| From | `from` | `YYYY-MM-DD` (start of day) or RFC 3339 |
+| To | `to` | `YYYY-MM-DD` (whole day) or RFC 3339 |
+
+Rules:
+
+- The free-text `search` box still applies **and** combines with the
+  structured filters (case-insensitive substring on the message).
+- `from` after `to` is a `400` from the API and is also caught client-side,
+  with a message and no request — a user never gets a misleading empty page.
+- These parameters are **only** accepted for `source=audit`. On `app`,
+  `system` or a `/var/log` file they answer `400` naming the field rather
+  than returning unfiltered rows that look filtered. The same rule applies to
+  `GET /journal/export`, so the downloaded file can never disagree with the
+  screen.
+- The audit source knows its exact match count, so the footer shows
+  "*shown* of *total* entries" and a Previous/Next pager (200 per page).
+  Applying a filter or Clear returns to the first page.
+- Entry rows show the structured `actor`, `target` and `client_ip` as badges
+  next to the timestamp, and `[action]` before the sentence.
+
+Implementation: `JournalQuery` in `src/handlers/journal.rs` carries the fields,
+`structured_filter_used` refuses them on other sources, and
+`audit_query_from_journal` maps them onto `crate::audit::AuditQuery` — date and
+severity validation stays in one place (`src/audit.rs`), so the same bad value
+gets the same message on `/api/audit` and on `/api/journal/entries`.
 
 ### Tests
 
 Unit (`src/audit.rs`): like-pattern escaping, date bounds, filter validation,
-limit/offset clamps, CSV quoting. Integration (`tests/audit_integration.rs`):
-admin gate, ordering, every filter, pagination, CSV/JSON export, prune and the
-Journal source. E2E (`tests/e2e/journal/journal.spec.ts` 2.4): the audit source
-is selectable and its entries request answers `200`.
+limit/offset clamps, CSV quoting. Unit (`src/handlers/journal.rs`):
+`structured_filter_used` names the offending field, and
+`audit_query_from_journal` trims/carries every filter and leaves blanks out.
+Integration (`tests/audit_integration.rs`): admin gate, ordering, every filter,
+pagination, CSV/JSON export, prune and the Journal source. Integration
+(`tests/journal_integration.rs`): the audit source filters by
+actor/action/severity/date, pages with `offset`, refuses a structured filter on
+another source and rejects a malformed date or severity. E2E
+(`tests/e2e/journal/journal.spec.ts` 2.4 and 13.x): the audit source is
+selectable, the filter row appears only there, every control reaches the
+request, Clear removes them, an inverted range is refused, and the export
+carries the same filters.
 
 ## Export (P1, 2026-11-09)
 
