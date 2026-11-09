@@ -35,6 +35,20 @@ final green run:
   `sqlite::memory:`), quota message follows the delegated-manager wording, and
   the share-link owner gets a folder grant.
 
+## 2026-11-09 — USB copy modes and traceability (written, not run)
+
+> **Not executed for this pass**, per instruction. Static checks: `cargo check
+> --lib`, `cargo check --tests`, `cargo fmt --check`, `npm run check` all clean.
+
+| Suite | Delta | Coverage |
+|---|---|---|
+| Unit (`src/usb_copy.rs`) | +8 | incremental skips an up-to-date file; mirror removes a destination file the source no longer has; versioned moves the previous copy into `.versions/<stamp>/`; photo import writes `YYYY/MM/<name>` from the modification date; `skip` leaves the destination untouched; `rename` keeps both as `name (1).ext`; a single-file source keeps its own name (plain and photo import) |
+| Integration (`tests/usb_copy_integration.rs`) | +2 | a pre-FIAB-13 profile JSON loads with `incremental`/`overwrite`; every `strategy` and `conflict` serializes to its snake_case API literal |
+| Frontend (`npm run check`) | — | `UsbCopy.svelte` mode/conflict selects and `TransferTray` `usb_copy` label compile with 0 errors |
+
+Expected totals after a full run: unit **2 947**, integration **4 582** (110
+suites) — recorded here so the next executed run can confirm them.
+
 ## 2026-11-09 — DSM-parity verification fixes (written, not run)
 
 > **No Rust, integration, E2E or installer suite was executed for this pass**,

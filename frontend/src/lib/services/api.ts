@@ -159,7 +159,7 @@ export interface TransferHistoryEntry {
   id: number;
   job_id: string | null;
   username: string;
-  operation: 'upload' | 'download' | 'copy' | 'move' | 'checksum';
+  operation: 'upload' | 'download' | 'copy' | 'move' | 'checksum' | 'usb_copy';
   source_path: string | null;
   dest_path: string | null;
   bytes_total: number;
@@ -2553,7 +2553,7 @@ class ApiClient {
     params: {
       limit?: number;
       offset?: number;
-      operation?: 'upload' | 'download' | 'copy' | 'move' | 'checksum';
+      operation?: 'upload' | 'download' | 'copy' | 'move' | 'checksum' | 'usb_copy';
       status?: 'complete' | 'failed' | 'cancelled';
       since?: number;
     } = {},

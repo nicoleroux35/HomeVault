@@ -59,6 +59,8 @@ pub enum TransferOperation {
     /// An on-demand checksum run (`POST /api/explorer/checksum`). Recorded so
     /// "was it verified?" has an answer too.
     Checksum,
+    /// A one-touch USB copy run (`POST /api/usb-copy/execute`), FIAB-13.
+    UsbCopy,
 }
 
 impl TransferOperation {
@@ -69,6 +71,7 @@ impl TransferOperation {
             Self::Copy => "copy",
             Self::Move => "move",
             Self::Checksum => "checksum",
+            Self::UsbCopy => "usb_copy",
         }
     }
 
@@ -81,6 +84,7 @@ impl TransferOperation {
             "copy" => Some(Self::Copy),
             "move" => Some(Self::Move),
             "checksum" => Some(Self::Checksum),
+            "usb_copy" => Some(Self::UsbCopy),
             _ => None,
         }
     }

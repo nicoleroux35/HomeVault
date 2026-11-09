@@ -31,7 +31,7 @@ CREATE TABLE IF NOT EXISTS transfer_history (
     job_id TEXT,
     -- Account that started the transfer.
     username TEXT NOT NULL,
-    -- 'upload' | 'download' | 'copy' | 'move' | 'checksum'
+    -- 'upload' | 'download' | 'copy' | 'move' | 'checksum' | 'usb_copy'
     operation TEXT NOT NULL,
     -- NULL for an upload (the bytes came from the client, not from a path).
     source_path TEXT,

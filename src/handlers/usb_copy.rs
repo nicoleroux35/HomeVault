@@ -40,6 +40,7 @@ use std::sync::Arc;
 
 use super::AppState;
 use crate::handlers::admin_guard::{require_admin, require_auth};
+use crate::transfer_history::{record_transfer, NewTransfer, TransferOperation, TransferStatus};
 use crate::usb_copy::{CopyStatus, UsbCopyProfile, UsbCopyService};
 use crate::utils::ResponseHelper;
 
@@ -245,6 +246,8 @@ pub async fn handle_execute(
 
     let profile_clone = profile.clone();
     let device_clone = device.clone();
+    let history_pool = state.db.pool();
+    let history_profile = profile.clone();
 
     crate::events::log_event(format!(
         "Admin '{}' started USB copy profile '{}' from {}",
@@ -256,8 +259,52 @@ pub async fn handle_execute(
 
         let mut updated_profile = profile_clone.clone();
         updated_profile.last_run = Some(std::time::SystemTime::now());
-        updated_profile.last_status =
-            Some(result.unwrap_or_else(|error| CopyStatus::Failed { error }));
+        let (run_status, transfer_status, verified, bytes, error) = match result {
+            Ok(status) => {
+                let (bytes, verified) = match &status {
+                    CopyStatus::Success { bytes_copied, .. } => {
+                        (*bytes_copied, profile_clone.verify_checksums)
+                    }
+                    _ => (0, false),
+                };
+                let transfer_status = match &status {
+                    CopyStatus::Success { .. } => TransferStatus::Complete,
+                    CopyStatus::Cancelled => TransferStatus::Cancelled,
+                    CopyStatus::Failed { .. } => TransferStatus::Failed,
+                };
+                (status, transfer_status, verified, bytes, None)
+            }
+            Err(error) => (
+                CopyStatus::Failed {
+                    error: error.clone(),
+                },
+                TransferStatus::Failed,
+                false,
+                0,
+                Some(error),
+            ),
+        };
+        updated_profile.last_status = Some(run_status);
+
+        // FIAB-13: one audit row per run, visible in the Explorer transfer
+        // history. A per-file row would flood the table on a photo import.
+        record_transfer(
+            history_pool,
+            NewTransfer {
+                job_id: None,
+                username: "system".to_string(),
+                operation: TransferOperation::UsbCopy,
+                source_path: Some(history_profile.source_path.clone()),
+                dest_path: Some(history_profile.destination_path.clone()),
+                bytes_total: bytes,
+                duration_ms: None,
+                method: Some(history_profile.strategy.as_str().to_string()),
+                verified,
+                status: transfer_status,
+                error_message: error,
+            },
+        )
+        .await;
 
         if let Err(e) = save_profile(&updated_profile).await {
             tracing::warn!("USB copy: could not persist the run outcome: {:?}", e);

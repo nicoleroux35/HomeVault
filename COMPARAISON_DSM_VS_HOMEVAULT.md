@@ -1239,3 +1239,81 @@ est un no‑op sur `sqlite::memory:`), message de quota délégué, grant du
 propriétaire pour les liens de partage, attente de 8 onglets Storage, modal
 « What’s new » fermé dans Backup, `Select` custom cliqué comme un bouton dans
 Tasks, options SMB/NFS mises à jour (4 selects, NFS 4.1).
+
+---
+
+## 16. Modes de copie USB et traçabilité — 2026‑11‑09 (FIAB‑13)
+
+DSM propose quatre modes dans USB Copy (copie incrémentale, miroir, versionnée,
+import photo) et une politique de conflit. HomeVault ne savait que recopier
+l’arborescence en écrasant tout : une copie nocturne de carte SD transférait à
+nouveau chaque photo, et « j’ai écrasé la mauvaise carte » n’avait pas de
+réponse. FIAB‑13 comble l’écart sans copier le code DSM.
+
+### 16.1 Ce qui a été ajouté
+
+| Mode (`strategy`) | Comportement |
+|---|---|
+| `incremental` (défaut) | Copie un fichier seulement s’il manque, diffère en taille ou est plus ancien que la source. Une carte recopiée le soir ne transfère que le delta. |
+| `mirror` | Incrémental puis supprime à la destination ce que la source n’a plus. `.versions/` est préservé. |
+| `versioned` | Déplace l’ancienne copie dans `.versions/<AAAAMMJJ‑HHMMSS>/` avant d’écrire la nouvelle (un dossier par exécution). |
+| `photo_import` | Range chaque fichier en `AAAA/MM/` selon sa date de modification, en ignorant les noms de dossiers de l’appareil (`DCIM/100CANON`). |
+
+Politique de conflit (`conflict`) : `overwrite` (défaut, comportement
+historique), `skip` (garde la copie déjà sur le NAS) ou `rename` (garde les deux,
+`photo (1).jpg`). Elle est évaluée après le test du mode : un fichier à jour en
+incrémental reste ignoré, il n’est pas dupliqué ; `skip`/`rename` priment sur
+`versioned`, qui ne déplace donc pas l’ancienne copie quand l’utilisateur a
+demandé à la conserver sur place.
+
+Les deux champs sont **optionnels** côté JSON : un profil écrit avant FIAB‑13 se
+recharge avec les valeurs par défaut. Une valeur inconnue est une erreur de
+désérialisation, donc un `400`, jamais un mode silencieusement ignoré.
+
+### 16.2 Traçabilité
+
+Chaque exécution écrit **une** ligne `transfer_history`
+(`operation = usb_copy`, `method` = le mode, `verified` = le résultat du
+checksum). Elle apparaît dans l’historique des transferts de l’Explorateur avec
+le libellé « USB copy » / « Copie USB », avec les chemins source et destination
+et les octets copiés. Une ligne par exécution, pas par fichier : un import photo
+noierait la table.
+
+### 16.3 Choix d’implémentation (le meilleur des deux)
+
+- Le moteur reste le même parcours itératif (pile) qu’avant : pas de récursion
+  Rust, donc pas de risque de débordement sur une carte profondément
+  arborescente ; la stratégie est appliquée fichier par fichier.
+- La vérification SHA‑256 globale (`verify_copy`) reste utilisée pour les modes
+  qui conservent l’arborescence ; l’import photo vérifie **chaque fichier au
+  moment de l’écriture**, parce que la disposition de destination ne correspond
+  plus à la source et qu’une comparaison de deux arbres échouerait à tort.
+- `mirror` ne supprime que des fichiers, jamais `.versions`, et ne sort jamais
+  de `destination_path`.
+- Le renommage de conflit est borné (`(1)`…`(1000)`), pour qu’un dossier plein
+  ne fasse pas boucler la copie.
+
+### 16.4 Interface
+
+La fenêtre USB Copy expose deux sélecteurs dans le formulaire de règle (« Mode
+de copie », « Si un fichier existe déjà ») avec une phrase d’aide par choix, et
+le mode est rappelé sur la carte de la règle. i18n en/fr/de/es.
+
+### 16.5 Tests écrits (non exécutés dans cette passe)
+
+- `src/usb_copy.rs` : ignorer un fichier à jour en incrémental, supprimer un
+  fichier obsolète en miroir, déplacer l’ancienne version dans `.versions`,
+  rangement `AAAA/MM` de l’import photo, `skip` qui laisse la destination
+  intacte, `rename` qui garde les deux copies, et les deux cas de source
+  mono‑fichier (nom conservé, y compris en import photo).
+- `tests/usb_copy_integration.rs` : un profil JSON antérieur sans
+  `strategy`/`conflict` se charge avec les défauts ; chaque mode et politique
+  sérialise exactement le littéral attendu par l’API.
+- `cargo check --tests`, `cargo fmt --check` et `npm run check` sont verts.
+
+### 16.6 Reste
+
+- Le test terrain d’une copie réelle depuis une carte (montage `udisksctl`
+  inclus) reste manuel : il demande un périphérique amovible.
+- La rotation des dossiers `.versions/` (purge au‑delà de N exécutions) n’est
+  pas encore exposée ; elle se décidera avec le quota de destination.

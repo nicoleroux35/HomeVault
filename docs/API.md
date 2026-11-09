@@ -631,7 +631,7 @@ Any refusal answers 400 and keeps the metadata row.
 | POST | `/explorer/checksum` | auth | JSON body `{ path, algorithm?, compare_with?, async? }` — on-demand digest (`sha256` default, `sha512`, `blake3`; MD5 and unknown values are `400`). A file ≤ 8 MiB answers `{ path, algorithm, checksum, file_size, duration_ms }` inline; a larger one (or `async: true`) answers `{ job_id, sse_url, status }` and the job reports bytes/speed/ETA like any transfer. `compare_with` adds `{ compare_with: { path, checksum, file_size }, match }`. Both paths pass the PathGuard |
 | GET | `/explorer/checksum/result` | auth | `?job_id=` — the outcome of an asynchronous checksum (`{ state, path, algorithm, checksum, file_size, duration_ms, match, error }`), owner or admin only, 15-minute lifetime |
 | GET | `/explorer/transfers/active` | auth | live transfers for the tray: `{ uploads: [{ session_id, filename, dir, bytes_received, bytes_total, progress, speed_bps, eta_seconds, state, created_at, last_chunk_at }], transfers: [{ id, zone, kind, state, label, progress, bytes_processed, bytes_total, speed_bps, eta_seconds, method, detail, cancel_path }], counts: { uploads, downloads, copies, total } }`. Uploads come from `upload_sessions` (a row, not a job), jobs from the progress manager scoped to the caller; `zone` is `upload`\|`download`\|`copy`; `cancel_path` is API-relative (`/progress/{id}`) and `null` for an upload (abort it with the session id) |
-| GET | `/explorer/transfers/history` | auth | `?limit=&offset=&operation=&status=&since=` — finished transfers, newest first: `{ entries: [{ id, job_id, username, operation, source_path, dest_path, bytes_total, duration_ms, method, verified, status, error_message, created_at, completed_at }], has_more, limit, offset }`. A non-admin sees only their own rows, an admin sees every user's; unknown `operation`/`status` values are `400`; retention 90 days |
+| GET | `/explorer/transfers/history` | auth | `?limit=&offset=&operation=&status=&since=` — finished transfers, newest first: `{ entries: [{ id, job_id, username, operation, source_path, dest_path, bytes_total, duration_ms, method, verified, status, error_message, created_at, completed_at }], has_more, limit, offset }`. `operation` is one of `upload`, `download`, `copy`, `move`, `checksum`, `usb_copy`. A non-admin sees only their own rows, an admin sees every user's; unknown `operation`/`status` values are `400`; retention 90 days |
 | POST/GET/DELETE | `/explorer/trash` | auth | `?path=` (POST) — move to trash / list trash / empty trash |
 | POST | `/explorer/trash/restore` | auth | `?id=` (cross-device EXDEV fallback) |
 | DELETE | `/explorer/trash/{id}` | auth | permanently delete one trashed item |
@@ -1841,6 +1841,20 @@ appliance. Profiles live in `{DATA_DIRECTORY}/data/usb_copy_profiles.json`.
 `last_run` / `last_status` itself, so an outcome is visible even when nothing is
 polling. A disabled profile is a `400`; a source that is a pool member is a
 `400`; an unknown profile or an absent device is a `404`.
+
+The profile body carries two FIAB-13 fields:
+
+| Field | Values | Default |
+|---|---|---|
+| `strategy` | `incremental`, `mirror`, `versioned`, `photo_import` | `incremental` |
+| `conflict` | `overwrite`, `skip`, `rename` | `overwrite` |
+
+An unknown value is a deserialization error, so `POST`/`PUT` answer `400`
+instead of silently storing a mode the copy engine would ignore. Both fields are
+optional in the body: a profile stored before FIAB-13 loads with the defaults.
+Every run appends one row to the Explorer transfer history
+(`operation = usb_copy`, `method` = the strategy slug, `verified` = the
+checksum outcome).
 
 ## Fan and thermal control — `system/fans/*`
 

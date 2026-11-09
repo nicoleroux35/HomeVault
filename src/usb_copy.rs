@@ -20,12 +20,15 @@
 //! - All operations are journaled
 
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64};
 use std::sync::Arc;
 use std::time::SystemTime;
 use tokio::process::Command;
 use tokio::time::Duration;
+
+use chrono::{Datelike, Utc};
 
 use crate::checksum::{hash_file_async, ChecksumAlgorithm};
 use crate::utils::process::run_timed_async;
@@ -66,6 +69,14 @@ pub struct UsbCopyProfile {
     /// Whether to verify checksums after copy
     pub verify_checksums: bool,
 
+    /// How an existing destination file is handled (FIAB-13).
+    #[serde(default)]
+    pub strategy: CopyStrategy,
+
+    /// What to do when a destination file already exists (FIAB-13).
+    #[serde(default)]
+    pub conflict: ConflictPolicy,
+
     /// Whether to eject after successful copy
     pub auto_eject: bool,
 
@@ -77,6 +88,55 @@ pub struct UsbCopyProfile {
 
     /// Last run status
     pub last_status: Option<CopyStatus>,
+}
+
+/// The copy strategy (FIAB-13), mirroring DSM's USB Copy modes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum CopyStrategy {
+    /// Copy only files that are missing or newer; keep the rest.
+    #[default]
+    Incremental,
+    /// Incremental, then remove destination files the source no longer has.
+    Mirror,
+    /// Move an existing destination file into `.versions/<timestamp>/` first.
+    Versioned,
+    /// Sort into `YYYY/MM/` by the file's modification date.
+    PhotoImport,
+}
+
+impl CopyStrategy {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Incremental => "incremental",
+            Self::Mirror => "mirror",
+            Self::Versioned => "versioned",
+            Self::PhotoImport => "photo_import",
+        }
+    }
+}
+
+/// What happens when a destination file already exists (FIAB-13).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ConflictPolicy {
+    /// Replace the destination (the historical behaviour).
+    #[default]
+    Overwrite,
+    /// Leave the destination untouched.
+    Skip,
+    /// Keep both, e.g. `photo (1).jpg`.
+    Rename,
+}
+
+impl ConflictPolicy {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Overwrite => "overwrite",
+            Self::Skip => "skip",
+            Self::Rename => "rename",
+        }
+    }
 }
 
 /// Copy operation status
@@ -405,31 +465,38 @@ impl UsbCopyService {
             .map_err(|e| format!("failed to create destination: {}", e))?;
 
         // A profile may point at a file (`/DCIM/photo.jpg`) as well as a
-        // directory. Keep the source's own name in that case, and verify the
-        // exact pair the copy wrote — not a directory against a file.
+        // directory. The copy engine keeps the file's own name inside the
+        // destination folder; verification compares the exact pair it wrote
+        // — not a directory against a file.
         let source_meta = tokio::fs::metadata(&source)
             .await
             .map_err(|e| format!("failed to stat source: {}", e))?;
-        let (source_root, destination_root) = if source_meta.is_file() {
+        let verify_root = if source_meta.is_file() {
             let name = source
                 .file_name()
                 .ok_or_else(|| "source file has no name".to_string())?;
-            (source.clone(), destination.join(name))
+            destination.join(name)
         } else {
-            (source.clone(), destination.clone())
+            destination.clone()
         };
 
-        // Count files first for progress
-        let total_files = Self::count_files(&source_root).await?;
+        // FIAB-13: the strategy and conflict policy are applied per file.
+        let strategy = profile.strategy;
+        let conflict = profile.conflict;
+        let (files_copied, bytes_copied) = Self::copy_recursive(
+            &source,
+            &destination,
+            strategy,
+            conflict,
+            matches!(strategy, CopyStrategy::PhotoImport),
+            profile.verify_checksums,
+        )
+        .await?;
 
-        // Copy files with progress
-        let (files_copied, bytes_copied) =
-            Self::copy_recursive(&source_root, &destination_root, total_files).await?;
-
-        // Verify if requested. A mismatch is a failed copy: the caller must
-        // never see `Success` for bytes that were not read back and compared.
-        if profile.verify_checksums {
-            Self::verify_copy(&source_root, &destination_root).await?;
+        // Verify if requested. Photo import rewrites the destination layout, so
+        // its per-file verification happened inside the copy loop.
+        if profile.verify_checksums && !matches!(strategy, CopyStrategy::PhotoImport) {
+            Self::verify_copy(&source, &verify_root).await?;
         }
 
         // Eject if requested
@@ -482,54 +549,228 @@ impl UsbCopyService {
         Ok(count)
     }
 
-    /// Copy files recursively
+    /// Copy files recursively under a strategy (FIAB-13).
+    ///
+    /// `photo_dates` maps every file into `YYYY/MM/` by its modification date;
+    /// `verify` hashes the pair as soon as each file is written (the global
+    /// `verify_copy` cannot compare two different layouts).
+    #[allow(clippy::too_many_arguments)]
     async fn copy_recursive(
         source: &Path,
         dest: &Path,
-        _total_files: u64,
+        strategy: CopyStrategy,
+        conflict: ConflictPolicy,
+        photo_dates: bool,
+        verify: bool,
     ) -> Result<(u64, u64), String> {
         let mut files_copied = 0u64;
         let mut bytes_copied = 0u64;
+        let stamp = Utc::now().format("%Y%m%d-%H%M%S").to_string();
+        let mut expected: HashSet<PathBuf> = HashSet::new();
 
-        let mut stack = vec![(source.to_path_buf(), dest.to_path_buf())];
+        // (source path, path relative to the source root)
+        let mut stack = vec![(source.to_path_buf(), PathBuf::new())];
 
-        while let Some((src, dst)) = stack.pop() {
+        while let Some((src, relative)) = stack.pop() {
             let metadata = tokio::fs::metadata(&src)
                 .await
-                .map_err(|e| format!("failed to get metadata: {}", e))?;
+                .map_err(|e| format!("failed to get metadata: {e}"))?;
 
             if metadata.is_file() {
-                // Copy file
+                // A single-file source (`relative` empty) keeps its own name;
+                // photo import prefixes the year/month folder.
+                let own_name = src
+                    .file_name()
+                    .map(PathBuf::from)
+                    .ok_or("source file has no name")?;
+                let relative = if photo_dates {
+                    let modified = metadata.modified().unwrap_or(SystemTime::now());
+                    let when: chrono::DateTime<Utc> = modified.into();
+                    let folder = PathBuf::from(format!("{:04}/{:02}", when.year(), when.month()));
+                    if relative.as_os_str().is_empty() {
+                        folder.join(own_name)
+                    } else {
+                        folder.join(&relative)
+                    }
+                } else if relative.as_os_str().is_empty() {
+                    own_name
+                } else {
+                    relative
+                };
+                let dst = dest.join(&relative);
+                expected.insert(relative);
+
+                if let Some(parent) = dst.parent() {
+                    tokio::fs::create_dir_all(parent)
+                        .await
+                        .map_err(|e| format!("failed to create directory: {e}"))?;
+                }
+
+                let mut should_copy = true;
+                if tokio::fs::try_exists(&dst).await.unwrap_or(false) {
+                    if matches!(strategy, CopyStrategy::Incremental | CopyStrategy::Mirror)
+                        && Self::is_up_to_date(&dst, &metadata).await
+                    {
+                        should_copy = false;
+                    }
+                    if should_copy {
+                        // The conflict policy decides whether the existing file
+                        // survives, is moved aside, or is replaced. Versioning
+                        // only applies to a real replacement, so `skip` and
+                        // `rename` never hide a file in `.versions`.
+                        match conflict {
+                            ConflictPolicy::Skip => should_copy = false,
+                            ConflictPolicy::Rename => {
+                                let renamed = Self::unique_destination(&dst).await;
+                                let _ = tokio::fs::rename(&dst, &renamed).await;
+                            }
+                            ConflictPolicy::Overwrite => {
+                                if matches!(strategy, CopyStrategy::Versioned) {
+                                    Self::version_existing(&dst, &stamp).await?;
+                                }
+                            }
+                        }
+                    }
+                }
+                if !should_copy {
+                    continue;
+                }
+
                 tokio::fs::copy(&src, &dst)
                     .await
-                    .map_err(|e| format!("failed to copy file: {}", e))?;
+                    .map_err(|e| format!("failed to copy file: {e}"))?;
+                if verify && !Self::same_sha256(&src, &dst).await? {
+                    return Err(format!(
+                        "checksum mismatch after copying {} to {}",
+                        src.display(),
+                        dst.display()
+                    ));
+                }
 
                 files_copied += 1;
                 bytes_copied += metadata.len();
             } else if metadata.is_dir() {
-                // Create destination directory
-                tokio::fs::create_dir_all(&dst)
-                    .await
-                    .map_err(|e| format!("failed to create directory: {}", e))?;
+                if !photo_dates {
+                    tokio::fs::create_dir_all(dest.join(&relative))
+                        .await
+                        .map_err(|e| format!("failed to create directory: {e}"))?;
+                }
 
-                // Queue children
                 let mut entries = tokio::fs::read_dir(&src)
                     .await
-                    .map_err(|e| format!("failed to read directory: {}", e))?;
-
+                    .map_err(|e| format!("failed to read directory: {e}"))?;
                 while let Some(entry) = entries
                     .next_entry()
                     .await
-                    .map_err(|e| format!("failed to read entry: {}", e))?
+                    .map_err(|e| format!("failed to read entry: {e}"))?
                 {
-                    let src_path = entry.path();
-                    let dst_path = dst.join(entry.file_name());
-                    stack.push((src_path, dst_path));
+                    stack.push((entry.path(), relative.join(entry.file_name())));
                 }
             }
         }
 
+        // Mirror: a file the source no longer has must disappear from the
+        // destination. Stay inside `dest` and never touch `.versions`.
+        if matches!(strategy, CopyStrategy::Mirror) {
+            Self::remove_unexpected(dest, Path::new(""), &expected).await?;
+        }
+
         Ok((files_copied, bytes_copied))
+    }
+
+    /// A destination is up to date when it exists with the same size and is
+    /// not older than the source.
+    async fn is_up_to_date(dst: &Path, src_meta: &std::fs::Metadata) -> bool {
+        let Ok(dst_meta) = tokio::fs::metadata(dst).await else {
+            return false;
+        };
+        if !dst_meta.is_file() || dst_meta.len() != src_meta.len() {
+            return false;
+        }
+        let src_time = src_meta.modified().unwrap_or(SystemTime::UNIX_EPOCH);
+        let dst_time = dst_meta.modified().unwrap_or(SystemTime::UNIX_EPOCH);
+        dst_time >= src_time
+    }
+
+    /// Moves an existing destination into `.versions/<stamp>/` next to it.
+    async fn version_existing(dst: &Path, stamp: &str) -> Result<(), String> {
+        let Some(parent) = dst.parent() else {
+            return Ok(());
+        };
+        let name = dst.file_name().ok_or("destination has no name")?;
+        let versions = parent.join(".versions").join(stamp);
+        tokio::fs::create_dir_all(&versions)
+            .await
+            .map_err(|e| format!("failed to create the versions folder: {e}"))?;
+        tokio::fs::rename(dst, versions.join(name))
+            .await
+            .map_err(|e| format!("failed to move the previous version: {e}"))
+    }
+
+    /// `name (1).ext`, `name (2).ext`… bounded so a full folder cannot loop.
+    async fn unique_destination(dst: &Path) -> PathBuf {
+        let parent = dst.parent().unwrap_or(Path::new(""));
+        let stem = dst
+            .file_stem()
+            .map(|s| s.to_string_lossy().to_string())
+            .unwrap_or_else(|| "file".to_string());
+        let ext = dst
+            .extension()
+            .map(|e| format!(".{}", e.to_string_lossy()))
+            .unwrap_or_default();
+        for n in 1..=1000 {
+            let candidate = parent.join(format!("{stem} ({n}){ext}"));
+            if !tokio::fs::try_exists(&candidate).await.unwrap_or(false) {
+                return candidate;
+            }
+        }
+        dst.to_path_buf()
+    }
+
+    /// Removes files under `dir` whose relative path is not in `expected`.
+    fn remove_unexpected<'a>(
+        dir: &'a Path,
+        relative: &'a Path,
+        expected: &'a HashSet<PathBuf>,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send + 'a>> {
+        Box::pin(async move {
+            let Ok(mut entries) = tokio::fs::read_dir(dir).await else {
+                return Ok(());
+            };
+            while let Some(entry) = entries
+                .next_entry()
+                .await
+                .map_err(|e| format!("failed to read {}: {e}", dir.display()))?
+            {
+                let name = entry.file_name();
+                if name == ".versions" {
+                    continue;
+                }
+                let path = relative.join(&name);
+                let metadata = entry
+                    .metadata()
+                    .await
+                    .map_err(|e| format!("failed to stat {}: {e}", entry.path().display()))?;
+                if metadata.is_dir() {
+                    Self::remove_unexpected(&entry.path(), &path, expected).await?;
+                    // Remove the directory only when it became empty.
+                    let _ = tokio::fs::remove_dir(entry.path()).await;
+                } else if !expected.contains(&path) {
+                    tokio::fs::remove_file(entry.path())
+                        .await
+                        .map_err(|e| format!("failed to remove {}: {e}", entry.path().display()))?;
+                }
+            }
+            Ok(())
+        })
+    }
+
+    async fn same_sha256(src: &Path, dst: &Path) -> Result<bool, String> {
+        let (a, b) = tokio::join!(sha256_path(src), sha256_path(dst));
+        match (a, b) {
+            (Ok(a), Ok(b)) => Ok(a.eq_ignore_ascii_case(&b)),
+            (Err(e), _) | (_, Err(e)) => Err(e),
+        }
     }
 
     /// Verify copied files match source, byte for byte.
@@ -658,6 +899,8 @@ mod tests {
             source_path: "/".to_string(),
             destination_path: "/mnt/test".to_string(),
             verify_checksums: false,
+            strategy: CopyStrategy::Incremental,
+            conflict: ConflictPolicy::Overwrite,
             auto_eject: false,
             enabled: true,
             last_run: None,
@@ -679,6 +922,8 @@ mod tests {
             source_path: "/".to_string(),
             destination_path: "/mnt/test".to_string(),
             verify_checksums: false,
+            strategy: CopyStrategy::Incremental,
+            conflict: ConflictPolicy::Overwrite,
             auto_eject: false,
             enabled: true,
             last_run: None,
@@ -700,6 +945,8 @@ mod tests {
             source_path: "/".to_string(),
             destination_path: "/mnt/test".to_string(),
             verify_checksums: false,
+            strategy: CopyStrategy::Incremental,
+            conflict: ConflictPolicy::Overwrite,
             auto_eject: false,
             enabled: true,
             last_run: None,
@@ -895,5 +1142,218 @@ mod tests {
         std::fs::write(&file, b"x").unwrap();
 
         assert_eq!(UsbCopyService::count_files(&file).await.unwrap(), 1);
+    }
+
+    #[tokio::test]
+    async fn incremental_skips_an_up_to_date_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("src");
+        let dst = dir.path().join("dst");
+        std::fs::create_dir_all(&src).unwrap();
+        std::fs::write(src.join("a.txt"), b"same").unwrap();
+
+        let first = UsbCopyService::copy_recursive(
+            &src,
+            &dst,
+            CopyStrategy::Incremental,
+            ConflictPolicy::Overwrite,
+            false,
+            false,
+        )
+        .await
+        .unwrap();
+        assert_eq!(first.0, 1);
+        let second = UsbCopyService::copy_recursive(
+            &src,
+            &dst,
+            CopyStrategy::Incremental,
+            ConflictPolicy::Overwrite,
+            false,
+            false,
+        )
+        .await
+        .unwrap();
+        assert_eq!(second.0, 0, "an up-to-date file is not copied again");
+    }
+
+    #[tokio::test]
+    async fn mirror_removes_a_file_the_source_no_longer_has() {
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("src");
+        let dst = dir.path().join("dst");
+        std::fs::create_dir_all(&src).unwrap();
+        std::fs::create_dir_all(&dst).unwrap();
+        std::fs::write(src.join("keep.txt"), b"keep").unwrap();
+        std::fs::write(dst.join("keep.txt"), b"keep").unwrap();
+        std::fs::write(dst.join("stale.txt"), b"stale").unwrap();
+
+        UsbCopyService::copy_recursive(
+            &src,
+            &dst,
+            CopyStrategy::Mirror,
+            ConflictPolicy::Overwrite,
+            false,
+            false,
+        )
+        .await
+        .unwrap();
+        assert!(dst.join("keep.txt").exists());
+        assert!(!dst.join("stale.txt").exists(), "mirror removes extras");
+    }
+
+    #[tokio::test]
+    async fn versioned_keeps_the_previous_file_under_versions() {
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("src");
+        let dst = dir.path().join("dst");
+        std::fs::create_dir_all(&src).unwrap();
+        std::fs::create_dir_all(&dst).unwrap();
+        std::fs::write(src.join("a.txt"), b"new").unwrap();
+        std::fs::write(dst.join("a.txt"), b"old").unwrap();
+
+        UsbCopyService::copy_recursive(
+            &src,
+            &dst,
+            CopyStrategy::Versioned,
+            ConflictPolicy::Overwrite,
+            false,
+            false,
+        )
+        .await
+        .unwrap();
+        assert_eq!(std::fs::read(dst.join("a.txt")).unwrap(), b"new");
+        let versions = dst.join(".versions");
+        let stamp = std::fs::read_dir(&versions)
+            .unwrap()
+            .next()
+            .expect("one version folder")
+            .unwrap();
+        assert_eq!(std::fs::read(stamp.path().join("a.txt")).unwrap(), b"old");
+    }
+
+    #[tokio::test]
+    async fn skip_keeps_the_destination_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("src");
+        let dst = dir.path().join("dst");
+        std::fs::create_dir_all(&src).unwrap();
+        std::fs::create_dir_all(&dst).unwrap();
+        std::fs::write(src.join("a.txt"), b"new-bytes").unwrap();
+        std::fs::write(dst.join("a.txt"), b"old!").unwrap();
+
+        let (copied, _) = UsbCopyService::copy_recursive(
+            &src,
+            &dst,
+            CopyStrategy::Versioned,
+            ConflictPolicy::Skip,
+            false,
+            false,
+        )
+        .await
+        .unwrap();
+        assert_eq!(copied, 0, "skip writes nothing");
+        assert_eq!(std::fs::read(dst.join("a.txt")).unwrap(), b"old!");
+    }
+
+    #[tokio::test]
+    async fn rename_keeps_both_copies() {
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("src");
+        let dst = dir.path().join("dst");
+        std::fs::create_dir_all(&src).unwrap();
+        std::fs::create_dir_all(&dst).unwrap();
+        std::fs::write(src.join("a.txt"), b"new").unwrap();
+        std::fs::write(dst.join("a.txt"), b"old").unwrap();
+
+        let (copied, _) = UsbCopyService::copy_recursive(
+            &src,
+            &dst,
+            CopyStrategy::Versioned,
+            ConflictPolicy::Rename,
+            false,
+            false,
+        )
+        .await
+        .unwrap();
+        assert_eq!(copied, 1);
+        assert_eq!(std::fs::read(dst.join("a.txt")).unwrap(), b"new");
+        assert_eq!(std::fs::read(dst.join("a (1).txt")).unwrap(), b"old");
+    }
+
+    #[tokio::test]
+    async fn a_single_file_source_lands_under_its_own_name() {
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("photo.jpg");
+        let dst = dir.path().join("dst");
+        std::fs::write(&src, b"jpeg-bytes").unwrap();
+
+        let (copied, bytes) = UsbCopyService::copy_recursive(
+            &src,
+            &dst,
+            CopyStrategy::Incremental,
+            ConflictPolicy::Overwrite,
+            false,
+            false,
+        )
+        .await
+        .unwrap();
+        assert_eq!(copied, 1);
+        assert_eq!(bytes, 10);
+        assert_eq!(std::fs::read(dst.join("photo.jpg")).unwrap(), b"jpeg-bytes");
+    }
+
+    #[tokio::test]
+    async fn a_single_file_photo_import_keeps_its_name() {
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("IMG_0002.jpg");
+        let dst = dir.path().join("dst");
+        std::fs::write(&src, b"photo").unwrap();
+
+        UsbCopyService::copy_recursive(
+            &src,
+            &dst,
+            CopyStrategy::PhotoImport,
+            ConflictPolicy::Overwrite,
+            true,
+            false,
+        )
+        .await
+        .unwrap();
+
+        let when: chrono::DateTime<Utc> =
+            std::fs::metadata(&src).unwrap().modified().unwrap().into();
+        let expected = dst
+            .join(format!("{:04}/{:02}", when.year(), when.month()))
+            .join("IMG_0002.jpg");
+        assert!(expected.exists(), "missing {}", expected.display());
+    }
+
+    #[tokio::test]
+    async fn photo_import_sorts_files_by_year_and_month() {
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("src");
+        let dst = dir.path().join("dst");
+        std::fs::create_dir_all(&src).unwrap();
+        std::fs::write(src.join("IMG_0001.jpg"), b"photo").unwrap();
+
+        UsbCopyService::copy_recursive(
+            &src,
+            &dst,
+            CopyStrategy::PhotoImport,
+            ConflictPolicy::Overwrite,
+            true,
+            false,
+        )
+        .await
+        .unwrap();
+        let when: chrono::DateTime<Utc> = std::fs::metadata(src.join("IMG_0001.jpg"))
+            .unwrap()
+            .modified()
+            .unwrap()
+            .into();
+        let expected = dst
+            .join(format!("{:04}/{:02}", when.year(), when.month()))
+            .join("IMG_0001.jpg");
+        assert!(expected.exists(), "missing {}", expected.display());
     }
 }

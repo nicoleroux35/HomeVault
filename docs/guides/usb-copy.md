@@ -63,9 +63,40 @@ devices. Creating, editing, deleting a rule and starting a copy are
 3. When `verify_checksums` is on, read every copied file back and compare a
    **SHA-256** of source and destination (same size is not enough), collecting
    every mismatch into one error. A mismatch fails the copy; the caller never
-   sees `Success`.
+   sees `Success`. Photo import verifies each file as it is written, because
+   the destination layout no longer mirrors the source.
 4. When `auto_eject` is on, unmount and power the device off — safe to unplug
    immediately.
+
+## Copy modes and conflict handling (FIAB-13)
+
+Each profile carries a **copy mode** (`strategy`) and an **existing-file
+policy** (`conflict`), mirroring DSM USB Copy. Both default to the historical
+behaviour, so a profile written before FIAB-13 still loads and copies the way
+it used to.
+
+| `strategy` | What it does |
+|---|---|
+| `incremental` (default) | Copies a file when the destination is missing, has a different size, or is older than the source. Unchanged files are left alone, so a nightly card copy only transfers what changed. |
+| `mirror` | Incremental, then removes destination files the source no longer has (a true replica). `.versions/` is never touched. |
+| `versioned` | Before a file is overwritten, the previous destination copy is moved to `.versions/<YYYYMMDD-HHMMSS>/` next to it (one folder per run), so "I overwrote the wrong card" is recoverable. |
+| `photo_import` | Sorts every file into `YYYY/MM/` by its modification date, ignoring the camera's folder names (`DCIM/100CANON`). |
+| `conflict` | `overwrite` (default) replaces the file; `skip` keeps the copy already on the NAS; `rename` keeps both as `photo (1).jpg`. |
+
+`mirror` is the only mode that deletes; the screen names the consequence on the
+mode itself. The conflict policy is evaluated after the strategy: an up-to-date
+file under `incremental` is still skipped rather than duplicated, and `skip` or
+`rename` takes precedence over `versioned` (the old copy stays in place or is
+renamed, it is not hidden in `.versions`).
+
+## Traceability
+
+Every run writes **one** `transfer_history` row (`operation = usb_copy`) with
+the source path, the destination path, the bytes copied, the strategy slug in
+`method`, and whether the copy was checksum-verified. It shows up in the File
+Explorer's transfer history as "USB copy", so "what did the card copy do last
+night?" is answerable without reading the journal. One row per run, not per
+file: a photo import would otherwise flood the table.
 
 A profile matches a device on its **UUID**, not its `/dev/sdX` name, which
 changes between reboots.
@@ -84,8 +115,8 @@ changes between reboots.
 
 | Suite | What it covers |
 |-------|----------------|
-| `src/usb_copy.rs` (`#[cfg(test)]`) | profile validation, destination must be absolute, UUID matching, SHA-256 verification (identical tree, same-size different bytes, size mismatch, missing file, single-file source), file counting |
-| `tests/usb_copy_integration.rs` | device listing and the validation surface |
+| `src/usb_copy.rs` (`#[cfg(test)]`) | profile validation, destination must be absolute, UUID matching, SHA-256 verification (identical tree, same-size different bytes, size mismatch, missing file, single-file source), file counting, incremental skip of an up-to-date file, mirror deletion of a stale file, versioned move into `.versions/<stamp>/`, photo-import `YYYY/MM` layout |
+| `tests/usb_copy_integration.rs` | device listing, the validation surface, legacy profile JSON loading with the FIAB-13 defaults, snake_case literals for every strategy/conflict |
 | `tests/phase4_auth_integration.rs` | `401` without a session, `403` for a member on every mutation, admin never refused |
 | `frontend/src/routes/UsbCopy.svelte` | covered by `npm run check` |
 

@@ -1,6 +1,6 @@
 //! Integration tests for USB one-touch copy
 
-use homevault::usb_copy::{UsbCopyProfile, UsbCopyService};
+use homevault::usb_copy::{ConflictPolicy, CopyStrategy, UsbCopyProfile, UsbCopyService};
 
 #[tokio::test]
 async fn test_list_devices() {
@@ -32,6 +32,8 @@ fn test_validate_profile_valid() {
         source_path: "/DCIM".to_string(),
         destination_path: "/mnt/photos".to_string(),
         verify_checksums: true,
+        strategy: CopyStrategy::Incremental,
+        conflict: ConflictPolicy::Overwrite,
         auto_eject: true,
         enabled: true,
         last_run: None,
@@ -303,9 +305,61 @@ fn make_test_profile() -> UsbCopyProfile {
         source_path: "/".to_string(),
         destination_path: "/mnt/test".to_string(),
         verify_checksums: false,
+        strategy: CopyStrategy::Incremental,
+        conflict: ConflictPolicy::Overwrite,
         auto_eject: false,
         enabled: true,
         last_run: None,
         last_status: None,
+    }
+}
+
+#[test]
+fn test_profile_defaults_keep_older_json_loadable() {
+    // A profile written before FIAB-13 has no `strategy` / `conflict`; it must
+    // still load, with the historical behaviour (incremental + overwrite).
+    let json = r#"{
+        "id": "legacy",
+        "name": "Legacy profile",
+        "device_uuid": "1234-5678",
+        "device_label": null,
+        "source_path": "/DCIM",
+        "destination_path": "/mnt/photos",
+        "verify_checksums": true,
+        "auto_eject": false,
+        "enabled": true,
+        "last_run": null,
+        "last_status": null
+    }"#;
+    let profile: UsbCopyProfile = serde_json::from_str(json).unwrap();
+    assert_eq!(profile.strategy, CopyStrategy::Incremental);
+    assert_eq!(profile.conflict, ConflictPolicy::Overwrite);
+}
+
+#[test]
+fn test_copy_strategy_serializes_as_the_api_literal() {
+    for (strategy, literal) in [
+        (CopyStrategy::Incremental, "incremental"),
+        (CopyStrategy::Mirror, "mirror"),
+        (CopyStrategy::Versioned, "versioned"),
+        (CopyStrategy::PhotoImport, "photo_import"),
+    ] {
+        assert_eq!(
+            serde_json::to_string(&strategy).unwrap(),
+            format!("\"{literal}\"")
+        );
+        assert_eq!(strategy.as_str(), literal);
+    }
+
+    for (conflict, literal) in [
+        (ConflictPolicy::Overwrite, "overwrite"),
+        (ConflictPolicy::Skip, "skip"),
+        (ConflictPolicy::Rename, "rename"),
+    ] {
+        assert_eq!(
+            serde_json::to_string(&conflict).unwrap(),
+            format!("\"{literal}\"")
+        );
+        assert_eq!(conflict.as_str(), literal);
     }
 }

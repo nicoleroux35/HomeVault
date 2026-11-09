@@ -56,6 +56,10 @@ export interface UsbCopyProfile {
   source_path: string;
   destination_path: string;
   verify_checksums: boolean;
+  /** FIAB-13 copy mode. */
+  strategy: 'incremental' | 'mirror' | 'versioned' | 'photo_import';
+  /** FIAB-13 behaviour when the destination file exists. */
+  conflict: 'overwrite' | 'skip' | 'rename';
   auto_eject: boolean;
   enabled: boolean;
   last_run: string | null;

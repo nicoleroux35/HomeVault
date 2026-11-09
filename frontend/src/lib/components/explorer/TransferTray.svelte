@@ -309,7 +309,9 @@
                   ? 'download'
                   : entry.operation === 'checksum'
                     ? 'checksum'
-                    : 'copy'}`)}
+                    : entry.operation === 'usb_copy'
+                      ? 'usb_copy'
+                      : 'copy'}`)}
             </span>
             <span class="min-w-0 flex-1 truncate text-[var(--hv-text-2)]">{entry.dest_path ?? entry.source_path ?? ''}</span>
             <span class="text-[var(--hv-text-3)]">{formatBytes(entry.bytes_total)}</span>

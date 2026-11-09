@@ -60,6 +60,8 @@ function profile(overrides: Record<string, unknown> = {}) {
     source_path: '/DCIM',
     destination_path: '/mnt/photos',
     verify_checksums: true,
+    strategy: 'incremental',
+    conflict: 'overwrite',
     auto_eject: false,
     enabled: true,
     last_run: null,
@@ -203,11 +205,15 @@ test.describe('USB one-touch copy', () => {
     await page.locator('[data-testid="usb-uuid"]').selectOption('1234-5678');
     await page.locator('[data-testid="usb-source"]').fill('/DCIM');
     await page.locator('[data-testid="usb-destination"]').fill('/mnt/photos');
+    await page.locator('[data-testid="usb-strategy"]').selectOption('versioned');
+    await page.locator('[data-testid="usb-conflict"]').selectOption('rename');
     await page.locator('[data-testid="usb-save"]').click();
 
     await expect.poll(() => recorder.creates.length).toBe(1);
     expect(recorder.creates[0].name).toBe('Camera Photos');
     expect(recorder.creates[0].device_uuid).toBe('1234-5678');
+    expect(recorder.creates[0].strategy).toBe('versioned');
+    expect(recorder.creates[0].conflict).toBe('rename');
     // The dialog closes and the notice confirms the save.
     await expect(page.locator('[data-testid="usb-name"]')).toBeHidden();
     await expect(page.locator('[data-testid="usb-notice"]')).toBeVisible();
@@ -239,6 +245,16 @@ test.describe('USB one-touch copy', () => {
     await expect.poll(() => recorder.executes).toEqual(['p1']);
     await expect(page.locator('[data-testid="usb-notice"]')).toContainText(
       'Copy operation started'
+    );
+  });
+
+  test('the copy mode is shown on the rule', async ({ page, request }) => {
+    await seedSession(page, await apiLogin(request));
+    await mockUsb(page, { profiles: [profile({ strategy: 'photo_import' })] });
+    await openUsbCopy(page);
+
+    await expect(page.locator('[data-testid="usb-profiles"]')).toContainText(
+      'Photo import'
     );
   });
 

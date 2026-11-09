@@ -77,6 +77,8 @@
       source_path: '/',
       destination_path: '/mnt/usb-copy',
       verify_checksums: true,
+      strategy: 'incremental',
+      conflict: 'overwrite',
       auto_eject: true,
       enabled: true,
       last_run: null,
@@ -243,6 +245,10 @@
                     <dd>{profile.destination_path}</dd>
                   </div>
                   <div>
+                    <dt>{$t('settings.usb_copy_strategy')}</dt>
+                    <dd>{$t(`settings.usb_copy_strategy_${profile.strategy}`)}</dd>
+                  </div>
+                  <div>
                     <dt>{$t('settings.usb_copy_last_run')}</dt>
                     <dd>{formatDate(profile.last_run)}</dd>
                   </div>
@@ -372,6 +378,27 @@
           data-testid="usb-destination"
         />
         <p class="usb-hint">{$t('settings.usb_copy_destination_hint')}</p>
+      </div>
+
+      <div class="usb-field">
+        <label for="usb-strategy">{$t('settings.usb_copy_strategy')}</label>
+        <select id="usb-strategy" bind:value={editingProfile.strategy} data-testid="usb-strategy">
+          <option value="incremental">{$t('settings.usb_copy_strategy_incremental')}</option>
+          <option value="mirror">{$t('settings.usb_copy_strategy_mirror')}</option>
+          <option value="versioned">{$t('settings.usb_copy_strategy_versioned')}</option>
+          <option value="photo_import">{$t('settings.usb_copy_strategy_photo_import')}</option>
+        </select>
+        <p class="usb-hint">{$t('settings.usb_copy_strategy_hint')}</p>
+      </div>
+
+      <div class="usb-field">
+        <label for="usb-conflict">{$t('settings.usb_copy_conflict')}</label>
+        <select id="usb-conflict" bind:value={editingProfile.conflict} data-testid="usb-conflict">
+          <option value="overwrite">{$t('settings.usb_copy_conflict_overwrite')}</option>
+          <option value="skip">{$t('settings.usb_copy_conflict_skip')}</option>
+          <option value="rename">{$t('settings.usb_copy_conflict_rename')}</option>
+        </select>
+        <p class="usb-hint">{$t('settings.usb_copy_conflict_hint')}</p>
       </div>
 
       <div class="usb-field usb-field-check">

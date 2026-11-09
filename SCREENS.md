@@ -1012,7 +1012,9 @@ limits are re-checked on load and on each sign-in; a corrupt `directory.json`,
 **Features:**
 - **Copy rules** — name, device (chosen from the attached devices, matched by
   UUID), source folder inside the device, destination folder on the appliance,
-  per-rule "check every copied file" and "eject when done", active flag
+  copy mode (`incremental`, `mirror`, `versioned`, `photo_import`), what to do
+  when a file already exists (`overwrite`, `skip`, `rename`), per-rule "check
+  every copied file" and "eject when done", active flag
 - **Copy now** per rule; an inactive rule cannot be run
 - **Attached devices** — label, size, UUID, mounted/not-mounted state and which
   rule each device matched
@@ -1023,7 +1025,8 @@ limits are re-checked on load and on each sign-in; a corrupt `directory.json`,
 wins over the body id; a copy is scheduled (the response returns before it
 finishes) and the task writes `last_run`/`last_status` itself; a pool member is
 refused as a source; `lsblk`, the array probes and the mount/unmount/power-off
-all carry deadlines.
+all carry deadlines; an unknown `strategy`/`conflict` is a `400`; every run
+appends one `usb_copy` row to the Explorer transfer history.
 
 **Guides:** [guides/usb-copy.md](./guides/usb-copy.md)
 

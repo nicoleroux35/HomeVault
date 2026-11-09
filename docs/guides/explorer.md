@@ -1266,7 +1266,8 @@ three algorithms (`""`, `"abc"`), a cumulative-progress test, the
 ### HV-ADV-02 — transfer history
 
 `transfer_history` (migration **073**) records one row per finished transfer:
-`job_id`, `username`, `operation` (`upload`/`download`/`copy`/`move`/`checksum`),
+`job_id`, `username`, `operation`
+(`upload`/`download`/`copy`/`move`/`checksum`/`usb_copy`),
 `source_path`, `dest_path`, `bytes_total`, `duration_ms`, `method`, `verified`,
 `status` (`complete`/`failed`/`cancelled`), `error_message`, `created_at`,
 `completed_at` (unix seconds).
