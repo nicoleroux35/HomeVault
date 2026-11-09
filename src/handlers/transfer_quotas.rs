@@ -37,7 +37,7 @@
 //! boundary.
 
 use axum::{
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::HeaderMap,
     response::{IntoResponse, Response},
     Json,
@@ -267,5 +267,48 @@ pub async fn handle_transfer_quota_delete(
             "error": format!("Failed to remove quota: {}", e)
         }))
         .into_response(),
+    }
+}
+
+/// Query for `GET /api/transfer-quotas/history`.
+#[derive(Deserialize, Debug)]
+pub struct QuotaHistoryQuery {
+    pub subject_type: String,
+    pub subject_name: String,
+    #[serde(default)]
+    pub limit: Option<u32>,
+}
+
+/// `GET /api/transfer-quotas/history?subject_type=user&subject_name=alice`
+///
+/// Admin-only: the history reveals another subject's usage. Newest first, and
+/// bounded by [`crate::quota_history::HISTORY_MAX_POINTS`].
+pub async fn handle_transfer_quota_history(
+    State(state): State<AppStateArc>,
+    headers: HeaderMap,
+    Query(query): Query<QuotaHistoryQuery>,
+) -> Response {
+    if let Err(resp) = crate::handlers::admin_guard::require_admin(&state, &headers).await {
+        return resp;
+    }
+    if !valid_subject_type(&query.subject_type) {
+        return crate::utils::ResponseHelper::json_error(
+            "subject_type must be 'user' or 'group'".to_string(),
+        );
+    }
+    let subject_name = query.subject_name.trim();
+    if subject_name.is_empty() || subject_name.chars().count() > 128 {
+        return crate::utils::ResponseHelper::json_error("subject_name is invalid".to_string());
+    }
+    match crate::quota_history::list(
+        state.db.pool().as_ref(),
+        &query.subject_type,
+        subject_name,
+        query.limit.unwrap_or(48),
+    )
+    .await
+    {
+        Ok(points) => crate::utils::ResponseHelper::json_success(points),
+        Err(e) => crate::utils::ResponseHelper::json_error(e),
     }
 }

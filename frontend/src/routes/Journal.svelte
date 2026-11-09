@@ -23,7 +23,7 @@
   import { Modal, Button, Alert } from '$lib/components/theme';
   import { PageLayout } from '$lib/components/app';
   import { cn } from '$lib/utils.js';
-  import { IconNotes, IconSearch, IconFilter, IconTrash, IconAlertTriangle, IconSettings } from '@tabler/icons-svelte';
+  import { IconNotes, IconSearch, IconFilter, IconTrash, IconAlertTriangle, IconSettings, IconDownload } from '@tabler/icons-svelte';
 
   interface JournalSource {
     id: string;
@@ -191,6 +191,39 @@
     loadEntries();
   }
 
+  /**
+   * Export the current source + filters as CSV. The endpoint needs the session
+   * token in a header, so this is a fetch + Blob download, not a plain link.
+   */
+  async function exportJournal() {
+    actionError = '';
+    const params = new URLSearchParams({ source: selectedSource, format: 'csv' });
+    if (searchFilter.trim()) params.set('search', searchFilter.trim());
+    if (selectedSource === 'system') {
+      if (unitFilter.trim()) params.set('unit', unitFilter.trim());
+      params.set('priority', String(priorityFilter));
+    }
+    try {
+      const headers: Record<string, string> = {};
+      const token = localStorage.getItem('session-token');
+      if (token) headers['x-session-token'] = token;
+      const response = await fetch(`/api/journal/export?${params.toString()}`, { headers });
+      if (!response.ok) {
+        actionError = translate('journal.export_failed');
+        return;
+      }
+      const blob = await response.blob();
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement('a');
+      anchor.href = url;
+      anchor.download = `homevault-journal-${selectedSource}.csv`;
+      anchor.click();
+      URL.revokeObjectURL(url);
+    } catch {
+      actionError = translate('journal.export_failed');
+    }
+  }
+
   function toggleAutoRefresh() {
     autoRefresh = !autoRefresh;
     if (autoRefresh) {
@@ -324,6 +357,10 @@
 
       <Button variant="primary" onclick={applyFilters} data-testid="journal-apply">
         <IconFilter size="14" /> {$t('journal.apply')}
+      </Button>
+
+      <Button variant="secondary" onclick={exportJournal} data-testid="journal-export">
+        <IconDownload size="14" /> {$t('journal.export')}
       </Button>
     </div>
   {/snippet}

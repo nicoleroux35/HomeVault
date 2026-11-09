@@ -3044,6 +3044,18 @@ class ApiClient {
     return this.get(`/transfer-quotas/${subjectType}`, { cache: false });
   }
 
+  /** P1 — hourly usage samples for one subject (newest first, 90-day retention). */
+  async getTransferQuotaHistory(
+    subjectType: 'user' | 'group',
+    subjectName: string,
+    limit = 48,
+  ) {
+    return this.get(
+      `/transfer-quotas/history?subject_type=${subjectType}&subject_name=${encodeURIComponent(subjectName)}&limit=${limit}`,
+      { cache: false },
+    );
+  }
+
   async setTransferQuota(
     subjectType: 'user' | 'group',
     subjectName: string,

@@ -28,6 +28,7 @@ pub mod network;
 /// Generated OpenAPI 3 description of the JSON API.
 pub mod openapi;
 pub mod proxy;
+pub mod quota_history;
 pub mod settings_persistence;
 pub mod sse;
 pub mod static_routes;

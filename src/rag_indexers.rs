@@ -556,6 +556,9 @@ The homevault_admin OS group is the application-admin group. It grants HomeVault
   zero allowed
 - A counter at the top reports how many subjects exist and how many of them
   actually have a limit
+- A History button on each row opens the hourly usage samples (kept 90 days);
+  an alert appears in the notification center when usage crosses 90% of a
+  limit within a counting period, once per crossing
 
 Nothing on this screen writes. Editing a quota happens in the Users app's
 "Transfer quotas" card; the "Manage in Users" button hands off to it.
@@ -749,6 +752,8 @@ Settings are exported/imported as JSON (SMTP passwords redacted in export). The 
 - System logs: syslog, auth.log, kern.log, daemon.log
 - journalctl entries with unit/priority filters
 - Search/filter entries
+- Export the current source and filter as a CSV download (same permissions as
+  the screen, up to 5,000 entries)
 - Clear application logs
 - Auto-cleanup scheduler (configurable interval, default 90 days)
 - Wake-on-LAN: save a machine by its network-card address and wake it from the

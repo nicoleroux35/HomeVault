@@ -1,5 +1,21 @@
 # HomeVault — Test tracking
 
+## P1 quota history/alerts + Journal export — 2026-11-09 (not run)
+
+> **Instruction followed: no test command was executed for this change.**
+> Static checks passed: `cargo check --lib`, `cargo check --tests`,
+> `cd frontend && npm run check` and `npm run build`.
+
+| Coverage | Added / changed |
+|---|---|
+| Unit (`src/quota_history.rs`) | **+2** — the crossing rule (first sample, crossing, staying above, below), and percent bounds for a missing/negative limit |
+| Integration (`tests/quotas_integration.rs`) | **+1** — four samples produce exactly two alerts (95 → 96 → 50 → 95), the history endpoint returns them newest-first, and it is admin-only |
+| Unit (`src/handlers/journal.rs`) | **+2** — CSV quoting for commas/quotes/newlines, and the header on an empty export |
+| Integration (`tests/journal_integration.rs`) | **+1** — audit export CSV + JSON, admin gate, invalid format and unknown source |
+| E2E | **+2** — Quotas 4.4 (row opens the history dialog), Journal 3.1b (Export requests the current filtered CSV) |
+| Migration (`088_transfer_quota_history.sql`) | history table + subject/date indexes |
+| Docs | `docs/guides/transfer-quotas.md`, `docs/guides/journal.md`, `docs/API.md`, `docs/BACKEND.md` (migration range), `SCREENS.md`, `PRIVACY.md` (RoPA row 17), `CHANGELOG.md`, RAG `quotas`/`journal`, `HOMEVAULT_TASKLIST_A_FAIRE.md` (P1-32), `COMPARAISON_DSM_VS_HOMEVAULT.md` |
+
 ## P1 scheduled tasks — service triggers — 2026-11-09 (not run)
 
 > **Instruction followed: no test command was executed for this change.**

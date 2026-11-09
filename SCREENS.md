@@ -195,6 +195,7 @@ the right; in a narrow window the two panes swap (threshold ≈ 1065px window wi
 - Per row: subject type, name, last update date
 - Per direction (upload, download): bytes used / limit + real progress bar
 - A disabled direction shows "Unlimited" (no limit, not "zero allowed")
+- Per row: **History** opens a read-only dialog with the hourly usage samples (90-day retention); a 90% crossing raises one system notification per crossing
 - Counter row: number of subjects, of which how many have a limit
 - "Manage in Users" button → opens the Users app (`hv-open-app` event)
 
@@ -344,6 +345,7 @@ and in the Groups screen.
 - Source selector: `app` (business event logs), **`audit`** (queryable audit trail: severity, actor/action, 90-day retention), `system` (journald), text files (syslog/auth.log/kern.log/daemon.log)
 - Entry list: timestamp, unit, priority, PID, message; the audit source shows `[action]` before the sentence
 - Filtering by unit, by priority, text search (the audit source supports text search in the Journal; structured filters and CSV/JSON export are on `/api/audit`)
+- **Export CSV** downloads the current source/search/priority view (same privilege model, ≤ 5 000 entries)
 - Auto-refresh toggle
 - Clearing of logs per source with confirmation
 - Scheduled cleanup settings (enablement, interval in days)

@@ -425,6 +425,21 @@ test.describe('4 — Interactions', () => {
     await page.waitForSelector('[data-testid="users-page"]', { timeout: 15_000 });
     await expect(win(page)).toBeVisible();
   });
+
+  test('4.4 — a row opens its usage history modal', async ({ page }) => {
+    await openQuotas(page, adminTokens);
+    const button = win(page).locator('[data-testid^="quotas-history-"]').first();
+    await expect(button).toBeVisible({ timeout: 10_000 });
+    await button.click();
+    const modal = page.locator('[data-testid="quotas-history-modal"]');
+    await expect(modal).toBeVisible();
+    // Either the hourly samples or the "history builds up" hint — never the
+    // error state from a failed request.
+    await expect(modal).not.toContainText(
+      /Could not load|Impossible de charger|No se pudo cargar|konnte nicht geladen/,
+    );
+    await page.keyboard.press('Escape');
+  });
 });
 
 // ===========================================================================

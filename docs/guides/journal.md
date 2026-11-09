@@ -157,6 +157,15 @@ admin gate, ordering, every filter, pagination, CSV/JSON export, prune and the
 Journal source. E2E (`tests/e2e/journal/journal.spec.ts` 2.4): the audit source
 is selectable and its entries request answers `200`.
 
+## Export (P1, 2026-11-09)
+
+`GET /journal/export` returns the current filtered view as a download. It uses
+the same privilege model and the same bounded read as the screen (5 000
+entries); the `audit` source is served from the table. `format=csv` (default)
+or `json`. The Journal toolbar has an **Export CSV** button that fetches with
+the session token and saves the file; the format is never taken from the URL
+alone.
+
 ## Remote syslog forwarding (Log Center → Log Sending)
 
 An admin can copy this box's audit stream to a collector over the network, so

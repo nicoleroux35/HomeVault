@@ -8,6 +8,16 @@ follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **Quota usage history, 90% alerts, and Journal export (2026-11-09, P1).**
+  An hourly sampler stores transfer-quota usage in `transfer_quota_history`
+  (migration 088, 90-day retention) and raises one system notification when a
+  limit crosses 90% within a period (staying above never re-alerts; a reset is
+  a fresh baseline). The Quotas screen opens a read-only history dialog per
+  row, and `GET /transfer-quotas/history` serves the points. The Journal
+  toolbar gained **Export CSV**, backed by `GET /journal/export` (same filters
+  and privilege model as the screen, CSV or JSON, 5 000 entries). Tests:
+  4 unit, 2 integration, E2E Quotas 4.4 + Journal 3.1b (written, not run).
+
 - **Scheduled tasks can trigger existing subsystems (2026-11-09, P1).** The
   Tasks engine gained a fifth type, `service`, so a cron can trigger work that
   already has an implementation instead of a second scheduler: a Docker/catalog

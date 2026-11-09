@@ -54,8 +54,8 @@ use tower::{Service, ServiceExt};
 use homevault::auth::AuthService;
 use homevault::config::PathGuard;
 use homevault::handlers::transfer_quotas::{
-    handle_transfer_quota_delete, handle_transfer_quota_get, handle_transfer_quota_set,
-    handle_transfer_quotas_list,
+    handle_transfer_quota_delete, handle_transfer_quota_get, handle_transfer_quota_history,
+    handle_transfer_quota_set, handle_transfer_quotas_list,
 };
 use homevault::handlers::{auth::handle_login, AppState};
 use homevault::middleware::rate_limit::RateLimitState;
@@ -116,6 +116,10 @@ async fn setup() -> Harness {
 fn quota_router(state: Arc<AppState>) -> Router {
     Router::new()
         .route("/api/auth/login", axum::routing::post(handle_login))
+        .route(
+            "/api/transfer-quotas/history",
+            get(handle_transfer_quota_history),
+        )
         .route(
             "/api/transfer-quotas/{subject_type}",
             get(handle_transfer_quotas_list),
@@ -734,4 +738,125 @@ async fn test_a_negative_limit_is_refused() {
         .as_str()
         .unwrap_or_default()
         .contains("negative"));
+}
+
+/// P1: the hourly sample is queryable, admin-only, and a 90% crossing raises
+/// exactly one notification per crossing (not one per sample).
+#[tokio::test]
+async fn quota_history_samples_and_alerts_on_a_crossing() {
+    let Harness {
+        state,
+        _tmp,
+        _guard,
+    } = setup().await;
+    create_test_user(&state, "admin1", "Password123!", 2).await;
+    create_test_user(&state, "alice", "Password123!", 1).await;
+    let mut router = quota_router(state.clone());
+    let admin = login(&mut router, "admin1", "Password123!").await;
+    let pool = state.db.pool();
+
+    let (status, _) = send(
+        &mut router,
+        Method::PUT,
+        "/api/transfer-quotas/user/alice",
+        Some(&admin),
+        Some(json!({
+            "upload_enabled": true,
+            "upload_limit_bytes": 100,
+            "download_enabled": false,
+            "download_limit_bytes": 0,
+            "period": "lifetime"
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    let set_used = |used: i64| {
+        let pool = pool.clone();
+        async move {
+            sqlx::query(
+                "UPDATE transfer_quotas SET upload_used_bytes = ? \
+                 WHERE subject_type = 'user' AND subject_name = 'alice'",
+            )
+            .bind(used)
+            .execute(pool.as_ref())
+            .await
+            .unwrap();
+        }
+    };
+    let notifications = || {
+        let pool = pool.clone();
+        async move {
+            sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM notifications WHERE source = 'quota'",
+            )
+            .fetch_one(pool.as_ref())
+            .await
+            .unwrap()
+        }
+    };
+
+    // First sample at 95% → one alert (no previous sample).
+    set_used(95).await;
+    assert_eq!(
+        homevault::quota_history::sample_once(pool.as_ref())
+            .await
+            .unwrap(),
+        1
+    );
+    assert_eq!(notifications().await, 1);
+
+    // Still above the threshold → no second alert.
+    set_used(96).await;
+    homevault::quota_history::sample_once(pool.as_ref())
+        .await
+        .unwrap();
+    assert_eq!(notifications().await, 1);
+
+    // Drop below, then cross again → a new alert.
+    set_used(50).await;
+    homevault::quota_history::sample_once(pool.as_ref())
+        .await
+        .unwrap();
+    set_used(95).await;
+    homevault::quota_history::sample_once(pool.as_ref())
+        .await
+        .unwrap();
+    assert_eq!(notifications().await, 2);
+
+    let (status, body) = send(
+        &mut router,
+        Method::GET,
+        "/api/transfer-quotas/history?subject_type=user&subject_name=alice",
+        Some(&admin),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let points = body["data"].as_array().unwrap();
+    assert_eq!(points.len(), 4);
+    assert_eq!(points[0]["upload_used_bytes"], json!(95));
+    assert_eq!(points[0]["upload_limit_bytes"], json!(100));
+
+    // Admin-only: no token and a plain user are refused.
+    let (status, _) = send(
+        &mut router,
+        Method::GET,
+        "/api/transfer-quotas/history?subject_type=user&subject_name=alice",
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+
+    let alice = login(&mut router, "alice", "Password123!").await;
+    let (status, _) = send(
+        &mut router,
+        Method::GET,
+        "/api/transfer-quotas/history?subject_type=user&subject_name=alice",
+        Some(&alice),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
 }

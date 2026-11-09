@@ -77,6 +77,25 @@ product. A cap that cannot be verified is a refused transfer, not an
 unlimited one. The `503` is deliberate rather than `403`: the caller did
 nothing wrong and retrying a moment later succeeds.
 
+## Usage history and alerts (P1, 2026-11-09)
+
+`src/quota_history.rs` samples every quota once an hour into
+`transfer_quota_history` (migration 088): observed_at, subject, period, and
+both directions' used/limit. Samples older than 90 days are pruned each tick.
+
+- The crossing rule is pure (`should_alert`): a notification is created only
+  when usage reaches 90% and the previous sample was below it (or there is no
+  previous sample in the same period). Staying above never re-alerts; dropping
+  below and crossing again does.
+- A period change or a counter reset (usage went backwards) is a fresh
+  baseline, so it cannot fire a false alert.
+- Alerts are normal system notifications (source `quota`, severity `warning`),
+  visible in the notification center and live over `/api/events`.
+- `GET /transfer-quotas/history?subject_type=user&subject_name=alice&limit=48`
+  (admin) returns newest-first points; the Quotas screen opens a read-only
+  history dialog per row.
+- The sampler is best-effort: a failure is logged and never blocks a transfer.
+
 ## Backend
 
 - `src/transfer_quota.rs` — `applicable_upload_quotas`/

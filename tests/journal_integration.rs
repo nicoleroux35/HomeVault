@@ -58,7 +58,7 @@ use homevault::auth::AuthService;
 use homevault::config::PathGuard;
 use homevault::handlers::journal::{
     handle_journal_cleanup_settings_get, handle_journal_cleanup_settings_update,
-    handle_journal_clear, handle_journal_entries, handle_journal_sources,
+    handle_journal_clear, handle_journal_entries, handle_journal_export, handle_journal_sources,
 };
 use homevault::handlers::terminal_pty::PtyManager;
 use homevault::handlers::{auth::handle_login, AppState};
@@ -138,6 +138,7 @@ fn journal_router(state: Arc<AppState>) -> Router {
         .route("/api/auth/login", axum::routing::post(handle_login))
         .route("/api/journal/sources", get(handle_journal_sources))
         .route("/api/journal/entries", get(handle_journal_entries))
+        .route("/api/journal/export", get(handle_journal_export))
         .route("/api/journal/clear", delete(handle_journal_clear))
         .route(
             "/api/journal/cleanup-settings",
@@ -206,6 +207,31 @@ async fn send(
         serde_json::from_slice(&bytes).unwrap_or(Value::Null)
     };
     (status, json)
+}
+
+async fn send_raw(
+    router: &mut Router,
+    method: Method,
+    uri: &str,
+    token: Option<&str>,
+) -> (StatusCode, axum::http::HeaderMap, String) {
+    let mut req = Request::builder().method(method).uri(uri);
+    if let Some(t) = token {
+        req = req.header("x-session-token", t);
+    }
+    let req = req.body(axum::body::Body::empty()).unwrap();
+    let resp = ServiceExt::<Req>::ready(router)
+        .await
+        .unwrap()
+        .call(req)
+        .await
+        .unwrap();
+    let status = resp.status();
+    let headers = resp.headers().clone();
+    let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    (status, headers, String::from_utf8_lossy(&bytes).to_string())
 }
 
 // ---------------------------------------------------------------------------
@@ -731,4 +757,88 @@ async fn test_cleanup_settings_round_trip_and_clamp() {
     )
     .await;
     assert_eq!(body["data"]["interval_days"], json!(1));
+}
+
+/// P1: the current filtered view exports as a download, with the same
+/// privilege model as the screen. The audit source is used here so the test
+/// does not depend on host log files.
+#[tokio::test]
+async fn journal_export_csv_and_json_for_the_audit_source() {
+    let h = setup().await;
+    create_test_user(&h.state, "admin1", "Password123!", 2).await;
+    create_test_user(&h.state, "user1", "Password123!", 1).await;
+    sqlx::query(
+        "INSERT INTO audit_log (created_at, severity, actor, action, target, client_ip, message)
+         VALUES ('2026-11-09T10:00:00+00:00', 'info', 'alice', 'auth.login', NULL, '192.0.2.1', 'User ''alice'' logged in')",
+    )
+    .execute(h.state.db.pool().as_ref())
+    .await
+    .unwrap();
+
+    let mut router = journal_router(h.state.clone());
+    let admin = login(&mut router, "admin1", "Password123!").await;
+    let user = login(&mut router, "user1", "Password123!").await;
+
+    let (status, headers, body) = send_raw(
+        &mut router,
+        Method::GET,
+        "/api/journal/export?source=audit&format=csv",
+        Some(&admin),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let content_type = headers
+        .get("content-type")
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or("");
+    assert!(content_type.starts_with("text/csv"));
+    assert!(headers
+        .get("content-disposition")
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or("")
+        .contains("homevault-journal-"));
+    assert!(body.starts_with("timestamp,unit,priority,pid,message\n"));
+    assert!(body.contains("[auth.login] User 'alice' logged in"));
+
+    let (status, body) = send(
+        &mut router,
+        Method::GET,
+        "/api/journal/export?source=audit&format=json",
+        Some(&admin),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["source"], "audit");
+    assert_eq!(body["entries"].as_array().unwrap().len(), 1);
+
+    // Same gate as the screen: audit/host sources are admin-only.
+    let (status, _, _) = send_raw(
+        &mut router,
+        Method::GET,
+        "/api/journal/export?source=audit&format=csv",
+        Some(&user),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+
+    let (status, _) = send(
+        &mut router,
+        Method::GET,
+        "/api/journal/export?source=audit&format=xml",
+        Some(&admin),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+
+    let (status, _) = send(
+        &mut router,
+        Method::GET,
+        "/api/journal/export?source=nope&format=csv",
+        Some(&admin),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
 }

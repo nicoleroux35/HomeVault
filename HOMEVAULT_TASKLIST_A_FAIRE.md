@@ -124,6 +124,7 @@ justifie.
 | **P1-29** | SMB WS-Discovery (découverte Windows) — livré 2026‑11‑08 | P1 | S | Découverte sans config |
 | **P1-30** | Mises à jour Docker planifiées/auto — livré 2026‑11‑09 | P1 | S/M | Hygiène de patch |
 | **P1-31** | Unifier les tâches planifiées (type `service`) — livré 2026‑11‑09 | P1 | S/M | Un seul moteur |
+| **P1-32** | Historique/alertes quotas + export Journal — livré 2026‑11‑09 | P1 | S | Visibilité sans surveillance |
 | **P2-1** | SMB AD/Kerberos complet (winbind, realm, idmap, keytab) — **gelé au partiel** (config ADS + join/leave ; DC réel seulement si cible entreprise) | P2 | L | Entreprise Windows |
 | **P2-2** | NFSv4 + Kerberos (`sec=krb5`) — **gelé au partiel** (flavor + validation keytab ; KDC réel seulement si cible entreprise) | P2 | L | Entreprise Unix |
 | **P2-3** | Thin provisioning — **gelé au partiel** (zvols ZFS thin/thick ; overcommit/LVM rejetés) | P2 | L | Sur‑allocation |
@@ -1662,6 +1663,21 @@ notification. Tests : 3 unitaires, 1 d'intégration
 (`tests/scheduled_tasks_integration.rs`), E2E Tasks 3.5 — écrits, non exécutés.
 Docs : `docs/guides/scheduled-tasks.md`, `docs/API.md`, `SCREENS.md`,
 FeatureDoc `scheduled-tasks`.
+
+### [x] P1-32 — Historique/alertes quotas + export Journal · S
+
+**Livré 2026‑11‑09.** `src/quota_history.rs` échantillonne chaque quota de
+transfert une fois par heure dans `transfer_quota_history` (migration `088`,
+rétention 90 jours) et crée **une** notification système quand une limite
+franchit 90 % dans une période (rester au-dessus ne re-alerte pas ; une remise
+à zéro est une nouvelle base). La règle de franchissement est pure et testée.
+`GET /api/transfer-quotas/history` (admin) sert les points ; l'écran Quotas
+ouvre un dialogue d'historique en lecture seule par ligne. Le Journal gagne
+**Export CSV** via `GET /api/journal/export` (mêmes filtres et privilèges que
+l'écran, CSV ou JSON, 5 000 entrées). Tests : 2 unitaires quotas + 2 Journal,
+2 d'intégration, E2E Quotas 4.4 / Journal 3.1b — écrits, non exécutés. Docs :
+`docs/guides/transfer-quotas.md`, `docs/guides/journal.md`, `docs/API.md`,
+`PRIVACY.md` (RoPA ligne 17), FeatureDocs `quotas`/`journal`.
 
 ---
 

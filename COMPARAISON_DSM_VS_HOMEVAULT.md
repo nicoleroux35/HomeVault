@@ -66,7 +66,7 @@ cas de désaccord avec le backlog, `HOMEVAULT_TASKLIST_A_FAIRE.md` §1bis gagne.
 | **RAID** | Storage Manager (création de volume) / Storage Advisor | 🟡 | SHR/SHR2, ajout automatique de spare, extension à chaud, RAID F1, vitesse et moniteur de resync (migration de niveau déjà faite) |
 | **Explorer** | File Station | ⭐ / 🟡 | **Montages VFS distants (CIFS/NFS/cloud)** absents ; vignettes **images seulement** (pas de vidéo/PDF) ; historique de versions **ZFS seulement** (pas Btrfs) ; ACL Windows ; favoris ; transcodage |
 | **Shares** | Control Panel > Dossier partagé + Services de fichiers | 🟡 | ACL Windows non simulées (POSIX uniquement) ; validation réelle DC/keytab AD ; NFSv4 Kerberos à valider sur matériel ; WS‑Discovery absent ; SMB multicanal, chiffrement, Previous Versions, Time Machine, rsync, FTP jails : **faits** |
-| **Quotas** | Control Panel > Quota | ✅ | Parité solide (utilisateur, partage, transfert). Ajouter historique/alertes de dépassement |
+| **Quotas** | Control Panel > Quota | ✅ / ⭐ | Parité solide (utilisateur, partage, transfert) **+ historique horaire et alerte à 90 %** (P1‑32, rétention 90 j) |
 | **USB Copy** | USB Copy | ✅ | Ajouter déclenchement physique one‑touch et règles multiples si le matériel le permet |
 | **iSCSI** | SAN Manager | 🟡 | Snapshots/clones de LUN, LUN thin, Fibre Channel, multipath, VAAI. CHAP et apply‑now sont faits |
 | **Backup** | Hyper Backup | 🟡 | Pas d'image **bare‑metal/block‑level**, pas d'agent ABB (Windows/Linux/M365), pas de C2. Restic, dédup, chiffrement, rétention, `mount`, vérification : faits |
@@ -98,7 +98,7 @@ cas de désaccord avec le backlog, `HOMEVAULT_TASKLIST_A_FAIRE.md` §1bis gagne.
 |---|---|---|---|
 | **Health** | Resource Monitor + Security Advisor + Active Insight | ✅ / 🟡 | Top processus, I/O disque, capteurs matériels, seuils/alertes. Security Advisor : au niveau |
 | **Metrics** | Resource Monitor | ✅ | Par processus, I/O disque/volume, rapports planifiés. Rétention configurable : faite |
-| **Journal** | Log Center | ✅ / ⭐ | **Table d'audit interrogeable livrée** (P1‑18 : filtres API, export CSV/JSON, source `audit`, rétention 90 j) ; restent les filtres structurés dans l'UI et les alertes. Syslog distant TLS : fait |
+| **Journal** | Log Center | ✅ / ⭐ | **Table d'audit interrogeable livrée** (P1‑18 : filtres API, export CSV/JSON, source `audit`, rétention 90 j) **+ Export CSV de la vue courante** (P1‑32) ; restent les filtres structurés dans l'UI et les alertes. Syslog distant TLS : fait |
 | **Widgets / Edit Widgets** | Widgets DSM | ✅ | Widgets backup/UPS/interface réseau/croissance stockage |
 | **Cloud Sync** | Cloud Sync | ✅ | Remotes chiffrés (rclone crypt), présets fournisseurs, limites de bande passante |
 | **Syncthing** | Synology Drive | 🟡 | **Navigateur de versions/restauration**, sync sélective/à la demande, dossiers d'équipe, apps mobiles, verrouillage de fichiers |
@@ -291,6 +291,10 @@ PHP 8.1/Redis 4.0.
   `ServiceKind` (`docker_update`, `trash_purge`, `db_backup`,
   `notification`) dans `src/scheduled_tasks_scheduler.rs`, migration `087`
   (CHECK élargi, historique conservé), sélecteur dans Tasks (P1‑31)
+- **Historique quotas + export Journal** : `src/quota_history.rs` (échantillon
+  horaire, alerte au franchissement de 90 %, purge 90 j), migration `088`,
+  `GET /api/transfer-quotas/history`, `GET /api/journal/export` et bouton
+  *Export CSV* (P1‑32)
 - Catalogue : `catalog/*/homevault-app.toml` (15 apps)
 - Apps catalogue **non liées aux partages** : le compose ne binde que
   `/srv/apps/<app>` (`src/app_catalog/mod.rs:261-270`) — d'où le chantier
@@ -525,7 +529,22 @@ Journal — l'API les porte déjà.
 - Docs : `docs/guides/scheduled-tasks.md`, `docs/API.md`, `SCREENS.md`,
   FeatureDoc `scheduled-tasks`.
 
+**P1‑32 — historique/alertes quotas + export Journal (livré).**
+
+- `src/quota_history.rs` échantillonne chaque quota de transfert toutes les
+  heures dans `transfer_quota_history` (migration `088`, rétention 90 j). Une
+  seule notification par franchissement de 90 % dans une période ; rester
+  au-dessus ne re-alerte pas, une remise à zéro est une nouvelle base.
+- `GET /api/transfer-quotas/history` (admin) sert les points ; l'écran Quotas
+  ouvre un dialogue d'historique en lecture seule par ligne.
+- `GET /api/journal/export` (mêmes filtres et privilèges que l'écran, CSV/JSON,
+  5 000 entrées) + bouton **Export CSV** dans le Journal.
+- Tests écrits mais **non exécutés** : 2 unitaires quotas + 2 Journal,
+  2 d'intégration, E2E Quotas 4.4 / Journal 3.1b.
+- Docs : `docs/guides/transfer-quotas.md`, `docs/guides/journal.md`,
+  `docs/API.md`, `PRIVACY.md` (RoPA ligne 17), FeatureDocs `quotas`/`journal`.
+
 **Reste sur P2‑9** : le test de reconstruction complète sur une VM jetable
 (boot, installation, restauration DB + configuration + données, vérification)
-et, si la cible le justifie, une image système équivalente à `md0`. Les autres
-P1 de l'ordre restent : historique/alertes quotas, WireGuard UX.
+et, si la cible le justifie, une image système équivalente à `md0`. Le dernier
+P1 de l'ordre reste : WireGuard UX.

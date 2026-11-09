@@ -266,6 +266,17 @@ test.describe('3 — Filters', () => {
     await expect.poll(() => queried, { timeout: 8000 }).toContain('search=homevault');
   });
 
+  test('3.1b — Export downloads the current filtered view as CSV', async ({ page }) => {
+    await openJournal(page, adminTokens);
+    await win(page).locator('#jr-search').fill('homevault');
+    const [request] = await Promise.all([
+      page.waitForRequest((r) => r.url().includes('/api/journal/export'), { timeout: 15_000 }),
+      win(page).locator('[data-testid="journal-export"]').click(),
+    ]);
+    expect(request.url()).toContain('format=csv');
+    expect(request.url()).toContain('search=homevault');
+  });
+
   test('3.2 — Enter in the search box triggers a query', async ({ page }) => {
     await openJournal(page, adminTokens);
     let hit = false;

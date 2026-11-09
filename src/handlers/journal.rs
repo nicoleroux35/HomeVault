@@ -46,7 +46,7 @@
 
 use axum::{
     extract::State,
-    http::HeaderMap,
+    http::{HeaderMap, HeaderValue, header},
     response::{IntoResponse, Response},
     Json,
 };
@@ -111,7 +111,7 @@ pub struct JournalSource {
 }
 
 /// Query parameters for listing journal entries.
-#[derive(Deserialize, Default, Debug)]
+#[derive(Deserialize, Default, Debug, Clone)]
 pub struct JournalQuery {
     /// Source id: `system` (default) or one of the text logs listed in
     /// `JournalSource` (e.g. `syslog`, `auth`, `kern`).
@@ -419,6 +419,188 @@ pub async fn handle_journal_entries(
         }))
         .into_response(),
     }
+}
+
+/// Export query: the same filters as the screen plus the output format.
+#[derive(Deserialize, Default, Debug)]
+pub struct JournalExportQuery {
+    #[serde(flatten)]
+    pub journal: JournalQuery,
+    /// `csv` (default) or `json`.
+    #[serde(default)]
+    pub format: Option<String>,
+}
+
+/// `GET /api/journal/export` — the current filtered view as a download.
+///
+/// Same privilege model as the screen (`app` session-level, `audit`/host
+/// admin-only), same bounded read (up to 5 000 entries). The audit source is
+/// served from the table; the other sources reuse the exact `read_entries`
+/// path, so the export and the screen can never disagree about what a filter
+/// means.
+pub async fn handle_journal_export(
+    State(state): State<AppStateArc>,
+    headers: HeaderMap,
+    axum::extract::Query(export): axum::extract::Query<JournalExportQuery>,
+) -> Response {
+    let username = match crate::handlers::admin_guard::require_auth(&state, &headers).await {
+        Ok(username) => username,
+        Err(resp) => return resp,
+    };
+
+    let source = export
+        .journal
+        .source
+        .clone()
+        .unwrap_or_else(|| "app".to_string());
+    let kind = match source_kind(&source) {
+        Some(kind) => kind,
+        None => return ResponseHelper::json_error(format!("Unknown log source: {}", source)),
+    };
+    if kind != SourceKind::App && !state.auth.is_admin(&username).await {
+        return ResponseHelper::json_forbidden(
+            "Host and audit sources are restricted to administrators".to_string(),
+        );
+    }
+
+    let format = export
+        .format
+        .as_deref()
+        .unwrap_or("csv")
+        .trim()
+        .to_ascii_lowercase();
+    if format != "csv" && format != "json" {
+        return ResponseHelper::json_error("format must be 'csv' or 'json'".to_string());
+    }
+    let search = export
+        .journal
+        .search
+        .clone()
+        .filter(|value| !value.trim().is_empty());
+
+    const EXPORT_LIMIT: usize = 5_000;
+    let entries: Vec<JournalEntry> = if kind == SourceKind::Audit {
+        let audit_query = crate::audit::AuditQuery {
+            q: search,
+            limit: Some(crate::audit::AUDIT_EXPORT_MAX),
+            ..Default::default()
+        };
+        match crate::audit::list(
+            state.db.pool().as_ref(),
+            &audit_query,
+            crate::audit::AUDIT_EXPORT_MAX,
+        )
+        .await
+        {
+            Ok(page) => page
+                .entries
+                .into_iter()
+                .map(|entry| JournalEntry {
+                    timestamp: Some(entry.timestamp),
+                    unit: Some("homevault".to_string()),
+                    priority: Some(if entry.severity == "warning" { 4 } else { 6 }),
+                    priority_text: Some(entry.severity),
+                    pid: None,
+                    message: match entry.action {
+                        Some(action) => format!("[{}] {}", action, entry.message),
+                        None => entry.message,
+                    },
+                })
+                .collect(),
+            Err(message) => return ResponseHelper::json_error(message),
+        }
+    } else {
+        let permit = match READ_PERMITS.clone().acquire_owned().await {
+            Ok(permit) => permit,
+            Err(_) => {
+                return ResponseHelper::json_internal_error(
+                    "Journal reader is unavailable".to_string(),
+                )
+            }
+        };
+        let query = export.journal.clone();
+        let source_for_read = source.clone();
+        let search_for_read = search.clone();
+        let result = tokio::task::spawn_blocking(move || {
+            let _permit = permit;
+            read_entries(&source_for_read, &query, EXPORT_LIMIT, search_for_read.as_deref())
+        })
+        .await;
+        match result {
+            Ok(Ok(read)) => read.entries,
+            Ok(Err(e)) => return ResponseHelper::json_error(e),
+            Err(_) => {
+                return ResponseHelper::json_internal_error(
+                    "Internal server error reading journal".to_string(),
+                )
+            }
+        }
+    };
+
+    let stamp = chrono::Utc::now().format("%Y%m%dT%H%M%SZ").to_string();
+    let mut response_headers = HeaderMap::new();
+    if format == "csv" {
+        response_headers.insert(
+            header::CONTENT_TYPE,
+            HeaderValue::from_static("text/csv; charset=utf-8"),
+        );
+        let disposition = format!("attachment; filename=\"homevault-journal-{source}-{stamp}.csv\"");
+        response_headers.insert(
+            header::CONTENT_DISPOSITION,
+            HeaderValue::from_str(&disposition)
+                .unwrap_or_else(|_| HeaderValue::from_static("attachment")),
+        );
+        (response_headers, journal_to_csv(&entries)).into_response()
+    } else {
+        response_headers.insert(
+            header::CONTENT_TYPE,
+            HeaderValue::from_static("application/json; charset=utf-8"),
+        );
+        let disposition = format!("attachment; filename=\"homevault-journal-{source}-{stamp}.json\"");
+        response_headers.insert(
+            header::CONTENT_DISPOSITION,
+            HeaderValue::from_str(&disposition)
+                .unwrap_or_else(|_| HeaderValue::from_static("attachment")),
+        );
+        let body = json!({
+            "source": source,
+            "exported_at": chrono::Utc::now().to_rfc3339(),
+            "entries": entries,
+        });
+        (response_headers, body.to_string()).into_response()
+    }
+}
+
+/// RFC 4180 CSV for the Journal export.
+fn journal_to_csv(entries: &[JournalEntry]) -> String {
+    let mut out = String::from("timestamp,unit,priority,pid,message\n");
+    for entry in entries {
+        let fields = [
+            entry.timestamp.as_deref().unwrap_or(""),
+            entry.unit.as_deref().unwrap_or(""),
+            entry.priority_text.as_deref().unwrap_or(""),
+            entry.pid.as_deref().unwrap_or(""),
+            entry.message.as_str(),
+        ];
+        for (index, field) in fields.iter().enumerate() {
+            if index > 0 {
+                out.push(',');
+            }
+            if field.contains(',')
+                || field.contains('"')
+                || field.contains('\n')
+                || field.contains('\r')
+            {
+                out.push('"');
+                out.push_str(&field.replace('"', "\"\""));
+                out.push('"');
+            } else {
+                out.push_str(field);
+            }
+        }
+        out.push('\n');
+    }
+    out
 }
 
 /// Delete HomeVault's own rotating application log files (source id
@@ -1226,5 +1408,28 @@ mod tests {
         // the caller must not render it as "no entries" (ROADMAP 20.2).
         assert!(err.contains("Failed to open"), "{err}");
         assert!(err.contains("gone.log"), "{err}");
+    }
+
+    #[test]
+    fn test_journal_csv_quotes_commas_quotes_and_newlines() {
+        let entries = vec![JournalEntry {
+            timestamp: Some("2026-11-09T10:00:00+00:00".to_string()),
+            unit: Some("homevault".to_string()),
+            priority: Some(6),
+            priority_text: Some("info".to_string()),
+            pid: None,
+            message: "a, b \"quoted\"\nnext".to_string(),
+        }];
+        let csv = journal_to_csv(&entries);
+        assert!(csv.starts_with("timestamp,unit,priority,pid,message\n"));
+        assert!(csv.contains("\"a, b \"\"quoted\"\" next\""));
+    }
+
+    #[test]
+    fn test_journal_csv_writes_the_header_for_an_empty_export() {
+        assert_eq!(
+            journal_to_csv(&[]),
+            "timestamp,unit,priority,pid,message\n"
+        );
     }
 }

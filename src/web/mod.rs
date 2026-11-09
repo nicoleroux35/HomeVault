@@ -175,7 +175,8 @@ use crate::handlers::{
     },
     journal::{
         handle_journal_cleanup_settings_get, handle_journal_cleanup_settings_update,
-        handle_journal_clear, handle_journal_entries, handle_journal_sources,
+        handle_journal_clear, handle_journal_entries, handle_journal_export,
+        handle_journal_sources,
     },
     local_dns::{handle_get as handle_local_dns_get, handle_update as handle_local_dns_update},
     mcp::{
@@ -347,8 +348,8 @@ use crate::handlers::{
     },
     system::{handle_server_restart, handle_server_shutdown},
     transfer_quotas::{
-        handle_transfer_quota_delete, handle_transfer_quota_get, handle_transfer_quota_set,
-        handle_transfer_quotas_list,
+        handle_transfer_quota_delete, handle_transfer_quota_get, handle_transfer_quota_history,
+        handle_transfer_quota_set, handle_transfer_quotas_list,
     },
     transfers::{handle_active_transfers, handle_transfer_history},
     upnp::{
@@ -2359,6 +2360,7 @@ pub fn create_app(state: AppStateArc) -> Router {
         )
         .route("/api/journal/sources", get(handle_journal_sources))
         .route("/api/journal/entries", get(handle_journal_entries))
+        .route("/api/journal/export", get(handle_journal_export))
         .route("/api/journal/clear", delete(handle_journal_clear))
         .route(
             "/api/journal/cleanup-settings",
@@ -2369,6 +2371,11 @@ pub fn create_app(state: AppStateArc) -> Router {
             put(handle_journal_cleanup_settings_update),
         )
         // Upload/download transfer quotas (Users/Groups pages)
+        // Static route first: axum prefers it over `{subject_type}`.
+        .route(
+            "/api/transfer-quotas/history",
+            get(handle_transfer_quota_history),
+        )
         .route(
             "/api/transfer-quotas/{subject_type}",
             get(handle_transfer_quotas_list),
@@ -2872,6 +2879,8 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     tokio::spawn(crate::docker_update_scheduler::run_scheduler_loop(
         state.clone(),
     ));
+    // P1: hourly transfer-quota usage samples + 90% crossing alerts.
+    tokio::spawn(crate::quota_history::run_sampler_loop(state.clone()));
     // Snapshots of HomeVault's own database (WAL mode: the `.db` file alone is
     // not restorable) plus the periodic WAL checkpoint that keeps `-wal` bounded.
     let scheduler_db = db.clone();

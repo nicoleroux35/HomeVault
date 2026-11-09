@@ -1580,6 +1580,7 @@ Clear-logs and cleanup-settings writes are `admin`. See
 |--------|------|------|
 | GET | `/journal/sources` | auth (lists `app`; adds `audit`, `system` + the `/var/log` files for an admin) |
 | GET | `/journal/entries` | auth for `?source=app`, admin for `audit`/`system`/`syslog`/`auth`/`kern`/`daemon` (403 otherwise) |
+| GET | `/journal/export` | same gate as `/journal/entries` | the current filtered view as `format=csv\|json` (≤ 5 000 entries), returned as a download |
 | DELETE | `/journal/clear` | admin |
 | GET/PUT | `/journal/cleanup-settings` | auth / admin |
 | GET | `/audit` | admin — paged audit trail (`from`, `to`, `severity`, `actor`, `action`, `q`, `limit` ≤ 500, `offset`); returns `entries`, `total`, `retention_days` |
@@ -1606,6 +1607,7 @@ separate system daemons this codebase can't meter). See
 | GET | `/transfer-quotas/{subject_type}/{subject_name}` | self or admin |
 | PUT | `/transfer-quotas/{subject_type}/{subject_name}` | admin |
 | DELETE | `/transfer-quotas/{subject_type}/{subject_name}` | admin |
+| GET | `/transfer-quotas/history` | admin | hourly usage samples for one subject (`subject_type`, `subject_name`, `limit` ≤ 500), newest first, 90-day retention; feeds the Quotas history dialog and the 90% crossing alerts |
 
 `subject_type` ∈ {`user`, `group`}. A user's own quota and every group they
 belong to are each checked and debited independently.

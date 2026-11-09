@@ -35,9 +35,10 @@
   import { get } from 'svelte/store';
   import { api } from '$lib/services/api';
   import { onAppVisible } from '$lib/utils/autoRevalidate';
-  import { t, languageStore } from '$lib/stores/i18n';
+  import { t, translate, languageStore } from '$lib/stores/i18n';
   import { isAdmin } from '$lib/stores/auth';
   import { PageLayout, DataTable, EmptyState } from '$lib/components/app';
+  import { Modal, Button } from '$lib/components/theme';
   import { cn } from '$lib/utils.js';
   import { IconGauge, IconUsers, IconShield, IconArrowRight } from '@tabler/icons-svelte';
 
@@ -63,6 +64,20 @@
   let loading = true;
   let loadError = false;
   let filter: QuotaFilter = 'all';
+
+  // P1 — hourly quota usage history (newest first). One modal per subject.
+  interface QuotaHistoryPoint {
+    observed_at: string;
+    period: string;
+    upload_used_bytes: number;
+    upload_limit_bytes: number;
+    download_used_bytes: number;
+    download_limit_bytes: number;
+  }
+  let historyFor: { subjectType: 'user' | 'group'; subjectName: string } | null = null;
+  let historyPoints: QuotaHistoryPoint[] = [];
+  let historyLoading = false;
+  let historyError = '';
 
   const FILTERS: { id: QuotaFilter; label: string }[] = [
     { id: 'all', label: 'quotas.filter_all' },
@@ -180,6 +195,39 @@
     window.dispatchEvent(new CustomEvent('hv-open-app', { detail: { id: 'users' } }));
   }
 
+  async function openHistory(row: QuotaRow) {
+    historyFor = { subjectType: row.subjectType, subjectName: row.subjectName };
+    historyPoints = [];
+    historyError = '';
+    historyLoading = true;
+    try {
+      const res = await api.getTransferQuotaHistory(row.subjectType, row.subjectName, 48);
+      if (res.success && res.data) historyPoints = res.data;
+      else historyError = res.message || res.error || translate('quotas.history_error');
+    } catch {
+      historyError = translate('quotas.history_error');
+    } finally {
+      historyLoading = false;
+    }
+  }
+
+  function closeHistory() {
+    historyFor = null;
+    historyPoints = [];
+    historyError = '';
+  }
+
+  /** `used / limit` as a whole percentage, or `null` when unlimited. */
+  function historyPercent(used: number, limit: number): number | null {
+    if (!limit || limit <= 0) return null;
+    return Math.min(999, Math.round((Math.max(0, used) / limit) * 100));
+  }
+
+  function historyCell(used: number, limit: number): string {
+    const pct = historyPercent(used, limit);
+    return pct === null ? '—' : `${pct}% · ${formatBytes(used)} / ${formatBytes(limit)}`;
+  }
+
   $: filtered = rows.filter((r) => filter === 'all' || r.subjectType === filter);
   $: limitedCount = rows.filter((r) => r.uploadEnabled || r.downloadEnabled).length;
 </script>
@@ -248,6 +296,7 @@
           { id: 'name', label: '' },
           { id: 'upload', label: $t('quotas.upload') },
           { id: 'download', label: $t('quotas.download') },
+          { id: 'history', label: '' },
         ]}
         label={$t('quotas.heading')}
         class="rounded-xl bg-card border border-border shadow-[var(--hv-shell-shadow-card)] p-2"
@@ -291,9 +340,61 @@
                 <span class="text-c-xs text-[var(--hv-shell-text)]">{$t('quotas.unlimited')}</span>
               {/if}
             </span>
+          {:else if column.id === 'history'}
+            <Button
+              variant="ghost"
+              onclick={() => openHistory(row)}
+              data-testid={`quotas-history-${row.subjectType}-${row.subjectName}`}
+            >
+              {$t('quotas.history')}
+            </Button>
           {/if}
         {/snippet}
       </DataTable>
     {/if}
   </div>
 </PageLayout>
+
+<Modal
+  open={historyFor !== null}
+  title={historyFor
+    ? $t('quotas.history_title', {
+        type: $t(historyFor.subjectType === 'user' ? 'quotas.type_user' : 'quotas.type_group'),
+        name: historyFor.subjectName,
+      })
+    : ''}
+  size="lg"
+  onclose={closeHistory}
+>
+  <div class="flex flex-col gap-3 p-1" data-testid="quotas-history-modal">
+    {#if historyLoading}
+      <p class="m-0 text-c-sm">{$t('quotas.loading')}</p>
+    {:else if historyError}
+      <p class="m-0 text-c-sm text-[var(--hv-danger)]" role="alert">{$t('quotas.history_error')}</p>
+    {:else if historyPoints.length === 0}
+      <p class="m-0 text-c-sm" data-testid="quotas-history-empty">{$t('quotas.history_empty')}</p>
+    {:else}
+      <p class="m-0 text-c-xs text-[var(--hv-shell-text-2)]">{$t('quotas.history_note')}</p>
+      <div class="overflow-x-auto">
+        <table class="w-full text-c-sm">
+          <thead>
+            <tr class="text-left text-c-xs uppercase tracking-wide text-[var(--hv-shell-text-2)]">
+              <th scope="col" class="py-1 pr-3">{$t('quotas.history_time')}</th>
+              <th scope="col" class="py-1 pr-3">{$t('quotas.history_upload')}</th>
+              <th scope="col" class="py-1">{$t('quotas.history_download')}</th>
+            </tr>
+          </thead>
+          <tbody>
+            {#each historyPoints as point (point.observed_at)}
+              <tr class="border-t border-[var(--hv-shell-border)]">
+                <td class="py-1 pr-3 whitespace-nowrap text-[var(--hv-shell-text-2)]">{formatDate(point.observed_at)}</td>
+                <td class="py-1 pr-3 font-[family-name:var(--hv-font-mono)]">{historyCell(point.upload_used_bytes, point.upload_limit_bytes)}</td>
+                <td class="py-1 font-[family-name:var(--hv-font-mono)]">{historyCell(point.download_used_bytes, point.download_limit_bytes)}</td>
+              </tr>
+            {/each}
+          </tbody>
+        </table>
+      </div>
+    {/if}
+  </div>
+</Modal>
