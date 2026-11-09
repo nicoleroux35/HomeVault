@@ -3105,3 +3105,204 @@ test.describe('30 — Signed update', () => {
     expect(anonymous).toBe(401);
   });
 });
+
+// ===========================================================================
+// 31 — SMTP OAuth2 (Gmail / Microsoft 365, P1-16)
+//
+// No test reaches a provider: saving, validation, the authorization URL and
+// the disconnect flow are local. The card is checked for labelled controls and
+// for never showing a secret back.
+// ===========================================================================
+
+/** Delete any OAuth2 configuration through the API, then re-mount Settings. */
+async function resetEmailOAuth(page: Page) {
+  await gotoDesktop(page, adminTokens);
+  await page.evaluate(
+    async ({ token, csrf }) => {
+      await fetch('/api/settings/email/oauth', {
+        method: 'DELETE',
+        headers: { 'x-session-token': token, 'x-csrf-token': csrf },
+      });
+    },
+    { token: adminTokens.token, csrf: adminTokens.csrf },
+  );
+  await page.reload({ waitUntil: 'domcontentloaded' });
+  await page.waitForSelector('.hv-user-pill', { timeout: 20_000 });
+}
+
+async function openEmailOAuthCard(page: Page) {
+  await openCategory(page, 'email');
+  const card = set(page).locator('[data-testid="settings-email-oauth-card"]');
+  await expect(card).toBeVisible({ timeout: 10_000 });
+  return card;
+}
+
+test.describe('31 — SMTP OAuth2', () => {
+  test('31.1 — the card renders labelled controls and starts unconfigured', async ({ page }) => {
+    await resetEmailOAuth(page);
+    const card = await openEmailOAuthCard(page);
+
+    for (const id of [
+      'emailOauthProvider',
+      'emailOauthClientId',
+      'emailOauthClientSecret',
+      'emailOauthRedirect',
+    ]) {
+      await expect(card.locator(`label[for="${id}"]`)).toBeVisible();
+      await expect(card.locator(`#${id}`)).toBeVisible();
+    }
+    await expect(card.locator('[data-testid="email-oauth-status"]')).toHaveAttribute(
+      'data-state',
+      'unconfigured',
+    );
+    // The secret field is a password input and is never pre-filled.
+    await expect(card.locator('[data-testid="email-oauth-client-secret"]')).toHaveAttribute(
+      'type',
+      'password',
+    );
+    await expect(card.locator('[data-testid="email-oauth-client-secret"]')).toHaveValue('');
+    // A provider hint names the relay to configure above.
+    await expect(card.locator('[data-testid="email-oauth-provider-hint"]')).toContainText(
+      'smtp.gmail.com',
+    );
+  });
+
+  test('31.2 — saving the registration makes the card ready without echoing the secret', async ({
+    page,
+  }) => {
+    await resetEmailOAuth(page);
+    const card = await openEmailOAuthCard(page);
+
+    await card.locator('[data-testid="email-oauth-client-id"]').fill(
+      '123.apps.googleusercontent.com',
+    );
+    await card
+      .locator('[data-testid="email-oauth-client-secret"]')
+      .fill('e2e-client-secret-value');
+    await card
+      .locator('[data-testid="email-oauth-redirect"]')
+      .fill('https://nas.example.com/api/settings/email/oauth/callback');
+    await card.locator('[data-testid="email-oauth-save"]').click();
+
+    await expect(card.locator('[data-testid="email-oauth-notice"]')).toContainText(/saved/i);
+    await expect(card.locator('[data-testid="email-oauth-status"]')).toHaveAttribute(
+      'data-state',
+      'ready',
+    );
+    // The secret is not echoed back into the field after saving.
+    await expect(card.locator('[data-testid="email-oauth-client-secret"]')).toHaveValue('');
+
+    const status = await page.evaluate(
+      async ({ token, csrf }) => {
+        const r = await fetch('/api/settings/email/oauth', {
+          headers: { 'x-session-token': token, 'x-csrf-token': csrf },
+        });
+        return r.text();
+      },
+      { token: adminTokens.token, csrf: adminTokens.csrf },
+    );
+    expect(status).toContain('"configured":true');
+    expect(status).not.toContain('e2e-client-secret-value');
+    expect(status).not.toContain('client_secret');
+    expect(status).not.toContain('refresh_token');
+  });
+
+  test('31.3 — an invalid redirect URL is refused with the reason', async ({ page }) => {
+    await resetEmailOAuth(page);
+    const card = await openEmailOAuthCard(page);
+
+    await card.locator('[data-testid="email-oauth-client-id"]').fill('client-id');
+    await card.locator('[data-testid="email-oauth-client-secret"]').fill('a-secret');
+    await card.locator('[data-testid="email-oauth-redirect"]').fill('ftp://nas.example.com/cb');
+    await card.locator('[data-testid="email-oauth-save"]').click();
+
+    await expect(card.locator('[data-testid="email-oauth-notice"]')).toContainText(
+      /http:\/\/ or https:\/\//i,
+    );
+    await expect(card.locator('[data-testid="email-oauth-status"]')).toHaveAttribute(
+      'data-state',
+      'unconfigured',
+    );
+  });
+
+  test('31.4 — Start returns the provider URL and binds it to a state cookie', async ({
+    page,
+  }) => {
+    await resetEmailOAuth(page);
+    const card = await openEmailOAuthCard(page);
+
+    await card.locator('[data-testid="email-oauth-client-id"]').fill('client-id');
+    await card.locator('[data-testid="email-oauth-client-secret"]').fill('a-secret');
+    await card
+      .locator('[data-testid="email-oauth-redirect"]')
+      .fill('https://nas.example.com/api/settings/email/oauth/callback');
+    await card.locator('[data-testid="email-oauth-save"]').click();
+    await expect(card.locator('[data-testid="email-oauth-status"]')).toHaveAttribute(
+      'data-state',
+      'ready',
+    );
+
+    const started = await page.evaluate(
+      async ({ token, csrf }) => {
+        const r = await fetch('/api/settings/email/oauth/start', {
+          method: 'POST',
+          headers: {
+            'x-session-token': token,
+            'x-csrf-token': csrf,
+            'content-type': 'application/json',
+          },
+          body: '{}',
+        });
+        return { status: r.status, body: await r.text() };
+      },
+      { token: adminTokens.token, csrf: adminTokens.csrf },
+    );
+    expect(started.status).toBe(200);
+    expect(started.body).toContain('accounts.google.com');
+    expect(started.body).toContain('response_type=code');
+    expect(started.body).toContain('state=');
+    // The Connect button stays available for a reconnect.
+    await expect(card.locator('[data-testid="email-oauth-connect"]')).toBeEnabled();
+  });
+
+  test('31.5 — the status route is admin-only', async ({ page }) => {
+    await gotoDesktop(page, adminTokens);
+    const anonymous = await page.evaluate(async () => {
+      const r = await fetch('/api/settings/email/oauth');
+      return r.status;
+    });
+    expect(anonymous).toBe(401);
+  });
+
+  test('31.6 — Disconnect asks for confirmation and clears the registration', async ({
+    page,
+  }) => {
+    await resetEmailOAuth(page);
+    const card = await openEmailOAuthCard(page);
+
+    await card.locator('[data-testid="email-oauth-client-id"]').fill('client-id');
+    await card.locator('[data-testid="email-oauth-client-secret"]').fill('a-secret');
+    await card
+      .locator('[data-testid="email-oauth-redirect"]')
+      .fill('https://nas.example.com/api/settings/email/oauth/callback');
+    await card.locator('[data-testid="email-oauth-save"]').click();
+    await expect(card.locator('[data-testid="email-oauth-status"]')).toHaveAttribute(
+      'data-state',
+      'ready',
+    );
+
+    await card.locator('[data-testid="email-oauth-disconnect"]').click();
+    const dialog = page.getByRole('dialog');
+    await expect(dialog).toBeVisible();
+    await expect(dialog.locator('[data-testid="confirm-dialog-message"]')).toContainText(/OAuth2/);
+    await dialog.getByRole('button').last().click();
+
+    await expect(card.locator('[data-testid="email-oauth-notice"]')).toContainText(
+      /disconnected/i,
+    );
+    await expect(card.locator('[data-testid="email-oauth-status"]')).toHaveAttribute(
+      'data-state',
+      'unconfigured',
+    );
+  });
+});

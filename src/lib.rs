@@ -69,6 +69,7 @@ pub mod disk;
 pub mod docker;
 pub mod docker_update_scheduler;
 pub mod email;
+pub mod email_oauth;
 pub mod encryption;
 pub mod events;
 pub mod firewall;

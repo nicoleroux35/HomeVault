@@ -28,6 +28,9 @@ Handlers in `src/handlers/settings.rs`. Persistence via
 | `GET /translations` | auth | flattened translation map (mounted at `/api/translations`; see [i18n](../I18N.md)) |
 | `GET/PUT /settings/email` | auth / admin | SMTP relay; validated before it is stored and used to generate the `msmtp` configuration (ROADMAP 13.3) |
 | `POST /settings/email/test` | admin | sends a real test email via `EmailService::send_test_email` to `NOTIFICATION_SETTINGS.email` (previously a stub that only logged and always reported success) |
+| `GET/PUT/DELETE /settings/email/oauth` | admin | SMTP OAuth2 registration (P1-16): provider, client id, sealed client secret, exact callback URL; the response never contains a secret or a token |
+| `POST /settings/email/oauth/start` | admin | returns the provider authorization URL and sets the one-time `hv_email_oauth_state` cookie |
+| `GET /settings/email/oauth/callback` | public | the provider redirect; refuses a state that does not match the cookie or was already used. See [email-oauth](./email-oauth.md) |
 | `GET/PUT /settings/notifications` | auth / admin | alert email, threshold, `webhook_url`/`webhook_enabled`; the URL is validated at save time and again at dispatch |
 | `GET /settings/appearance` | **any session** | the appliance look: `wallpaper` (one of the 44 bundled — no upload) + `accent_color`. Read by every account's boot hydration (ROADMAP 26.1); carries nothing else — no e-mail, SMTP, update or notification field |
 | `PUT /settings/appearance` | admin | same two fields, validated (see below). `theme` / `density` no longer exist (ROADMAP 26.2) |

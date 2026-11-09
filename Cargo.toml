@@ -16,7 +16,7 @@ name = "homevault"
 path = "src/bin/server.rs"
 
 [dependencies]
-reqwest = { version = "0.13", features = ["json", "stream"] }
+reqwest = { version = "0.13", features = ["json", "stream", "blocking", "form"] }
 axum = { version = "0.8", features = ["macros", "ws", "multipart"] }
 axum-macros = "0.5"
 chrono = { version = "0.4", features = ["serde"] }

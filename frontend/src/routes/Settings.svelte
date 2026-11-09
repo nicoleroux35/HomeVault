@@ -83,6 +83,7 @@
     settingsIconTile
   } from '$lib/components/settings/vocabulary';
   import AntivirusCard from '$lib/components/settings/AntivirusCard.svelte';
+  import EmailOAuthCard from '$lib/components/settings/EmailOAuthCard.svelte';
   import AntiRansomwareCard from '$lib/components/settings/AntiRansomwareCard.svelte';
   import FirewallCard from '$lib/components/settings/FirewallCard.svelte';
   import TlsCard from '$lib/components/settings/TlsCard.svelte';
@@ -1353,6 +1354,9 @@
             <button class={cn(settingsBtn, settingsBtnGhost)} onclick={handleTestEmail} disabled={testingEmail}>{testingEmail ? $t('settings.sending') : $t('settings.test_email')}</button>
           </div>
         </div>
+        <!-- P1-16: Gmail / Microsoft 365 sign-in, under the relay it replaces
+             the password for. The card owns its own save/connect flow. -->
+        <EmailOAuthCard class="mt-3" />
       {/if}
       {#if activeCategory === 'notifications'}
         <div data-testid="settings-card-title" class={secLabel}></div>

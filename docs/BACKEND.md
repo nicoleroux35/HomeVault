@@ -76,6 +76,8 @@ src/
                         (feeds the System Journal "app" source via tracing)
   dependencies.rs       Startup external-tool inventory (cross-checked vs install.sh)
   email.rs              EmailService (mutt/sendmail/msmtp)
+  email_oauth.rs        SMTP OAuth2 (Gmail/Microsoft 365): authorization-code
+                        flow, sealed refresh token, access-token cache
   permissions.rs        PermissionService (POSIX ACLs for shares)
   shares.rs             Share model/service (SMB/NFS/FTP/WebDAV/SFTP)
   rsync_server.rs       Opt-in rsyncd: module validation, config/secrets/unit

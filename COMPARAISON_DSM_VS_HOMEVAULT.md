@@ -38,6 +38,7 @@ qu'elle listait sont **désormais livrés** et ne doivent plus être comptés :
 | OpenAPI, DDNS 7 fournisseurs, SNMP v3 | ✅ livrés |
 | Table d'audit | ✅ **livrée le 2026‑11‑08, filtres structurés UI le 2026‑11‑09** (P1‑18 : table, API, export, source Journal, filtres gravité/utilisateur/action/dates, pagination, rétention 90 j) |
 | Signature + atomicité de mise à jour | ✅ **installeur 2026‑11‑08 + Apply update dans Settings 2026‑11‑09** (P2‑8 ; reste la clé de production) |
+| OAuth2 e‑mail (Gmail / Microsoft 365) | ✅ **livré le 2026‑11‑09** (P1‑16 : flux code, refresh token scellé, msmtp `oauthbearer`/`xoauth2`, carte Settings — aucun mot de passe applicatif) |
 | Isolation d'exécution | 🟡 **installeur livré le 2026‑11‑08** (P2‑7 partiel : systemd durci + AppArmor opt‑in ; validation terrain/enforce restante) |
 | Restauration bare‑metal | 🟡 **drill non destructif livré le 2026‑11‑08** (P2‑9 partiel : snapshot DB + archive config + état backup vérifiés ; test de reconstruction VM restant) |
 
@@ -162,8 +163,9 @@ Référence opérationnelle : `HOMEVAULT_TASKLIST_A_FAIRE.md` §1bis.
 **État au 2026‑11‑08.** P2‑8 est livré côté **installeur** : manifeste signé
 vérifié avant téléchargement, application atomique, `homevault.previous`
 conservé, rollback automatique si le service ne devient pas prêt, résultat
-exposé dans Settings (`last_update`). Le **déclenchement depuis l'UI** reste à
-faire, ainsi que la publication de la clé publique de production.
+exposé dans Settings (`last_update`). Le **déclenchement depuis l'UI** est
+livré le 2026‑11‑09 (canal signé + **Apply update** + unité `homevault-update`,
+voir plus bas) ; reste la publication de la clé publique de production.
 
 P2‑7 est livré côté **installeur** : unité systemd durcie et mesurable
 (`ProtectSystem`, `ReadOnlyPaths`, `PrivateTmp`, `RestrictSUIDSGID`,
@@ -178,8 +180,40 @@ P1‑18 est **livré** : table `audit_log` (migration 086), écriture non
 bloquante depuis `events::log_event`, champs structurés pour
 l'authentification (acteur/action/IP), API admin `GET /api/audit` +
 `/api/audit/export` (CSV/JSON), source `audit` dans le Journal et purge à
-90 jours. Restent les filtres structurés dans l'UI Journal (l'API les porte
-déjà). P2‑9 est **livré côté drill** : `src/restore_drill.rs` vérifie le dernier
+90 jours. Les **filtres structurés de l'UI Journal sont livrés le 2026‑11‑09**
+(gravité/utilisateur/action/dates, pagination, export ; voir plus bas). **P1‑16 — OAuth2 e‑mail (livré le 2026‑11‑09).** Le relais SMTP peut
+s'authentifier auprès de Gmail et de Microsoft 365 **sans mot de passe
+applicatif** :
+
+- `src/email_oauth.rs` : flux code d'autorisation, URL par fournisseur
+  (Google : `access_type=offline` + `prompt=consent`, scope
+  `https://mail.google.com/` ; Microsoft : `offline_access` + `SMTP.Send`),
+  échange et renouvellement du jeton, cache mémoire (marge 60 s, délai 20 s,
+  redirections désactivées).
+- **Secrets scellés** (`hv1:`) dans `data/email_oauth.json` : client secret et
+  refresh token. Aucun endpoint ne les renvoie, aucune ligne de journal ne les
+  contient ; l'audit ne note que connected/disconnected/registration saved.
+- **Callback public mais lié au navigateur** : cookie d'état `HttpOnly`,
+  `SameSite=Lax`, usage unique, 10 minutes — le modèle du login OIDC. Un état
+  absent, différent du cookie ou rejoué est refusé avant tout appel réseau.
+- **Envoi** : le jeton d'accès (jamais le refresh token) est écrit dans
+  `msmtp.conf` (0600) avec `auth oauthbearer` (Google) ou `auth xoauth2`
+  (Microsoft). Un refresh token tourné est stocké avant de continuer ; un
+  échec (`invalid_grant`, consentement révoqué) **nomme la raison** au lieu de
+  retomber silencieusement sur le mot de passe.
+- **UI** : carte *OAuth2 (Gmail / Microsoft 365)* sous Notifications —
+  fournisseur, client ID, secret (jamais réaffiché, vide = conserver), URL de
+  redirection exacte, Connecter/Reconnecter/Déconnecter, état
+  Connected/Ready/Not configured, date de connexion, dernière erreur, lien de
+  réautorisation. **Déconnecter** supprime le fichier et le cache.
+- Tests écrits mais **non exécutés** : 11 unitaires (`email_oauth`), 3
+  unitaires (`email.rs`), 3 unitaires (page de callback), 6 d'intégration
+  (aucun fournisseur contacté), E2E Settings §31 (6). Docs :
+  `docs/guides/email-oauth.md` (nouveau), `docs/INDEX.md`,
+  `docs/guides/settings.md`, `docs/API.md`, `SCREENS.md`, FeatureDoc
+  `settings`.
+
+P2‑9 est **livré côté drill** : `src/restore_drill.rs` vérifie le dernier
 snapshot DB (copie temporaire, ouverture en lecture seule,
 `PRAGMA integrity_check`, comptage tables/utilisateurs), décode la dernière
 archive de configuration (checksums, passphrase si chiffrée) et rapporte le
@@ -831,4 +865,4 @@ et, si la cible le justifie, une image système équivalente à `md0`. **Toute l
 feuille §3.2 est livrée** : les trois P1 (média, Explorer, téléchargeur) et les
 cinq P2 (cache SSD ZFS L2ARC/SLOG, LUN fins iSCSI, export/import VM, versions
 Syncthing, calendrier/contacts en app catalogue). Restent les finitions
-P1‑18/P2‑7/P2‑8 et le test VM de P2‑9.
+P2‑7/P2‑8 (terrain, clé de production) et le test VM de P2‑9.

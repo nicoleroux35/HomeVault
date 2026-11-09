@@ -72,6 +72,7 @@ pub mod docker;
 pub mod docker_catalog;
 pub mod docker_update_schedule;
 pub mod downloader;
+pub mod email_oauth;
 pub mod encryption;
 pub mod explorer;
 pub mod file_requests;

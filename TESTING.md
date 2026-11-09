@@ -1,5 +1,23 @@
 # HomeVault — Test tracking
 
+## P1-16 — SMTP OAuth2 (Gmail / Microsoft 365) — 2026-11-09 (not run)
+
+> **Instruction followed: no test command was executed for this change.**
+> Static checks passed: `cargo check --lib`, `cargo check --tests`,
+> `cd frontend && npm run check`, `npm run build` and
+> `npx playwright test --list`.
+> **No test reaches a provider**: every Rust case stops before the token
+> endpoint, and the E2E suite never clicks Connect.
+
+| Coverage | Added / changed |
+|---|---|
+| Unit (`src/email_oauth.rs`) | **+11** — provider parsing/defaults (Google/Microsoft, unknown stored value falls back, strict request parse); Google URL requests `access_type=offline` + `prompt=consent`; Microsoft uses its own endpoint/scope; bad client id / redirect / state refused; redirect validation (http(s), no credentials, no fragment); client id/secret validation; token parsing (rotation, missing/absurd `expires_in`, bounded token-free errors); the public status carries no sealed value; configured vs connected; state is single-use |
+| Unit (`src/email.rs`) | **+3** — the msmtp config uses `oauthbearer`/`xoauth2`, quotes the access token, refuses an unknown mechanism or a control character in the user/token, and requires TLS (a bearer token must never go out in clear) |
+| Unit (`src/handlers/email_oauth.rs`) | **+3** — the callback echo is HTML-escaped, the result page is `text/html` + `no-store`, and the state lifetime is short |
+| Integration (`tests/email_oauth_integration.rs`) | **+6** — GET/PUT/DELETE/start are admin-only; validation (provider, redirect scheme, client id) and the response never carries `client_secret`/`refresh_token`/`hv1:`; the file on disk is sealed and not plaintext; start returns the provider URL + HttpOnly/SameSite cookie; the callback refuses a missing/mismatched/replayed state without any network call; disconnect clears the file |
+| E2E (`tests/e2e/settings/settings.spec.ts`) | **+6** — §31.1 labelled card and unconfigured state; §31.2 save makes it ready without echoing the secret; §31.3 invalid redirect message; §31.4 start URL + state; §31.5 admin-only status; §31.6 disconnect confirmation |
+| Docs | `docs/guides/email-oauth.md` (new), `docs/INDEX.md`, `docs/guides/settings.md`, `docs/API.md`, `SCREENS.md`, `CHANGELOG.md`, RAG `settings`, `HOMEVAULT_TASKLIST_A_FAIRE.md` (P1-16), `COMPARAISON_DSM_VS_HOMEVAULT.md` |
+
 ## P1-18 UI — structured filters in the System Journal — 2026-11-09 (not run)
 
 > **Instruction followed: no test command was executed for this change.**

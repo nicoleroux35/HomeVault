@@ -8,6 +8,29 @@ follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **SMTP OAuth2 for Gmail and Microsoft 365 (2026-11-09, P1-16).** The relay
+  no longer needs an app password that the providers are retiring:
+  - a new **OAuth2** card under Settings → Notifications saves the provider,
+    the client ID, the client secret and the exact callback URL;
+  - **Connect** starts the authorization-code flow; the callback is bound to
+    the admin's browser by a one-time HttpOnly `hv_email_oauth_state` cookie
+    (10-minute lifetime, single use), exactly like the OIDC sign-in;
+  - the **client secret and the refresh token are sealed** (`hv1:`) in
+    `data/email_oauth.json`; no endpoint ever returns either, and the audit
+    trail records only "connected"/"disconnected";
+  - at send time the refresh token is exchanged for a short-lived access token
+    (memory cache, 20 s deadline, redirects disabled), which is written into
+    the 0600 `msmtp.conf` as `auth oauthbearer` (Google) or `auth xoauth2`
+    (Microsoft, send-only `SMTP.Send` scope);
+  - a rotated refresh token is stored before the send continues; a failing
+    connection reports the provider's reason (`invalid_grant`, revoked
+    consent) instead of silently falling back to a password;
+  - **Disconnect** deletes the registration and the token; leaving the secret
+    field blank on save keeps the stored one.
+  Tests: 11 unit (`email_oauth`), 3 unit (`email` msmtp config), 3 unit
+  (callback page), 6 integration (no provider is contacted) and Settings E2E
+  §31 (written, not run).
+
 - **Structured filters in the System Journal (2026-11-09, P1-18 UI).** The
   queryable audit trail is now investigable from the screen, not just from the
   API:

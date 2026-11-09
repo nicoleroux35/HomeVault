@@ -662,6 +662,23 @@ pub fn create_app(state: AppStateArc) -> Router {
         .route("/api/settings/email", get(handle_email_settings_get))
         .route("/api/settings/email", put(handle_email_settings_update))
         .route("/api/settings/email/test", post(handle_email_test))
+        // SMTP OAuth2 (P1-16). The callback is public because the provider
+        // redirects the browser here; a one-time state cookie binds it to the
+        // admin's own flow. No endpoint ever returns a client secret or token.
+        .route(
+            "/api/settings/email/oauth",
+            get(crate::handlers::email_oauth::handle_email_oauth_get)
+                .put(crate::handlers::email_oauth::handle_email_oauth_update)
+                .delete(crate::handlers::email_oauth::handle_email_oauth_disconnect),
+        )
+        .route(
+            "/api/settings/email/oauth/start",
+            post(crate::handlers::email_oauth::handle_email_oauth_start),
+        )
+        .route(
+            "/api/settings/email/oauth/callback",
+            get(crate::handlers::email_oauth::handle_email_oauth_callback),
+        )
         // Settings - notifications
         .route(
             "/api/settings/notifications",

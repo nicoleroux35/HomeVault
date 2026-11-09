@@ -765,7 +765,7 @@ The screen refreshes on tab switch, on window focus and every 45 s
    - **Password expiry** — global number of days before a password must be changed (`0` = never, 1–365); an expired account is limited to the change flow at its next sign-in
 3. **Appearance** — Wallpaper (15 presets)
 4. **Widgets** — Active monitors (the 11 real monitors, driven by `monitorStore` → `/api/monitor-layout`) + refresh interval (2/5/10/30/60 s, stored in the same blob) + Weather widget (Open-Meteo location, display fields) — Weather was moved out of Appearance on 2026-09-09
-5. **Notifications** — Email/SMTP server (server, port, credentials, TLS, send test) + alerts (threshold, channels) + webhook
+5. **Notifications** — Email/SMTP server (server, port, credentials, TLS, send test) + **OAuth2 card** (Gmail / Microsoft 365: provider, client ID/secret, exact redirect URL, Connect/Reconnect/Disconnect, connected-since and the last error — the secret is never shown back) + alerts (threshold, channels) + webhook
 6. **AI Assistant** — current model, **five models ranked for this host's RAM/GPU** (each with its RAM/VRAM floor, size and speed; a model that needs more memory than the appliance has is flagged, never marked "best choice"), one-click install & load, manual model install, Ollama status + refresh + **External agents (MCP)**: endpoint, kill-switch, tool permissions and API tokens
 7. **Monitoring** (4 cards):
    - **UPS Monitoring** — UPS list: battery/runtime/voltage/load/status

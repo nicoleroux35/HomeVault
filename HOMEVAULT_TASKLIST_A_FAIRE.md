@@ -108,7 +108,7 @@ justifie.
 | **P1-13** | Rollback Btrfs en place (layout `@`/`@snapshots`) ✅ | P1 | M/L | Parité ZFS |
 | **P1-14** | Pare‑feu GeoIP (pays) ✅ | P1 | M | Réduction de surface exposée |
 | **P1-15** | SNMP v3 (auth/priv) | P1 | M | Supervision d'entreprise |
-| **P1-16** | E‑mail OAuth2 (Gmail/Microsoft) | P1 | M | SMTP moderne sans mot de passe applicatif |
+| **P1-16** | E‑mail OAuth2 (Gmail/Microsoft) — **livré 2026‑11‑09** | P1 | M | SMTP moderne sans mot de passe applicatif |
 | **P1-17** | Client WireGuard | P1 | M | Site‑à‑site inverse |
 | **P1-18** | Table d'audit interrogeable — livrée 2026‑11‑08, **filtres structurés UI livrés 2026‑11‑09** | P1 | M | Enquête après incident |
 | **P1-19** | `clamd` temps réel (option, hors profil basse conso) — **rejeté pour la cible** (coût RAM permanent) | P1 | M | Antivirus à l'écriture |
@@ -230,7 +230,7 @@ panne majeur.
 | Décision | Items | Justification |
 |---|---|---|
 | **Priorité** | **P2-7** isolation d’exécution (**installeur livré 2026‑11‑08**, enforce/terrain restants), **P2-8** mises à jour signées/atomiques (**livré 2026‑11‑09**, reste la clé de production), **P1-18** table d’audit **livrée 2026‑11‑09** (filtres UI compris), **P2-9** restauration bare-metal (**drill livré 2026‑11‑08**, test VM restant) | Sécurité, intégrité de la chaîne et reprise après sinistre : gains réels, sans dépendance externe. |
-| **À faire, plus tard** | **P1-16** OAuth2 e-mail | Gmail/Microsoft retirent les mots de passe applicatifs ; les alertes peuvent cesser de partir. Coût modéré. |
+| **À faire, plus tard** | — | (P1‑16 OAuth2 e-mail livré le 2026‑11‑09) |
 | **Finitions seulement** | **P1-27** signature du catalogue (pas de pinning obligatoire), **P1-28** avertissement installateur (pas de carte UI), **P1-21** suggestion de spare (pas d’ajout auto) | Le cœur est déjà livré ; le reste ajoute du risque ou peu de valeur. |
 | **Gelé au stade partiel** | **P2-1** SMB AD, **P2-2** NFS Kerberos, **P2-3** thin provisioning, **P2-4** déduplication, **P2-15** witness | Utiles seulement en entreprise/multi-site ou après benchmark ; ne pas investir sans cible explicite. |
 | **Rejeté pour la cible** | **P2-5** KMIP, **P2-6** WORM, **P1-19** clamd temps réel, **P1-20** PPPoE, **P2-3** partie overcommit LVM/UI (le support zvol reste), **P2-4** exécution automatique (le design reste) | Complexité, coût permanent ou mode de panne (boot dépendant du réseau, saturation imprévisible, verrouillage admin) disproportionnés. |
@@ -1336,12 +1336,46 @@ survivent au reboot comme les règles manuelles.
   `SnmpAgentCard.svelte`, `frontend/src/lib/services/api.ts`,
   `src/i18n/*.toml`, `tests/e2e/settings/snmp-agent.spec.ts`.
 
-### [ ] P1-16 — E‑mail OAuth2 · M
+### [x] P1-16 — E‑mail OAuth2 · M · **livré 2026‑11‑09**
 
 - Aujourd'hui SMTP par `msmtp` avec mot de passe (`src/email.rs:28`).
 - Ajouter OAuth2 (Gmail/Microsoft) : client id/secret, refresh token chiffré,
   renouvellement, `msmtp` via `oauth2token`.
 - Tests : refresh, expiration, erreur de scope ; jamais de token renvoyé.
+
+**Livré 2026‑11‑09.** `src/email_oauth.rs` porte le flux code d'autorisation,
+le renouvellement et la mécanique msmtp des deux fournisseurs :
+
+- **Stockage scellé** (`hv1:`) du client secret et du refresh token dans
+  `data/email_oauth.json` ; aucun endpoint ne les renvoie, et le journal
+  d'audit ne note que « connected » / « disconnected » / « registration
+  saved ».
+- **Flux navigateur** : `POST /settings/email/oauth/start` construit l'URL du
+  fournisseur (Google : `access_type=offline` + `prompt=consent`, scope
+  `https://mail.google.com/` ; Microsoft : `offline_access` +
+  `SMTP.Send`) et pose un cookie d'état `HttpOnly`/`SameSite=Lax`, à usage
+  unique, valable 10 minutes. Le callback public refuse un état absent,
+  différent du cookie ou déjà consommé — aucun lien préparé ne peut connecter
+  un compte.
+- **Envoi** : le refresh token est échangé contre un jeton d'accès (cache
+  mémoire, marge de 60 s, délai 20 s, redirections désactivées), écrit dans
+  `msmtp.conf` (0600) avec `auth oauthbearer` (Google) ou `auth xoauth2`
+  (Microsoft). Un jeton de rafraîchissement tourné est stocké avant de
+  continuer. Une connexion en échec **échoue avec la raison du fournisseur**
+  (`invalid_grant`, consentement révoqué) au lieu de retomber silencieusement
+  sur le mot de passe.
+- **UI** : carte *OAuth2 (Gmail / Microsoft 365)* sous Notifications —
+  fournisseur, client ID, secret (jamais réaffiché), URL de redirection exacte,
+  Connecter/Reconnecter/Déconnecter, état Connected/Ready/Not configured avec
+  la date, dernière erreur, lien de réautorisation si le pop-up est bloqué.
+- **Déconnexion** : supprime le fichier et le cache ; le mot de passe SMTP
+  reprend, ou l'envoi s'arrête s'il n'y en a pas.
+- Tests écrits mais **non exécutés** : 11 unitaires (`email_oauth`), 3
+  unitaires (`email.rs`), 3 unitaires (page de callback), 6 d'intégration
+  (aucun fournisseur contacté), E2E Settings §31 (6).
+- Docs : `docs/guides/email-oauth.md` (nouveau), `docs/INDEX.md`,
+  `docs/guides/settings.md`, `docs/API.md`, `SCREENS.md`, FeatureDoc
+  `settings`.
 
 ### [x] P1-17 — Client WireGuard · M
 
@@ -2318,7 +2352,7 @@ Vérifié dans le code au 04/11/2026 (réserves d'intégrité ajoutées le
 - [x] P1-13 rollback Btrfs en place
 - [x] P1-14 GeoIP
 - [x] P1-15 SNMP v3
-- [ ] P1-16 OAuth2 e‑mail
+- [x] P1-16 OAuth2 e‑mail — livré 2026‑11‑09
 - [x] P1-17 client WG
 
 ### Sprint 4 — « Intégrité prouvable » (2–3 semaines)
@@ -2433,7 +2467,7 @@ Shares, docs et `TESTING.md` à jour.
   de P0-7, `x-systemd.*`, température sur 3 échantillons, backoff et
   notification `backup.jobs` sont livrés). Après la **revue de valeur du
   2026‑11‑06**, les prochains chantiers ouverts sont **P2-7 (enforce +
-  terrain), P2-8 (clé de production), P2-9 (test VM), P1-16**, puis les finitions
+  terrain), P2-8 (clé de production), P2-9 (test VM)**, puis les finitions
   P1-27/P1-28 ; les autres items sont gelés ou rejetés.
 - **Tests** : `cargo check --lib`, `cargo test --lib --no-run` et les
   `--no-run` de `replication_integration`, `iscsi_integration`,

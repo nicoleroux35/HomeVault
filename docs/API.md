@@ -279,6 +279,10 @@ only for a `kid` the cached set does not contain.
 | GET | `/translations` | auth | returns flattened `locale → key → string` map (`handle_get_translations`, `src/handlers/settings.rs`; mounted at `/api/translations`) |
 | GET/PUT | `/settings/email` | auth / admin | SMTP relay; validated before it is stored (From: address, port) and used to generate the `msmtp` configuration |
 | POST | `/settings/email/test` | admin | send test email |
+| GET/PUT | `/settings/email/oauth` | admin | SMTP OAuth2 (Gmail/Microsoft 365): `provider`, `client_id`, optional `client_secret` (blank keeps it), `redirect_url`; returns `configured`, `connected`, `connected_at`, `last_error`, `auth_method`, `smtp_host`/`smtp_port` — **never** the secret or a token |
+| DELETE | `/settings/email/oauth` | admin | forget the registration and the refresh token |
+| POST | `/settings/email/oauth/start` | admin | `{authorization_url, expires_in}` plus the one-time `hv_email_oauth_state` HttpOnly cookie; `400` until the registration is complete |
+| GET | `/settings/email/oauth/callback` | public | provider redirect (`code`/`state`/`error`). A missing, mismatched or replayed state is a `400` HTML page; no token is stored |
 | GET/PUT | `/settings/notifications` | auth / admin | alert e-mail, threshold, `webhook_url`/`webhook_enabled`/`webhook_format`; the URL must be `http(s)` with a host and no embedded credentials (`400` otherwise) and is validated again at dispatch (`validate_webhook_url`) |
 | GET | `/settings/appearance` | any session | the appliance look: `{ wallpaper, accent_color }` only — read by every account's boot hydration (ROADMAP 26.1) |
 | PUT | `/settings/appearance` | admin | `wallpaper` + `accent_color`, validated before anything is stored |

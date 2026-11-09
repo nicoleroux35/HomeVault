@@ -1439,6 +1439,55 @@ class ApiClient {
     return this.post('/settings/email/test');
   }
 
+  // --- SMTP OAuth2 (P1-16) --------------------------------------------------
+
+  /** Read the OAuth2 status. Never includes the client secret or a token. */
+  async getEmailOAuth() {
+    return this.get<{
+      oauth: {
+        provider: 'google' | 'microsoft';
+        client_id: string;
+        redirect_url: string;
+        configured: boolean;
+        connected: boolean;
+        connected_at: string | null;
+        last_error: string | null;
+        auth_method: string;
+        smtp_host: string;
+        smtp_port: number;
+      };
+      providers: Array<{
+        id: 'google' | 'microsoft';
+        smtp_host: string;
+        smtp_port: number;
+        auth_method: string;
+      }>;
+    }>('/settings/email/oauth', { cache: false });
+  }
+
+  /** Save the client registration. A blank `client_secret` keeps the stored one. */
+  async setEmailOAuth(data: {
+    provider?: 'google' | 'microsoft';
+    client_id?: string;
+    client_secret?: string;
+    redirect_url?: string;
+  }) {
+    return this.put('/settings/email/oauth', data);
+  }
+
+  /** Forget the registration and the refresh token. */
+  async disconnectEmailOAuth() {
+    return this.delete('/settings/email/oauth');
+  }
+
+  /** Build the provider URL and bind the flow to this browser. */
+  async startEmailOAuth() {
+    return this.post<{ authorization_url: string; expires_in: number }>(
+      '/settings/email/oauth/start',
+      {}
+    );
+  }
+
   // Notifications
 
   async updateNotificationSettings(data: {

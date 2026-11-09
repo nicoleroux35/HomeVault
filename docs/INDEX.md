@@ -79,6 +79,7 @@ methods, and notable invariants.
 | Security (sessions, login history, CSP, brute-force, login auto-block, connected clients) | [guides/security.md](./guides/security.md) |
 | Identity (trusted devices, rescue e-mail, account recovery, **passkeys/WebAuthn**) | [guides/identity.md](./guides/identity.md) |
 | Settings (general, security, appearance, widgets, notifications, AI, monitoring, system — 8 rail groups, incl. the outbound proxy and the full configuration backup/restore) | [guides/settings.md](./guides/settings.md) |
+| Email OAuth2 (Gmail / Microsoft 365, sealed refresh token, no app password) | [guides/email-oauth.md](./guides/email-oauth.md) |
 | Themes | [guides/themes.md](./guides/themes.md) |
 | Desktop shell & windowing | [guides/desktop.md](./guides/desktop.md) |
 | Activity taskbar (unified background-job feed) | [guides/activity.md](./guides/activity.md) |

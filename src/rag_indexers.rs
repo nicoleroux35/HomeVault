@@ -739,7 +739,14 @@ Security: protected-device blocklist prevents operating on the boot disk. Path t
             content: r#"Configure HomeVault:
 - General: hostname, update frequency, language
 - Appearance: wallpaper (bundled) and accent colour
-- Email: SMTP configuration for notifications
+- Email: SMTP configuration for notifications, plus optional OAuth2 for Gmail
+  and Microsoft 365: an administrator saves the client ID, the client secret
+  and the exact callback URL, then presses Connect and signs in at the
+  provider. HomeVault stores a sealed refresh token and never the account
+  password; the secret is never shown again. The card reports Connected (with
+  the date), Ready to connect or Not configured, and offers Disconnect. If the
+  provider revokes access, the next send fails with the provider's reason
+  instead of silently falling back to a stored password
 - Notifications: alert thresholds
 - AI Assistant: model selection, Ollama configuration
 - Database snapshots: automatic self-contained snapshots of the appliance
