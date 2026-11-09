@@ -69,6 +69,34 @@ tenant went over quota its access was revoked — raise the quota (or free space
 in the destination screen and the htpasswd entry is restored on the next
 watchdog pass.
 
+## Where the data directory lives (FIAB-04, 2026-11-09)
+
+The SQLite database, JSON settings and configuration archives live under
+`DATA_DIRECTORY` (default `/var/lib/homevault`). A pool holds the files, but
+the pool does not hold the configuration: if `/` is a single disk and it fails,
+accounts, shares, ACLs, quotas and settings are lost even though the data
+survives.
+
+The installer accepts **`HV_DATA_DIR`** (or the legacy `DATA_DIRECTORY`) and
+refuses a relative path, `/`, whitespace or `..`. When the chosen directory is
+on the same filesystem as `/`, it prints a warning with the remedy. To keep the
+configuration on a redundant pool:
+
+```bash
+sudo HV_DATA_DIR=/mnt/pool/homevault bash installer/install.sh
+# the pool must be a ZFS mirror, a Btrfs RAID1 or an mdadm RAID1/5/6/10
+```
+
+For an existing install, stop the service, copy `data/` (preserving ownership)
+to the new path, update `DATA_DIRECTORY` in the systemd unit (or reinstall with
+`HV_DATA_DIR`), then start and run **Verify restore**. The directory must be
+writable by the service account (`root` by default, `homevault` in the split
+deployment).
+
+This reduces the blast radius; it does not replace an **off-machine** copy. A
+system-disk loss still needs a configuration archive plus a data backup that
+are not on the failed machine — that is the bare-metal rebuild below.
+
 ## Scenario 4 — bare-metal rebuild on new hardware
 
 1. **Install HomeVault** on the new machine (`installer/install.sh`, or the

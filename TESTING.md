@@ -87,6 +87,20 @@ supervisor is covered in the next section.
 **Still to run:** the three tests above and a live `kill -9` of one loop to
 confirm the restart/backoff path.
 
+## 2026-11-09 — data directory on a redundant pool (FIAB-04, written, not run)
+
+> **No test was executed.** Static checks: `bash -n installer/install.sh`,
+> `bash -n installer/tests/data-dir.test.sh`.
+
+| Suite | Coverage |
+|---|---|
+| Installer (`installer/tests/data-dir.test.sh`) | `validate_data_dir` accepts `/srv/homevault`, `/mnt/pool/homevault`, `/var/lib/homevault`; refuses empty, relative, `/`, whitespace, `..`, `//` with a named reason; `on_system_filesystem /` is true and `/proc` is not |
+| Installer behaviour | `HV_DATA_DIR` wins over `DATA_DIRECTORY`; an invalid value falls back to `/var/lib/homevault` with a warning; the warning when the directory shares `/`'s filesystem names the remedy |
+
+**Still to run:** the installer suite, then the FIAB-05 bare-metal rebuild on a
+disposable VM (remove the system disk, install fresh, restore DB + config from
+an off-machine copy, re-attach the pool, measure RTO/RPO).
+
 ## P1-28 — kernel stability + explicit monitoring choice — 2026-11-09 (not run)
 
 > **No Rust or E2E test was executed for this change.** Static checks passed:

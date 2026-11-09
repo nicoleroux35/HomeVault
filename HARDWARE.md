@@ -83,6 +83,14 @@ notifications, a few applications.**
 | **Data disks** | dedicated SSD/HDD; 2+ disks for RAID/redundancy |
 | **Network** | Gigabit Ethernet |
 
+**Configuration resilience (FIAB-04).** The database and settings live in
+`DATA_DIRECTORY` (default `/var/lib/homevault`). With a single system disk,
+that disk's failure loses accounts, shares and settings even when the pools
+survive. Put the data directory on a redundant pool with
+`HV_DATA_DIR=/mnt/pool/homevault` (ZFS mirror / Btrfs RAID1 / mdadm RAID1+),
+or keep an off-machine configuration archive. The installer warns when the
+directory is on the same filesystem as `/`; it never moves it silently.
+
 Margin included for: `clamd` (ClamAV antivirus, ~1–1.5 GB resident for
 the signature database — **the heaviest memory item**),
 anti-ransomware, storage cache, explorer archive operations,

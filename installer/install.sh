@@ -110,7 +110,8 @@ if [[ "$HV_BOOTSTRAP" -eq 1 && $EUID -ne 0 ]]; then
                  HV_RELEASE_MANIFEST HV_RELEASE_SIGNATURE HV_RELEASE_PUBKEY \
                  HV_CATALOG_PUBKEY HV_SMARTD HV_MDMONITOR HV_SKIP_SYSCTL \
                  HV_APPARMOR HV_APPARMOR_ENFORCE \
-                 HV_MODE HV_YES HV_SKIP_OPTIONAL HV_SERVICE_USER DATA_DIRECTORY PORT HTTPS_PORT; do
+                 HV_MODE HV_YES HV_SKIP_OPTIONAL HV_SERVICE_USER DATA_DIRECTORY \
+                 HV_DATA_DIR PORT HTTPS_PORT; do
         if [[ -n "${!_hv_v:-}" ]]; then _hv_envs+=("$_hv_v=${!_hv_v}"); fi
     done
     unset _hv_v
@@ -325,6 +326,9 @@ Environment:
                         SMART itself, running both duplicates every alert)
   HV_MDMONITOR=1        enable mdmonitor too (same duplication rule as smartd)
   HV_SKIP_SYSCTL=1      write but do not apply the kernel stability settings
+  HV_DATA_DIR           data directory (SQLite DB, settings, config archives)
+                        on a redundant pool; default /var/lib/homevault.
+                        DATA_DIRECTORY is accepted as the legacy spelling.
   HV_YES=1              same as --yes
   HV_MODE=cli|tui       same as --cli / --tui
   HV_SERVICE_USER       root (default) or homevault
@@ -959,6 +963,39 @@ monitor_decision() {
     fi
 }
 
+# Validate `HV_DATA_DIR` / `DATA_DIRECTORY` before it reaches the unit or a
+# `chown -R`. A relative path, `/`, whitespace or traversal would either put
+# the database somewhere surprising or make the quoted systemd environment
+# ambiguous. On success prints nothing; on failure prints the reason.
+validate_data_dir() {
+    local path="$1"
+    if [[ -z "$path" ]]; then echo "empty"; return 1; fi
+    if [[ "$path" != /* ]]; then echo "not absolute"; return 1; fi
+    if [[ "$path" == "/" ]]; then echo "root"; return 1; fi
+    if [[ "$path" == *$'\n'* || "$path" == *$'\t'* || "$path" == *' '* ]]; then
+        echo "whitespace"; return 1
+    fi
+    if [[ "$path" == *"//"* || "$path" == *"/../"* || "$path" == *"/.." ]]; then
+        echo "traversal"; return 1
+    fi
+    return 0
+}
+
+# The device id of the filesystem holding a path, resolving the nearest
+# existing parent first (the data directory often does not exist yet).
+_data_dir_device() {
+    local path="$1"
+    while [[ ! -e "$path" ]]; do path=$(dirname -- "$path"); done
+    stat -c %d -- "$path"
+}
+
+# True when the data directory sits on the same filesystem as `/`. That is the
+# default and is not an error — but a system-disk failure then loses accounts,
+# shares and settings, so the installer says it once, with the remedy.
+on_system_filesystem() {
+    [[ "$(_data_dir_device "$1")" == "$(_data_dir_device /)" ]]
+}
+
 # Sourced by `installer/tests/*.test.sh`: stop here.
 if [[ "${HV_LIB_ONLY:-0}" == "1" ]]; then
     return 0 2>/dev/null || exit 0
@@ -1104,7 +1141,16 @@ if [[ $EUID -ne 0 ]]; then
 fi
 
 INSTALL_DIR="/opt/homevault"
-DATA_DIR="/var/lib/homevault"
+DEFAULT_DATA_DIR="/var/lib/homevault"
+# FIAB-04: the data directory (SQLite DB, settings, config archives) may live
+# on a redundant pool. `HV_DATA_DIR` wins over the legacy `DATA_DIRECTORY`;
+# an invalid value falls back to the default with a loud warning instead of
+# writing a systemd unit that would fail at boot.
+DATA_DIR="${HV_DATA_DIR:-${DATA_DIRECTORY:-$DEFAULT_DATA_DIR}}"
+if ! _data_dir_error=$(validate_data_dir "$DATA_DIR"); then
+    echo "Warning: refusing data directory '$DATA_DIR' ($_data_dir_error); using $DEFAULT_DATA_DIR." >&2
+    DATA_DIR="$DEFAULT_DATA_DIR"
+fi
 SERVICE_NAME="homevault"
 SERVICE_FILE="/etc/systemd/system/homevault.service"
 ENV_FILE="/etc/homevault.env"
@@ -1419,6 +1465,11 @@ mkdir -p "/home/homevault"
 # doesn't fail trying to create a subdirectory under root-owned /mnt/.
 mkdir -p /mnt/raid /mnt/pools /mnt/encrypted /mnt/rclone
 ok "Directories created under $INSTALL_DIR and $DATA_DIR"
+if on_system_filesystem "$DATA_DIR"; then
+    warn "DATA_DIRECTORY ($DATA_DIR) is on the system disk: a system-disk failure loses accounts, shares and settings."
+    echo -e "  Keep an off-machine backup (restic or a configuration archive) or reinstall with"
+    echo -e "  ${C_BOLD}HV_DATA_DIR=/path/on/a/redundant/pool${C_RESET} (ZFS mirror / Btrfs RAID1 / mdadm)."
+fi
 
 # Dependency checker — is this Debian package actually installed and usable?
 # Reads dpkg's status field instead of `dpkg -s`: a package left in the

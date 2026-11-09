@@ -1105,3 +1105,30 @@ dans `TESTING.md`.
 - Reste terrain : `kill -9` d’une boucle / `systemctl stop` sur un hôte réel,
   et le choix de politique de redémarrage par boucle si un cas particulier
   apparaît.
+
+---
+
+## 11. Emplacement des données système — 2026‑11‑09 (FIAB‑04, partiel)
+
+> **Constat DSM.** DSM place sa racine sur un miroir `md0` : un disque système
+> qui meurt ne perd ni les comptes ni la configuration. HomeVault laissait ce
+> choix implicite et l’installeur ignorait `HV_DATA_DIR`/`DATA_DIRECTORY` en
+> réécrivant `DATA_DIR` en dur.
+
+- `installer/install.sh` honore désormais **`HV_DATA_DIR`** (prioritaire) puis
+  `DATA_DIRECTORY` ; une valeur relative, `/`, contenant un espace ou `..`
+  est refusée avec la raison et remplace par `/var/lib/homevault` — jamais un
+  unit systemd qui échoue au boot.
+- `validate_data_dir` et `on_system_filesystem` sont des fonctions pures
+  testables. Si le répertoire est sur le **même système de fichiers que `/`**,
+  l’installeur affiche un avertissement nommant la conséquence (comptes,
+  partages, réglages) et les remèdes : `HV_DATA_DIR` sur un pool redondant
+  (ZFS mirror / Btrfs RAID1 / mdadm) ou une archive hors machine.
+- Docs : `docs/guides/disaster-recovery.md` (section dédiée + migration d’un
+  répertoire existant), `HARDWARE.md` (configuration résiliente).
+- Tests installeur (`installer/tests/data-dir.test.sh`, non exécuté) :
+  chemins acceptés/refusés avec raison, comparaison de périphérique `/` vs
+  `/proc`, code de retour.
+- **Reste FIAB‑04/FIAB‑05** : la preuve de reprise (retirer le disque système,
+  réinstaller, restaurer base + configuration hors machine) et le RTO/RPO
+  restent à exécuter sur VM ; c’est le scénario P2‑9.
