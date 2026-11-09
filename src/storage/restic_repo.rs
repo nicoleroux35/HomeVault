@@ -35,7 +35,7 @@ impl ResticRepository {
 
     pub async fn list_all(&self) -> Result<Vec<ResticRepo>, sqlx::Error> {
         let rows = sqlx::query_as::<_, ResticRepoRow>(
-            "SELECT id, name, repository, password, retention_policy_id, source_paths, exclude_patterns, tags, snapshot_source, snapshot_pool, snapshot_dataset, snapshot_create_before_backup, created_at, updated_at FROM restic_repos ORDER BY name",
+            "SELECT id, name, repository, password, retention_policy_id, source_paths, exclude_patterns, tags, snapshot_source, snapshot_pool, snapshot_dataset, snapshot_create_before_backup, last_check_ok, last_check_at, last_check_error, created_at, updated_at FROM restic_repos ORDER BY name",
         )
         .fetch_all(self.pool.as_ref())
         .await?;
@@ -45,7 +45,7 @@ impl ResticRepository {
 
     pub async fn get_by_id(&self, id: &str) -> Result<Option<ResticRepo>, sqlx::Error> {
         let row = sqlx::query_as::<_, ResticRepoRow>(
-            "SELECT id, name, repository, password, retention_policy_id, source_paths, exclude_patterns, tags, snapshot_source, snapshot_pool, snapshot_dataset, snapshot_create_before_backup, created_at, updated_at FROM restic_repos WHERE id = ?",
+            "SELECT id, name, repository, password, retention_policy_id, source_paths, exclude_patterns, tags, snapshot_source, snapshot_pool, snapshot_dataset, snapshot_create_before_backup, last_check_ok, last_check_at, last_check_error, created_at, updated_at FROM restic_repos WHERE id = ?",
         )
         .bind(id)
         .fetch_optional(self.pool.as_ref())
@@ -56,13 +56,37 @@ impl ResticRepository {
 
     pub async fn get_by_name(&self, name: &str) -> Result<Option<ResticRepo>, sqlx::Error> {
         let row = sqlx::query_as::<_, ResticRepoRow>(
-            "SELECT id, name, repository, password, retention_policy_id, source_paths, exclude_patterns, tags, snapshot_source, snapshot_pool, snapshot_dataset, snapshot_create_before_backup, created_at, updated_at FROM restic_repos WHERE name = ?",
+            "SELECT id, name, repository, password, retention_policy_id, source_paths, exclude_patterns, tags, snapshot_source, snapshot_pool, snapshot_dataset, snapshot_create_before_backup, last_check_ok, last_check_at, last_check_error, created_at, updated_at FROM restic_repos WHERE name = ?",
         )
         .bind(name)
         .fetch_optional(self.pool.as_ref())
         .await?;
 
         Ok(row.map(|r| r.into_model()))
+    }
+
+    /// Records the verdict of a scheduled `restic check` (FIAB-14). The Backup
+    /// screen reads it back; `None` means the repository has never been
+    /// checked. A failure keeps the plain-English reason.
+    pub async fn record_check(
+        &self,
+        repo_id: &str,
+        ok: bool,
+        error: Option<&str>,
+    ) -> Result<(), sqlx::Error> {
+        let now = Utc::now().to_rfc3339();
+        sqlx::query(
+            "UPDATE restic_repos SET last_check_ok = ?, last_check_at = ?, \
+             last_check_error = ?, updated_at = ? WHERE id = ?",
+        )
+        .bind(if ok { 1_i64 } else { 0_i64 })
+        .bind(&now)
+        .bind(error)
+        .bind(&now)
+        .bind(repo_id)
+        .execute(self.pool.as_ref())
+        .await?;
+        Ok(())
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -118,6 +142,9 @@ impl ResticRepository {
             snapshot_pool: snapshot_pool.map(|s| s.to_string()),
             snapshot_dataset: snapshot_dataset.map(|s| s.to_string()),
             snapshot_create_before_backup,
+            last_check_ok: None,
+            last_check_at: None,
+            last_check_error: None,
             created_at: chrono::DateTime::parse_from_rfc3339(&now)
                 .map(|d| d.with_timezone(&chrono::Utc))
                 .unwrap_or_else(|_| Utc::now()),
@@ -328,6 +355,9 @@ struct ResticRepoRow {
     snapshot_pool: Option<String>,
     snapshot_dataset: Option<String>,
     snapshot_create_before_backup: bool,
+    last_check_ok: Option<i64>,
+    last_check_at: Option<String>,
+    last_check_error: Option<String>,
     created_at: String,
     updated_at: String,
 }
@@ -356,6 +386,9 @@ impl ResticRepoRow {
             snapshot_pool: self.snapshot_pool,
             snapshot_dataset: self.snapshot_dataset,
             snapshot_create_before_backup: self.snapshot_create_before_backup,
+            last_check_ok: self.last_check_ok.map(|value| value != 0),
+            last_check_at: self.last_check_at,
+            last_check_error: self.last_check_error,
             created_at: parse_dt(&self.created_at),
             updated_at: parse_dt(&self.updated_at),
         }

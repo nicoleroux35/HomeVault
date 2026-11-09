@@ -4797,6 +4797,9 @@ interface ResticRepo {
   snapshot_pool: string | null;
   snapshot_dataset: string | null;
   snapshot_create_before_backup: boolean;
+  last_check_ok: boolean | null;
+  last_check_at: string | null;
+  last_check_error: string | null;
   created_at: string;
   updated_at: string;
 }

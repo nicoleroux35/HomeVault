@@ -239,24 +239,24 @@ impl TaskAction {
                     "downloader_rss" => ServiceKind::DownloaderRss,
                     other => return Err(format!("Unknown service '{other}'")),
                 };
-                let message = raw
-                    .message
-                    .unwrap_or_default()
-                    .trim()
-                    .to_string();
+                let message = raw.message.unwrap_or_default().trim().to_string();
                 match service {
                     ServiceKind::Notification => {
                         if message.is_empty() {
                             return Err("A notification task needs a message".into());
                         }
                         if message.chars().count() > 500 {
-                            return Err("The notification message is longer than 500 characters".into());
+                            return Err(
+                                "The notification message is longer than 500 characters".into()
+                            );
                         }
                         if message
                             .chars()
                             .any(|c| c.is_control() && c != '\n' && c != '\t')
                         {
-                            return Err("The notification message contains control characters".into());
+                            return Err(
+                                "The notification message contains control characters".into()
+                            );
                         }
                     }
                     _ if !message.is_empty() => {
@@ -266,7 +266,11 @@ impl TaskAction {
                 }
                 TaskAction::Service {
                     service,
-                    message: if message.is_empty() { None } else { Some(message) },
+                    message: if message.is_empty() {
+                        None
+                    } else {
+                        Some(message)
+                    },
                 }
             }
             other => return Err(format!("Unknown task type '{other}'")),
@@ -904,6 +908,14 @@ async fn perform(state: &Arc<AppState>, action: &TaskAction) -> Result<String, S
                         } else {
                             String::new()
                         };
+                        // FIAB-14: make the verdict visible in Backup, not
+                        // only in the task run history.
+                        if let Err(e) = ResticRepository::new(state.db.pool())
+                            .record_check(repo_id, true, None)
+                            .await
+                        {
+                            tracing::warn!("Could not record the restic check result: {e}");
+                        }
                         return Ok(format!(
                             "Restic check passed ({display_subset} of packs read){suffix}"
                         ));
@@ -911,20 +923,32 @@ async fn perform(state: &Arc<AppState>, action: &TaskAction) -> Result<String, S
                     // Repository issues are not transient: retrying would
                     // read the same broken packs again.
                     Ok(check) => {
-                        return Err(format!(
-                            "Restic check found issues: {}",
-                            check.errors.join("; ")
-                        ))
+                        let message =
+                            format!("Restic check found issues: {}", check.errors.join("; "));
+                        if let Err(e) = ResticRepository::new(state.db.pool())
+                            .record_check(repo_id, false, Some(&message))
+                            .await
+                        {
+                            tracing::warn!("Could not record the restic check result: {e}");
+                        }
+                        return Err(message);
                     }
                     Err(e) => last_error = Some(e),
                 }
             }
-            Err(format!(
+            let message = format!(
                 "Restic check failed after 3 attempts: {}",
                 last_error
                     .map(|e| e.to_string())
                     .unwrap_or_else(|| "unknown error".to_string())
-            ))
+            );
+            if let Err(e) = ResticRepository::new(state.db.pool())
+                .record_check(repo_id, false, Some(&message))
+                .await
+            {
+                tracing::warn!("Could not record the restic check result: {e}");
+            }
+            Err(message)
         }
         TaskAction::Power { action } => {
             let action = *action;
@@ -944,17 +968,15 @@ async fn perform(state: &Arc<AppState>, action: &TaskAction) -> Result<String, S
                 ))
             }
             ServiceKind::TrashPurge => {
-                let repo = crate::storage::trash_policy_repo::TrashPolicyRepository::new(
-                    state.db.pool(),
-                );
+                let repo =
+                    crate::storage::trash_policy_repo::TrashPolicyRepository::new(state.db.pool());
                 let settings = repo.get_settings().await.map_err(|e| e.to_string())?;
                 let policy = settings.policy();
                 let state = state.clone();
-                let report = tokio::task::spawn_blocking(move || {
-                    crate::trash::purge_all(&state, &policy)
-                })
-                .await
-                .map_err(|e| format!("Trash purge task panicked: {e}"))?;
+                let report =
+                    tokio::task::spawn_blocking(move || crate::trash::purge_all(&state, &policy))
+                        .await
+                        .map_err(|e| format!("Trash purge task panicked: {e}"))?;
                 Ok(format!(
                     "Trash purge removed {} item(s), reclaimed {} byte(s)",
                     report.purged, report.freed_bytes
@@ -1152,7 +1174,10 @@ mod tests {
             (r#"{"service":"docker_update"}"#, ServiceKind::DockerUpdate),
             (r#"{"service":"trash_purge"}"#, ServiceKind::TrashPurge),
             (r#"{"service":"db_backup"}"#, ServiceKind::DbBackup),
-            (r#"{"service":"downloader_rss"}"#, ServiceKind::DownloaderRss),
+            (
+                r#"{"service":"downloader_rss"}"#,
+                ServiceKind::DownloaderRss,
+            ),
         ] {
             let action = TaskAction::from_parts("service", payload).expect(payload);
             assert_eq!(action.type_name(), "service");
@@ -1174,10 +1199,7 @@ mod tests {
         // one side would fail here.
         let cases = [
             ("command", r#"{"command":"/bin/true","args":[]}"#),
-            (
-                "snapshot",
-                r#"{"pool":"tank/data","recursive":false}"#,
-            ),
+            ("snapshot", r#"{"pool":"tank/data","recursive":false}"#),
             ("smart_test", r#"{"device":"sda","test_type":"short"}"#),
             ("scrub", r#"{"pool":"tank/data","pool_type":"zfs"}"#),
             ("restic_check", r#"{"repo_id":"abc-123"}"#),

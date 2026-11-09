@@ -1418,3 +1418,55 @@ async fn test_stale_running_jobs_are_closed_and_snapshot_id_is_recorded() {
     // on completion rather than at creation.
     assert_eq!(done_job.snapshot_id.as_deref(), Some("da0f81d6"));
 }
+
+#[tokio::test]
+async fn restic_check_status_round_trips() {
+    let (state, _tmp, _guard) = setup_state().await;
+    let repo = homevault::storage::restic_repo::ResticRepository::new(state.db.pool());
+    let created = repo
+        .create(
+            "nightly",
+            "/tmp/restic-test-repo",
+            "pw",
+            None,
+            &[],
+            None,
+            None,
+            "directory",
+            None,
+            None,
+            false,
+        )
+        .await
+        .expect("create repo");
+    let loaded = repo
+        .get_by_id(&created.id)
+        .await
+        .expect("read repo")
+        .expect("repo exists");
+    assert_eq!(loaded.last_check_ok, None);
+    assert_eq!(loaded.last_check_at, None);
+
+    repo.record_check(&created.id, false, Some("pack truncated"))
+        .await
+        .expect("record failure");
+    let failed = repo
+        .get_by_id(&created.id)
+        .await
+        .expect("read repo")
+        .expect("repo exists");
+    assert_eq!(failed.last_check_ok, Some(false));
+    assert_eq!(failed.last_check_error.as_deref(), Some("pack truncated"));
+    assert!(failed.last_check_at.is_some());
+
+    repo.record_check(&created.id, true, None)
+        .await
+        .expect("record success");
+    let verified = repo
+        .get_by_id(&created.id)
+        .await
+        .expect("read repo")
+        .expect("repo exists");
+    assert_eq!(verified.last_check_ok, Some(true));
+    assert!(verified.last_check_error.is_none());
+}

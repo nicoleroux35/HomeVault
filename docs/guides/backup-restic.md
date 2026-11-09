@@ -243,10 +243,13 @@ lines count, and a non-zero exit with no recognizable marker still reports one.
 
 **Scheduled check.** Tasks → **Restic repository check** runs
 `restic check --read-data-subset=<subset>` on a cron (default `10%`, also
-`1/4` or `1G`). The task history is the last-check record; a failure is
-visible there and the task replans on the next tick. The manual
-`POST /restic/check` remains available for an immediate full or metadata
-check.
+`1/4` or `1G`). **FIAB-14 (2026-11-09)** persists the verdict on the repository
+(`last_check_ok`, `last_check_at`, `last_check_error`) and the Backup screen
+shows **Verified / Failed / Never checked** with the failure reason, so an
+admin no longer has to open Tasks to see whether the last check found a broken
+pack. A failure also raises the existing `backup.jobs` notification through the
+scheduled-task failure path. The manual `POST /restic/check` remains available
+for an immediate full or metadata check.
 
 ### Retention: count, age and size
 

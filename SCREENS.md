@@ -650,7 +650,7 @@ The screen refreshes on tab switch, on window focus and every 45 s
 **3 views:**
 
 ### Repository list
-- Repository cards: name, URL, source paths, retention policy, snapshot count, last backup
+- Repository cards: name, URL, source paths, retention policy, snapshot count, last backup, and **last check** (Verified / Failed / Never checked, FIAB-14; the failure reason is shown under the badge)
 - Repository creation: name, URL, password, source paths, exclusion patterns, tags, source (directory/snapshot pool), retention policy
 - Repository deletion
 

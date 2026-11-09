@@ -51,6 +51,10 @@
     snapshot_pool: string | null;
     snapshot_dataset: string | null;
     snapshot_create_before_backup: boolean;
+    /** FIAB-14: last scheduled `restic check` verdict; null = never run. */
+    last_check_ok: boolean | null;
+    last_check_at: string | null;
+    last_check_error: string | null;
     created_at: string;
     updated_at: string;
   }
@@ -949,6 +953,19 @@
               <div class="px-4 py-3 flex flex-col gap-1.5">
                 <div class="flex items-start justify-between gap-2 text-sm"><span class="text-xs text-[var(--hv-shell-text-2)]">{$t('restic.source_label')}</span><span class="font-semibold text-[var(--hv-shell-text-strong)] text-right">{repo.source_paths.join(', ') || $t('restic.not_configured')}</span></div>
                 {#if repo.tags}<div class="flex items-center justify-between gap-2 text-sm"><span class="text-xs text-[var(--hv-shell-text-2)]">{$t('restic.tags_label')}</span><span class="font-semibold text-[var(--hv-shell-text-strong)]">{repo.tags}</span></div>{/if}
+                <div class="flex items-center justify-between gap-2 text-sm" data-testid="restic-last-check">
+                  <span class="text-xs text-[var(--hv-shell-text-2)]">{$t('restic.last_check_label')}</span>
+                  {#if repo.last_check_ok === true}
+                    <span class={cn(badge, 'bg-[var(--hv-success-bg)] text-[var(--hv-success)]')} title={repo.last_check_at || ''}>{$t('restic.last_check_verified')}</span>
+                  {:else if repo.last_check_ok === false}
+                    <span class={cn(badge, 'bg-[var(--hv-error-bg)] text-[var(--hv-error)]')} title={repo.last_check_error || repo.last_check_at || ''}>{$t('restic.last_check_failed')}</span>
+                  {:else}
+                    <span class={cn(badge, 'bg-[var(--hv-shell-border-soft)] text-[var(--hv-shell-text-2)]')}>{$t('restic.last_check_never')}</span>
+                  {/if}
+                </div>
+                {#if repo.last_check_error}
+                  <p class="m-0 text-c-xs text-[var(--hv-error)] break-words" data-testid="restic-last-check-error">{repo.last_check_error}</p>
+                {/if}
               </div>
               <div class="px-4 pb-4 flex justify-end">
                 <button data-testid="restic-action-danger" class="grid place-items-center w-9 h-9 flex-none rounded-lg border border-[var(--hv-shell-border-strong)] bg-[var(--hv-shell-fill)] text-[var(--hv-shell-text-strong)] cursor-pointer hover:bg-[var(--hv-error-bg)] hover:text-[var(--hv-error)] hv-ic" onclick={(e) => { e.stopPropagation(); deleteRepo(repo); }} title={$t('restic.remove_config_title')} aria-label={$t('restic.remove_config_title')}><IconTrash size={14} /></button>

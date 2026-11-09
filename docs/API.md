@@ -882,7 +882,7 @@ catalog, files, VMs, knowledge search, reboot). See
 |--------|------|------|-------|
 | GET | `/restic/available` | auth | is `restic` installed |
 | GET | `/restic/version` | auth | |
-| GET | `/restic/repos` | auth | `?include_password=` (admin only when true) |
+| GET | `/restic/repos` | auth | `?include_password=` (admin only when true). Each repo carries `last_check_ok`/`last_check_at`/`last_check_error` (FIAB-14) |
 | POST | `/restic/repos` | admin | create repo |
 | GET/PUT/DELETE | `/restic/repos/{id}` | auth/admin | get/update/delete |
 | GET | `/restic/repos/{id}/snapshots` | auth | |

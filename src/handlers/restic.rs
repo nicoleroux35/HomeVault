@@ -313,6 +313,9 @@ pub async fn handle_restic_repo_create(
                 snapshot_pool: new_repo.snapshot_pool.clone(),
                 snapshot_dataset: new_repo.snapshot_dataset.clone(),
                 snapshot_create_before_backup: new_repo.snapshot_create_before_backup,
+                last_check_ok: new_repo.last_check_ok,
+                last_check_at: new_repo.last_check_at.clone(),
+                last_check_error: new_repo.last_check_error.clone(),
                 created_at: new_repo.created_at,
                 updated_at: new_repo.updated_at,
             };

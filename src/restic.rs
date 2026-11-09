@@ -130,6 +130,13 @@ pub struct ResticRepo {
     pub snapshot_pool: Option<String>,
     pub snapshot_dataset: Option<String>,
     pub snapshot_create_before_backup: bool,
+    /// Last scheduled `restic check` verdict (FIAB-14): `None` = never run.
+    #[serde(default)]
+    pub last_check_ok: Option<bool>,
+    #[serde(default)]
+    pub last_check_at: Option<String>,
+    #[serde(default)]
+    pub last_check_error: Option<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -2431,6 +2438,9 @@ mod tests {
             snapshot_pool: None,
             snapshot_dataset: None,
             snapshot_create_before_backup: false,
+            last_check_ok: None,
+            last_check_at: None,
+            last_check_error: None,
             created_at: Utc::now(),
             updated_at: Utc::now(),
         };
@@ -2470,6 +2480,9 @@ mod tests {
             snapshot_pool: None,
             snapshot_dataset: None,
             snapshot_create_before_backup: false,
+            last_check_ok: None,
+            last_check_at: None,
+            last_check_error: None,
             created_at: Utc::now(),
             updated_at: Utc::now(),
         };

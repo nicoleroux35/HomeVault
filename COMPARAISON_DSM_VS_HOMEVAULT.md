@@ -1156,3 +1156,25 @@ dans `TESTING.md`.
 - Reste FIAB‑10 : le test terrain d’une reconstruction réelle (le profil doit
   survivre au reboot et la reconstruction ne doit pas affamer les partages) et
   l’évaluation de `--consistency-policy=ppl` sur RAID5.
+
+---
+
+## 13. Verdict du `restic check` dans Backup — 2026‑11‑09 (FIAB‑14)
+
+> DSM affiche l’état de vérification d’une sauvegarde dans Hyper Backup.
+> HomeVault exécutait la tâche `restic_check` mais son verdict ne vivait que
+> dans Tasks : l’écran Backup ne disait pas si le dernier contrôle avait échoué.
+
+- Migration `094` : `last_check_ok`, `last_check_at`, `last_check_error` sur
+  `restic_repos`. La tâche planifiée enregistre le verdict (succès, packs
+  corrompus, échec après 3 tentatives) ; `ResticRepository::record_check` est
+  la seule écriture.
+- `ResticRepo` expose les trois champs ; la carte du dépôt affiche
+  **Verified / Failed / Never checked**, la date en infobulle et la raison de
+  l’échec sous le badge.
+- L’échec déclenche déjà la notification `backup.jobs` via le chemin d’échec
+  des tâches planifiées ; aucun nouveau canal.
+- Tests écrits, non exécutés : aller‑retour `record_check` (jamais → échec →
+  succès), champs sérialisés dans l’API des dépôts.
+- Reste FIAB‑14 : test terrain avec un pack tronqué (le badge doit passer à
+  Failed et la notification partir).

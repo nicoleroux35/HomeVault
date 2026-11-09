@@ -116,6 +116,20 @@ an off-machine copy, re-attach the pool, measure RTO/RPO).
 the sysctls survive a reboot and the shares stay responsive under the `low`
 profile.
 
+## 2026-11-09 — restic check verdict in Backup (FIAB-14, written, not run)
+
+> **No test was executed.** Static checks: `cargo check --lib`,
+> `cargo check --tests`, `npm run check` (0 errors / 0 warnings).
+
+| Suite | Coverage |
+|---|---|
+| Migration (`sqlx/migrations/094_restic_check_status.sql`) | adds `last_check_ok`, `last_check_at`, `last_check_error` to `restic_repos` |
+| Integration (`tests/restic_integration.rs`) | `record_check` round-trip: never checked → failed with reason and timestamp → verified with the error cleared; the repo payload carries the fields |
+| Frontend (`Restic.svelte`) | Verified / Failed / Never checked badge, failure reason, 4 locales |
+
+**Still to run:** the round-trip test and a live check against a repository with
+a truncated pack (badge Failed + `backup.jobs` notification).
+
 ## P1-28 — kernel stability + explicit monitoring choice — 2026-11-09 (not run)
 
 > **No Rust or E2E test was executed for this change.** Static checks passed:
