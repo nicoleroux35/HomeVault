@@ -1,0 +1,28 @@
+manifest_version = 1
+id = "baikal"
+name = "Baïkal"
+version = "1.0.0"
+category = "productivity"
+icon = "calendar"
+app_port = 80
+default_port = 8084
+arch = ["amd64", "arm64"]
+gpu = false
+developer = "Baïkal"
+website = "https://sabre.io/baikal/"
+repo = "https://github.com/ckulka/baikal-docker"
+description = "CalDAV and CardDAV server: your calendars and contacts, on your own NAS."
+description_fr = "Serveur CalDAV et CardDAV : vos calendriers et contacts, sur votre propre NAS."
+description_de = "CalDAV- und CardDAV-Server: Ihre Kalender und Kontakte auf Ihrem eigenen NAS."
+description_es = "Servidor CalDAV y CardDAV: tus calendarios y contactos en tu propio NAS."
+tagline = "Calendars and contacts, self-hosted."
+
+# Docker hardening (HomeVault's `[security]`, DSM7-style privilege
+# declaration). `no_new_privileges` defaults to true; `cap_drop`, `cap_add`,
+# `user` and `read_only` are opt-in and validated at manifest load.
+[security]
+no_new_privileges = true
+# cap_drop = ["ALL"]
+# cap_add = ["NET_BIND_SERVICE"]
+# user = "1000:1000"
+# read_only = true

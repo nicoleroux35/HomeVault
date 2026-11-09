@@ -201,7 +201,7 @@ async fn test_catalog_list_returns_builtin_apps() {
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["success"], json!(true));
     let apps = body["data"].as_array().expect("array");
-    assert_eq!(apps.len(), 15, "the 15 built-in apps must be listed");
+    assert_eq!(apps.len(), 16, "the 16 built-in apps must be listed");
     let jellyfin = apps
         .iter()
         .find(|a| a["app_id"] == "jellyfin")

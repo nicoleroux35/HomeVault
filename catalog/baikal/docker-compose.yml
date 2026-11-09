@@ -1,0 +1,18 @@
+services:
+  baikal:
+    image: ckulka/baikal:nginx
+    container_name: baikal
+    restart: unless-stopped
+    ports:
+      - "{{PORT}}:80"
+    volumes:
+      # Baïkal's own settings (database config, admin password) and the
+      # calendars/contacts themselves are two separate trees: keeping them
+      # apart means a config reset never touches the user's data.
+      - {{DATA_DIR}}/config:/var/www/baikal/config
+      - {{DATA_DIR}}/data:/var/www/baikal/Specific
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+          cpus: '0.5'

@@ -904,7 +904,7 @@ test.describe('15 — Catalog phase B', () => {
     await switchTab(page, 'catalog');
     const cards = win(page).locator('[data-testid="docker-app-card"]');
     await expect(cards.first()).toBeVisible({ timeout: 10_000 });
-    // This host is x86_64 with a current server version: the 15 built-in
+    // This host is x86_64 with a current server version: the built-in
     // apps declare no arch/version gate, so no card may carry the badge.
     await expect(win(page).getByText(/Cannot be installed here/)).toHaveCount(0);
     const jellyfin = win(page).locator('[data-testid="docker-app-card"]', { hasText: 'Jellyfin' });

@@ -23,7 +23,7 @@
      Opened as a desktop window app (admin only).
      ======================================================================== -->
 <script lang="ts">
-  import { IconSearch, IconX, IconRefresh, IconTrash, IconPlayerPlay, IconPlayerPause, IconSquare, IconDownload, IconCheck, IconCopy, IconPhoto as ImageIcon, IconAlertTriangle, IconContainer, IconPlus, IconTerminal, IconExternalLink, IconDeviceTv, IconCloud, IconShield, IconLock, IconHome, IconGlobe, IconDatabase, IconActivity, IconPackage, IconPackages, IconServer, IconNetwork, IconKey, IconShieldOff, IconGitBranch, IconRss, IconTextScan2, IconBook, IconLayoutDashboard, IconMusic, IconListCheck, IconPipeline, IconBoxMultiple, IconBox, IconPencil, IconStar, IconInfoCircle, IconTool, IconSettings, IconBolt, IconFolder } from '@tabler/icons-svelte';
+  import { IconSearch, IconX, IconRefresh, IconTrash, IconPlayerPlay, IconPlayerPause, IconSquare, IconDownload, IconCheck, IconCopy, IconPhoto as ImageIcon, IconAlertTriangle, IconContainer, IconPlus, IconTerminal, IconExternalLink, IconDeviceTv, IconCloud, IconShield, IconLock, IconHome, IconGlobe, IconDatabase, IconActivity, IconPackage, IconPackages, IconServer, IconNetwork, IconKey, IconShieldOff, IconGitBranch, IconRss, IconTextScan2, IconBook, IconLayoutDashboard, IconMusic, IconListCheck, IconPipeline, IconBoxMultiple, IconBox, IconPencil, IconStar, IconInfoCircle, IconTool, IconSettings, IconBolt, IconFolder, IconCalendar } from '@tabler/icons-svelte';
   import { api } from '$lib/services/api';
   import { t, translate } from '$lib/stores/i18n';
   import { onAppVisible } from '$lib/utils/autoRevalidate';
@@ -127,6 +127,7 @@
     'key-round': IconKey, 'shield-ban': IconShieldOff, activity: IconActivity, 'git-branch': IconGitBranch,
     rss: IconRss, 'scan-text': IconTextScan2, 'book-open': IconBook, house: IconHome,
     'layout-dashboard': IconLayoutDashboard, music: IconMusic, 'list-checks': IconListCheck, workflow: IconPipeline,
+    calendar: IconCalendar,
   };
   function catalogIconFor(icon: string | null): any {
     return (icon && CATALOG_ICONS[icon]) || IconPackage;

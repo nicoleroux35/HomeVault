@@ -63,7 +63,7 @@ pass the matched, catalog-defined `app.id`, never the raw request `id`.
 `src/docker_catalog.rs::CATALOG` was **deleted**. Apps are now *packages*: a
 `homevault-app.toml` manifest + a sibling `docker-compose.yml` template
 (`{{DATA_DIR}}`/`{{PORT}}`/`{{APP_ID}}`), from the embedded `catalog/` dir
-(15 built-in packages) **plus community stores** — git repos an admin adds by
+(16 built-in packages) **plus community stores** — git repos an admin adds by
 URL (`GET/POST/DELETE /api/docker/stores`, cloned into `apps_dir()/stores/<id>/`).
 Logic lives in `src/app_catalog/{mod,manifest,store,updates}.rs`.
 
@@ -534,7 +534,7 @@ query value, so a call site reads like the URL it builds.
   `handle_compose_available`/catalog install return `{ available: false }` /
   a clear error rather than hanging or crashing.
 - Verified live via `curl` with a real session: `GET /docker/catalog` returns
-  all 15 apps with correct image/port/`installed_port` data, and the
+  all built-in apps with correct image/port/`installed_port` data, and the
   auth split is enforced. A live install (`docker compose up`) was **not**
   exercised in this pass — the verification environment has no outbound
   network access to pull images — so treat the compose templates themselves

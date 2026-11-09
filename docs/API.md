@@ -940,7 +940,7 @@ Representative endpoints:
 | GET/PUT | `/docker/daemon/config` | admin | read / validated write of `daemon.json` (+ `systemctl restart docker`) |
 | GET/POST/DELETE | `/docker/networks` (+ `/{name}`, `/prune`, `/connect`, `/disconnect`) | admin |
 | GET/POST/PUT/DELETE | `/docker/compose/projects` (+ `/{name}/config\|start\|stop\|restart\|update\|services`) | admin | `update` = `compose pull` + `up -d` |
-| GET | `/docker/catalog` | auth | manifest-driven app list (15 built-in packages + community stores) + `installed`/`installed_port`; filtered by `resource_shares` `kind=app` for members (admins see all) |
+| GET | `/docker/catalog` | auth | manifest-driven app list (16 built-in packages + community stores) + `installed`/`installed_port`; filtered by `resource_shares` `kind=app` for members (admins see all) |
 | GET | `/docker/catalog/{id}/icon` · `/gallery/{n}` | auth | package icon / screenshot (`id` is namespaced `<store>:<app>`, URL-encoded) |
 | POST | `/docker/catalog/{id}/install` | admin | renders the package's compose template into a project, starts it, writes `.install.toml`, starts the per-app proxy. Body `{port?, alternatives?, environment?, media_share?: {name, share_type}, gpu?}`; hard-gates compatibility, settings, dependencies, the declared `share_mount` and `/dev/dri` |
 | GET | `/docker/catalog/{id}/install-review` | auth | pre-install review: dependency plan (satisfiers, providers, selection), declared environment, compatibility verdict, plus `share_mount`, `gpu`, `gpu_available` and the enabled `shares` |

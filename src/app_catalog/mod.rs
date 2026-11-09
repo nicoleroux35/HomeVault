@@ -688,11 +688,11 @@ mod tests {
     #[test]
     fn test_builtin_catalog_loads() {
         let apps = scan_builtin();
-        // The 15 migrated apps must all parse.
+        // The built-in apps must all parse.
         assert_eq!(
             apps.len(),
-            15,
-            "expected 15 built-in apps, got {}",
+            16,
+            "expected 16 built-in apps, got {}",
             apps.len()
         );
         assert!(apps.iter().all(|a| a.store_id == BUILTIN_STORE_ID));

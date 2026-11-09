@@ -8,6 +8,14 @@ follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **Calendars and contacts, self-hosted (2026-11-09, P2).** DSM's Calendar and
+  Contacts apps land where §6 says they belong — the catalog, not a new
+  subsystem: **Baïkal** (CalDAV + CardDAV, one container) is the 16th built-in
+  app. Its settings and its calendar/contact data live in two separate volumes,
+  so resetting the admin password never touches the user's data. Phones,
+  Thunderbird and DAVx⁵ connect straight to it, behind the existing reverse
+  proxy and VPN. Catalog now ships 16 apps.
+
 - **Syncthing file versions: policy and restore (2026-11-09, P2).** Syncthing
   already keeps the previous copy of a replaced file; HomeVault now lets you see
   and control it without a second version store.

@@ -133,6 +133,7 @@ justifie.
 | **P2-17** | iSCSI : LUN fins ZFS + snapshots/clones — livré 2026‑11‑09 | P2 | M | Export bloc avec snapshots |
 | **P2-18** | VM : export/import d'archive (OVA) — livré 2026‑11‑09 | P2 | M | Portabilité des machines |
 | **P2-19** | Syncthing : navigateur de versions — livré 2026‑11‑09 | P2 | S/M | Récupérer un fichier remplacé |
+| **P2-20** | Calendrier/Contacts via app catalogue (Baïkal) — livré 2026‑11‑09 | P2 | S | Agenda du foyer |
 | **P2-1** | SMB AD/Kerberos complet (winbind, realm, idmap, keytab) — **gelé au partiel** (config ADS + join/leave ; DC réel seulement si cible entreprise) | P2 | L | Entreprise Windows |
 | **P2-2** | NFSv4 + Kerberos (`sec=krb5`) — **gelé au partiel** (flavor + validation keytab ; KDC réel seulement si cible entreprise) | P2 | L | Entreprise Unix |
 | **P2-3** | Thin provisioning — **gelé au partiel** (zvols ZFS thin/thick ; overcommit/LVM rejetés) | P2 | L | Sur‑allocation |
@@ -2159,6 +2160,25 @@ versions — il règle la politique du démon et lui demande la restauration.
 Tests : 6 unitaires, 3 d'intégration (**le démon n'est jamais contacté**), E2E
 Syncthing §15 — écrits, **non exécutés**. Docs : `docs/guides/syncthing.md`,
 `SCREENS.md`, FeatureDoc `syncthing`.
+
+### [x] P2-20 — Calendrier/Contacts en app catalogue · S
+
+**Livré 2026‑11‑09.** Décision §6 : ni sous‑système natif, ni duplication —
+**Baïkal** entre au catalogue (16 apps) et sert **CalDAV** et **CardDAV** avec
+l'interface d'administration standard.
+
+- `catalog/baikal/` : manifeste (`[security] no_new_privileges`, quatre
+  descriptions localisées, icône `calendar`) et compose avec **deux volumes
+  séparés** — `config` (réglages, mot de passe admin) et `data`
+  (calendriers/contacts), pour qu'une réinitialisation de config ne touche
+  jamais les données.
+- Aucun nouveau code Rust : l'installation, le reverse‑proxy, l'accès VPN, la
+  sauvegarde Restic et les mises à jour planifiées s'appliquent tels quels.
+- Compte intégré : 15 → 16 dans les tests de catalogue et la doc.
+
+Tests : les tests de catalogue existants couvrent le nouveau paquet (manifeste
+valide, `[security]` présent, rendu compose sans placeholder, port lié) — non
+exécutés. Docs : `SCREENS.md`, `docs/guides/docker.md`, `docs/API.md`.
 
 ---
 

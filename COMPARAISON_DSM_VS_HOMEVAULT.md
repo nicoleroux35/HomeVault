@@ -15,7 +15,7 @@
 |---|---|
 | Baseline HomeVault | commit `6cc87ed`, 08/11/2026 |
 | Firmware DSM analysé | 7.4.1‑90080 (DS925+), image `/media/nicolas/500GB/Projets/DSM7/DSM_DS925+_90080` |
-| Périmètre | 30 apps intégrées du launcher + 15 apps du catalogue Docker |
+| Périmètre | 30 apps intégrées du launcher + 16 apps du catalogue Docker |
 | Méthode | Vérification du code (`src/`, `frontend/`, `catalog/`), des guides `docs/guides/` et du backlog `HOMEVAULT_TASKLIST_A_FAIRE.md` |
 | Légende | ⭐ HomeVault au‑delà · ✅ parité · 🟡 partiel · ❌ absent |
 | Revue de valeur | 2026‑11‑08 — filtre §6, aligné sur le backlog §1bis |
@@ -110,7 +110,7 @@ cas de désaccord avec le backlog, `HOMEVAULT_TASKLIST_A_FAIRE.md` §1bis gagne.
 
 ## 2. Catalogue d'apps vs paquets DSM
 
-HomeVault propose **15 apps** ; DSM référence **63 paquets** (19 installés d'usine
+HomeVault propose **16 apps** ; DSM référence **63 paquets** (19 installés d'usine
 dans l'image).
 
 | Catégorie | HomeVault (catalogue) | Paquet DSM | Verdict | À améliorer |
@@ -124,8 +124,8 @@ dans l'image).
 | Monitoring | **Grafana, Uptime Kuma** | Resource Monitor / Active Insight | ⭐ | Intégration des métriques HomeVault |
 | Automatisation/IoT | **n8n, Home Assistant** | (aucun équivalent) | ⭐ | Connecteurs HomeVault |
 | Mots de passe | **Vaultwarden** | Secure SignIn | ⭐ | SSO/passkeys |
-| Tâches/RSS/DNS | **Vikunja, FreshRSS, Pi‑hole** | Calendar / DNS Server | ✅ / 🟡 | **Calendrier manquant** |
-| **Absents** | — | MailPlus Server, Calendar, Contacts, Synology Office, Chat (équipe), Surveillance Station, Web Station, Directory Server, RADIUS Server, C2/Hybrid Share, ABB Agent, CMS, Migration Assistant, DLNA | ❌ | Décider pour chaque : app catalogue vs développement natif vs non‑objectif assumé |
+| Tâches/RSS/DNS/agenda | **Vikunja, FreshRSS, Pi‑hole, Baïkal** | Calendar / Contacts / DNS Server | ✅ | **Calendrier et contacts livrés via Baïkal** (CalDAV + CardDAV, P2‑20) |
+| **Absents** | — | MailPlus Server, Synology Office, Chat (équipe), Surveillance Station, Web Station, Directory Server, RADIUS Server, C2/Hybrid Share, ABB Agent, CMS, Migration Assistant, DLNA | ❌ | Décider pour chaque : app catalogue vs développement natif vs non‑objectif assumé (Calendar/Contacts sont désormais couverts par le catalogue) |
 
 > Le « Chat » de HomeVault est un **assistant IA**, pas la messagerie d'équipe de
 > DSM. Ne pas confondre les deux dans un comparatif.
@@ -199,7 +199,7 @@ reconstruction complète sur VM.
 | **P2 ✅** | iSCSI snapshots/clones de LUN, thin LUN | **P2 home‑lab** : **livré** (P2‑17) — LUN fin ZFS + snapshots/clones | Usage domestique marginal | M | nouveau |
 | **P2 ✅** | VM export/import OVA | **P2** en s'appuyant sur `incus export` natif : **livré** (P2‑18) | Portabilité/backup, pas un sous‑système | M | nouveau |
 | **P2 ✅** | Syncthing navigateur de versions | **P2** intégration UI seule (Syncthing gère déjà les versions) : **livré** (P2‑19) | Faible effort, pas de nouveau moteur | S/M | nouveau |
-| **P2** | Calendrier/Contacts manquants | **App catalogue** (Radicale/Baïkal), pas natif | Cohérent avec le backlog §6 | S | nouveau |
+| **P2 ✅** | Calendrier/Contacts manquants | **App catalogue** (Radicale/Baïkal), pas natif : **livré** (P2‑20, Baïkal) | Cohérent avec le backlog §6 | S | nouveau |
 
 **P1‑34 — Intégration média (livrée).**
 
@@ -330,6 +330,22 @@ reconstruction complète sur VM.
   contacté**), E2E Syncthing §15. Docs : `docs/guides/syncthing.md`,
   `SCREENS.md`, FeatureDoc `syncthing`.
 
+**P2‑20 — Calendrier/Contacts en app catalogue (livré).**
+
+- **Baïkal** rejoint le catalogue (16 apps) : un seul conteneur (nginx + PHP)
+  qui sert **CalDAV** et **CardDAV**, avec l'interface d'administration qui
+  crée les utilisateurs, calendriers et carnets.
+- Deux volumes séparés : `config` (réglages, mot de passe admin) et `data`
+  (calendriers/contacts) — une réinitialisation de config ne touche jamais les
+  données.
+- **Pas de sous‑système natif** : c'est la décision §6 (le natif est réservé à
+  ce qui doit partager l'identité, les partages, la sauvegarde ou la
+  supervision). Les clients (iOS, Android, Thunderbird, DAVx⁵) se connectent
+  directement au conteneur, derrière le reverse‑proxy et le VPN existants.
+- Tests : les tests de catalogue existants couvrent le nouveau paquet
+  (manifeste + `[security]` + rendu compose) ; le compte intégré passe de 15 à
+  16 dans les tests et la doc.
+
 ### 3.3 Geler ou rejeter — parité sans valeur pour la cible
 
 | Proposition | Décision | Raison |
@@ -434,7 +450,7 @@ PHP 8.1/Redis 4.0.
 - **WireGuard UX** : `WgEndpointConfig` + `resolve_endpoint`/`endpoint_warning`
   dans `src/vpn.rs`, `GET/PUT /api/vpn/wireguard/endpoint`, carte endpoint
   dans VPN (P1‑33)
-- Catalogue : `catalog/*/homevault-app.toml` (15 apps)
+- Catalogue : `catalog/*/homevault-app.toml` (16 apps, dont **Baïkal** — CalDAV/CardDAV — P2‑20)
 - **Intégration média** : `share_mount` + `gpu` dans le manifeste
   (`src/app_catalog/manifest.rs`), `RenderOptions`/`render_with_options` dans
   `src/app_catalog/mod.rs`, `media_share`/`gpu` à l'install et mémorisés dans
@@ -771,8 +787,8 @@ Journal — l'API les porte déjà.
 
 **Reste sur P2‑9** : le test de reconstruction complète sur une VM jetable
 (boot, installation, restauration DB + configuration + données, vérification)
-et, si la cible le justifie, une image système équivalente à `md0`. **Tous les
-P1 de §3.2 sont livrés** (média, Explorer, téléchargeur) et **quatre P2** le sont
-aussi (cache SSD ZFS L2ARC/SLOG, LUN fins iSCSI, export/import VM, versions
-Syncthing) ; reste le calendrier en app catalogue, puis les finitions
-P1‑18/P2‑7/P2‑8.
+et, si la cible le justifie, une image système équivalente à `md0`. **Toute la
+feuille §3.2 est livrée** : les trois P1 (média, Explorer, téléchargeur) et les
+cinq P2 (cache SSD ZFS L2ARC/SLOG, LUN fins iSCSI, export/import VM, versions
+Syncthing, calendrier/contacts en app catalogue). Restent les finitions
+P1‑18/P2‑7/P2‑8 et le test VM de P2‑9.

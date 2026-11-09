@@ -1,5 +1,19 @@
 # HomeVault — Test tracking
 
+## P2 Calendars/contacts in the catalog (Baïkal) — 2026-11-09 (not run)
+
+> **Instruction followed: no test command was executed for this change.**
+> Static checks passed: `cargo check --lib`, `cargo check --tests`,
+> `cd frontend && npm run check` and `npm run build`.
+
+| Coverage | Added / changed |
+|---|---|
+| Catalog | **+1 package** (`catalog/baikal/`): manifest with `[security] no_new_privileges`, four localized descriptions, and a compose template with two separate volumes (`config`, `data`) and memory/CPU limits |
+| Unit (`src/app_catalog/mod.rs`) | the built-in count assertion moves 15 → 16; the existing `test_every_builtin_manifest_declares_security`, `test_builtin_apps_render` and `test_builtin_media_apps_declare_share_mount_and_gpu_support` now also cover Baïkal (manifest parses, `[security]` present, no placeholder left after render, port bound) |
+| Integration (`tests/app_catalog_integration.rs`) | the catalog list assertion moves 15 → 16 |
+| E2E (`tests/e2e/docker/docker.spec.ts`) | §15.2's comment no longer hardcodes a count (the badge/install assertions stay) |
+| Docs | `SCREENS.md`, `docs/guides/docker.md`, `docs/API.md`, `CHANGELOG.md`, `HOMEVAULT_TASKLIST_A_FAIRE.md` (P2‑20), `COMPARAISON_DSM_VS_HOMEVAULT.md` |
+
 ## P2 Syncthing file versions (policy + restore) — 2026-11-09 (not run)
 
 > **Instruction followed: no test command was executed for this change.**
