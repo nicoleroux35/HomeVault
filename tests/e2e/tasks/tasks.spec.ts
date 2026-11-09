@@ -253,9 +253,12 @@ test('3.5 — the type select offers a service trigger', async ({ page }) => {
     .locator('[role="dialog"]')
     .filter({ has: page.locator('[data-testid="tasks-save-btn"]') })
     .first();
+  await expect(modal).toBeVisible();
 
-  const typeCombobox = modal.getByRole('combobox').first();
-  await typeCombobox.click();
+  // The task-type control is the shared `Select` (a button, not a native
+  // `select`); the first combobox in this modal is the timezone.
+  const typeSelect = modal.getByRole('button', { name: 'snapshot' }).first();
+  await typeSelect.click();
   const option = page.getByRole('option', {
     name: /Trigger a service|Déclencher un service|Ejecutar un servicio|Dienst auslösen/,
   });

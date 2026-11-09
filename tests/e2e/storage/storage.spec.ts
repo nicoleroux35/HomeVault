@@ -237,12 +237,12 @@ test.describe('1 — Page load', () => {
     await expect(win(page).locator('[data-testid="storage-loading"]')).toHaveCount(0);
   });
 
-  test('1.3 — header shows the Storage title and its 7 tabs', async ({ page }) => {
+  test('1.3 — header shows the Storage title and its 8 tabs', async ({ page }) => {
     await gotoStorage(page, adminTokens);
     await expect(win(page).locator('.hv-winhdr-title')).toContainText(/storage|stockage|speicher|almacen/i);
     // disks / virtual disks / partitions / removable / encryption / cache /
-    // snapshot schedules (2026-10-13)
-    await expect(win(page).locator('.hv-winhdr-tab')).toHaveCount(7);
+    // snapshot schedules (2026-10-13) / compression (P2-11)
+    await expect(win(page).locator('.hv-winhdr-tab')).toHaveCount(8);
   });
 
   test('1.4 — the 4 stat tiles render', async ({ page }) => {

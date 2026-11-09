@@ -11,7 +11,8 @@
 | Installer `data-dir.test.sh` | **12 passed / 0 failed** |
 | Frontend `npm run check` | **0 errors / 0 warnings** |
 | Frontend `npm run build` | **OK** (106 precompressed files) |
-| E2E (health, storage, backup, Firefox, workers=1) | see the run log / below |
+| E2E (health, storage, backup, Firefox, workers=1) | **125 passed / 4 skipped / 0 failed** (`E2E_EXIT=0`) |
+| E2E (shares, tasks, iscsi — merge surfaces) | **91 passed / 1 skipped / 0 failed** (`E2E_EXIT=0`) |
 | `cargo fmt --check` | **fails: 134 pre-existing rustfmt diffs** (toolchain drift; not introduced by this pass) |
 
 The first executed run found real defects and stale tests, all fixed before the

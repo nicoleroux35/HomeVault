@@ -579,7 +579,7 @@ test.describe('4 — All user interactions', () => {
 
     const form = win(page).locator('[data-testid="shares-config"] [data-testid="shares-form"]');
     const selects = form.locator('select');
-    await expect(selects).toHaveCount(2);
+    await expect(selects).toHaveCount(4);
 
     const securityValues = await selects.nth(0).locator('option').evaluateAll((options) =>
       options.map((option) => (option as HTMLOptionElement).value),
@@ -676,7 +676,7 @@ test.describe('4 — All user interactions', () => {
     );
     const versionIndex = optionSets.findIndex((values) => values.includes('auto'));
     expect(versionIndex).toBeGreaterThanOrEqual(0);
-    expect(optionSets[versionIndex]).toEqual(['auto', '3', '4', '4.2']);
+    expect(optionSets[versionIndex]).toEqual(['auto', '3', '4', '4.1', '4.2']);
 
     await form
       .getByRole('button', { name: /save|enregistrer|speichern|guardar/i })

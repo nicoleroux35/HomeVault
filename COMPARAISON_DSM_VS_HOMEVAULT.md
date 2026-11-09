@@ -1205,3 +1205,37 @@ dans `TESTING.md`.
 - Reste FIAB‑03 : le test terrain d’une mise à jour qui migre puis échoue
   (health check), et la taille/rotation de `pre-update.db*` si la base est
   volumineuse.
+
+---
+
+## 15. Vérification exécutée — 2026‑11‑09
+
+> Première exécution complète de la suite sur `main`. Elle a trouvé 10 échecs
+> unitaires et 4 suites d’intégration en échec, tous corrigés avant le run
+> final. Les tests ont ensuite été exécutés, contrairement aux passes
+> précédentes.
+
+| Suite | Résultat |
+|---|---|
+| Unitaires Rust | **2 939 / 2 939** |
+| Intégration Rust (`--no-fail-fast`) | **110 suites, 4 580 / 4 580** |
+| Installeur `unit-hardening` / `update-engine` / `data-dir` | **57 / 43 / 12**, 0 échec |
+| Frontend `npm run check` / `build` | **0 erreur, 0 warning** / build OK |
+| E2E Health + Storage + Backup (Firefox, 1 worker) | **125 passés, 4 ignorés, 0 échec** |
+| E2E Shares + Tasks + iSCSI | **91 passés, 1 ignoré, 0 échec** |
+| `cargo fmt --check` | **rouge** : 134 diffs préexistants (dérive `rustfmt`, hors périmètre) |
+
+**Défauts réels corrigés par ce run** : indentation du bloc GPU (test), niveau
+de compression Btrfs nu (`15` → `zstd:15`), borne basse `idmap` à 0 refusée,
+`resume_decision("No scrub in progress")` qui ne nettoyait jamais le marqueur,
+`sudo` non disponible traité comme no‑op pour Samba, socket systemd vide,
+`e2fsck`/`dumpe2fs` ajoutés aux binaires de base, et le test du helper
+d’installeur borné par `run_timed`.
+
+**Corrections de tests/harnais** : grants explicites pour les fixtures
+content‑index et recherche globale (un membre ne voit plus tous les
+`PathGuard`), base SQLite fichier pour le drill de restauration (`VACUUM INTO`
+est un no‑op sur `sqlite::memory:`), message de quota délégué, grant du
+propriétaire pour les liens de partage, attente de 8 onglets Storage, modal
+« What’s new » fermé dans Backup, `Select` custom cliqué comme un bouton dans
+Tasks, options SMB/NFS mises à jour (4 selects, NFS 4.1).

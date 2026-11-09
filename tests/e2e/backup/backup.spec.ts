@@ -100,6 +100,14 @@ async function gotoDesktop(page: Page, tokens: Tokens, lang?: string) {
   await seedBrowser(page, tokens, lang);
   await page.goto('/desktop');
   await page.waitForSelector('.hv-user-pill', { timeout: 20_000 });
+  // A freshly seeded server opens "What's new" once; it sits above the
+  // launcher and intercepts every dock click. Dismiss it before navigating.
+  const whatsNew = page.locator('[data-testid="whats-new-modal"]');
+  await whatsNew.waitFor({ state: 'visible', timeout: 2_500 }).catch(() => {});
+  if (await whatsNew.isVisible().catch(() => false)) {
+    await page.locator('[data-testid="whats-new-dismiss"]').click().catch(() => {});
+    await whatsNew.waitFor({ state: 'hidden', timeout: 3_000 }).catch(() => {});
+  }
   await page
     .addStyleTag({
       content: '[class*="-monitor"]{display:none!important;pointer-events:none!important}',
