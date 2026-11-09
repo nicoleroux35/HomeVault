@@ -15,7 +15,7 @@ d'implémentation**.
 | Champ | Valeur |
 |---|---|
 | Sources | `ANALYSE-DSM-vs-HOMEVAULT.md` (parité, `c37c803`) + `docs/analysis/dsm7-reliability-integrity-review.md` (fiabilité/intégrité, `3afe03e`) |
-| Date | 2026‑11‑06 |
+| Date | 2026‑11‑06, état au 2026‑11‑09 (HEAD `03cdb2f`) |
 | Périmètre | écarts **vérifiés dans le code** : parité fonctionnelle (§14.8/§15.4 de l'analyse) **et** fiabilité/stabilité/intégrité des fichiers et transferts (revue du 05/11), revue de valeur du 06/11 |
 | Hors périmètre | ce qui est déjà livré (voir §5, avec les réserves d'intégrité) et les non‑objectifs assumés (voir §6) |
 
@@ -113,7 +113,7 @@ justifie.
 | **P1-18** | Table d'audit interrogeable — livrée 2026‑11‑08, **filtres structurés UI livrés 2026‑11‑09** | P1 | M | Enquête après incident |
 | **P1-19** | `clamd` temps réel (option, hors profil basse conso) — **rejeté pour la cible** (coût RAM permanent) | P1 | M | Antivirus à l'écriture |
 | **P1-20** | PPPoE — **rejeté pour la cible** (la box FAI le fait déjà) | P1 | M | Box en bridge |
-| **P1-21** | RAID : vitesse de resync, moniteur `mdadm`, spare auto sur disque « Critical » — **partiel assumé** (suggestion seulement ; ajout auto rejeté) | P1 | M | Reconstruction contrôlée, alerte avant panne |
+| **P1-21** | RAID : vitesse de resync, moniteur `mdadm`, spare auto sur disque « Critical » — **vitesse livrée** (FIAB‑10 : API + persistance + UI) ; moniteur livré ; **ajout auto rejeté** (suggestion seulement) | P1 | M | Reconstruction contrôlée, alerte avant panne |
 | **P1-22** | Btrfs : `compress=zstd`, `space_cache=v2`, balance conditionnel, TRIM planifié ✅ | P1 | M | Maintenance et espace disque sains |
 | **P1-23** | Import/assemblage mdadm étranger (« online assemble ») ✅ | P1 | S/M | Récupérer un pool sans recréer |
 | **P1-24** | Digest des gros téléchargements + checksums de chunks d'upload ✅ | P1 | M | Intégrité prouvée au‑delà de 64 Mio |
@@ -140,9 +140,9 @@ justifie.
 | **P2-4** | Déduplication — **gelé au design** (planification `duperemove` ; exécution après benchmark seulement) | P2 | XL | Économie d'espace |
 | **P2-5** | KMIP / coffre de clés — **rejeté pour la cible** (dépendance critique au boot) | P2 | XL | Clés externalisées |
 | **P2-6** | WORM par fichier — **rejeté pour la cible** (les snapshots immuables suffisent) | P2 | M/L | Immuabilité légale |
-| **P2-7** | Isolation d'exécution (systemd durci + profils AppArmor) — **priorité**, installeur livré 2026‑11‑08 (enforce/terrain restants) | P2 | L | Défense en profondeur |
-| **P2-8** | Mise à jour signée + atomique + rollback — livré 2026‑11‑09 (installeur 2026‑11‑08 + **Apply update** dans Settings) | P2 | L/XL | Intégrité de la chaîne |
-| **P2-9** | Réparation/restauration bare‑metal testée — **priorité**, drill non destructif livré 2026‑11‑08 (test VM restant) | P2 | L | Reprise après sinistre |
+| **P2-7** | Isolation d'exécution (systemd durci + profils AppArmor) — **priorité**, installeur + préflight AppArmor livrés (FIAB‑11 ; enforce/terrain restants) | P2 | L | Défense en profondeur |
+| **P2-8** | Mise à jour signée + atomique + rollback — livré (installeur + **Apply update** + ancrages/rotation FIAB‑12 ; reste la publication des clés) | P2 | L/XL | Intégrité de la chaîne |
+| **P2-9** | Réparation/restauration bare‑metal testée — **priorité**, drill + grille RTO/RPO livrés (FIAB‑05 ; test VM restant) | P2 | L | Reprise après sinistre |
 | **P2-10** | Prédiction de panne disque par régression SMART (pas de ML) ✅ | P2 | M | Anticiper le remplacement |
 | **P2-11** | Compression/défragmentation Btrfs (hors dédup P2-4) ✅ | P2 | M | Espace et perf |
 | **P2-12** | Rapport de santé hebdomadaire (scrub, SMART, I/O, backups) ✅ | P2 | S/M | Visibilité sans surveillance |
@@ -210,6 +210,21 @@ justifie.
 > 2026‑11‑06 (ci-dessous), la suite prioritaire est **P2-7 (enforce/terrain),
 > P2-8 (reste la clé de production), P2-9 (test VM)**.
 > Les autres items sont gelés ou rejetés pour la cible actuelle.
+>
+> **État au 2026‑11‑09 (HEAD `03cdb2f`).** La suite complète a été exécutée et
+> est verte (2 939 unitaires, 4 580 intégrations, suites d'installeur, E2E
+> ciblés — `COMPARAISON_DSM_VS_HOMEVAULT.md` §15). Depuis : FIAB‑10 (vitesse
+> RAID, §12), FIAB‑14 (verdict restic, §13), FIAB‑03 (rollback base, §14),
+> FIAB‑13 (modes USB + traçabilité, §16), FIAB‑01 (runbook d'injection de
+> pannes + tests de dédoublonnage, §17), FIAB‑11/12 (ancrages de confiance +
+> préflight AppArmor + rotation des clés, §18) et la grille RTO/RPO de FIAB‑05
+> (§19). Il ne reste que du **terrain** : reconstruction VM, enforce AppArmor,
+> publication des clés de production et les preuves manuelles de FIAB‑01.
+> Les mentions « écrits, non exécutés » des cartes P1‑30→P2‑20 datent de leur
+> passe : leurs unitaires et intégrations ont depuis tourné dans le run
+> complet ; seuls les E2E non listés dans `COMPARAISON_DSM_VS_HOMEVAULT.md`
+> §15 (Explorer, Téléchargeur, Docker, VPN, Quotas, Settings) restent à
+> lancer.
 
 ---
 
@@ -228,9 +243,9 @@ panne majeur.
 
 | Décision | Items | Justification |
 |---|---|---|
-| **Priorité** | **P2-7** isolation d’exécution (**installeur livré 2026‑11‑08**, enforce/terrain restants), **P2-8** mises à jour signées/atomiques (**livré 2026‑11‑09**, reste la clé de production), **P2-9** restauration bare-metal (**drill livré 2026‑11‑08**, test VM restant) | Sécurité, intégrité de la chaîne et reprise après sinistre : gains réels, sans dépendance externe. |
+| **Priorité** | **P2-7** isolation d’exécution (**installeur + préflight AppArmor livrés**, enforce/terrain restants), **P2-8** mises à jour signées/atomiques (**livré**, ancrages/rotation FIAB‑12 ; reste la publication des clés), **P2-9** restauration bare-metal (**drill + grille RTO/RPO livrés**, test VM restant) | Sécurité, intégrité de la chaîne et reprise après sinistre : gains réels, sans dépendance externe. |
 | **À faire, plus tard** | — | (P1‑16 OAuth2 e-mail livré le 2026‑11‑09 ; plus aucun item ouvert dans cette catégorie) |
-| **Finitions seulement** | **P1-21** suggestion de spare (pas d’ajout auto) | Le cœur est déjà livré ; le reste ajoute du risque ou peu de valeur. P1‑27 et P1‑28 sont livrés le 2026‑11‑09. |
+| **Finitions seulement** | **P1-21** suggestion de spare (pas d’ajout auto) | La vitesse de resync, le moniteur et la suggestion sont livrés (FIAB‑10) ; l’ajout auto reste rejeté. P1‑27 et P1‑28 sont livrés le 2026‑11‑09. |
 | **Gelé au stade partiel** | **P2-1** SMB AD, **P2-2** NFS Kerberos, **P2-3** thin provisioning, **P2-4** déduplication, **P2-15** witness | Utiles seulement en entreprise/multi-site ou après benchmark ; ne pas investir sans cible explicite. |
 | **Rejeté pour la cible** | **P2-5** KMIP, **P2-6** WORM, **P1-19** clamd temps réel, **P1-20** PPPoE, **P2-3** partie overcommit LVM/UI (le support zvol reste), **P2-4** exécution automatique (le design reste) | Complexité, coût permanent ou mode de panne (boot dépendant du réseau, saturation imprévisible, verrouillage admin) disproportionnés. |
 
@@ -238,7 +253,11 @@ panne majeur.
 > dans `main` : le commit `d46a2a5` a été fusionné en conservant P2‑1, P2‑7,
 > P1‑27 et les écrans média/zvol. Les migrations 082–085 du lot sont
 > renumérotées **089–092**, et **093** reconstruit le CHECK des tâches pour
-> les 7 types. Les tests du lot restent à exécuter (FIAB‑01).
+> les 7 types. La suite complète a depuis été **exécutée et est verte**
+> (`COMPARAISON_DSM_VS_HOMEVAULT.md` §15) ; FIAB‑01 a ajouté le runbook
+> d'injection de pannes et les tests de dédoublonnage, et il ne reste que les
+> **preuves manuelles** (SIGKILL+reboot, `dm-flakey`, client SMB, `configfs`
+> iSCSI).
 
 **Décisions détaillées.**
 
@@ -412,6 +431,8 @@ conservé sous la destination) et `count_files` compte un fichier comme 1.
 Tests unitaires : arbre identique, même taille mais contenu différent, taille
 différente, fichier manquant, source fichier unique, comptage. Docs :
 `docs/guides/usb-copy.md` (l'étape 3 ne promet plus un simple hash).
+**Complété le 2026‑11‑09 (FIAB‑13)** : modes de copie, politique de conflit
+et traceur d'exécution (points 4 et 5 ci‑dessous).
 
 **Constat.** `UsbCopyProfile.verify_checksums` existe (`src/usb_copy.rs:64`),
 mais `verify_copy` ne comparait que la **taille** et l'**existence**
@@ -428,10 +449,15 @@ mais `verify_copy` ne comparait que la **taille** et l'**existence**
    booléen mais le renommer dans l'API/UI pour qu'il ne mente plus).
 4. Ajouter les stratégies DSM manquantes si elles ne sont pas déjà couvertes :
    `incremental`, `mirror`, `versioned`, `photo-import`, avec politique de
-   conflit `overwrite | skip | rename`. *(Reste ouvert : ce lot ne couvre que
-   la vérification.)*
+   conflit `overwrite | skip | rename`. **Livré le 2026‑11‑09 (FIAB‑13)** :
+   `CopyStrategy`/`ConflictPolicy` sur le profil, appliqués fichier par
+   fichier dans `copy_recursive`, sélecteurs UI, i18n ×4 —
+   `COMPARAISON_DSM_VS_HOMEVAULT.md` §16.
 5. Journaliser le résultat par fichier et exposer les échecs dans
-   `transfer_history`. *(Reste ouvert.)*
+   `transfer_history`. **Livré autrement le 2026‑11‑09** : une ligne
+   `transfer_history` **par exécution** (`operation = usb_copy`, `method` =
+   mode, `verified`), pas par fichier — un import photo noierait la table ;
+   les échecs de vérification font échouer le run et y figurent.
 
 **Fichiers.** `src/usb_copy.rs`, `tests/usb_copy_integration.rs`,
 `frontend/src/routes/UsbCopy.svelte`, `docs/guides/usb-copy.md`.
@@ -463,7 +489,9 @@ doublé, un scrub `finished`/`repaired` efface le marqueur, et `idle`/une
 sortie inconnue relance le scrub enregistré. ZFS peut reprendre son propre
 scan ; Btrfs et mdadm repartent du début. L'appel se fait dans
 `src/storage/recovery.rs` **avant** le scrub global post-arrêt sale.
-*Reste ouvert : le test d'intégration « SIGKILL puis reboot ».*
+*Le `SIGKILL` + reboot réel reste une preuve terrain, désormais décrite dans
+`docs/guides/failure-injection.md` (§17 du comparatif) avec la commande et la
+sortie à conserver.*
 
 **Constat.** Le scrub n'existait que comme endpoint manuel
 (`POST /storage/virtual-disks/{name}/scrub`, `src/pools.rs:566`,
@@ -573,8 +601,8 @@ les erreurs I/O (`journalctl` 24 h, `btrfs device stats`, `zpool status -x`,
 `health.disk_smart`. `src/disk_health_scheduler.rs` échantillonne au plus une
 fois par 20 h. Endpoints session/admin + carte **Disk health history** dans
 Health (liste des findings + **Sample now** admin), i18n ×4.
-*Restent ouverts : seuil température sur 3 échantillons (aujourd'hui un seul),
-et rapport de santé hebdomadaire agrégé.*
+*Complété : le seuil de température porte sur 3 échantillons consécutifs
+(`analyze_temperature`) et le rapport hebdomadaire agrégé est livré par P2‑12.*
 
 **Constat.** `check_disk_smart` ne lisait que `smartctl -H`
 (`src/health.rs:518`). Les attributs 5/187/188/197/198 étaient extraits pour la
@@ -660,9 +688,10 @@ validait avant `systemctl reload smbd`.
 Un `smb.conf` corrompu est réparé au boot. `testparm` refuse une config
 invalide avant reload.
 
-**Tests.** Unitaires (`AtomicWriter`), unitaires `shares` (backup/append/
-self-heal), intégration (kill pendant écriture — à ajouter), E2E (self-heal au
-démarrage — à ajouter).
+**Tests.** Unitaires (`AtomicWriter`, dont la coupure simulée entre le
+temporaire et le `rename`), unitaires `shares` (backup/append/self-heal),
+E2E (self-heal au démarrage — à ajouter). Le `kill -9` réel pendant une
+écriture est une preuve terrain décrite dans `docs/guides/failure-injection.md`.
 
 ---
 
@@ -678,9 +707,10 @@ et l'échec est visible dans Tasks. `ResticService::check_repo_with_subset` a
 été ajouté ; `check_repo` reste le chemin `--read-data` complet pour le
 bouton manuel. UI Tasks : type **Restic repository check** (repo id + subset),
 i18n ×4 ; `docs/guides/scheduled-tasks.md` documente le payload.
-*Restent ouverts : les 3 tentatives avec backoff et la colonne
-`last_check_ok` dédiée dans l'écran Backup (l'historique de tâche couvre le
-besoin immédiat).*
+*Depuis FIAB‑14 (2026‑11‑09), la colonne `last_check_ok`/`last_check_at`/
+`last_check_error` et le badge **Verified / Failed / Never checked** de l'écran
+Backup sont livrés (migration 094, `COMPARAISON_DSM_VS_HOMEVAULT.md` §13). Le
+test terrain avec un pack tronqué reste à faire.*
 
 **Constat.** `restic check` existait à la demande (`src/restic.rs:1661`) mais le
 planificateur ne faisait que backup + retention (`src/restic_scheduler.rs`).
@@ -1497,9 +1527,11 @@ disque non prévu). PPL reste documentaire, pas d’UI.
 **Livré partiel 2026-11-05.** `src/raid_stability.rs` :
 - profils de vitesse `low` (1 000–25 000 kB/s), `balanced`
   (5 000–100 000) et `fast` (25 000–500 000), écrits dans
-  `/proc/sys/dev/raid/speed_limit_min|max` via `sudo tee` ; la fonction
-  `apply_speed_profile` existe mais aucun endpoint/UI ne l'appelle encore,
-  donc rien n'est imposé au démarrage ;
+  `/proc/sys/dev/raid/speed_limit_min|max` via `sudo tee`. **Depuis FIAB‑10
+  (2026‑11‑09)** : `GET/PUT /api/storage/raid/resync-speed`, choix persisté
+  dans `data/state/raid-speed.json`, réappliqué au démarrage, après création
+  d'un volume et après lancement d'une reconstruction, sélecteur dans
+  Storage → RAID — `COMPARAISON_DSM_VS_HOMEVAULT.md` §12 ;
 - parsing des événements `md/array <event> <device>` (`Fail`,
   `DegradedArray`, `SpareActive`, `RebuildStarted`, `RebuildFinished`) ;
 - `poll_once` compare l'état des arrays au passage précédent et notifie quand
@@ -1509,8 +1541,9 @@ disque non prévu). PPL reste documentaire, pas d’UI.
   `spare_suggestion` l'ajoute à la notification de dégradation — ou dit
   explicitement qu'aucun disque libre n'est disponible.
 *Reste ouvert : l'ajout du spare (`mdadm --add`) reste humain, volontairement
-— choisir un remplaçant modifie l'inventaire de la machine. `--consistency-
-policy=ppl` (write hole) n'est pas évalué dans l'UI.*
+— choisir un remplaçant modifie l'inventaire de la machine ;
+`--consistency-policy=ppl` (write hole) n'est pas évalué dans l'UI ; le test
+terrain d'une reconstruction réelle reste à faire.*
 
 - Écrire `/proc/sys/dev/raid/speed_limit_min|max` depuis un profil
   « impact faible / rapide / personnalisé » ; le bitmap write‑intent existe
@@ -1977,12 +2010,18 @@ une fonction livrée sont **volontairement absentes** et documentées :
 `ProtectKernelTunables` (sysctl WireGuard), `ProtectKernelModules` (modprobe
 iSCSI), `ProtectHostname`, `ProtectClock`, `PrivateDevices`, `ProtectHome`
 (dossiers utilisateurs), `CapabilityBoundingSet` (sudo setuid). Profil AppArmor
-**opt‑in** (`HV_APPARMOR=1`, complain par défaut, enforce après validation), et
-score `systemd-analyze security` imprimé par l'installeur. Tests :
-`installer/tests/unit-hardening.test.sh` (non exécutés). Docs :
+**opt-in** (`HV_APPARMOR=1`, complain par défaut, enforce après validation), et
+score `systemd-analyze security` imprimé par l'installeur.
+**Complété le 2026‑11‑09 (FIAB‑11/12)** : l'installeur compile le profil rendu
+avec `apparmor_parser -Q` avant de remplacer le profil chargé (un profil fautif
+ne retire plus la confinement en place), et `docs/guides/security.md` liste
+chaque directive volontairement absente avec sa raison + la checklist terrain
+par sous‑système — `COMPARAISON_DSM_VS_HOMEVAULT.md` §18. Tests :
+`installer/tests/unit-hardening.test.sh` (compile ; suite non exécutée). Docs :
 `docs/guides/security.md` → « Process isolation ». **Reste** : passe terrain
-`systemd-analyze security`/`aa-logprof`, enforce AppArmor, et l'étude d'un
-utilisateur système par sous‑système (aujourd'hui un seul compte de service).
+`systemd-analyze security`/`aa-logprof`, enforce AppArmor sur hôte réel, et
+l'étude d'un utilisateur système par sous‑système (aujourd'hui un seul compte
+de service).
 
 ### [~] P2-8 — Mise à jour signée + atomique · L/XL
 
@@ -2021,8 +2060,13 @@ paramétrée). Une installation `curl | bash` copie désormais l'installeur dans
 7 assertions de rendu d'unité, 3 d'intégration, E2E Settings §30 — écrits, non
 exécutés.
 
-**Reste** : publication de la clé publique de production (dépôt de release) et
-validation terrain sur un hôte réel.
+**Complété le 2026‑11‑09 (FIAB‑12).** `install_trust_anchor` installe la clé
+de release (`HV_RELEASE_PUBKEY` → `/usr/local/lib/homevault/release-key.pem`)
+comme la clé catalogue, et `docs/guides/security.md` documente la rotation
+publish‑then‑replace et la révocation hors ligne des deux chaînes —
+`COMPARAISON_DSM_VS_HOMEVAULT.md` §18. **Reste** : publier les clés de
+production (clés privées hors dépôt) et rejouer la matrice de signature sur un
+artefact réel.
 
 ### [~] P2-9 — Réparation / restauration bare‑metal · L
 
@@ -2045,9 +2089,14 @@ persisté dans `data/restore-drill.json`. Runbook mis à jour
 (`docs/guides/disaster-recovery.md`). Tests : 4 unitaires
 (`src/restore_drill.rs`), 5 d'intégration
 (`tests/restore_drill_integration.rs`), E2E Settings 8.6 — écrits, non
-exécutés. **Reste** : le test de reconstruction complète sur VM (boot d'une VM
-jetable, installation, restauration DB + config + données, vérification) et,
-si la cible le justifie, une image système équivalente à `md0`.
+exécutés. **Complété le 2026‑11‑09 (FIAB‑05, partiel)** : la grille
+**RTO/RPO par scénario** (disque système, pool perdu via réplication, pool
+perdu via restic, rançongiciel, erreur humaine) est dans
+`docs/guides/disaster-recovery.md`, avec une colonne « mesuré » réservée à un
+run VM daté — `COMPARAISON_DSM_VS_HOMEVAULT.md` §19. **Reste** : le test de
+reconstruction complète sur VM (boot d'une VM jetable, installation,
+restauration DB + config + données, vérification) et, si la cible le justifie,
+une image système équivalente à `md0`.
 
 ### [x] P2-10 — Prédiction de panne disque par régression SMART · M
 
@@ -2301,9 +2350,10 @@ Vérifié dans le code au 04/11/2026 (réserves d'intégrité ajoutées le
 > dire « déjà fiable ». Ces fonctions existent, mais une lacune est couverte
 > par un nouvel item :
 >
-> - **USB Copy** existe et sa vérification compare désormais un SHA-256 réel
->   (P0-5) ; restent les stratégies de copie (incremental/mirror/versioned) et
->   l'historique par fichier.
+> - **USB Copy** existe, sa vérification compare un SHA-256 réel (P0-5) et les
+>   stratégies (incremental/mirror/versioned/photo‑import), la politique de
+>   conflit et l'historique d'exécution sont livrés (FIAB‑13) ; reste le test
+>   terrain avec une carte réelle et la purge de `.versions/`.
 > - **Checksums** : le digest des gros téléchargements et les checksums de
 >   chunks sont livrés (P1-24) ; reste le test E2E navigateur.
 > - **SMB multichannel**, durable handles, chiffrement, signature, `strict
@@ -2315,7 +2365,9 @@ Vérifié dans le code au 04/11/2026 (réserves d'intégrité ajoutées le
 > - **Restic** : `check` planifié avec `--read-data-subset` (P0-10) ; reste le
 >   test E2E sur un vrai dépôt.
 > - **Config backup** est solide et les écritures de `smb.conf`/exports sont
->   atomiques (P0-9) ; reste le test de coupure `kill -9` en intégration.
+>   atomiques (P0-9) ; la coupure entre le fichier temporaire et le `rename`
+>   est couverte par un test unitaire, le `kill -9` réel reste une preuve
+>   terrain (`docs/guides/failure-injection.md`).
 > - **SMART** est historisé et alerté (P0-8) ; la prédiction de panne est
 >   affichée dans une carte Health (P2-10).
 > - **Snapshots GFS** existent ; la quiescence applicative est branchée via
@@ -2408,7 +2460,7 @@ Shares, docs et `TESTING.md` à jour.
 
 ### Sprint 5 — « Consolidation stockage & transferts » (2 semaines)
 
-- [~] P1-21 RAID resync/moniteur/spare auto (profils + moniteur ; ajout du spare manuel)
+- [~] P1-21 RAID resync/moniteur/spare auto (vitesse API+UI livrée FIAB‑10, moniteur livré ; ajout du spare manuel, PPL à évaluer)
 - [x] P1-22 Btrfs compression/balance/TRIM (boucle balance/TRIM ; politique par partage en P2-11)
 - [x] P1-23 import mdadm étranger
 - [x] P1-24 digest gros téléchargements/chunks
@@ -2421,9 +2473,9 @@ Shares, docs et `TESTING.md` à jour.
 
 - [~] P2-1 AD/Kerberos (gelé au partiel : config ADS + join/leave)
 - [~] P2-2 NFSv4/Kerberos (gelé au partiel : flavor + validation keytab)
-- [~] P2-7 isolation d'exécution — installeur livré 2026‑11‑08, enforce/terrain restants
-- [~] P2-8 mises à jour signées — livré 2026‑11‑09 (installeur + Apply update), reste la clé de production
-- [~] P2-9 restauration bare-metal — drill livré 2026‑11‑08, test VM restant
+- [~] P2-7 isolation d'exécution — installeur + préflight AppArmor livrés (FIAB‑11), enforce/terrain restants
+- [~] P2-8 mises à jour signées — livré (installeur + Apply update + ancrages/rotation FIAB‑12), reste la publication des clés
+- [~] P2-9 restauration bare-metal — drill + grille RTO/RPO livrés (FIAB‑05), test VM restant
 - [~] P2-3 thin (gelé au support zvol ; overcommit rejeté)
 - [~] P2-4 déduplication (design conservé ; exécution gelée)
 - [-] P2-5 KMIP (rejeté pour la cible)
@@ -2504,15 +2556,21 @@ Shares, docs et `TESTING.md` à jour.
   notification `backup.jobs` sont livrés). Après la **revue de valeur du
   2026‑11‑06**, les prochains chantiers ouverts sont **P2-7 (enforce +
   terrain), P2-8 (clé de production), P2-9 (test VM)** ; les autres items sont
-  gelés ou rejetés.
+  gelés ou rejetés. **Au 2026‑11‑09**, ces trois-là ne sont plus des chantiers
+  de code : FIAB‑11/12 ont livré le préflight AppArmor, les ancrages et la
+  rotation, FIAB‑05 a ajouté la grille RTO/RPO, et il ne reste que les preuves
+  terrain (enforce, VM, publication des clés) — voir
+  `COMPARAISON_DSM_VS_HOMEVAULT.md` §18–§19.
 - **Tests** : `cargo check --lib`, `cargo test --lib --no-run` et les
   `--no-run` de `replication_integration`, `iscsi_integration`,
   `storage_integration`, `raid_integration`, `rclone_integration`,
   `health_integration`, `cache_integration`, `explorer_integration`,
   `setup_integration` et `scheduled_tasks_integration` compilent (avertissements
-  préexistants uniquement) ; **les suites n'ont pas été exécutées** (consigne
-  du mainteneur). `npm run check` n'a pas pu tourner dans le worktree
-  (dépendances frontend absentes).
+  préexistants uniquement). **Depuis le 2026‑11‑09, la suite complète a été
+  exécutée et est verte** : 2 939 unitaires, 110 suites / 4 580 intégrations,
+  `unit-hardening` / `update-engine` / `data-dir`, `npm run check`/`build`,
+  `cargo fmt --check` et les E2E ciblés (`COMPARAISON_DSM_VS_HOMEVAULT.md`
+  §15, `TESTING.md`).
 - **Ne pas copier les compromis DSM** : `^metadata_csum` sur ext4,
   `enable_periodic_fsck = 0`, MD5 comme checksum utilisateur, USB Copy sans
   vérification, NFSv4 désactivé par défaut, SHA‑1 dans les manifestes,
