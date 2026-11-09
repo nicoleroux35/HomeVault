@@ -136,6 +136,146 @@ pub enum DockerError {
     /// of echoing an empty stderr.
     #[error("Docker command timed out after {0}s")]
     Timeout(u64),
+    /// The image reference is malformed (bad digest, tag or character).
+    #[error("Invalid image reference: {0}")]
+    InvalidReference(String),
+}
+
+/// Docker's digest grammar this build accepts: `sha256:` followed by exactly
+/// 64 lowercase hex characters. Another algorithm is refused rather than
+/// guessed at.
+pub fn validate_digest(digest: &str) -> Result<(), String> {
+    let Some(hex) = digest.strip_prefix("sha256:") else {
+        return Err("the digest must start with sha256:".to_string());
+    };
+    if hex.len() != 64 {
+        return Err("a sha256 digest must be exactly 64 hex characters".to_string());
+    }
+    if !hex
+        .chars()
+        .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase())
+    {
+        return Err("a sha256 digest may only contain lowercase hex".to_string());
+    }
+    Ok(())
+}
+
+/// Validate an image reference before it becomes an argv entry for
+/// `docker pull` (P1-27). The value is already one argv entry (never a shell
+/// string), so this is about a *malformed* reference being refused with a
+/// clear message instead of Docker's stderr.
+pub fn validate_image_reference(reference: &str) -> Result<(), String> {
+    let reference = reference.trim();
+    if reference.is_empty() {
+        return Err("the image reference must not be empty".to_string());
+    }
+    if reference.len() > 255 {
+        return Err("the image reference is too long".to_string());
+    }
+    if reference
+        .chars()
+        .any(|c| c.is_control() || c.is_whitespace())
+    {
+        return Err("the image reference must not contain spaces".to_string());
+    }
+    if !reference
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-' | '/' | ':' | '@'))
+    {
+        return Err("the image reference contains an unexpected character".to_string());
+    }
+
+    // `name@sha256:…`: the digest pins the content, so the tag is irrelevant.
+    if let Some((name, digest)) = reference.rsplit_once('@') {
+        if name.is_empty() {
+            return Err("the image name is missing before the digest".to_string());
+        }
+        return validate_digest(digest);
+    }
+
+    // A tag is the colon after the last slash (a registry port is before it).
+    let last_segment = reference
+        .rfind('/')
+        .map(|index| &reference[index + 1..])
+        .unwrap_or(reference);
+    if let Some((name, tag)) = last_segment.rsplit_once(':') {
+        if name.is_empty() {
+            return Err("the image name is missing before the tag".to_string());
+        }
+        let valid = tag.len() <= 128
+            && !tag.is_empty()
+            && tag
+                .chars()
+                .next()
+                .is_some_and(|c| c.is_ascii_alphanumeric() || c == '_')
+            && tag
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '-'));
+        if !valid {
+            return Err("the image tag is invalid".to_string());
+        }
+    }
+    Ok(())
+}
+
+/// Build the reference `docker pull` receives: `<image>:<tag>`, except for a
+/// digest reference where the tag must not be appended.
+pub fn image_reference(image: &str, tag: &str) -> Result<String, DockerError> {
+    let image = image.trim();
+    if image.is_empty() {
+        return Err(DockerError::InvalidReference(
+            "the image name must not be empty".to_string(),
+        ));
+    }
+    let reference = if image.contains('@') {
+        image.to_string()
+    } else {
+        let tag = tag.trim();
+        let tag = if tag.is_empty() { "latest" } else { tag };
+        format!("{image}:{tag}")
+    };
+    validate_image_reference(&reference).map_err(DockerError::InvalidReference)?;
+    Ok(reference)
+}
+
+/// `HOMEVAULT_REQUIRE_PINNED_IMAGES=1` makes a catalog install refuse any
+/// rendered compose service whose `image:` is not `@sha256:`-pinned. Opt-in:
+/// the default keeps tags, so a catalog update is not blocked by a digest that
+/// a release has not published yet.
+pub fn require_pinned_images() -> bool {
+    std::env::var("HOMEVAULT_REQUIRE_PINNED_IMAGES")
+        .map(|value| {
+            matches!(
+                value.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            )
+        })
+        .unwrap_or(false)
+}
+
+/// The `image:` values in a rendered compose file that are not pinned by a
+/// valid `@sha256:` digest. Pure: the installer/catalog gate can explain
+/// exactly which services are unpinned.
+pub fn unpinned_images(compose_yaml: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    for line in compose_yaml.lines() {
+        let trimmed = line.trim();
+        let Some(value) = trimmed.strip_prefix("image:") else {
+            continue;
+        };
+        let value = value.trim().trim_matches(&['"', '\''][..]);
+        if value.is_empty() {
+            continue;
+        }
+        let pinned = value
+            .rsplit_once('@')
+            .map(|(_, digest)| validate_digest(digest).is_ok())
+            .unwrap_or(false);
+        if !pinned {
+            out.push(value.to_string());
+        }
+    }
+    out
 }
 
 /// Run a `docker` command with a hard timeout, capturing both streams.
@@ -1057,7 +1197,10 @@ impl DockerService {
 
     /// Pull a Docker image from the configured registry.
     pub fn pull_image(image: &str, tag: &str) -> Result<(), DockerError> {
-        let reference = format!("{}:{}", image, tag);
+        // P1-27: validate before the reference reaches `docker pull`. A digest
+        // reference already pins the content, so a tag must not be appended to
+        // it (`repo@sha256:…:latest` is not a reference).
+        let reference = image_reference(image, tag)?;
         let output = run_docker(&["pull", &reference], LONG_TIMEOUT)?;
 
         if !output.status.success() {
@@ -3126,6 +3269,72 @@ Build Cache     0         0         0B        0B
         assert!(
             !args.iter().any(|a| a == "--network"),
             "the default bridge network must not be passed explicitly"
+        );
+    }
+    #[test]
+    fn test_image_reference_builds_tag_and_digest_forms() {
+        assert_eq!(
+            image_reference("jellyfin/jellyfin", "latest").unwrap(),
+            "jellyfin/jellyfin:latest"
+        );
+        assert_eq!(
+            image_reference("registry.example.com:5000/team/app", "1.2.3").unwrap(),
+            "registry.example.com:5000/team/app:1.2.3"
+        );
+        // An empty tag means latest, never a bare name silently resolved.
+        assert_eq!(image_reference("redis", "  ").unwrap(), "redis:latest");
+        // A digest reference keeps its digest: appending `:latest` would make
+        // an invalid reference.
+        let digest = format!("sha256:{}", "a".repeat(64));
+        assert_eq!(
+            image_reference(&format!("redis@{digest}"), "latest").unwrap(),
+            format!("redis@{digest}")
+        );
+    }
+
+    #[test]
+    fn test_image_reference_refuses_a_malformed_digest_or_tag() {
+        for bad in [
+            String::from("redis@sha256:deadbeef"),
+            format!("redis@sha256:{}", "A".repeat(64)),
+            format!("redis@sha256:{}", "z".repeat(64)),
+            format!("redis@md5:{}", "a".repeat(32)),
+            String::from("redis@sha256:"),
+            String::from("redis:bad tag"),
+            String::from("redis:-leading-dash"),
+            String::from("redis:tag/slash"),
+            String::from("redis;rm -rf"),
+            String::new(),
+        ] {
+            assert!(validate_image_reference(&bad).is_err(), "{bad:?}");
+        }
+        assert!(
+            validate_image_reference(&format!("ghcr.io/acme/app@sha256:{}", "0".repeat(64)))
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn test_unpinned_images_names_every_unpinned_service() {
+        let yaml = r#"
+services:
+  web:
+    image: nginx:1.27
+  db:
+    image: "postgres@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  worker:
+    image: 'ghcr.io/acme/worker:2'
+"#;
+        let unpinned = unpinned_images(yaml);
+        assert_eq!(unpinned, vec!["nginx:1.27", "ghcr.io/acme/worker:2"]);
+        // A malformed digest is not "pinned" either.
+        let yaml = format!(
+            "services:\n  x:\n    image: redis@sha256:{}",
+            "b".repeat(63)
+        );
+        assert_eq!(
+            unpinned_images(&yaml),
+            vec![format!("redis@sha256:{}", "b".repeat(63))]
         );
     }
 }

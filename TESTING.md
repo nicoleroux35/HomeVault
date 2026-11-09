@@ -29,6 +29,7 @@
 | Coverage | Added / changed |
 |---|---|
 | Unit (`src/catalog_signature.rs`) | **+7** — hex/base64 decoding (whitespace tolerated), 32-byte key length, Ed25519 verification accepts only the matching key/message/signature, a missing or tampered `.sig` is reported, the checkout policy (no key → Unconfigured, require → error, keyed → Verified, unsigned app refused, wrong key refused), `state_for_store` folding, and a stable 16-char key fingerprint |
+| Unit (`src/docker.rs`) | **+3** — `image_reference` builds `name:tag`, keeps a `@sha256:` digest unchanged (never appends `:latest`) and defaults an empty tag; malformed digests/tags/characters are refused; `unpinned_images` names every service missing a valid digest |
 | Integration (`tests/app_catalog_integration.rs`) | **+1** — `GET /docker/stores` reports `unconfigured` (with `app_count` 1) when no key is set, and `invalid` + the reason + `app_count` 0 under `HV_REQUIRE_SIGNED_STORES=1`; the refused store's app is absent from the catalog |
 | Installer (`installer/install.sh`) | `HV_CATALOG_PUBKEY` is forwarded through the sudo re-exec and installed at `/usr/local/lib/homevault/catalog-key.ed25519` (path or inline key); help text documents it. Syntax checked with `bash -n` (not executed) |
 | Docs | `docs/guides/docker.md` (new "Signed community stores" section with the signing commands), `docs/API.md`, `SCREENS.md`, `CHANGELOG.md`, RAG `docker`, `HOMEVAULT_TASKLIST_A_FAIRE.md` (P1-27), `COMPARAISON_DSM_VS_HOMEVAULT.md` |

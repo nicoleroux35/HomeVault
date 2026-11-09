@@ -228,9 +228,9 @@ panne majeur.
 
 | Décision | Items | Justification |
 |---|---|---|
-| **Priorité** | **P2-7** isolation d’exécution (**installeur livré 2026‑11‑08**, enforce/terrain restants), **P2-8** mises à jour signées/atomiques (**livré 2026‑11‑09**, reste la clé de production), **P1-18** table d’audit **livrée 2026‑11‑09** (filtres UI compris), **P2-9** restauration bare-metal (**drill livré 2026‑11‑08**, test VM restant) | Sécurité, intégrité de la chaîne et reprise après sinistre : gains réels, sans dépendance externe. |
-| **À faire, plus tard** | — | (P1‑16 OAuth2 e-mail livré le 2026‑11‑09) |
-| **Finitions seulement** | **P1-27** signature du catalogue (pas de pinning obligatoire), **P1-28** avertissement installateur (pas de carte UI), **P1-21** suggestion de spare (pas d’ajout auto) | Le cœur est déjà livré ; le reste ajoute du risque ou peu de valeur. |
+| **Priorité** | **P2-7** isolation d’exécution (**installeur livré 2026‑11‑08**, enforce/terrain restants), **P2-8** mises à jour signées/atomiques (**livré 2026‑11‑09**, reste la clé de production), **P2-9** restauration bare-metal (**drill livré 2026‑11‑08**, test VM restant) | Sécurité, intégrité de la chaîne et reprise après sinistre : gains réels, sans dépendance externe. |
+| **À faire, plus tard** | — | (P1‑16 OAuth2 e-mail livré le 2026‑11‑09 ; plus aucun item ouvert dans cette catégorie) |
+| **Finitions seulement** | **P1-21** suggestion de spare (pas d’ajout auto) | Le cœur est déjà livré ; le reste ajoute du risque ou peu de valeur. P1‑27 et P1‑28 sont livrés le 2026‑11‑09. |
 | **Gelé au stade partiel** | **P2-1** SMB AD, **P2-2** NFS Kerberos, **P2-3** thin provisioning, **P2-4** déduplication, **P2-15** witness | Utiles seulement en entreprise/multi-site ou après benchmark ; ne pas investir sans cible explicite. |
 | **Rejeté pour la cible** | **P2-5** KMIP, **P2-6** WORM, **P1-19** clamd temps réel, **P1-20** PPPoE, **P2-3** partie overcommit LVM/UI (le support zvol reste), **P2-4** exécution automatique (le design reste) | Complexité, coût permanent ou mode de panne (boot dépendant du réseau, saturation imprévisible, verrouillage admin) disproportionnés. |
 
@@ -1621,13 +1621,14 @@ blocs) ; aucun scrub destination n'est lancé.*
 de toutes les images est rejeté (il casserait les mises à jour du catalogue) ;
 la signature des manifestes de stores externes reste utile.
 
-**Livré partiel 2026-11-05.** `src/supply_chain.rs` fournit la syntaxe SHA-256
-stricte, `pinned_digest`/`is_pinned`, `verify_ed25519` et `verify_artifact`
-(signature absente ou clé absente = refus). `DockerService::pull_image` appelle
-`validate_image_reference` avant `docker pull`, donc un `@sha256:` mal formé
-est refusé côté HomeVault. `HOMEVAULT_REQUIRE_PINNED_IMAGES=1` fait en plus
-refuser une installation catalogue dont un `image:` du compose rendu n'est pas
-épinglé `@sha256:…`, avec la liste des images fautives.
+**Livré 2026‑11‑09 (digest + pinning).** `src/docker.rs` :
+`validate_image_reference` refuse un digest `@sha256:` mal formé (exactement 64
+hex minuscules) et une étiquette invalide **avant** `docker pull` ;
+`image_reference` n'ajoute pas `:latest` à une référence déjà épinglée.
+`HOMEVAULT_REQUIRE_PINNED_IMAGES=1` fait refuser une installation catalogue
+dont un `image:` du compose rendu n'est pas épinglé, en nommant les services
+fautifs (`unpinned_images`). Le pinning obligatoire reste **opt-in** (décision
+du 2026‑11‑06 : il casserait les mises à jour du catalogue).
 **Livré 2026‑11‑09 (signature des stores).** `src/catalog_signature.rs` vérifie
 une signature Ed25519 détachée (`<fichier>.sig`, hex ou base64, sur les octets
 exacts) de `homevault-store.toml` **et** de chaque `homevault-app.toml` :
@@ -1667,11 +1668,8 @@ la carte UI write-cache/UPS est gelée (peu de valeur, surface en plus).
 `StartLimitBurst=5`, `OOMPolicy=stop`, et
 `/etc/sysctl.d/99-homevault.conf` (`kernel.panic=10`,
 `kernel.panic_on_oops=1`, `vm.dirty_background_ratio=5`, `vm.dirty_ratio=10`).
-`src/system_stability.rs` garde les mêmes valeurs et fournit
-`parse_write_cache` (`hdparm -W`), `write_cache_warning` (cache actif sans
-UPS) et `duplicate_monitor_warning` (smartd/mdmonitor + samplers HomeVault).
 L'installateur vérifie `systemctl is-enabled smartd|mdmonitor` et avertit
-quand l'un tourne en double.
+quand l'un tourne en double, via `monitor_decision` (fonction pure testée).
 **Livré 2026‑11‑09 (installateur).**
 
 - `/etc/sysctl.d/99-homevault.conf` est écrit et appliqué (`sysctl -q -p`) :

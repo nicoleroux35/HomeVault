@@ -736,8 +736,11 @@ Implémentation : `JournalQuery` → `audit_query_from_journal`
 - `GET /docker/stores` expose `signature` (`verified`/`unconfigured`/
   `invalid`), `signature_error` et `app_count` (0 pour un store refusé) ;
   l'écran Docker affiche **Signed / Unsigned / Signature refused**.
-- Le pinning obligatoire des images reste **rejeté** (décision du 2026‑11‑06) ;
-  seul le digest mal formé est refusé avant `docker pull`.
+- Les références d’images sont validées avant `docker pull` (`@sha256:` +
+  64 hex minuscules, grammaire d’étiquette, pas de `:tag` ajouté à un digest) ;
+  `HOMEVAULT_REQUIRE_PINNED_IMAGES=1` refuse une installation dont un service
+  n’est pas épinglé, en le nommant. Le pinning **obligatoire** reste rejeté
+  (décision du 2026‑11‑06).
 - Tests écrits mais **non exécutés** : 7 unitaires (`catalog_signature`), 1
   d'intégration (`app_catalog`), `bash -n` de l'installeur. Docs :
   `docs/guides/docker.md` (commandes de signature), `docs/API.md`,

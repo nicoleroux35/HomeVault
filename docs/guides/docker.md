@@ -123,6 +123,25 @@ The installer copies `HV_CATALOG_PUBKEY` (a path or the inline key) to
 `/usr/local/lib/homevault/catalog-key.ed25519`, so a deployment does not depend
 on the service environment carrying it.
 
+### Image references and opt-in pinning (P1-27, 2026-11-09)
+
+Every reference is validated before it becomes an argv entry for `docker pull`
+(`src/docker.rs::validate_image_reference`):
+
+- a digest must be `@sha256:` + exactly 64 lowercase hex characters; another
+  algorithm, a short digest or uppercase hex is refused with a message naming
+  the rule;
+- a tag must match Docker's grammar (`[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}`);
+- a digest reference is never given a `:tag` suffix (`repo@sha256:…:latest` is
+  not a reference);
+- an empty tag means `latest`, explicitly.
+
+`HOMEVAULT_REQUIRE_PINNED_IMAGES=1` makes a catalog install refuse a rendered
+compose file whose `image:` values are not all `@sha256:`-pinned, naming every
+unpinned service and stopping **before** any directory is created. It is
+opt-in: mandatory pinning would freeze catalog updates behind a digest the
+release has not published yet (2026-11-06 decision).
+
 ### App catalog phase B — dependencies, settings, compatibility (2026-10-13)
 
 Catalog phase-B additions on the same package shape (no new manifest file):

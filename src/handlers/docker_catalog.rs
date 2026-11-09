@@ -765,6 +765,20 @@ pub async fn install_catalog_app(
         }
     };
 
+    // P1-27: when the operator demands pinned images, refuse before a single
+    // file is created. The message names the offending services, not just
+    // "install failed".
+    if crate::docker::require_pinned_images() {
+        let unpinned = crate::docker::unpinned_images(&rendered);
+        if !unpinned.is_empty() {
+            return Err(format!(
+                "Cannot install {}: HOMEVAULT_REQUIRE_PINNED_IMAGES=1 but these images are not pinned by @sha256: {}",
+                app.manifest.name,
+                unpinned.join(", ")
+            ));
+        }
+    }
+
     if let Err(e) = tokio::fs::create_dir_all(&data_dir).await {
         return Err(format!("Failed to create data directory: {}", e));
     }

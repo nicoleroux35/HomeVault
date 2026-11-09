@@ -38,8 +38,12 @@ follows [Semantic Versioning](https://semver.org/).
   - the Docker store list returns `signature` (`verified`/`unconfigured`/
     `invalid`), `signature_error` and a zero `app_count` for a refused store,
     and the screen shows **Signed / Unsigned / Signature refused** on the row.
-  Tests: 7 unit (`catalog_signature`), 1 integration (`app_catalog`), installer
-  `bash -n` (written, not run).
+  The same change validates image references before `docker pull`
+  (`@sha256:` + 64 lowercase hex, tag grammar, no tag appended to a digest) and
+  adds the opt-in `HOMEVAULT_REQUIRE_PINNED_IMAGES=1` gate that names every
+  unpinned service and refuses the install before creating anything.
+  Tests: 7 unit (`catalog_signature`), 3 unit (`docker` image references),
+  1 integration (`app_catalog`), installer `bash -n` (written, not run).
 
 - **SMTP OAuth2 for Gmail and Microsoft 365 (2026-11-09, P1-16).** The relay
   no longer needs an app password that the providers are retiring:
