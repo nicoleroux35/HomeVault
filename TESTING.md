@@ -1,5 +1,21 @@
 # HomeVault — Test tracking
 
+## P1 media integration (share binding + hardware transcoding) — 2026-11-09 (not run)
+
+> **Instruction followed: no test command was executed for this change.**
+> Static checks passed: `cargo check --lib`, `cargo check --tests`,
+> `cd frontend && npm run check` and `npm run build`.
+
+| Coverage | Added / changed |
+|---|---|
+| Unit (`src/app_catalog/manifest.rs`) | **+1** — `share_mount` accepted for `/media` and `/mnt/media` (default folder `media` / `mnt-media`), refused for relative, root, trailing slash, `..`, whitespace, `:` and empty components |
+| Unit (`src/app_catalog/mod.rs`) | **+7** — built-in media apps declare `share_mount`/`gpu`; a chosen share renders `host:/media:ro` and is *not* treated as app data; the default folder lives under `apps/<key>` and *is* created; the GPU block follows the device and the opt-in (and never appears for an app without `gpu`); an invalid share path is refused by the renderer; a `{{SHARE_DIR}}` placeholder without a manifest declaration is an error; `replace_block` re-indents and drops whole lines |
+| Unit (`src/handlers/docker_catalog.rs`) | **+2** — the marker round-trips `environment`/share/`gpu` and rebuilds the same `RenderOptions` (a vanished share falls back to the recorded path); a legacy marker with none of the new keys still loads with defaults |
+| Integration (`tests/app_catalog_integration.rs`) | **+3** — a share is refused for an app that does not declare one; an unknown share type and an unconfigured share are `400`s (never an arbitrary bind mount); GPU is refused for an app without hardware support |
+| Integration (`tests/mcp_integration.rs`) | **+4 assertions** — the install review now exposes `share_mount`, `gpu`, `gpu_available`, `shares` |
+| E2E (`tests/e2e/docker/docker.spec.ts`) | **+1 test, +4 assertions** — 15.1 checks the review fields; 15.3b checks the Library selector defaults to the app's own folder and the GPU checkbox is opt-in (disabled with the reason when the host has no `/dev/dri`) |
+| Docs | `docs/guides/docker.md` (new "Media integration" section), `docs/API.md`, `SCREENS.md`, `CHANGELOG.md`, RAG `docker` FeatureDoc, `HOMEVAULT_TASKLIST_A_FAIRE.md` (§3.2 P1 card), `COMPARAISON_DSM_VS_HOMEVAULT.md` |
+
 ## P1 WireGuard remote-access UX — 2026-11-09 (not run)
 
 > **Instruction followed: no test command was executed for this change.**

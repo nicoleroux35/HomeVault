@@ -667,10 +667,22 @@ async fn call_tool(
                         .collect()
                 })
                 .unwrap_or_default();
+            let media_share = args
+                .get("media_share")
+                .and_then(|v| v.as_object())
+                .and_then(|o| {
+                    Some(docker_catalog::MediaShareChoice {
+                        name: o.get("name")?.as_str()?.to_string(),
+                        share_type: o.get("share_type")?.as_str()?.to_string(),
+                    })
+                });
+            let gpu = args.get("gpu").and_then(|v| v.as_bool()).unwrap_or(false);
             let req = docker_catalog::InstallCatalogAppRequest {
                 port,
                 alternatives,
                 environment,
+                media_share,
+                gpu,
             };
             docker_catalog::install_catalog_app(state, &id, &req, &actor).await
         }

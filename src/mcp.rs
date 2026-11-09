@@ -364,8 +364,8 @@ pub fn tools_for_permissions(perms: &McpPermissions) -> Vec<McpTool> {
     if perms.app_store {
         tools.push(McpTool {
             name: "apps.install",
-            description: "Install a catalog app by <store>:<id>. Optional host port, dependency alternatives (dependency -> <store>:<id>) and environment settings.",
-            input_schema: schema(&[("id", "string"), ("port", "number"), ("alternatives", "object"), ("environment", "object")], &["id"]),
+            description: "Install a catalog app by <store>:<id>. Optional host port, dependency alternatives (dependency -> <store>:<id>), environment settings, a media share ({name, share_type}) bound to the library of an app that declares share_mount, and gpu (mount /dev/dri for hardware transcoding).",
+            input_schema: schema(&[("id", "string"), ("port", "number"), ("alternatives", "object"), ("environment", "object"), ("media_share", "object"), ("gpu", "boolean")], &["id"]),
         });
     }
     if !perms.files.is_empty_scope() {

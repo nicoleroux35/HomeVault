@@ -936,8 +936,8 @@ Representative endpoints:
 | GET/POST/PUT/DELETE | `/docker/compose/projects` (+ `/{name}/config\|start\|stop\|restart\|update\|services`) | admin | `update` = `compose pull` + `up -d` |
 | GET | `/docker/catalog` | auth | manifest-driven app list (15 built-in packages + community stores) + `installed`/`installed_port`; filtered by `resource_shares` `kind=app` for members (admins see all) |
 | GET | `/docker/catalog/{id}/icon` · `/gallery/{n}` | auth | package icon / screenshot (`id` is namespaced `<store>:<app>`, URL-encoded) |
-| POST | `/docker/catalog/{id}/install` | admin | renders the package's compose template into a project, starts it, writes `.install.toml`, starts the per-app proxy. Body `{port?, alternatives?, environment?}`; hard-gates compatibility, settings and dependencies |
-| GET | `/docker/catalog/{id}/install-review` | auth | pre-install review: dependency plan (satisfiers, providers, selection), declared environment, compatibility verdict |
+| POST | `/docker/catalog/{id}/install` | admin | renders the package's compose template into a project, starts it, writes `.install.toml`, starts the per-app proxy. Body `{port?, alternatives?, environment?, media_share?: {name, share_type}, gpu?}`; hard-gates compatibility, settings, dependencies, the declared `share_mount` and `/dev/dri` |
+| GET | `/docker/catalog/{id}/install-review` | auth | pre-install review: dependency plan (satisfiers, providers, selection), declared environment, compatibility verdict, plus `share_mount`, `gpu`, `gpu_available` and the enabled `shares` |
 | GET | `/docker/catalog/{id}/logs?tail=N` | auth | tails the installed app's compose logs (1–2000, default 200) |
 | DELETE | `/docker/catalog/{id}` | admin | stops + removes the project, stops the proxy |
 | POST | `/docker/catalog/{id}/proxy` | admin | toggle the per-app session-cookie auth gate — `{ auth_required, applied }` (`applied: false` = proxy not running, value saved for its next start; an unpersistable marker is an error) |

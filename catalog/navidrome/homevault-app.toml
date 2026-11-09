@@ -8,6 +8,8 @@ app_port = 4533
 default_port = 4533
 arch = ["amd64", "arm64", "armv7"]
 gpu = false
+# Where the chosen HomeVault music share is mounted inside the container.
+share_mount = "/music"
 developer = "Navidrome"
 website = "https://www.navidrome.org"
 repo = "https://github.com/navidrome/navidrome"

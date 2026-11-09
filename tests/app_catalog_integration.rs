@@ -418,3 +418,98 @@ async fn test_install_unknown_app_is_error() {
         .unwrap_or_default()
         .contains("Unknown"));
 }
+
+// ---------------------------------------------------------------------------
+// Media integration: a share may only be bound to an app that declares it,
+// and only a *configured* share can be chosen.
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_install_rejects_a_media_share_for_an_app_that_does_not_use_one() {
+    let (state, _tmp, _g) = setup_state().await;
+    mk_user(&state, "admin", "pw012345", 2).await;
+    let mut r = router(state);
+    let token = login(&mut r, "admin", "pw012345").await;
+
+    // Vikunja's manifest has no `share_mount`: it does not consume media.
+    let (_, body) = send(
+        &mut r,
+        Method::POST,
+        "/api/docker/catalog/homevault:vikunja/install",
+        Some(&token),
+        Some(json!({"media_share": {"name": "Movies", "share_type": "smb"}})),
+    )
+    .await;
+    assert_eq!(body["success"], json!(false));
+    assert!(
+        body["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("does not use a media share"),
+        "{body}"
+    );
+}
+
+#[tokio::test]
+async fn test_install_rejects_an_unknown_share_name_or_type() {
+    let (state, _tmp, _g) = setup_state().await;
+    mk_user(&state, "admin", "pw012345", 2).await;
+    let mut r = router(state);
+    let token = login(&mut r, "admin", "pw012345").await;
+
+    // Unknown protocol.
+    let (_, body) = send(
+        &mut r,
+        Method::POST,
+        "/api/docker/catalog/homevault:jellyfin/install",
+        Some(&token),
+        Some(json!({"media_share": {"name": "Movies", "share_type": "smbv1"}})),
+    )
+    .await;
+    assert_eq!(body["success"], json!(false));
+    assert!(body["message"]
+        .as_str()
+        .unwrap_or_default()
+        .contains("Unknown share type"));
+
+    // A share that is not configured on this server is refused, never
+    // turned into an arbitrary host bind mount.
+    let (_, body) = send(
+        &mut r,
+        Method::POST,
+        "/api/docker/catalog/homevault:jellyfin/install",
+        Some(&token),
+        Some(json!({"media_share": {"name": "homevault-test-no-such-share", "share_type": "smb"}})),
+    )
+    .await;
+    assert_eq!(body["success"], json!(false));
+    assert!(
+        body["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("Cannot use share"),
+        "{body}"
+    );
+}
+
+#[tokio::test]
+async fn test_install_rejects_gpu_for_an_app_without_hardware_support() {
+    let (state, _tmp, _g) = setup_state().await;
+    mk_user(&state, "admin", "pw012345", 2).await;
+    let mut r = router(state);
+    let token = login(&mut r, "admin", "pw012345").await;
+
+    let (_, body) = send(
+        &mut r,
+        Method::POST,
+        "/api/docker/catalog/homevault:vikunja/install",
+        Some(&token),
+        Some(json!({"gpu": true})),
+    )
+    .await;
+    assert_eq!(body["success"], json!(false));
+    assert!(body["message"]
+        .as_str()
+        .unwrap_or_default()
+        .contains("does not support hardware acceleration"));
+}

@@ -7,7 +7,9 @@ icon = "image"
 app_port = 2283
 default_port = 2283
 arch = ["amd64", "arm64"]
-gpu = false
+gpu = true
+# Where the chosen HomeVault media share is mounted inside the container.
+share_mount = "/mnt/media"
 developer = "Immich"
 website = "https://immich.app"
 repo = "https://github.com/immich-app/immich"

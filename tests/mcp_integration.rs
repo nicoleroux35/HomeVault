@@ -608,6 +608,12 @@ async fn test_install_review_shape() {
     assert!(review.get("environment").is_some());
     assert!(review.get("incompatibility_reason").is_some());
     assert!(review.get("default_port").is_some());
+    // Media integration: Jellyfin's library can be bound to a configured
+    // share, and the host's GPU availability is reported (not assumed).
+    assert_eq!(review["share_mount"], json!("/media"));
+    assert_eq!(review["gpu"], json!(true));
+    assert!(review.get("gpu_available").is_some());
+    assert!(review["shares"].is_array());
 
     // Unknown app → error.
     let (_, body) = send(

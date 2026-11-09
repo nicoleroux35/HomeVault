@@ -23,7 +23,7 @@
      Opened as a desktop window app (admin only).
      ======================================================================== -->
 <script lang="ts">
-  import { IconSearch, IconX, IconRefresh, IconTrash, IconPlayerPlay, IconPlayerPause, IconSquare, IconDownload, IconCheck, IconCopy, IconPhoto as ImageIcon, IconAlertTriangle, IconContainer, IconPlus, IconTerminal, IconExternalLink, IconDeviceTv, IconCloud, IconShield, IconLock, IconHome, IconGlobe, IconDatabase, IconActivity, IconPackage, IconPackages, IconServer, IconNetwork, IconKey, IconShieldOff, IconGitBranch, IconRss, IconTextScan2, IconBook, IconLayoutDashboard, IconMusic, IconListCheck, IconPipeline, IconBoxMultiple, IconBox, IconPencil, IconStar, IconInfoCircle, IconTool, IconSettings, IconBolt } from '@tabler/icons-svelte';
+  import { IconSearch, IconX, IconRefresh, IconTrash, IconPlayerPlay, IconPlayerPause, IconSquare, IconDownload, IconCheck, IconCopy, IconPhoto as ImageIcon, IconAlertTriangle, IconContainer, IconPlus, IconTerminal, IconExternalLink, IconDeviceTv, IconCloud, IconShield, IconLock, IconHome, IconGlobe, IconDatabase, IconActivity, IconPackage, IconPackages, IconServer, IconNetwork, IconKey, IconShieldOff, IconGitBranch, IconRss, IconTextScan2, IconBook, IconLayoutDashboard, IconMusic, IconListCheck, IconPipeline, IconBoxMultiple, IconBox, IconPencil, IconStar, IconInfoCircle, IconTool, IconSettings, IconBolt, IconFolder } from '@tabler/icons-svelte';
   import { api } from '$lib/services/api';
   import { t, translate } from '$lib/stores/i18n';
   import { onAppVisible } from '$lib/utils/autoRevalidate';
@@ -115,6 +115,9 @@
     reviewLoading: boolean;
     alternatives: Record<string, string>;
     envValues: Record<string, string>;
+    /** `"<share_type>:<name>"`, or `''` for the app's own folder. */
+    share: string;
+    gpu: boolean;
   } | null>(null);
   let updateAllBusy = $state(false);
   let appLogsModal = $state<{ id: string; name: string; logs: string; loading: boolean } | null>(null);
@@ -672,6 +675,10 @@
       reviewLoading: true,
       alternatives: {},
       envValues: {},
+      // Defaults: the app's own library folder and no GPU — the safe path a
+      // home user can accept without thinking about it.
+      share: '',
+      gpu: false,
     };
     checkPortValue(String(app.default_port));
     loadInstallReview(app.id);
@@ -701,17 +708,28 @@
 
   async function confirmCatalogInstall() {
     if (!catalogPortModal) return;
-    const { id, name, port, alternatives, envValues } = catalogPortModal;
+    const { id, name, port, alternatives, envValues, share, gpu } = catalogPortModal;
     const parsedPort = parseInt(port, 10);
     catalogBusyId = id;
     const environment: Record<string, string> = {};
     for (const [k, v] of Object.entries(envValues)) {
       if (v.trim() !== '') environment[k] = v;
     }
+    // `share` is `"<type>:<name>"`; the server re-resolves the share itself
+    // and refuses anything that is not configured.
+    let media_share: { name: string; share_type: string } | undefined;
+    if (share) {
+      const index = share.indexOf(':');
+      if (index > 0) {
+        media_share = { share_type: share.slice(0, index), name: share.slice(index + 1) };
+      }
+    }
     const res = await api.installDockerCatalogApp(id, {
       port: Number.isFinite(parsedPort) ? parsedPort : undefined,
       alternatives,
       environment,
+      media_share,
+      gpu,
     });
     catalogBusyId = null;
     catalogPortModal = null;
@@ -2037,6 +2055,9 @@
               {:else}
                 <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-[var(--hv-success-bg)] text-[var(--hv-success)] text-c-xs font-bold"><span class="w-1.5 h-1.5 rounded-full bg-[var(--hv-success)]"></span>{$t('docker.catalog_installed_badge')}</span>
               {/if}
+              {#if app.installed_share}
+                <span data-testid="docker-app-library" class="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-[var(--hv-shell-border-soft)] text-[var(--hv-shell-text-2)] text-c-xs font-semibold"><IconFolder size={13} stroke={2} />{$t('docker.catalog_library')}: {app.installed_share}</span>
+              {/if}
               <div class="flex flex-wrap gap-1.5 mt-1">
                 {#if catalogUpdates[app.id]}
                   <button class={cn(actionBtn, 'text-c-base')} disabled={updateBusyId === app.id} onclick={() => updateCatalogApp(app)}><IconDownload size={15} stroke={2} /> {updateBusyId === app.id ? $t('docker.catalog_updating') : $t('docker.catalog_update_now')}</button>
@@ -2154,6 +2175,32 @@
                 {/if}
               </div>
             {/each}
+          </div>
+        {/if}
+        {#if cp.review.share_mount}
+          <div class="mt-3 flex flex-col gap-2">
+            <span class="text-xs font-bold uppercase tracking-wide text-[var(--hv-shell-text-3)]">{$t('docker.catalog_library')}</span>
+            <div class={field}>
+              <label class={fieldLabel} for="catalogLibrary">{$t('docker.catalog_library')}</label>
+              <select id="catalogLibrary" class={textInput} bind:value={cp.share} data-testid="catalog-library-select">
+                <option value="">{$t('docker.catalog_library_default')}</option>
+                {#each cp.review.shares as s (s.share_type + ':' + s.name)}
+                  <option value={`${s.share_type}:${s.name}`}>{s.name} ({s.share_type.toUpperCase()})</option>
+                {/each}
+              </select>
+              <span class="text-c-xs text-[var(--hv-shell-text-2)]">{$t('docker.catalog_library_hint')}</span>
+            </div>
+          </div>
+        {/if}
+        {#if cp.review.gpu}
+          <div class="mt-3 flex flex-col gap-1">
+            <label class="flex items-center gap-2 text-c-sm text-[var(--hv-shell-text)] cursor-pointer">
+              <input type="checkbox" class="accent-[var(--hv-primary)]" bind:checked={cp.gpu} disabled={!cp.review.gpu_available} data-testid="catalog-gpu-toggle" />
+              {$t('docker.catalog_gpu')}
+            </label>
+            <span class="text-c-xs text-[var(--hv-shell-text-2)]">
+              {cp.review.gpu_available ? $t('docker.catalog_gpu_hint') : $t('docker.catalog_gpu_missing')}
+            </span>
           </div>
         {/if}
         {#if cp.review.environment.length > 0}

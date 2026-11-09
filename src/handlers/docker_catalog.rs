@@ -100,6 +100,15 @@ struct CatalogAppView {
     proxy_auth_required: bool,
     /// True when the app's images don't cover the host's CPU architecture.
     unsupported_on_host: bool,
+    /// Container path the app mounts an admin-chosen share on; `None` when
+    /// the app does not consume media files.
+    share_mount: Option<String>,
+    /// True when the app can use `/dev/dri` (hardware transcoding).
+    gpu: bool,
+    /// True when this host actually exposes `/dev/dri`.
+    gpu_available: bool,
+    /// The share this install is bound to (`None` = its own folder).
+    installed_share: Option<String>,
 }
 
 /// Reads back the host port an app was installed on, from the `.port`
@@ -126,6 +135,11 @@ async fn read_installed_port_async(install_key: &str) -> Option<u16> {
 /// The `.install.toml` marker written next to an installed app's data,
 /// recording which catalog entry (and template version) it came from, plus
 /// its per-app reverse-proxy state.
+///
+/// It also records **every admin choice that changes the rendered compose
+/// file** (declared settings, media share, GPU access). An update re-renders
+/// from the marker, so it can no longer silently drop a chosen share or a
+/// hardware-transcoding opt-in and restart the app with defaults.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct InstallMarker {
     store_id: String,
@@ -137,6 +151,56 @@ struct InstallMarker {
     proxy_port: Option<u16>,
     #[serde(default = "default_true")]
     proxy_auth_required: bool,
+    /// Values given for the manifest's declared `environment` settings.
+    #[serde(default)]
+    environment: std::collections::HashMap<String, String>,
+    /// The HomeVault share the app's library is mounted from, if any.
+    #[serde(default)]
+    share_name: Option<String>,
+    /// Protocol of that share (`smb`, `nfs`, …), as `ShareType::as_str`.
+    #[serde(default)]
+    share_type: Option<String>,
+    /// Host path recorded at install time. Used only when the share itself
+    /// has since been renamed or removed, so an update still renders.
+    #[serde(default)]
+    share_path: Option<String>,
+    /// `/dev/dri` is passed to the container.
+    #[serde(default)]
+    gpu: bool,
+}
+
+impl InstallMarker {
+    /// The render options this app was installed with.
+    fn render_options(&self) -> crate::app_catalog::RenderOptions {
+        crate::app_catalog::RenderOptions {
+            env: self.environment.clone(),
+            share_dir: self.media_share_dir(),
+            gpu: self.gpu,
+        }
+    }
+
+    /// The share's host directory, re-resolved from the share list so a share
+    /// whose path changed keeps working. Blocking (reads the share configs):
+    /// call it from the blocking pool.
+    fn media_share_dir(&self) -> Option<std::path::PathBuf> {
+        let (Some(name), Some(kind)) = (self.share_name.as_deref(), self.share_type.as_deref())
+        else {
+            return self.share_path.clone().map(std::path::PathBuf::from);
+        };
+        let resolved = crate::shares::ShareType::parse(kind).and_then(|parsed| {
+            match crate::shares::SharesService::get_share(name, parsed) {
+                Ok(share) => Some(std::path::PathBuf::from(share.path)),
+                Err(e) => {
+                    tracing::warn!(
+                        "media share '{name}' ({kind}) is no longer available ({e}); \
+                         keeping the recorded path for the next update"
+                    );
+                    None
+                }
+            }
+        });
+        resolved.or_else(|| self.share_path.clone().map(std::path::PathBuf::from))
+    }
 }
 
 fn default_true() -> bool {
@@ -265,7 +329,31 @@ pub(crate) async fn enabled_stores(state: &Arc<AppState>) -> Vec<(String, String
         .collect()
 }
 
-#[derive(Debug, Deserialize)]
+/// A media share the admin picked for a catalog app's library.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct MediaShareChoice {
+    pub name: String,
+    /// Protocol, as `ShareType::as_str` (`smb`, `nfs`, `ftp`, `webdav`, `sftp`).
+    pub share_type: String,
+}
+
+/// The resolved media library of an install: the configured share bound to
+/// the app's container mount, empty when the app uses its own folder.
+#[derive(Debug, Default)]
+struct MediaBinding {
+    /// Share name, `None` when no share was chosen.
+    name: Option<String>,
+    /// `ShareType::as_str` of that share.
+    share_type: Option<String>,
+    /// Host path recorded in the install marker.
+    path: Option<String>,
+    /// Host path actually mounted for this install.
+    dir: Option<std::path::PathBuf>,
+    /// Container path from the manifest (`/media`, `/mnt/media`, …).
+    mount: String,
+}
+
+#[derive(Debug, Default, Deserialize)]
 pub struct InstallCatalogAppRequest {
     pub port: Option<u16>,
     /// `dependency -> namespaced provider id` overrides. Each override must
@@ -275,6 +363,15 @@ pub struct InstallCatalogAppRequest {
     /// Values for the manifest's declared `environment` settings.
     #[serde(default)]
     pub environment: std::collections::HashMap<String, String>,
+    /// Mount one of the **configured** shares as the app's media library.
+    /// Refused for a manifest that does not declare `share_mount`; the path is
+    /// always resolved server-side, never taken from the request.
+    #[serde(default)]
+    pub media_share: Option<MediaShareChoice>,
+    /// Hand `/dev/dri` to the container. Refused unless the manifest sets
+    /// `gpu = true` and the host really exposes the device.
+    #[serde(default)]
+    pub gpu: bool,
 }
 
 /// Lists every catalog app (built-in + enabled stores) with its live
@@ -381,6 +478,14 @@ pub async fn handle_catalog_list(
                         })
                         .unwrap_or(true),
                     unsupported_on_host: !app.manifest.supports_host_arch(host_arch),
+                    share_mount: app.manifest.share_mount().map(str::to_string),
+                    gpu: app.manifest.gpu,
+                    gpu_available: app_catalog::gpu_available(),
+                    installed_share: if installed {
+                        read_install_marker_sync(&install_dir(&key)).and_then(|m| m.share_name)
+                    } else {
+                        None
+                    },
                 }
             })
             .collect::<Vec<_>>()
@@ -503,6 +608,78 @@ pub async fn install_catalog_app(
         return Err(format!("Invalid settings for {}: {}", app.manifest.name, e));
     }
 
+    // Media integration: bind a **configured** share into the app, never an
+    // arbitrary host path. The manifest decides whether the app consumes a
+    // share at all and where inside the container it lands.
+    let mut media = MediaBinding::default();
+    if let Some(choice) = &req.media_share {
+        let Some(mount) = app.manifest.share_mount() else {
+            return Err(format!("{} does not use a media share", app.manifest.name));
+        };
+        let Some(kind) = crate::shares::ShareType::parse(&choice.share_type) else {
+            return Err(format!("Unknown share type: {}", choice.share_type));
+        };
+        let name = choice.name.clone();
+        let lookup = kind.clone();
+        let resolved = tokio::task::spawn_blocking(move || {
+            crate::shares::SharesService::get_share(&name, lookup)
+        })
+        .await
+        .map_err(|e| format!("share lookup task failed: {e}"))?;
+        let share = match resolved {
+            Ok(share) => share,
+            Err(e) => return Err(format!("Cannot use share '{}': {e}", choice.name)),
+        };
+        // The share's own path is what gets mounted; anything else (relative,
+        // missing, not a directory) would make Docker create an empty
+        // directory and the app would scan nothing.
+        let dir = std::path::PathBuf::from(&share.path);
+        if !dir.is_absolute() {
+            return Err(format!(
+                "Share '{}' has a relative path ({}), which cannot be mounted",
+                share.name, share.path
+            ));
+        }
+        if !dir.is_dir() {
+            return Err(format!(
+                "Share '{}' is not available at {} on this server",
+                share.name, share.path
+            ));
+        }
+        media = MediaBinding {
+            name: Some(share.name.clone()),
+            share_type: Some(kind.as_str().to_string()),
+            path: Some(share.path.clone()),
+            dir: Some(dir),
+            mount: mount.to_string(),
+        };
+    } else if let Some(mount) = app.manifest.share_mount() {
+        // No share chosen: the app still gets a working (empty) library in
+        // its own data directory, so it starts without an error.
+        media.mount = mount.to_string();
+    }
+
+    if req.gpu {
+        if !app.manifest.gpu {
+            return Err(format!(
+                "{} does not support hardware acceleration",
+                app.manifest.name
+            ));
+        }
+        if !app_catalog::gpu_available() {
+            return Err(format!(
+                "Hardware acceleration needs {} on this server, and it is missing",
+                app_catalog::GPU_DEVICE_DIR
+            ));
+        }
+    }
+
+    let render_options = app_catalog::RenderOptions {
+        env: req.environment.clone(),
+        share_dir: media.dir.clone(),
+        gpu: req.gpu,
+    };
+
     let port = req.port.unwrap_or(app.manifest.host_port());
 
     // Port-conflict guard (same check the create-container form uses).
@@ -581,7 +758,7 @@ pub async fn install_catalog_app(
         }
     }
 
-    let (rendered, data_dir) = match app_catalog::render_with_env(&app, port, &req.environment) {
+    let (rendered, data_dir) = match app_catalog::render_with_options(&app, port, &render_options) {
         Ok(v) => v,
         Err(e) => {
             return Err(format!("Failed to render {}: {}", app.manifest.name, e));
@@ -630,6 +807,11 @@ pub async fn install_catalog_app(
         host_port: port,
         proxy_port: None,
         proxy_auth_required: true,
+        environment: req.environment.clone(),
+        share_name: media.name.clone(),
+        share_type: media.share_type.clone(),
+        share_path: media.path.clone(),
+        gpu: req.gpu,
     };
     if let Err(e) = write_install_marker(&install_key, marker.clone()).await {
         return Err(format!(
@@ -696,8 +878,17 @@ pub async fn install_catalog_app(
     crate::sse::PROGRESS_MANAGER.complete_job(&job_id, &format!("{} installed", app.manifest.name));
 
     crate::events::log_event(format!(
-        "{} installed catalog app '{}' from store '{}' (port: {})",
-        actor, app.manifest.name, app.store_id, port
+        "{} installed catalog app '{}' from store '{}' (port: {}){}{}",
+        actor,
+        app.manifest.name,
+        app.store_id,
+        port,
+        media
+            .name
+            .as_ref()
+            .map(|name| format!(", library: share '{name}' on {}", media.mount))
+            .unwrap_or_default(),
+        if req.gpu { ", GPU: /dev/dri" } else { "" }
     ));
     Ok(format!("{} installed and started", app.manifest.name))
 }
@@ -807,6 +998,17 @@ pub async fn handle_catalog_update(
         host_port,
         proxy_port: prev.as_ref().and_then(|m| m.proxy_port),
         proxy_auth_required: prev.as_ref().map(|m| m.proxy_auth_required).unwrap_or(true),
+        // Carry the admin's install choices through the update: dropping
+        // them would remount the app's library as an empty folder and
+        // quietly turn off hardware transcoding.
+        environment: prev
+            .as_ref()
+            .map(|m| m.environment.clone())
+            .unwrap_or_default(),
+        share_name: prev.as_ref().and_then(|m| m.share_name.clone()),
+        share_type: prev.as_ref().and_then(|m| m.share_type.clone()),
+        share_path: prev.as_ref().and_then(|m| m.share_path.clone()),
+        gpu: prev.as_ref().map(|m| m.gpu).unwrap_or(false),
     };
     // `apply_update` = git pull (store) + `docker compose pull` + `up -d` —
     // minutes-long, no progress signal. Show it as an indeterminate job in the
@@ -815,8 +1017,9 @@ pub async fn handle_catalog_update(
         crate::sse::JobType::Custom("docker_update".to_string()),
         &format!("Updating {}", name),
     );
+    let options_marker = marker.clone();
     match tokio::task::spawn_blocking(move || {
-        crate::app_catalog::updates::apply_update(&app, host_port)
+        crate::app_catalog::updates::apply_update(&app, host_port, &options_marker.render_options())
     })
     .await
     {
@@ -898,6 +1101,24 @@ pub async fn handle_catalog_install_review(
             })).collect::<Vec<_>>(),
             "environment": app.manifest.environment,
             "default_port": app.manifest.host_port(),
+            // Media integration: only offered for an app that mounts a share.
+            "share_mount": app.manifest.share_mount(),
+            "gpu": app.manifest.gpu,
+            "gpu_available": app_catalog::gpu_available(),
+            "shares": if app.manifest.share_mount().is_some() {
+                crate::shares::SharesService::get_shares()
+                    .unwrap_or_default()
+                    .into_iter()
+                    .filter(|s| s.enabled)
+                    .map(|s| serde_json::json!({
+                        "name": s.name,
+                        "share_type": s.share_type.as_str(),
+                        "path": s.path,
+                    }))
+                    .collect::<Vec<_>>()
+            } else {
+                Vec::new()
+            },
         })
     })
     .await;
@@ -917,10 +1138,7 @@ pub struct CatalogUpdateReport {
 /// Updates every installed catalog app with a pending update. Shared by the
 /// admin "update all" action and the scheduled updater (P1 Docker updates), so
 /// both paths behave identically and a failure never aborts the queue.
-pub(crate) async fn update_all_pending(
-    state: &Arc<AppState>,
-    actor: &str,
-) -> CatalogUpdateReport {
+pub(crate) async fn update_all_pending(state: &Arc<AppState>, actor: &str) -> CatalogUpdateReport {
     let stores = enabled_stores(state).await;
     let pending = crate::app_catalog::updates::check_installed_apps(&stores).await;
     if pending.is_empty() {
@@ -946,8 +1164,13 @@ pub(crate) async fn update_all_pending(
         let bare_id = app.bare_id().to_string();
         let ns_id = app.namespaced_id();
         let prev = read_install_marker(&install_key).await;
+        let carry = prev.clone();
         let outcome = tokio::task::spawn_blocking(move || {
-            crate::app_catalog::updates::apply_update(&app, host_port)
+            let options = carry
+                .as_ref()
+                .map(InstallMarker::render_options)
+                .unwrap_or_default();
+            crate::app_catalog::updates::apply_update(&app, host_port, &options)
         })
         .await;
         match outcome {
@@ -963,6 +1186,14 @@ pub(crate) async fn update_all_pending(
                         .as_ref()
                         .map(|m| m.proxy_auth_required)
                         .unwrap_or(true),
+                    environment: prev
+                        .as_ref()
+                        .map(|m| m.environment.clone())
+                        .unwrap_or_default(),
+                    share_name: prev.as_ref().and_then(|m| m.share_name.clone()),
+                    share_type: prev.as_ref().and_then(|m| m.share_type.clone()),
+                    share_path: prev.as_ref().and_then(|m| m.share_path.clone()),
+                    gpu: prev.as_ref().map(|m| m.gpu).unwrap_or(false),
                 };
                 match write_install_marker(&install_key, marker).await {
                     Ok(()) => updated.push(item.id.clone()),
@@ -1123,6 +1354,11 @@ pub async fn handle_catalog_proxy_config(
                 .await
                 .map(|i| i.proxy_port),
             proxy_auth_required: req.auth_required,
+            environment: std::collections::HashMap::new(),
+            share_name: None,
+            share_type: None,
+            share_path: None,
+            gpu: false,
         },
     };
     marker.proxy_auth_required = req.auth_required;
@@ -1313,6 +1549,11 @@ mod tests {
             host_port: 22300,
             proxy_port,
             proxy_auth_required: true,
+            environment: std::collections::HashMap::new(),
+            share_name: None,
+            share_type: None,
+            share_path: None,
+            gpu: false,
         }
     }
 
@@ -1370,6 +1611,67 @@ mod tests {
     fn test_missing_marker_reads_as_none() {
         let dir = scratch_dir("missing");
         assert!(read_install_marker_sync(&dir).is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// P1-34: the marker carries every admin choice that changes the rendered
+    /// compose file, so an update rebuilds the same stack instead of defaults.
+    #[test]
+    fn test_install_marker_round_trips_media_choices_and_settings() {
+        let dir = scratch_dir("media");
+        let mut m = marker(None);
+        m.environment
+            .insert("TZ".to_string(), "Europe/Paris".to_string());
+        m.share_name = Some("hv-missing-test-share".to_string());
+        m.share_type = Some("smb".to_string());
+        m.share_path = Some("/srv/media".to_string());
+        m.gpu = true;
+        write_install_marker_sync(&dir, &m).expect("marker written");
+
+        let read = read_install_marker_sync(&dir).expect("marker read back");
+        assert_eq!(
+            read.environment.get("TZ").map(String::as_str),
+            Some("Europe/Paris")
+        );
+        assert_eq!(read.share_name.as_deref(), Some("hv-missing-test-share"));
+        assert_eq!(read.share_type.as_deref(), Some("smb"));
+        assert!(read.gpu);
+
+        let options = read.render_options();
+        assert_eq!(
+            options.env.get("TZ").map(String::as_str),
+            Some("Europe/Paris")
+        );
+        assert!(options.gpu);
+        // The share is re-resolved by name; one that no longer exists falls
+        // back to the recorded path, so the update still renders.
+        assert_eq!(
+            options.share_dir.as_deref(),
+            Some(std::path::Path::new("/srv/media"))
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A marker written before media integration existed has none of the new
+    /// keys: it must still load, with defaults rather than a parse error.
+    #[test]
+    fn test_legacy_marker_without_media_fields_loads() {
+        let dir = scratch_dir("legacy");
+        std::fs::write(
+            dir.join(".install.toml"),
+            "store_id = \"homevault\"\n\
+             app_id = \"jellyfin\"\n\
+             namespaced_id = \"homevault:jellyfin\"\n\
+             package_version = \"1.0.0\"\n\
+             host_port = 8096\n",
+        )
+        .expect("legacy marker written");
+        let read = read_install_marker_sync(&dir).expect("legacy marker must parse");
+        assert!(read.environment.is_empty());
+        assert!(!read.gpu);
+        assert!(read.share_name.is_none());
+        assert!(read.proxy_auth_required, "absent flag still means gated");
+        assert!(read.render_options().share_dir.is_none());
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

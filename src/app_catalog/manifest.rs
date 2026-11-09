@@ -56,8 +56,17 @@ pub struct Manifest {
     /// (`amd64` / `arm64` / `armv7`). Empty = assume all.
     #[serde(default)]
     pub arch: Vec<String>,
+    /// True when the app's images can use a hardware transcoder (`/dev/dri`).
+    /// The admin still opts in at install time; the flag only says the app
+    /// supports it.
     #[serde(default)]
     pub gpu: bool,
+    /// Container path where an admin-chosen HomeVault share is mounted, e.g.
+    /// `/media` for Jellyfin. `None` means the app does not consume media
+    /// files, and the install API refuses a share choice for it. The compose
+    /// template carries it as `{{SHARE_DIR}}:<share_mount>[:ro]`.
+    #[serde(default)]
+    pub share_mount: Option<String>,
     #[serde(default)]
     pub tagline: Option<String>,
     pub description: String,
@@ -244,6 +253,52 @@ pub fn is_valid_env_name(name: &str) -> bool {
         && name.chars().next().is_some_and(|c| c.is_ascii_uppercase())
 }
 
+/// The container path a manifest's media share is mounted on must be an
+/// absolute, ordinary path: no `..` (it would escape the mount), no
+/// whitespace or `:` (either would break the `host:container` compose
+/// string), and no trailing slash (the value is used as-is on the right of a
+/// volume entry).
+pub fn validate_share_mount(path: &str) -> Result<(), String> {
+    if !path.starts_with('/') {
+        return Err(format!("share_mount must be an absolute path: {path:?}"));
+    }
+    if path.len() < 2 || path.ends_with('/') {
+        return Err(format!(
+            "share_mount must name a directory below /: {path:?}"
+        ));
+    }
+    if path.contains("..") || path.contains(':') || path.chars().any(char::is_whitespace) {
+        return Err(format!("invalid share_mount: {path:?}"));
+    }
+    if path.split('/').any(|part| part.is_empty()) {
+        return Err(format!("invalid share_mount: {path:?}"));
+    }
+    Ok(())
+}
+
+impl Manifest {
+    /// The container path an admin-chosen share is mounted on, when this app
+    /// consumes media files.
+    pub fn share_mount(&self) -> Option<&str> {
+        self.share_mount.as_deref()
+    }
+
+    /// A stable folder name for the app's own default library, derived from
+    /// the share mount (`/mnt/media` → `mnt-media`), so the app has a working
+    /// folder the first time it starts.
+    pub fn default_share_folder(&self) -> Option<String> {
+        let mount = self.share_mount()?;
+        let name = mount
+            .trim_start_matches('/')
+            .replace(|c: char| !c.is_ascii_alphanumeric(), "-");
+        if name.is_empty() {
+            None
+        } else {
+            Some(name)
+        }
+    }
+}
+
 impl Manifest {
     pub fn parse(s: &str) -> Result<Manifest, String> {
         let m: Manifest = toml::from_str(s).map_err(|e| format!("invalid manifest: {e}"))?;
@@ -294,6 +349,9 @@ impl Manifest {
             parse_version(min).ok_or_else(|| {
                 format!("invalid min_homevault_version {min:?} (want major.minor.patch)")
             })?;
+        }
+        if let Some(mount) = &m.share_mount {
+            validate_share_mount(mount)?;
         }
         m.security.validate()?;
         Ok(m)
@@ -575,5 +633,46 @@ mod tests {
             .incompatibility_reason("arm", "9.9.9")
             .unwrap()
             .contains("amd64"));
+    }
+
+    #[test]
+    fn test_share_mount_validation_and_default_folder() {
+        // An app that consumes no media files.
+        let m = Manifest::parse(MINIMAL).unwrap();
+        assert_eq!(m.share_mount(), None);
+        assert_eq!(m.default_share_folder(), None);
+
+        // A well-formed mount point.
+        let src = format!("{MINIMAL}\nshare_mount = \"/media\"\n");
+        let m = Manifest::parse(&src).unwrap();
+        assert_eq!(m.share_mount(), Some("/media"));
+        assert_eq!(m.default_share_folder().as_deref(), Some("media"));
+
+        let src = format!("{MINIMAL}\nshare_mount = \"/mnt/media\"\n");
+        assert_eq!(
+            Manifest::parse(&src)
+                .unwrap()
+                .default_share_folder()
+                .as_deref(),
+            Some("mnt-media")
+        );
+
+        // Anything that would break out of, or corrupt, the volume string.
+        for bad in [
+            "media",       // relative
+            "/",           // root
+            "/media/",     // trailing slash
+            "/mnt/../etc", // traversal
+            "/two words",  // whitespace
+            "/a:b",        // compose separator
+            "/mnt//media", // empty component
+        ] {
+            assert!(
+                validate_share_mount(bad).is_err(),
+                "{bad:?} must be refused"
+            );
+            let src = format!("{MINIMAL}\nshare_mount = \"{bad}\"\n");
+            assert!(Manifest::parse(&src).is_err(), "{bad:?} must fail parse");
+        }
     }
 }

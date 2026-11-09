@@ -216,17 +216,70 @@ fn scan_store(store_id: &str, store_name: &str) -> Vec<CatalogApp> {
 /// rendered YAML and the app's dedicated data directory (created by the
 /// caller). Mirrors the old `docker_catalog::render`.
 pub fn render(app: &CatalogApp, port: u16) -> Result<(String, PathBuf), String> {
-    render_with_env(app, port, &std::collections::HashMap::new())
+    render_with_options(app, port, &RenderOptions::default())
 }
 
-/// Like [`render`], but substitutes declared environment variables: every
-/// `{{NAME}}` placeholder for a manifest-declared `NAME` is replaced by the
-/// caller-supplied value, else the manifest default, else left in place when
-/// the variable is optional. A missing required value is an error.
+/// Like [`render`], but substitutes declared environment variables.
 pub fn render_with_env(
     app: &CatalogApp,
     port: u16,
     env: &std::collections::HashMap<String, String>,
+) -> Result<(String, PathBuf), String> {
+    render_with_options(
+        app,
+        port,
+        &RenderOptions {
+            env: env.clone(),
+            ..RenderOptions::default()
+        },
+    )
+}
+
+/// Where a container finds the host's hardware transcoder (Intel/AMD iGPU via
+/// VAAPI/QuickSync). Mounting the whole directory gives the app the render
+/// node it picks at runtime without HomeVault guessing the card model.
+pub const GPU_DEVICE_DIR: &str = "/dev/dri";
+
+/// True when the host exposes a render device to containers.
+pub fn gpu_available() -> bool {
+    gpu_available_in(std::path::Path::new(GPU_DEVICE_DIR))
+}
+
+/// Testable form of [`gpu_available`] (the real check is a `stat` on
+/// `/dev/dri`, which a test cannot create).
+pub fn gpu_available_in(dir: &std::path::Path) -> bool {
+    dir.is_dir()
+}
+
+/// Everything an admin chooses at install time that changes the rendered
+/// compose file.
+///
+/// Kept as one value so an update can rebuild the *same* stack from the
+/// install marker: re-rendering with defaults would silently drop a chosen
+/// media share, a GPU passthrough or a declared setting on the first update.
+#[derive(Debug, Clone, Default)]
+pub struct RenderOptions {
+    /// Values for the manifest's declared `environment` settings.
+    pub env: std::collections::HashMap<String, String>,
+    /// Host directory bound to the manifest's `share_mount`. `None` uses the
+    /// app's own folder inside its data directory, so a freshly installed
+    /// media app still finds a library to scan.
+    pub share_dir: Option<PathBuf>,
+    /// Mount `/dev/dri` into the app. Only honoured when the manifest sets
+    /// `gpu = true` and the host really has the device.
+    pub gpu: bool,
+}
+
+/// Render the compose template with every admin choice applied.
+///
+/// Placeholders: `{{DATA_DIR}}`, `{{PORT}}`, `{{APP_ID}}`, the declared
+/// `{{NAME}}` environment values, `{{SHARE_DIR}}` (the host side of the
+/// manifest's `share_mount`) and `{{GPU_DEVICES}}` (the `devices:` block).
+/// Security policy is inserted last, so it applies to the final file.
+pub fn render_with_options(
+    app: &CatalogApp,
+    port: u16,
+    options: &RenderOptions,
 ) -> Result<(String, PathBuf), String> {
     let tmpl = app
         .compose_template()
@@ -237,7 +290,8 @@ pub fn render_with_env(
         .replace("{{PORT}}", &port.to_string())
         .replace("{{APP_ID}}", app.bare_id());
     for decl in &app.manifest.environment {
-        let value = env
+        let value = options
+            .env
             .get(&decl.name)
             .cloned()
             .or_else(|| decl.default.clone());
@@ -254,8 +308,122 @@ pub fn render_with_env(
             None => {}
         }
     }
+
+    // Media share: a configured HomeVault share, or the app's own folder.
+    match app.manifest.share_mount() {
+        Some(mount) => {
+            let (share_dir, own_folder) = match &options.share_dir {
+                Some(dir) => (dir.clone(), false),
+                None => (
+                    data_dir.join(
+                        app.manifest
+                            .default_share_folder()
+                            .unwrap_or_else(|| "media".to_string()),
+                    ),
+                    true,
+                ),
+            };
+            let raw = share_dir.to_string_lossy().to_string();
+            if !share_dir.is_absolute() || raw.contains(':') || raw.chars().any(char::is_whitespace)
+            {
+                return Err(format!(
+                    "invalid media share path {raw:?} for {}",
+                    app.manifest.name
+                ));
+            }
+            rendered = rendered.replace("{{SHARE_DIR}}", &raw);
+            if own_folder {
+                // Docker would create this as root:root; the installer's
+                // `data_volume_paths` pass creates and owns it first.
+                tracing::debug!(
+                    "{}: no media share chosen, scanning {}",
+                    app.manifest.name,
+                    share_dir.display()
+                );
+            }
+            // The container path is part of the trust boundary: it comes from
+            // the package, never from the request.
+            debug_assert!(manifest::validate_share_mount(mount).is_ok());
+        }
+        None => {
+            if rendered.contains("{{SHARE_DIR}}") {
+                return Err(format!(
+                    "{} mounts {{SHARE_DIR}} but its manifest declares no share_mount",
+                    app.manifest.name
+                ));
+            }
+        }
+    }
+
+    // Hardware transcoding: opt-in, and only for an app that asks for it.
+    // The explanation travels with the block so a disabled GPU leaves no
+    // orphan comment in the rendered file.
+    let gpu_block = (app.manifest.gpu && options.gpu && gpu_available())
+        .then_some("devices:\n  # Hardware transcoding (VAAPI/QuickSync)\n  - /dev/dri:/dev/dri");
+    rendered = replace_block(&rendered, "{{GPU_DEVICES}}", gpu_block);
+    if app.manifest.gpu && options.gpu && !gpu_available() {
+        tracing::warn!(
+            "{} was asked for hardware transcoding but {} is missing: rendering software-only",
+            app.manifest.name,
+            GPU_DEVICE_DIR
+        );
+    }
+
     let rendered = apply_security_policy(&rendered, &app.manifest.security);
     Ok((rendered, data_dir))
+}
+
+/// Replace a whole-line placeholder, re-indenting the replacement's
+/// continuation lines to the placeholder's own indentation.
+///
+/// An empty replacement removes the line entirely instead of leaving a blank
+/// one, which is how optional blocks (the GPU `devices:` entry, absent on
+/// most hosts) disappear from the file. A placeholder inside a line is
+/// substituted in place without re-indentation.
+fn replace_block(yaml: &str, placeholder: &str, value: Option<&str>) -> String {
+    if !yaml.contains(placeholder) {
+        return yaml.to_string();
+    }
+    let mut out = String::with_capacity(yaml.len());
+    for line in yaml.split_inclusive('\n') {
+        let (body, newline) = match line.strip_suffix('\n') {
+            Some(body) => (body, "\n"),
+            None => (line, ""),
+        };
+        let Some(index) = body.find(placeholder) else {
+            out.push_str(line);
+            continue;
+        };
+        let prefix = &body[..index];
+        let suffix = &body[index + placeholder.len()..];
+        match value.filter(|v| !v.is_empty()) {
+            Some(value) if prefix.trim().is_empty() => {
+                let mut first = true;
+                for part in value.split('\n') {
+                    if !first {
+                        out.push_str(prefix);
+                    }
+                    out.push_str(part);
+                    out.push('\n');
+                    first = false;
+                }
+            }
+            Some(value) => {
+                out.push_str(prefix);
+                out.push_str(value);
+                out.push_str(suffix);
+                out.push_str(newline);
+            }
+            // Dropped: skip the whole line, including its newline.
+            None if prefix.trim().is_empty() => {}
+            None => {
+                out.push_str(prefix.trim_end());
+                out.push_str(suffix);
+                out.push_str(newline);
+            }
+        }
+    }
+    out
 }
 
 /// Host directories a rendered compose file bind-mounts from the app's data
@@ -724,5 +892,169 @@ mod tests {
         let mut good = std::collections::HashMap::new();
         good.insert("SECRET".to_string(), "s3cr3t".to_string());
         assert!(validate_env_values(&app, &good).is_ok());
+    }
+
+    // -- media integration (share binding + hardware transcoding) -----------
+
+    fn builtin(id: &str) -> CatalogApp {
+        scan_builtin()
+            .into_iter()
+            .find(|a| a.manifest.id == id)
+            .unwrap_or_else(|| panic!("{id} is not in the built-in catalog"))
+    }
+
+    #[test]
+    fn test_builtin_media_apps_declare_share_mount_and_gpu_support() {
+        assert_eq!(builtin("jellyfin").manifest.share_mount(), Some("/media"));
+        assert_eq!(builtin("immich").manifest.share_mount(), Some("/mnt/media"));
+        assert_eq!(builtin("navidrome").manifest.share_mount(), Some("/music"));
+        // Video apps can transcode on the GPU; a music server cannot.
+        assert!(builtin("jellyfin").manifest.gpu);
+        assert!(builtin("immich").manifest.gpu);
+        assert!(!builtin("navidrome").manifest.gpu);
+    }
+
+    #[test]
+    fn test_render_binds_the_chosen_share_read_only() {
+        let app = builtin("jellyfin");
+        let (yaml, data_dir) = render_with_options(
+            &app,
+            8096,
+            &RenderOptions {
+                share_dir: Some(PathBuf::from("/srv/films")),
+                ..RenderOptions::default()
+            },
+        )
+        .unwrap();
+        assert!(yaml.contains("- /srv/films:/media:ro"), "{yaml}");
+        assert!(!yaml.contains("{{"));
+        // The user's share is not app data: it is never pre-created or
+        // chowned by the installer.
+        assert!(!data_volume_paths(&yaml, &data_dir)
+            .iter()
+            .any(|p| p.starts_with("/srv/films")));
+    }
+
+    #[test]
+    fn test_render_defaults_to_a_folder_inside_the_app_data_dir() {
+        let app = builtin("immich");
+        let (yaml, data_dir) = render(&app, 2283).unwrap();
+        let expected = data_dir.join("mnt-media");
+        assert!(
+            yaml.contains(&format!("{}:/mnt/media:ro", expected.display())),
+            "{yaml}"
+        );
+        // And that folder *is* app data, so the installer creates it.
+        assert!(data_volume_paths(&yaml, &data_dir).contains(&expected));
+    }
+
+    #[test]
+    fn test_gpu_block_follows_the_device_and_the_opt_in() {
+        // The check really inspects the filesystem (a temp dir exists, a
+        // missing path does not) rather than returning a constant.
+        assert!(gpu_available_in(&std::env::temp_dir()));
+        assert!(!gpu_available_in(std::path::Path::new(
+            "/nonexistent/hv-no-such-device"
+        )));
+
+        let app = builtin("jellyfin");
+        // Not asked for: the placeholder disappears entirely (no blank line,
+        // no dangling comment).
+        let (off, _) = render(&app, 8096).unwrap();
+        assert!(!off.contains("{{GPU_DEVICES}}"));
+        assert!(!off.contains("/dev/dri"));
+        assert!(!off.contains("Hardware transcoding"));
+
+        let (asked, _) = render_with_options(
+            &app,
+            8096,
+            &RenderOptions {
+                gpu: true,
+                ..RenderOptions::default()
+            },
+        )
+        .unwrap();
+        assert!(!asked.contains("{{GPU_DEVICES}}"));
+        if gpu_available() {
+            assert!(
+                asked.contains("devices:\n      - /dev/dri:/dev/dri"),
+                "{asked}"
+            );
+        } else {
+            assert!(!asked.contains("/dev/dri"), "{asked}");
+        }
+
+        // An app whose manifest does not declare `gpu` never receives the
+        // device, even when the request asks for it.
+        let (music, _) = render_with_options(
+            &builtin("navidrome"),
+            4533,
+            &RenderOptions {
+                gpu: true,
+                ..RenderOptions::default()
+            },
+        )
+        .unwrap();
+        assert!(!music.contains("/dev/dri"));
+    }
+
+    #[test]
+    fn test_invalid_share_path_is_refused_by_the_renderer() {
+        let app = builtin("jellyfin");
+        for bad in ["relative/media", "/srv/two words", "/srv/a:b"] {
+            let err = render_with_options(
+                &app,
+                8096,
+                &RenderOptions {
+                    share_dir: Some(PathBuf::from(bad)),
+                    ..RenderOptions::default()
+                },
+            )
+            .unwrap_err();
+            assert!(err.contains("invalid media share path"), "{err}");
+        }
+    }
+
+    #[test]
+    fn test_share_placeholder_without_a_manifest_declaration_is_an_error() {
+        let dir = std::env::temp_dir().join(format!(
+            "hv-catalog-share-{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("docker-compose.yml"),
+            "services:\n  demo:\n    image: nginx\n    volumes:\n      - {{SHARE_DIR}}:/media:ro\n",
+        )
+        .unwrap();
+        let manifest = Manifest::parse(
+            "manifest_version = 1\nid = \"demo\"\nname = \"Demo\"\ncategory = \"x\"\napp_port = 1\ndescription = \"d\"\n",
+        )
+        .unwrap();
+        let app = CatalogApp {
+            store_id: "test".to_string(),
+            store_name: "test".to_string(),
+            manifest,
+            source: AppSource::Store(dir.clone()),
+        };
+        let err = render(&app, 1).unwrap_err();
+        assert!(err.contains("share_mount"), "{err}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_replace_block_reindents_and_drops_whole_lines() {
+        let yaml = "services:\n  a:\n    volumes:\n      - /x:/y\n    {{P}}\n    restart: always\n";
+        let block = "devices:\n  - /dev/dri:/dev/dri";
+        let rendered = replace_block(yaml, "{{P}}", Some(block));
+        assert_eq!(
+            rendered,
+            "services:\n  a:\n    volumes:\n      - /x:/y\n    devices:\n      - /dev/dri:/dev/dri\n    restart: always\n"
+        );
+        // None removes the line itself, leaving no blank line behind.
+        assert_eq!(
+            replace_block(yaml, "{{P}}", None),
+            "services:\n  a:\n    volumes:\n      - /x:/y\n    restart: always\n"
+        );
     }
 }

@@ -126,6 +126,7 @@ justifie.
 | **P1-31** | Unifier les tâches planifiées (type `service`) — livré 2026‑11‑09 | P1 | S/M | Un seul moteur |
 | **P1-32** | Historique/alertes quotas + export Journal — livré 2026‑11‑09 | P1 | S | Visibilité sans surveillance |
 | **P1-33** | WireGuard UX (QR, 1‑clic, endpoint DDNS) — livré 2026‑11‑09 | P1 | S/M | Accès distant simple |
+| **P1-34** | Intégration média (partage + transcodage matériel) — livré 2026‑11‑09 | P1 | M | Le besoin n°1 d'un NAS familial |
 | **P2-1** | SMB AD/Kerberos complet (winbind, realm, idmap, keytab) — **gelé au partiel** (config ADS + join/leave ; DC réel seulement si cible entreprise) | P2 | L | Entreprise Windows |
 | **P2-2** | NFSv4 + Kerberos (`sec=krb5`) — **gelé au partiel** (flavor + validation keytab ; KDC réel seulement si cible entreprise) | P2 | L | Entreprise Unix |
 | **P2-3** | Thin provisioning — **gelé au partiel** (zvols ZFS thin/thick ; overcommit/LVM rejetés) | P2 | L | Sur‑allocation |
@@ -1693,6 +1694,40 @@ valide ne fonctionne qu'en intérieur. Tests : 2 unitaires (`src/vpn.rs`),
 1 d'intégration (`tests/vpn_integration.rs`), E2E VPN 1.5 — écrits, non
 exécutés. Docs : `docs/guides/vpn.md`, `docs/API.md`, `SCREENS.md`, FeatureDoc
 `vpn`.
+
+### [x] P1-34 — Intégration média : partage + transcodage matériel · M
+
+**Livré 2026‑11‑09.** Les apps média du catalogue (Jellyfin, Immich,
+Navidrome) ne sont pas réimplémentées : elles reçoivent les deux choses que
+Video/Audio/Photo Station apportent à un foyer, avec ce que HomeVault possède
+déjà.
+
+- Le **manifeste** déclare `share_mount` (`/media`, `/mnt/media`, `/music`) et
+  le template écrit `{{SHARE_DIR}}:<mount>:ro`. La valeur est validée au parse
+  (absolue, sans `..`, `:` ni espace) car elle est recollée dans une chaîne
+  `hôte:conteneur`. Un app qui ne le déclare pas refuse tout partage (`400`).
+- L'admin choisit un **partage configuré** : `media_share: {name, share_type}`
+  est résolu par `SharesService::get_share` ; le chemin monté est celui du
+  partage, jamais un chemin arbitraire de la requête. Montage **lecture
+  seule**, et le chemin n'entre pas dans `data_volume_paths` (le installeur ne
+  `chown` jamais un partage utilisateur).
+- Sans choix, l'app reçoit son propre dossier (`apps/<clé>/<montage>`) : elle
+  démarre et scanne un dossier vide, au lieu d'échouer.
+- **Transcodage matériel** opt-in à trois conditions : `gpu = true` dans le
+  manifeste, `gpu: true` dans la requête, `/dev/dri` présent. Le bloc
+  `devices:` disparaît complètement sinon ; un hôte qui perd son GPU entre deux
+  mises à jour journalise un avertissement et rend en logiciel.
+- **Les mises à jour conservent les choix** : `.install.toml` enregistre
+  `environment`, `share_name/share_type/share_path` et `gpu`, et `apply_update`
+  rend depuis eux (`RenderOptions`) — ce qui corrige aussi l'ancien bug d'une
+  mise à jour qui perdait les réglages `environment`.
+
+Tests : 1 unitaire manifeste, 7 unitaires rendu, 2 unitaires marqueur
+(`.install.toml`), 3 d'intégration (partage refusé sur un app qui n'en déclare
+pas, type inconnu, partage non configuré, GPU refusé), 4 assertions
+d'intégration sur `install-review`, E2E Docker 15.1/15.3b — écrits,
+**non exécutés**. Docs : `docs/guides/docker.md` (section « Media
+integration »), `docs/API.md`, `SCREENS.md`, FeatureDoc `docker`.
 
 ---
 

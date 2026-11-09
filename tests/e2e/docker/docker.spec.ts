@@ -878,6 +878,12 @@ test.describe('15 — Catalog phase B', () => {
     expect(Array.isArray(review.data.environment)).toBe(true);
     expect('incompatibility_reason' in review.data).toBe(true);
     expect(typeof review.data.default_port).toBe('number');
+    // Media integration: Jellyfin's library can be bound to a configured
+    // share, and the host's GPU is reported rather than assumed.
+    expect(review.data.share_mount).toBe('/media');
+    expect(typeof review.data.gpu).toBe('boolean');
+    expect(typeof review.data.gpu_available).toBe('boolean');
+    expect(Array.isArray(review.data.shares)).toBe(true);
 
     const unknown = await page.evaluate(
       async ({ token, csrf }) => {
@@ -926,6 +932,52 @@ test.describe('15 — Catalog phase B', () => {
     await expect(modal.getByText(/cannot install this app/i)).toHaveCount(0);
     await expect(modal.getByRole('button', { name: /^Install/ })).toBeEnabled();
     // Close without installing — no image is ever pulled by this suite.
+    await modal.getByRole('button', { name: /Cancel/ }).click();
+    await expect(modal).toHaveCount(0);
+  });
+
+  test('15.3b — the Install dialog offers a library share and a GPU opt-in', async ({ page }) => {
+    await gotoDocker(page, adminTokens);
+    await switchTab(page, 'catalog');
+    const jellyfin = win(page).locator('[data-testid="docker-app-card"]', { hasText: 'Jellyfin' });
+    if ((await jellyfin.count()) === 0) test.skip(true, 'jellyfin not in catalog');
+    const installBtn = jellyfin.getByRole('button', { name: /^Install/ });
+    if ((await installBtn.count()) === 0) test.skip(true, 'jellyfin already installed here');
+    await installBtn.first().click();
+    const modal = page.locator('[data-slot="dialog-content"][role="dialog"]');
+    await expect(modal).toBeVisible({ timeout: 10_000 });
+    await expect(modal.getByText(/Checking requirements/)).toHaveCount(0, { timeout: 10_000 });
+
+    // Library: the safe default is the app's own folder; every configured
+    // share is offered by name.
+    const library = modal.locator('[data-testid="catalog-library-select"]');
+    await expect(library).toBeVisible();
+    await expect(library.locator('option').first()).toHaveText(/own folder/i);
+    await expect(library.locator('option').first()).toHaveAttribute('value', '');
+
+    // GPU: opt-in, and never pre-checked. When the host has no render device
+    // the checkbox is disabled and explains why.
+    const gpu = modal.locator('[data-testid="catalog-gpu-toggle"]');
+    await expect(gpu).toBeVisible();
+    await expect(gpu).not.toBeChecked();
+    const gpuAvailable = await page.evaluate(
+      async ({ token, csrf }) => {
+        const r = await fetch('/api/docker/catalog/homevault:jellyfin/install-review', {
+          headers: { 'x-session-token': token, 'x-csrf-token': csrf },
+        });
+        const body = await r.json();
+        return body.data.gpu_available as boolean;
+      },
+      { token: adminTokens.token, csrf: adminTokens.csrf },
+    );
+    if (!gpuAvailable) {
+      await expect(gpu).toBeDisabled();
+      await expect(modal.getByText(/No graphics card/i)).toBeVisible();
+    } else {
+      await expect(gpu).toBeEnabled();
+    }
+
+    // Nothing is installed and no image is pulled by this suite.
     await modal.getByRole('button', { name: /Cancel/ }).click();
     await expect(modal).toHaveCount(0);
   });

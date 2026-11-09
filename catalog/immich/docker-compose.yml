@@ -7,6 +7,10 @@ services:
       - "{{PORT}}:2283"
     volumes:
       - {{DATA_DIR}}/library:/usr/src/app/upload
+      # External library: the HomeVault share the admin picked at install
+      # time. Read-only, because Immich only indexes the files.
+      - {{SHARE_DIR}}:/mnt/media:ro
+    {{GPU_DEVICES}}
     environment:
       - DB_HOSTNAME=immich-postgres
       - DB_USERNAME=immich

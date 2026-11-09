@@ -7,7 +7,9 @@ services:
       - "{{PORT}}:4533"
     volumes:
       - {{DATA_DIR}}/data:/data
-      - {{DATA_DIR}}/music:/music:ro
+      # Music library: the HomeVault share the admin picked at install time
+      # (read-only: Navidrome only reads the files).
+      - {{SHARE_DIR}}:/music:ro
     deploy:
       resources:
         limits:

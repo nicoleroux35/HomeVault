@@ -8,6 +8,23 @@ follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **Media integration: share binding and hardware transcoding (2026-11-09, P1).**
+  The catalog's media apps (Jellyfin, Immich, Navidrome) can now use your files
+  and your graphics card instead of an empty sandbox folder:
+  - a manifest declares `share_mount` (`/media`, `/mnt/media`, `/music`) and
+    the install dialog offers a **Library** selector over the configured
+    shares; the server resolves the share itself, mounts it **read-only**, and
+    refuses an app that does not declare one (`share_mount` is validated at
+    parse: absolute, no `..`, `:` or whitespace);
+  - **hardware transcoding** is an opt-in that needs the manifest's
+    `gpu = true`, the request's `gpu: true` and a real `/dev/dri`; the GPU
+    checkbox is disabled with the reason when the host has no render device;
+  - `.install.toml` now records the settings, the share and the GPU choice, and
+    updates render from them — which also fixes an update silently dropping
+    the admin's declared environment values.
+  Tests: 10 unit (share/GPU rendering, `replace_block`, manifest validation,
+  marker round-trip), 3 integration, Docker E2E 15.1/15.3b (written, not run).
+
 - **WireGuard remote-access UX (2026-11-09, P1).** Peer configs (and their QR
   codes, already shipped) now use a public endpoint resolved in order: a manual
   admin override, the configured Dynamic DNS hostname, then the detected public

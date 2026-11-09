@@ -7,7 +7,11 @@ icon = "movie"
 app_port = 8096
 default_port = 8096
 arch = ["amd64", "arm64"]
-gpu = false
+# Jellyfin's images ship the VAAPI/QuickSync transcoder: the admin can hand
+# the container /dev/dri at install time.
+gpu = true
+# Where the chosen HomeVault media share is mounted inside the container.
+share_mount = "/media"
 developer = "Jellyfin"
 website = "https://jellyfin.org"
 repo = "https://github.com/jellyfin/jellyfin"

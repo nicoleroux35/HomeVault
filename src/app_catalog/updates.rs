@@ -357,11 +357,19 @@ pub fn version_is_older(installed: &str, available: &str) -> bool {
 }
 
 /// Re-render the template (picks up a newer package version), pull newer
-/// images, then recreate the stack. Blocking; wrap in `spawn_blocking`.
-pub fn apply_update(app: &CatalogApp, host_port: u16) -> Result<(), String> {
+/// images, then recreate the stack.
+///
+/// `options` are the choices the app was installed with (declared settings,
+/// media share, GPU access) — an update must rebuild the same stack, not the
+/// default one. Blocking; wrap in `spawn_blocking`.
+pub fn apply_update(
+    app: &CatalogApp,
+    host_port: u16,
+    options: &app_catalog::RenderOptions,
+) -> Result<(), String> {
     let key = app.install_key();
 
-    let (rendered, _dir) = app_catalog::render(app, host_port)?;
+    let (rendered, _dir) = app_catalog::render_with_options(app, host_port, options)?;
     ComposeManager::update_project(&key, &rendered).map_err(|e| e.to_string())?;
 
     let dir = crate::config::paths::compose_dir().join(&key);

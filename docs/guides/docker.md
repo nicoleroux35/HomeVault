@@ -104,7 +104,8 @@ Catalog phase-B additions on the same package shape (no new manifest file):
   in `UPPER_SNAKE_CASE`, `services`, `default`, `options`, `required`,
   `note`) validated at parse (bad names/duplicates/default-outside-options
   rejected) and at install (`validate_env_values`); values render into the
-  compose template as `{{NAME}}` placeholders (`render_with_env`).
+  compose template as `{{NAME}}` placeholders (`render_with_env`, now a thin
+  wrapper over `render_with_options`).
 - **Per-app Docker security policy**: a `[security]` table in the manifest is
   rendered into **every service** of the compose file — HomeVault's
   equivalent of DSM7's `conf/privilege`. `no_new_privileges` defaults to
@@ -158,6 +159,56 @@ Catalog phase-B additions on the same package shape (no new manifest file):
 - Install/uninstall share their core with the MCP `apps.install/uninstall`
   tools (`install_catalog_app` / `uninstall_catalog_app`, actor-labelled
   event log) — fix one path and both move.
+
+### Media integration — share binding and hardware transcoding (P1, 2026-11-09)
+
+Media apps are not reimplemented natively: the catalog apps (Jellyfin,
+Immich, Navidrome) get the two things DSM's Video/Audio/Photo Station give a
+home user, using what HomeVault already has.
+
+- **The manifest declares the library**, not the request. A package adds
+  `share_mount = "/media"` and writes `{{SHARE_DIR}}:<share_mount>:ro` in its
+  compose template. `share_mount` is validated at manifest parse: absolute,
+  no `..`, no `:`, no whitespace, no trailing slash — it is spliced into a
+  `host:container` string, so a malformed value would be a mount escape.
+  Only apps that declare it accept a share choice; any other app refuses one
+  with `400 … does not use a media share`.
+- **The admin picks a configured share.** `POST /docker/catalog/{id}/install`
+  accepts `media_share: {name, share_type}`; the server resolves it through
+  `SharesService::get_share` and mounts **the share's own path** — a request
+  can never name an arbitrary host directory. A share that does not exist,
+  is relative or is not a directory is a `400`. The mount is read-only: a
+  media server indexes the user's files, it never edits them, and the path is
+  deliberately *not* in `data_volume_paths`, so the installer never
+  pre-creates or `chown`s a user's share.
+- **No choice still works.** Without `media_share` the app gets its own
+  library folder inside its data directory (`apps/<key>/<mount-name>`, e.g.
+  `/mnt/media` → `apps/immich/mnt-media`), created and owned by the installer
+  — the app starts, scans an empty folder, and the admin can add files there
+  or re-install against a share.
+- **Hardware transcoding is an opt-in with three conditions**: the manifest
+  sets `gpu = true`, the admin sends `gpu: true`, and the host exposes
+  `/dev/dri`. Ask for it on an app that does not support it → `400`; ask on a
+  host without the device → `400` naming `/dev/dri`. The rendered block is
+  `devices:\n  - /dev/dri:/dev/dri` at the service level; when any condition
+  fails the placeholder line disappears entirely (no blank line, no orphan
+  comment). A host that loses its GPU between two updates logs a warning and
+  renders software-only instead of failing the update.
+- **Updates keep the choices.** `.install.toml` now records `environment`,
+  `share_name`/`share_type`/`share_path` and `gpu`, and `apply_update` renders
+  from them (`RenderOptions`) instead of from defaults. This also fixes a
+  pre-existing bug: an update used to re-render with **no** environment
+  values, silently dropping the settings the admin had entered. A renamed
+  share is re-resolved by name; if it is gone, the recorded path is reused so
+  the update still produces a valid stack.
+- The install dialog shows a **Library** selector (default: the app's own
+  folder) and a **GPU** checkbox (disabled, with the reason, when the host has
+  no render device). The installed card shows the bound share. Both are
+  optional: a home user who clicks Install without touching anything gets the
+  safe path.
+- `install-review` and `GET /docker/catalog` expose `share_mount`, `gpu`,
+  `gpu_available`, the enabled `shares` and (once installed)
+  `installed_share`.
 
 ### Per-app reverse proxy + app-scoped auth (`src/app_proxy/*`)
 
@@ -461,6 +512,14 @@ query value, so a call site reads like the URL it builds.
   (see the caching contract above); a Docker mutation evicts the whole
   `/docker` cache family.
 - Live logs go through the ticket, never a session token in a URL.
+- **A container never mounts a path the request names.** A media app's library
+  is resolved from the *configured* shares (`SharesService::get_share`) and
+  mounted read-only; the container path comes from the package manifest. See
+  "Media integration" above.
+- **A re-render must reproduce the install.** Every admin choice that changes
+  the compose file (declared settings, media share, GPU) lives in
+  `.install.toml`; a new one is added to `InstallMarker` *and* to
+  `RenderOptions` in the same change, or an update will silently drop it.
 - Destructive actions validate their input **before** touching the daemon
   (`PruneTarget`, signals, names, build context, `daemon.json`).
 - `handle_catalog_install` and `handle_catalog_update` register an

@@ -452,6 +452,10 @@ RAID levels: RAID0 (stripe), RAID1 (mirror), RAID5 (parity), RAID6 (double parit
 - Volume management: list, create, delete, see which containers use a volume
 - Docker engine settings (daemon.json) editable from the interface
 - App Catalog: install pre-configured apps from manifests
+- Media apps (Jellyfin, Immich, Navidrome) can bind one of your shares as their
+  library (read-only, chosen at install) and use the graphics card (/dev/dri)
+  for hardware transcoding when the host has one; both choices are kept on
+  updates
 - Community stores: add third-party app repositories
 - Per-app reverse proxy with session-cookie auth gate
 - Port conflict detection before container creation

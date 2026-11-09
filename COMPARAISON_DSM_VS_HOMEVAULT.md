@@ -115,9 +115,9 @@ dans l'image).
 
 | Catégorie | HomeVault (catalogue) | Paquet DSM | Verdict | À améliorer |
 |---|---|---|---|---|
-| Photos/vidéos | **Immich** | Synology Photos | ✅ / ⭐ | Installation 1‑clic, stockage sur partage, sauvegarde automatique, transcodage matériel |
-| Vidéo | **Jellyfin** | Video Station | ✅ | Transcodage HW, DLNA, accès distant |
-| Musique | **Navidrome** | Audio Station | ✅ | DLNA/AirPlay |
+| Photos/vidéos | **Immich** | Synology Photos | ✅ / ⭐ | **Binding sur un partage en lecture seule** et **transcodage matériel opt‑in** livrés (P1‑34) ; sauvegarde automatique des mobiles et reconnaissance ML à valider côté Immich |
+| Vidéo | **Jellyfin** | Video Station | ✅ | **Transcodage HW via `/dev/dri`** livré, bibliothèque sur partage ; accès distant par reverse‑proxy + VPN ; **DLNA non validé** (exigerait `network_mode: host`) |
+| Musique | **Navidrome** | Audio Station | ✅ | **Bibliothèque sur partage** livrée ; DLNA/AirPlay non validé |
 | Docs/notes | **BookStack, Paperless‑ngx** | Note Station, Documents | 🟡 | OCR/scan, édition collaborative, import |
 | Drive/sync | **ownCloud, Syncthing** | Synology Drive | 🟡 | Sync sélective, versions, apps mobiles, édition en ligne |
 | Git/dev | **Gitea** | Git Server | ✅ | SSO, sauvegarde |
@@ -192,7 +192,7 @@ reconstruction complète sur VM.
 
 | Priorité | Proposition initiale | Recadrage retenu | Pourquoi | Effort | Réf. |
 |---|---|---|---|---|---|
-| **P1** | « Média first‑class » (apps natives) | **Intégration média** : installation 1‑clic + **binding sur un partage** + backup/rétention + reverse‑proxy + accès distant + détection transcodage HW | Le backlog §6 rejette le natif ; l'usage n°1 d'un NAS reste à couvrir par le catalogue | M | nouveau |
+| **P1 ✅** | « Média first‑class » (apps natives) | **Intégration média** : installation 1‑clic + **binding sur un partage** + backup/rétention + reverse‑proxy + accès distant + détection transcodage HW — **partage + transcodage livrés** | Le backlog §6 rejette le natif ; l'usage n°1 d'un NAS reste à couvrir par le catalogue | M | nouveau |
 | **P1** | Explorer : CIFS/NFS/cloud, vignettes vidéo/PDF, versions Btrfs, favoris | **CIFS/NFS + favoris + versions Btrfs** en P1 ; cloud via rclone existant ; **vignettes vidéo/PDF en P2 opt‑in** (ffmpeg/poppler = surface + CPU) | Dernier vrai écart avec File Station | M | nouveau |
 | **P1** | Téléchargeur : NZB, RSS, planification, limites, extraction | **RSS + planification + limites/tâche + extraction auto** ; **NZB/eMule rejetés** | Niche, credentials, exposition légale | M | nouveau |
 | **P2** | Cache SSD L2ARC/SLOG | **Opt‑in ZFS**, jamais par défaut (exige un SSD) | Gain réel seulement sur matériel adapté | M | nouveau |
@@ -200,6 +200,29 @@ reconstruction complète sur VM.
 | **P2** | VM export/import OVA | **P2** en s'appuyant sur `incus export` natif | Portabilité/backup, pas un sous‑système | M | nouveau |
 | **P2** | Syncthing navigateur de versions | **P2** intégration UI seule (Syncthing gère déjà les versions) | Faible effort, pas de nouveau moteur | S/M | nouveau |
 | **P2** | Calendrier/Contacts manquants | **App catalogue** (Radicale/Baïkal), pas natif | Cohérent avec le backlog §6 | S | nouveau |
+
+**P1‑34 — Intégration média (livrée).**
+
+- **Le manifeste décide** : Jellyfin (`share_mount = "/media"`), Immich
+  (`/mnt/media`) et Navidrome (`/music`) montent `{{SHARE_DIR}}:<montage>:ro`.
+  La valeur est validée au parse (absolue, sans `..`, `:` ni espace), et un app
+  qui ne la déclare pas refuse tout partage (`400`) — le chemin conteneur
+  appartient au paquet, jamais à la requête.
+- **L'admin choisit un partage configuré**, jamais un chemin :
+  `media_share: {name, share_type}` est résolu par `SharesService::get_share`
+  puis monté **en lecture seule** ; le chemin n'entre pas dans
+  `data_volume_paths`, donc l'installeur ne crée ni ne `chown` un partage
+  utilisateur. Sans choix, l'app reçoit son propre dossier
+  (`apps/<clé>/<montage>`) et démarre.
+- **Transcodage matériel** opt‑in à trois conditions (`gpu = true` au
+  manifeste, `gpu: true` à l'install, `/dev/dri` présent) ; sinon le bloc
+  `devices:` disparaît du compose et le bouton est désactivé avec la raison.
+- **Les mises à jour conservent les choix** (`.install.toml` :
+  `environment`, partage, `gpu`) — corrige au passage la perte des réglages
+  `environment` lors d'un update.
+- Tests **écrits, non exécutés** : 10 unitaires, 3 d'intégration, E2E Docker
+  15.1/15.3b. Docs : `docs/guides/docker.md`, `docs/API.md`, `SCREENS.md`,
+  FeatureDoc `docker`.
 
 ### 3.3 Geler ou rejeter — parité sans valeur pour la cible
 
@@ -238,11 +261,13 @@ PHP 8.1/Redis 4.0.
    enforcement AppArmor à valider), audit requêtable (**livré**), restauration
    bare‑metal (drill livré, test VM restant) — c'est‑à‑dire la **confiance**
    plus que les fonctionnalités.
-3. **Le plus gros écart « visible pour l'utilisateur » est le média** : photos,
-   vidéo, musique passent aujourd'hui par le catalogue Docker, sans binding sur
-   un partage ni sauvegarde associée. Le chantier P1 est donc une **intégration
-   média** (1‑clic, partage, backup, proxy, transcodage HW), **pas** des apps
-   natives — voir §3.2.
+3. **Le plus gros écart « visible pour l'utilisateur » — le média — est désormais
+   comblé côté intégration** : les apps du catalogue s'installent en 1‑clic,
+   sont **liées à un partage en lecture seule** et **accélérées par le GPU**
+   quand la machine en a un (P1‑34), derrière le reverse‑proxy et le VPN.
+   Restent la rétention/sauvegarde média (le partage est couvert par Restic) et
+   la validation DLNA/reconnaissance ML — pas des apps natives, conformément au
+   §3.2.
 4. **Les écarts entreprise et de niche sont gelés ou rejetés**, pas reportés
    indéfiniment : AD/Kerberos/ACL Windows, serveur OpenVPN, L2TP, SHR/SHR2,
    NZB/eMule, KMIP/WORM, HA, IDS. Les traiter comme des régressions serait
@@ -299,9 +324,11 @@ PHP 8.1/Redis 4.0.
   dans `src/vpn.rs`, `GET/PUT /api/vpn/wireguard/endpoint`, carte endpoint
   dans VPN (P1‑33)
 - Catalogue : `catalog/*/homevault-app.toml` (15 apps)
-- Apps catalogue **non liées aux partages** : le compose ne binde que
-  `/srv/apps/<app>` (`src/app_catalog/mod.rs:261-270`) — d'où le chantier
-  « binding sur un partage » du §3.2
+- **Intégration média** : `share_mount` + `gpu` dans le manifeste
+  (`src/app_catalog/manifest.rs`), `RenderOptions`/`render_with_options` dans
+  `src/app_catalog/mod.rs`, `media_share`/`gpu` à l'install et mémorisés dans
+  `.install.toml` (`src/handlers/docker_catalog.rs`), `apply_update` rend
+  depuis le marqueur (`src/app_catalog/updates.rs`) — P1‑34
 - **13 ordonnanceurs déjà existants** (`src/web/mod.rs:2809-2850`) : une
   « tâche planifiée backup/scrub/corbeille » doit les exposer, pas les dupliquer
 - Serveur OpenVPN absent, client seul : `src/handlers/vpn.rs:953-1002` ;
@@ -560,8 +587,29 @@ Journal — l'API les porte déjà.
   d'intégration (`tests/vpn_integration.rs`), E2E VPN 1.5.
 - Docs : `docs/guides/vpn.md`, `docs/API.md`, `SCREENS.md`, FeatureDoc `vpn`.
 
+**P1‑34 — intégration média : partage + transcodage matériel (livré).**
+
+- Les apps média du catalogue (Jellyfin, Immich, Navidrome) déclarent
+  `share_mount` dans leur manifeste et montent `{{SHARE_DIR}}:<montage>:ro`.
+  La valeur est validée au parse (absolue, sans `..`, `:` ni espace).
+- L'admin choisit un **partage configuré** (`media_share: {name, share_type}`),
+  résolu par `SharesService::get_share` puis monté **en lecture seule**. Un app
+  qui ne déclare pas de `share_mount` refuse la demande (`400`) ; un partage
+  inconnu aussi. Sans choix, l'app reçoit son propre dossier
+  (`apps/<clé>/<montage>`).
+- **Transcodage matériel** opt‑in (`gpu = true` au manifeste, `gpu: true`,
+  `/dev/dri` présent) ; sinon le bouton est désactivé et le bloc `devices:`
+  absent du compose.
+- `.install.toml` enregistre `environment`, le partage et `gpu` ;
+  `apply_update` rend depuis eux — corrige la perte des réglages lors d'un
+  update.
+- Tests écrits mais **non exécutés** : 8 unitaires, 3 d'intégration, E2E
+  Docker 15.1/15.3b.
+- Docs : `docs/guides/docker.md` (§ « Media integration »), `docs/API.md`,
+  `SCREENS.md`, FeatureDoc `docker`.
+
 **Reste sur P2‑9** : le test de reconstruction complète sur une VM jetable
 (boot, installation, restauration DB + configuration + données, vérification)
-et, si la cible le justifie, une image système équivalente à `md0`. **Tous les
-P1 de l'ordre sont désormais livrés** ; restent les P2 (profondeur stockage,
-média, etc.) et les finitions P1‑18/P2‑7/P2‑8.
+et, si la cible le justifie, une image système équivalente à `md0`. Les P1 de
+l'ordre sont livrés (dont l'intégration média) ; restent les P2 (profondeur
+stockage, etc.) et les finitions P1‑18/P2‑7/P2‑8.

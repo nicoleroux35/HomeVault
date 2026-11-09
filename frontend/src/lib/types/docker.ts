@@ -281,6 +281,14 @@ export interface DockerCatalogApp {
   proxy_port: number | null;
   proxy_auth_required: boolean;
   unsupported_on_host: boolean;
+  /** Container path the app mounts a share on; `null` = no media library. */
+  share_mount: string | null;
+  /** The app can use `/dev/dri`. */
+  gpu: boolean;
+  /** This host exposes `/dev/dri`. */
+  gpu_available: boolean;
+  /** The share this install is bound to, `null` = its own folder. */
+  installed_share: string | null;
 }
 
 /** One row of `GET /docker/stores` (a community package store). */
@@ -312,6 +320,13 @@ export interface DockerInstallReviewDep {
   selected: string | null;
 }
 
+/** One configured share offered as a catalog app's media library. */
+export interface DockerCatalogShare {
+  name: string;
+  share_type: string;
+  path: string;
+}
+
 /** `GET /docker/catalog/{id}/install-review`. */
 export interface DockerInstallReview {
   id: string;
@@ -321,6 +336,17 @@ export interface DockerInstallReview {
   dependencies: DockerInstallReviewDep[];
   environment: DockerEnvVarDecl[];
   default_port: number;
+  /**
+   * Container path the app mounts a HomeVault share on. `null` when the app
+   * does not consume media files — the dialog then offers no library choice.
+   */
+  share_mount: string | null;
+  /** The app's images can use `/dev/dri` (hardware transcoding). */
+  gpu: boolean;
+  /** This host actually exposes `/dev/dri`. */
+  gpu_available: boolean;
+  /** Enabled shares the admin can bind, empty when `share_mount` is null. */
+  shares: DockerCatalogShare[];
 }
 
 /** `POST /docker/catalog/{id}/install`. */
@@ -328,6 +354,10 @@ export interface DockerCatalogInstallRequest {
   port?: number;
   alternatives?: Record<string, string>;
   environment?: Record<string, string>;
+  /** Bind a configured share as the app's library (apps with `share_mount`). */
+  media_share?: { name: string; share_type: string };
+  /** Mount `/dev/dri` (apps with `gpu = true`, host with the device). */
+  gpu?: boolean;
 }
 
 /** `POST /docker/catalog/update-all`. */

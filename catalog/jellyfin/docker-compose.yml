@@ -8,7 +8,10 @@ services:
     volumes:
       - {{DATA_DIR}}/config:/config
       - {{DATA_DIR}}/cache:/cache
-      - {{DATA_DIR}}/media:/media
+      # Library: the HomeVault share the admin picked at install time
+      # (read-only: a media server never edits the user's files).
+      - {{SHARE_DIR}}:/media:ro
+    {{GPU_DEVICES}}
     deploy:
       resources:
         limits:
