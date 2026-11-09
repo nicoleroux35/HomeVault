@@ -8,6 +8,21 @@ follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **Kernel stability and explicit monitoring choice in the installer
+  (2026-11-09, P1-28).** A NAS should reboot rather than hang, and must not
+  double every alert:
+  - the installer writes `/etc/sysctl.d/99-homevault.conf`
+    (`kernel.panic=10`, `kernel.panic_on_oops=1`,
+    `vm.dirty_background_ratio=5`, `vm.dirty_ratio=10`) and applies it with
+    `sysctl -q -p`; `HV_SKIP_SYSCTL=1` writes it without applying it;
+  - `smartd` and `mdmonitor` stay **off by default** because HomeVault samples
+    SMART and RAID itself; `HV_SMARTD=1` / `HV_MDMONITOR=1` opts in, and an
+    already-enabled daemon is reported instead of silently disabled;
+  - the decision is a pure `monitor_decision` function covered by the installer
+    unit test, and every outcome is printed during install.
+  The write-cache/UPS warning card remains out of the UI by the 2026-11-06
+  value review.
+
 - **Signed community app stores (2026-11-09, P1-27).** Third-party catalog
   content is now verifiable before it is trusted:
   - `homevault-store.toml` and every app's `homevault-app.toml` can carry a

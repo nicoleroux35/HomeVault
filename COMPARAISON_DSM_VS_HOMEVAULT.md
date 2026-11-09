@@ -39,6 +39,7 @@ qu'elle listait sont **désormais livrés** et ne doivent plus être comptés :
 | Table d'audit | ✅ **livrée le 2026‑11‑08, filtres structurés UI le 2026‑11‑09** (P1‑18 : table, API, export, source Journal, filtres gravité/utilisateur/action/dates, pagination, rétention 90 j) |
 | Signature + atomicité de mise à jour | ✅ **installeur 2026‑11‑08 + Apply update dans Settings 2026‑11‑09** (P2‑8 ; reste la clé de production) |
 | Signature des stores communautaires | ✅ **livrée le 2026‑11‑09** (P1‑27 : Ed25519 détachée sur le descripteur et chaque manifeste d’app, vérifiée au sync et au chargement, badge Signed/Unsigned/refused) |
+| Stabilité système / monitoring hôte | ✅ **livrée le 2026‑11‑09** (P1‑28 : `sysctl` noyau + cache d’écriture borné, `smartd`/`mdmonitor` opt‑in pour ne jamais doubler les alertes de HomeVault) |
 | OAuth2 e‑mail (Gmail / Microsoft 365) | ✅ **livré le 2026‑11‑09** (P1‑16 : flux code, refresh token scellé, msmtp `oauthbearer`/`xoauth2`, carte Settings — aucun mot de passe applicatif) |
 | Isolation d'exécution | 🟡 **installeur livré le 2026‑11‑08** (P2‑7 partiel : systemd durci + AppArmor opt‑in ; validation terrain/enforce restante) |
 | Restauration bare‑metal | 🟡 **drill non destructif livré le 2026‑11‑08** (P2‑9 partiel : snapshot DB + archive config + état backup vérifiés ; test de reconstruction VM restant) |
@@ -182,7 +183,9 @@ bloquante depuis `events::log_event`, champs structurés pour
 l'authentification (acteur/action/IP), API admin `GET /api/audit` +
 `/api/audit/export` (CSV/JSON), source `audit` dans le Journal et purge à
 90 jours. Les **filtres structurés de l'UI Journal sont livrés le 2026‑11‑09**
-(gravité/utilisateur/action/dates, pagination, export ; voir plus bas). **P1‑16 — OAuth2 e‑mail (livré le 2026‑11‑09).** Le relais SMTP peut
+(gravité/utilisateur/action/dates, pagination, export ; voir plus bas).
+
+**P1‑16 — OAuth2 e‑mail (livré le 2026‑11‑09).** Le relais SMTP peut
 s'authentifier auprès de Gmail et de Microsoft 365 **sans mot de passe
 applicatif** :
 
@@ -739,6 +742,26 @@ Implémentation : `JournalQuery` → `audit_query_from_journal`
   d'intégration (`app_catalog`), `bash -n` de l'installeur. Docs :
   `docs/guides/docker.md` (commandes de signature), `docs/API.md`,
   `SCREENS.md`, FeatureDoc `docker`.
+
+**P1‑28 — stabilité système (livrée côté installeur le 2026‑11‑09).**
+
+- `/etc/sysctl.d/99-homevault.conf` :
+  `kernel.panic=10`, `kernel.panic_on_oops=1`,
+  `vm.dirty_background_ratio=5`, `vm.dirty_ratio=10`, appliqué par
+  `sysctl -q -p` (`HV_SKIP_SYSCTL=1` écrit sans appliquer) — un noyau qui
+  panique redémarre au lieu de rester bloqué avec des partages à moitié
+  montés, et un disque lent ne peut pas accumuler des minutes d’écriture non
+  synchronisée.
+- `smartd` et `mdmonitor` restent **désactivés par défaut** : HomeVault
+  échantillonne SMART et le RAID lui‑même, donc lancer les deux doublerait
+  chaque alerte. `HV_SMARTD=1`/`HV_MDMONITOR=1` les active ; un démon déjà
+  actif est signalé, jamais coupé en silence.
+- La décision est une fonction pure `monitor_decision`
+  (`unavailable`/`already`/`enable`/`leave`) couverte par le test d’installeur.
+- La carte UI write cache/UPS reste **gelée** (revue de valeur du 2026‑11‑06) ;
+  les données SMART/RAID de l’écran Health couvrent le besoin.
+- Tests : 9 assertions d’installeur (`bash -n`, non exécuté). Docs :
+  `docs/ARCHITECTURE.md`.
 
 **P2‑9 — restauration bare‑metal (drill livré, test VM restant).**
 

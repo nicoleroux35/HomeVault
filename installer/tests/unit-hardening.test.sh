@@ -106,5 +106,19 @@ ENFORCE_PROFILE=$(HV_APPARMOR_ENFORCE=1 render_apparmor_profile)
 has "apparmor: enforce switch" "$ENFORCE_PROFILE" "flags=(enforce)"
 lacks "apparmor: enforce is not complain" "$ENFORCE_PROFILE" "flags=(complain)"
 
+# --- Kernel stability + monitoring choice (P1-28) -------------------------
+SYSCTL=$(render_sysctl)
+has "sysctl: panic reboots" "$SYSCTL" "kernel.panic = 10"
+has "sysctl: oops reboots" "$SYSCTL" "kernel.panic_on_oops = 1"
+has "sysctl: bounded background writeback" "$SYSCTL" "vm.dirty_background_ratio = 5"
+has "sysctl: bounded writeback" "$SYSCTL" "vm.dirty_ratio = 10"
+lacks "sysctl: no unexpanded substitution" "$SYSCTL" '$('
+
+# The host daemons are opt-in, and an already-enabled one is never doubled.
+has "monitor: missing package" "$(monitor_decision n n 0)" "unavailable"
+has "monitor: already enabled wins over the request" "$(monitor_decision y y 1)" "already"
+has "monitor: explicit enable" "$(monitor_decision y n 1)" "enable"
+has "monitor: default is leave" "$(monitor_decision y n 0)" "leave"
+
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
 [[ "$FAIL" -eq 0 ]]

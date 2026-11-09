@@ -359,6 +359,23 @@ re-execs, and a second elevation attempt fails loudly rather than looping.
 `--package`, `--dry-run` and `--help` are excluded from the whole bootstrap:
 none needs root and none may pop a window.
 
+### Kernel stability and host monitoring (P1-28, 2026-11-09)
+
+The installer makes the "survive a fault, then come back" behaviour explicit
+instead of relying on distro defaults:
+
+| Piece | Value / rule |
+|---|---|
+| Unit | `LimitNOFILE=65536`, `TimeoutStopSec=30`, `StartLimitIntervalSec=60`, `StartLimitBurst=5`, `OOMPolicy=stop` |
+| `/etc/sysctl.d/99-homevault.conf` | `kernel.panic=10`, `kernel.panic_on_oops=1`, `vm.dirty_background_ratio=5`, `vm.dirty_ratio=10`; applied with `sysctl -q -p` (failure warns, never aborts) |
+| `HV_SKIP_SYSCTL=1` | write the file but do not apply it (containers, read-only `/proc/sys`) |
+| `smartd` / `mdmonitor` | **off by default**: HomeVault samples SMART and RAID itself, so running both would duplicate every alert. `HV_SMARTD=1` / `HV_MDMONITOR=1` opts in; an already-enabled daemon is reported, never silently disabled. `monitor_decision` is pure and unit-tested |
+
+The write-cache/UPS warning card stays out of the UI by the 2026-11-06 value
+review; the installer warning plus the Health screen's own SMART/RAID data
+cover the same ground without a new surface.
+
+
 Prompts read **fd 3**, bound to `/dev/tty` (probed by *opening* it — `[[ -r
 /dev/tty ]]` succeeds on a process with no controlling terminal, the open then
 fails with `ENXIO`). This is a bug fix, not a nicety: with `curl | sudo bash`

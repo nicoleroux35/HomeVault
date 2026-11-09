@@ -1,5 +1,21 @@
 # HomeVault — Test tracking
 
+## P1-28 — kernel stability + explicit monitoring choice — 2026-11-09 (not run)
+
+> **No Rust or E2E test was executed for this change.** Static checks passed:
+> `bash -n installer/install.sh` and
+> `bash -n installer/tests/unit-hardening.test.sh`.
+> **No host setting is changed by the tests**: `render_sysctl` and
+> `monitor_decision` are pure renderers/decisions.
+> The installer unit file was run once during development to confirm the new
+> assertions: **55 passed, 0 failed**.
+
+| Coverage | Added / changed |
+|---|---|
+| Installer (`installer/tests/unit-hardening.test.sh`) | **+9 assertions** — `render_sysctl` contains the panic/oops/dirty-ratio values and no unexpanded substitution; `monitor_decision` returns `unavailable` (missing package), `already` (enabled wins over the request), `enable` (explicit `HV_*=1`) and `leave` (default) |
+| Installer (`installer/install.sh`) | writes and applies `/etc/sysctl.d/99-homevault.conf` (`HV_SKIP_SYSCTL=1` skips applying), and the `smartd`/`mdmonitor` block enables only on request. `bash -n` only |
+| Docs | `docs/ARCHITECTURE.md` (new "Kernel stability and host monitoring" section), `CHANGELOG.md`, `HOMEVAULT_TASKLIST_A_FAIRE.md` (P1-28), `COMPARAISON_DSM_VS_HOMEVAULT.md` |
+
 ## P1-27 — signed community app stores — 2026-11-09 (not run)
 
 > **Instruction followed: no test command was executed for this change.**

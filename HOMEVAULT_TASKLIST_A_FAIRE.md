@@ -120,7 +120,7 @@ justifie.
 | **P1-25** | Vérification finale rsync/rclone (`--checksum`, `rclone check`) ✅ | P1 | S/M | Une sync n'est pas « OK » sans comparaison |
 | **P1-26** | Réplication : Btrfs over SSH + vérification destination ✅ | P1 | M/L | Parité ZFS et copie distante prouvée |
 | **P1-27** | Chaîne d'approvisionnement : images Docker par digest + signature du catalogue — **livré 2026‑11‑09** (pinning obligatoire rejeté, signature des stores faite) | P1 | M | Pas d'image/catalogue substitué |
-| **P1-28** | Stabilité système : `LimitNOFILE`, `sysctl`, `smartd`/`mdmonitor`, write cache + UPS — **partiel assumé** (avertissement installateur suffit ; carte UI rejetée) | P1 | S/M | Moins de coupures évitables |
+| **P1-28** | Stabilité système : `LimitNOFILE`, `sysctl`, `smartd`/`mdmonitor`, write cache + UPS — **livré 2026‑11‑09** (installeur ; carte UI rejetée) | P1 | S/M | Moins de coupures évitables |
 | **P1-29** | SMB WS-Discovery (découverte Windows) — livré 2026‑11‑08 | P1 | S | Découverte sans config |
 | **P1-30** | Mises à jour Docker planifiées/auto — livré 2026‑11‑09 | P1 | S/M | Hygiène de patch |
 | **P1-31** | Unifier les tâches planifiées (type `service`) — livré 2026‑11‑09 | P1 | S/M | Un seul moteur |
@@ -194,8 +194,8 @@ justifie.
 > (vérification + `transfer_history`) et P1-26. **Partiel** : P1-21 (profils,
 > moniteur et suggestion de spare ; ajout du spare toujours manuel). P1-27 est
 > **livré** (digest mal formé refusé, pinning strict opt-in, signature Ed25519
-> des stores vérifiée au sync et au chargement). **Partiel** : P1-28
-> (unité/sysctl + avertissement installateur ; avertissements UI non exposés).
+> des stores vérifiée au sync et au chargement). P1-28 est **livré** côté
+> installeur (sysctl + choix explicite smartd/mdmonitor ; carte UI gelée).
 >
 > **P2 : livrés** P2-10 (prédiction + carte UI), P2-11 (politiques de
 > compression + onglet Storage + boucle mensuelle), P2-12 (rapport
@@ -208,7 +208,7 @@ justifie.
 >
 > Les P0 sont fonctionnellement terminés. Après la revue de valeur du
 > 2026‑11‑06 (ci-dessous), la suite prioritaire est **P2-7 (enforce/terrain),
-> P2-8 (reste la clé de production), P2-9 (test VM)**, puis la finition P1-28.
+> P2-8 (reste la clé de production), P2-9 (test VM)**.
 > Les autres items sont gelés ou rejetés pour la cible actuelle.
 
 ---
@@ -1657,7 +1657,7 @@ exacts) de `homevault-store.toml` **et** de chaque `homevault-app.toml` :
   P2-8 (mise à jour signée/atomique) sans le remplacer.
 - Tests : image non épinglée refusée, signature absente/invalide refusée.
 
-### [~] P1-28 — Stabilité système : unité, `sysctl`, `smartd`/`mdmonitor`, UPS · S/M
+### [x] P1-28 — Stabilité système : unité, `sysctl`, `smartd`/`mdmonitor`, UPS · S/M · **livré 2026‑11‑09**
 
 **Décision 2026‑11‑06 : partiel assumé.** L’avertissement installateur suffit ;
 la carte UI write-cache/UPS est gelée (peu de valeur, surface en plus).
@@ -1672,9 +1672,23 @@ la carte UI write-cache/UPS est gelée (peu de valeur, surface en plus).
 UPS) et `duplicate_monitor_warning` (smartd/mdmonitor + samplers HomeVault).
 L'installateur vérifie `systemctl is-enabled smartd|mdmonitor` et avertit
 quand l'un tourne en double.
-*Restent ouverts : activer/choisir explicitement smartd/mdmonitor dans
-l'installateur, et afficher les avertissements write cache/UPS/duplicate dans
-l'UI.*
+**Livré 2026‑11‑09 (installateur).**
+
+- `/etc/sysctl.d/99-homevault.conf` est écrit et appliqué (`sysctl -q -p`) :
+  `kernel.panic=10`, `kernel.panic_on_oops=1`, `vm.dirty_background_ratio=5`,
+  `vm.dirty_ratio=10`. `HV_SKIP_SYSCTL=1` écrit le fichier sans l'appliquer
+  (conteneurs, `/proc/sys` en lecture seule) ; un échec est un avertissement,
+  jamais une installation avortée.
+- `smartd`/`mdmonitor` sont **désactivés par défaut** : HomeVault échantillonne
+  déjà SMART et le RAID, donc lancer les deux doublerait chaque alerte.
+  `HV_SMARTD=1`/`HV_MDMONITOR=1` les active explicitement ; un démon déjà
+  activé est signalé, jamais désactivé en silence.
+- La décision est une fonction pure `monitor_decision`
+  (`unavailable`/`already`/`enable`/`leave`) couverte par
+  `installer/tests/unit-hardening.test.sh`.
+- La carte UI write cache/UPS reste **gelée** (revue de valeur du 2026‑11‑06).
+- Tests : 9 assertions d'installeur (`bash -n`, non exécuté). Docs :
+  `docs/ARCHITECTURE.md` → « Kernel stability and host monitoring ».
 
 - Unité HomeVault : `LimitNOFILE=65536`, `TimeoutStopSec=30`,
   `StartLimitIntervalSec=60`, `StartLimitBurst=5`, `OOMPolicy=stop`.
@@ -2397,7 +2411,7 @@ Shares, docs et `TESTING.md` à jour.
 - [x] P1-25 vérification rsync/rclone + `transfer_history`
 - [x] P1-26 réplication Btrfs over SSH + vérification destination
 - [x] P1-27 digest/signature chaîne d'approvisionnement — livré 2026‑11‑09 (pinning strict opt-in ; signature des stores vérifiée)
-- [~] P1-28 stabilité système (unité, sysctl, helpers ; avertissements non exposés)
+- [x] P1-28 stabilité système — livré 2026‑11‑09 (installeur : sysctl + choix smartd/mdmonitor explicite)
 
 ### Trimestre — « Structure »
 
@@ -2485,8 +2499,8 @@ Shares, docs et `TESTING.md` à jour.
   de P0-7, `x-systemd.*`, température sur 3 échantillons, backoff et
   notification `backup.jobs` sont livrés). Après la **revue de valeur du
   2026‑11‑06**, les prochains chantiers ouverts sont **P2-7 (enforce +
-  terrain), P2-8 (clé de production), P2-9 (test VM)**, puis la finition
-  P1-28 ; les autres items sont gelés ou rejetés.
+  terrain), P2-8 (clé de production), P2-9 (test VM)** ; les autres items sont
+  gelés ou rejetés.
 - **Tests** : `cargo check --lib`, `cargo test --lib --no-run` et les
   `--no-run` de `replication_integration`, `iscsi_integration`,
   `storage_integration`, `raid_integration`, `rclone_integration`,
