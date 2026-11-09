@@ -30,7 +30,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, LazyLock, Mutex};
 
 use axum::{
-    routing::{get, post, put},
+    routing::{delete, get, post, put},
     Router,
 };
 use http::{Method, Request, StatusCode};
@@ -41,7 +41,9 @@ use homevault::auth::AuthService;
 use homevault::config::PathGuard;
 use homevault::handlers::auth::handle_login;
 use homevault::handlers::iscsi::{
-    handle_iscsi_apply, handle_iscsi_backstore_create, handle_iscsi_backstore_delete,
+    handle_iscsi_apply, handle_iscsi_backstore_clone, handle_iscsi_backstore_create,
+    handle_iscsi_backstore_delete, handle_iscsi_backstore_snapshot_create,
+    handle_iscsi_backstore_snapshot_delete, handle_iscsi_backstore_snapshots,
     handle_iscsi_backstore_update, handle_iscsi_get, handle_iscsi_settings_put,
     handle_iscsi_target_create, handle_iscsi_target_delete, handle_iscsi_target_update,
 };
@@ -114,6 +116,18 @@ fn router(state: Arc<AppState>) -> Router {
         .route(
             "/api/storage/iscsi/backstores/{id}",
             put(handle_iscsi_backstore_update).delete(handle_iscsi_backstore_delete),
+        )
+        .route(
+            "/api/storage/iscsi/backstores/{id}/snapshots",
+            get(handle_iscsi_backstore_snapshots).post(handle_iscsi_backstore_snapshot_create),
+        )
+        .route(
+            "/api/storage/iscsi/backstores/{id}/snapshots/{snapshot}",
+            delete(handle_iscsi_backstore_snapshot_delete),
+        )
+        .route(
+            "/api/storage/iscsi/backstores/{id}/clone",
+            post(handle_iscsi_backstore_clone),
         )
         .route(
             "/api/storage/iscsi/targets",
@@ -801,4 +815,180 @@ async fn test_apply_reports_the_missing_host_stack_without_running_anything() {
         h.root.join("data").join("iscsi.json").exists(),
         "the switch must be persisted in the data directory"
     );
+}
+
+// ---------------------------------------------------------------------------
+// Thin volumes (zvol): creation, snapshots and clones (P2)
+//
+// None of these tests creates a real volume: the zvol cases use a pool name
+// that cannot exist on the host, so the handler stops at "no such pool" (or at
+// "zfs is not installed"), and the snapshot/clone cases run against a
+// file-backed backstore, which those endpoints refuse by design.
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_zvol_backstore_requires_an_existing_zfs_pool() {
+    let h = setup().await;
+    let (mut router, admin, _member) = signed_in(&h).await;
+
+    // No pool named at all.
+    let (status, body) = send(
+        &mut router,
+        Method::POST,
+        "/api/storage/iscsi/backstores",
+        Some(&admin),
+        Some(json!({
+            "name": "disk1",
+            "kind": "zvol",
+            "size_bytes": 10_i64 * 1024 * 1024 * 1024,
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert!(body["message"]
+        .as_str()
+        .unwrap_or_default()
+        .contains("ZFS pool"));
+
+    // A pool this host does not have: refused before any `zfs create`.
+    let (status, body) = send(
+        &mut router,
+        Method::POST,
+        "/api/storage/iscsi/backstores",
+        Some(&admin),
+        Some(json!({
+            "name": "disk1",
+            "kind": "zvol",
+            "pool": "hv-test-no-such-pool",
+            "size_bytes": 10_i64 * 1024 * 1024 * 1024,
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert!(body["message"]
+        .as_str()
+        .unwrap_or_default()
+        .contains("No pool named"));
+
+    // The name is a dataset component: uppercase or a slash never reaches ZFS.
+    let (status, body) = send(
+        &mut router,
+        Method::POST,
+        "/api/storage/iscsi/backstores",
+        Some(&admin),
+        Some(json!({
+            "name": "Disk/1",
+            "kind": "zvol",
+            "pool": "hv-test-no-such-pool",
+            "size_bytes": 10_i64 * 1024 * 1024 * 1024,
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+}
+
+#[tokio::test]
+async fn test_snapshot_endpoints_refuse_a_file_backstore() {
+    let h = setup().await;
+    let (mut router, admin, _member) = signed_in(&h).await;
+    std::fs::create_dir_all(h.root.join("iscsi")).expect("iscsi folder");
+    let store_id = create_backstore(&mut router, &admin, backstore_body(&h, "data")).await;
+
+    // Reading the snapshots of a file backstore is a named refusal, not an
+    // empty list that would suggest "no snapshot yet".
+    let (status, body) = send(
+        &mut router,
+        Method::GET,
+        &format!("/api/storage/iscsi/backstores/{store_id}/snapshots"),
+        Some(&admin),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert!(body["message"]
+        .as_str()
+        .unwrap_or_default()
+        .contains("not a ZFS volume"));
+
+    let (status, body) = send(
+        &mut router,
+        Method::POST,
+        &format!("/api/storage/iscsi/backstores/{store_id}/snapshots"),
+        Some(&admin),
+        Some(json!({ "name": "before-upgrade" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+
+    let (status, body) = send(
+        &mut router,
+        Method::POST,
+        &format!("/api/storage/iscsi/backstores/{store_id}/clone"),
+        Some(&admin),
+        Some(json!({ "name": "copy", "snapshot": "before-upgrade" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert!(body["message"]
+        .as_str()
+        .unwrap_or_default()
+        .contains("not a ZFS volume"));
+}
+
+#[tokio::test]
+async fn test_snapshot_names_are_validated_before_anything_runs() {
+    let h = setup().await;
+    let (mut router, admin, _member) = signed_in(&h).await;
+    std::fs::create_dir_all(h.root.join("iscsi")).expect("iscsi folder");
+    let store_id = create_backstore(&mut router, &admin, backstore_body(&h, "data")).await;
+
+    for bad in ["", "../x", "a/b", "with space"] {
+        let (status, body) = send(
+            &mut router,
+            Method::POST,
+            &format!("/api/storage/iscsi/backstores/{store_id}/snapshots"),
+            Some(&admin),
+            Some(json!({ "name": bad })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{bad:?}: {body}");
+    }
+
+    // Deleting uses the same validator (the name is a URL segment).
+    let (status, body) = send(
+        &mut router,
+        Method::DELETE,
+        &format!("/api/storage/iscsi/backstores/{store_id}/snapshots/bad.name@x"),
+        Some(&admin),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+}
+
+#[tokio::test]
+async fn test_a_file_backstore_cannot_become_a_zvol_in_place() {
+    let h = setup().await;
+    let (mut router, admin, _member) = signed_in(&h).await;
+    std::fs::create_dir_all(h.root.join("iscsi")).expect("iscsi folder");
+    let store_id = create_backstore(&mut router, &admin, backstore_body(&h, "data")).await;
+
+    // Converting in place would silently re-point an exported LUN at a new
+    // dataset: the answer is "create a new backstore".
+    let mut body = backstore_body(&h, "data");
+    body["kind"] = json!("zvol");
+    body["pool"] = json!("hv-test-no-such-pool");
+    let (status, resp) = send(
+        &mut router,
+        Method::PUT,
+        &format!("/api/storage/iscsi/backstores/{store_id}"),
+        Some(&admin),
+        Some(body),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{resp}");
+    assert!(resp["message"]
+        .as_str()
+        .unwrap_or_default()
+        .contains("as a new backstore"));
 }

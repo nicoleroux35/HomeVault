@@ -149,6 +149,10 @@ interface Fixture {
   stores?: any[];
   targets?: any[];
   pending?: boolean;
+  /** Thin-volume support: which ZFS pools the host offers. */
+  zvol?: { available: boolean; pools: string[] };
+  /** Snapshots returned for the zvol snapshot panel. */
+  snapshots?: any[];
   /** Overrides the status returned by the next mutation. */
   refuse?: { status: number; message: string };
 }
@@ -161,7 +165,11 @@ interface Recorder {
   applies: number;
 }
 
-function buildPayload(f: Required<Pick<Fixture, 'enabled' | 'caps' | 'stores' | 'targets' | 'pending'>>) {
+function buildPayload(
+  f: Required<
+    Pick<Fixture, 'enabled' | 'caps' | 'stores' | 'targets' | 'pending' | 'zvol'>
+  >,
+) {
   return {
     settings: {
       enabled: f.enabled,
@@ -179,6 +187,11 @@ function buildPayload(f: Required<Pick<Fixture, 'enabled' | 'caps' | 'stores' | 
     paths: {
       fileio_root: '/srv/homevault/data/iscsi',
       allowed_roots: ['/srv/homevault/data', '/mnt/pool1'],
+    },
+    zvol: {
+      available: f.zvol.available,
+      pools: f.zvol.pools,
+      parent: 'homevault-iscsi',
     },
     state: {
       usable: f.caps.usable,
@@ -205,6 +218,8 @@ async function mockApi(page: Page, fixture: Fixture = {}): Promise<Recorder> {
     stores: fixture.stores ?? [STORE, SPARE],
     targets: fixture.targets ?? [TARGET],
     pending: fixture.pending ?? false,
+    zvol: fixture.zvol ?? { available: false, pools: [] },
+    snapshots: fixture.snapshots ?? [],
   };
 
   const ok = (extra: any = {}) => ({
@@ -257,6 +272,26 @@ async function mockApi(page: Page, fixture: Fixture = {}): Promise<Recorder> {
           },
         }),
       );
+    }
+
+    // Thin volumes: snapshots and clones.
+    if (path.includes('/snapshots')) {
+      if (method === 'GET') {
+        return route.fulfill(ok({ snapshots: state.snapshots }));
+      }
+      if (method === 'POST') {
+        const body = request.postDataJSON();
+        state.snapshots = [
+          ...state.snapshots,
+          { name: `tank/homevault-iscsi/disk1@${body.name}`, short_name: body.name, created: '1762800000' },
+        ];
+        return route.fulfill(ok({ snapshot: body.name }));
+      }
+      return route.fulfill(ok({ deleted: true }));
+    }
+    if (method === 'POST' && path.endsWith('/clone')) {
+      recorder.storeCreates.push(request.postDataJSON());
+      return route.fulfill(ok());
     }
 
     if (method === 'POST' && path.endsWith('/backstores')) {
@@ -667,5 +702,96 @@ test.describe('6 — Accessibility', () => {
     await page.keyboard.press('Escape');
     await expect(modal).toBeHidden();
     await expect(trigger).toBeFocused();
+  });
+});
+
+// ===========================================================================
+// 7 — Thin volumes (zvol): creation, snapshots and clones
+//
+// The API is mocked, so nothing runs `zfs` on the host: the tests prove the
+// dialog offers the option only when a ZFS pool is reported, that a zvol sends
+// its pool and size (and no path), and that the snapshot panel lists what the
+// server returns.
+// ===========================================================================
+
+const ZVOL_STORE = {
+  id: 3,
+  name: 'disk1',
+  kind: 'zvol',
+  path: '/dev/zvol/tank/homevault-iscsi/disk1',
+  size_bytes: 20 * 1024 ** 3,
+  readonly: false,
+  created_at: '2026-11-01T10:00:00Z',
+  updated_at: '2026-11-01T10:00:00Z',
+  lun_count: 0,
+};
+
+test.describe('7 — Thin volumes (zvol)', () => {
+  test('7.1 — the ZFS option appears only when a pool is reported, and sends pool + size', async ({
+    page,
+  }) => {
+    const recorder = await mockApi(page, { zvol: { available: true, pools: ['tank'] } });
+    await openIscsi(page);
+
+    await win(page).locator('[data-testid="iscsi-add-backstore"]').click();
+    const kind = page.locator('[data-testid="iscsi-backstore-kind"]');
+    await expect(kind).toBeVisible();
+
+    // The option exists because the payload reports a pool.
+    await kind.selectOption('zvol');
+    await page.locator('[data-testid="iscsi-backstore-name"]').fill('disk1');
+    await page.locator('[data-testid="iscsi-backstore-pool"]').selectOption('tank');
+    await page.locator('[data-testid="iscsi-backstore-size"]').fill('20');
+    // No path field for a zvol: the dataset is derived server-side.
+    await expect(page.locator('[data-testid="iscsi-backstore-path"]')).toHaveCount(0);
+    await page.locator('[data-testid="iscsi-backstore-save"]').click();
+
+    await expect.poll(() => recorder.storeCreates.length).toBe(1);
+    const body = recorder.storeCreates[0];
+    expect(body.kind).toBe('zvol');
+    expect(body.pool).toBe('tank');
+    expect(body.path).toBe('');
+    expect(body.size_bytes).toBe(20 * 1024 ** 3);
+    expect(body.sparse).toBe(true);
+  });
+
+  test('7.2 — without a ZFS pool the option is absent (no dead choice)', async ({ page }) => {
+    await mockApi(page, { zvol: { available: false, pools: [] } });
+    await openIscsi(page);
+    await win(page).locator('[data-testid="iscsi-add-backstore"]').click();
+    const kind = page.locator('[data-testid="iscsi-backstore-kind"]');
+    await expect(kind).toBeVisible();
+    await expect(kind.locator('option[value="zvol"]')).toHaveCount(0);
+  });
+
+  test('7.3 — a ZFS volume lists its snapshots and clones one into a new disk', async ({ page }) => {
+    const recorder = await mockApi(page, {
+      zvol: { available: true, pools: ['tank'] },
+      stores: [ZVOL_STORE],
+      snapshots: [
+        {
+          name: 'tank/homevault-iscsi/disk1@before-upgrade',
+          short_name: 'before-upgrade',
+          created: '1762800000',
+        },
+      ],
+    });
+    await openIscsi(page);
+
+    await win(page).locator('[data-testid="iscsi-backstore-snapshots-3"]').click();
+    const modal = page.locator('[data-testid="iscsi-snapshots"]');
+    await expect(modal).toBeVisible();
+
+    // The existing snapshot is listed with its short name.
+    await expect(modal).toContainText('before-upgrade');
+
+    // Cloning sends the new name and the snapshot it comes from.
+    await page.locator('[data-testid="iscsi-clone-name"]').fill('disk1-copy');
+    await modal.locator('[data-testid="iscsi-snapshot-clone-before-upgrade"]').click();
+    await expect.poll(() => recorder.storeCreates.length).toBe(1);
+    expect(recorder.storeCreates[0]).toEqual({
+      name: 'disk1-copy',
+      snapshot: 'before-upgrade',
+    });
   });
 });

@@ -8,6 +8,27 @@ follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **iSCSI thin LUNs on ZFS, with snapshots and clones (2026-11-09, P2).** A
+  shared disk can now be a **thin ZFS volume** instead of a sized file: created
+  by HomeVault under `<pool>/homevault-iscsi/`, allocated on write, and
+  snapshottable at any instant.
+  - `kind: "zvol"` on `POST /api/storage/iscsi/backstores` (`{pool, size_bytes,
+    sparse?}`) — the device path is derived, never supplied, and a non-ZFS pool
+    is refused with the reason;
+  - `GET/POST …/backstores/{id}/snapshots`, `DELETE …/snapshots/{snapshot}` and
+    `POST …/backstores/{id}/clone` — the clone becomes a new backstore ready to
+    export as its own LUN, sharing the snapshot's blocks until one side changes;
+  - these endpoints only ever touch `/dev/zvol/<pool>/homevault-iscsi/<name>`,
+    so they cannot snapshot or destroy a dataset HomeVault did not create; a
+    zvol's kind, name and path are immutable in place (only its read-only flag
+    changes), because converting an existing backstore would silently re-point
+    an exported LUN;
+  - deleting a zvol disk removes the volume and its snapshots (`zfs destroy -r`)
+    only after the name is typed, like the file case;
+  - sudoers grows by exactly `zfs create` and `zfs clone`.
+  Tests: 6 unit (`src/zvol.rs`), 4 integration (no `zfs` command is executed),
+  iSCSI E2E §7 (written, not run).
+
 - **ZFS read cache and separate log (L2ARC / SLOG) (2026-11-09, P2).** The
   other half of DSM's SSD cache, next to HomeVault's existing write-cache tier:
   an L2ARC or SLOG vdev attached to an existing ZFS pool, from the Cache tab.

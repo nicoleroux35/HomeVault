@@ -873,13 +873,17 @@ pretending to limit anything.
   missing pieces (`targetcli`, each kernel module, configfs)
 - Feature switch with a named consequence ("turning this off disconnects every
   initiator immediately; disks and exports are kept")
-- **Disks to share** — a file HomeVault creates and sizes, or a whole block
-  device; read-only flag; per-disk "used by N LUN(s)" and a refusal to delete a
-  disk a LUN still serves
+- **Disks to share** — a file HomeVault creates and sizes, a whole block
+  device, or a **thin ZFS volume** (offered only when `zfs` is installed and a
+  ZFS pool exists); read-only flag; per-disk "used by N LUN(s)" and a refusal to
+  delete a disk a LUN still serves
+- **Snapshots of a thin volume** — a per-disk panel (camera action) that lists
+  the snapshots, takes one instantly, clones a snapshot into a new disk (named
+  in the panel) and deletes one; the cloned disk then exports as its own LUN
 - **Exports** — IQN (immutable once created), enabled flag, portals (address +
   port), LUNs (number → disk), allowed initiators with optional CHAP
-- Delete a disk's backing file only after ticking "also delete the file" **and**
-  typing the disk name
+- Delete a disk's backing file (or a thin volume, snapshots included) only after
+  ticking "also delete" **and** typing the disk name
 - **Apply now** in the toolbar: the only action that runs `targetcli`
 
 **Invariants:** saving only writes metadata — nothing reaches the kernel until
@@ -890,7 +894,9 @@ to a half-built export; fileio paths are canonicalised and must stay under the
 data directory or a pool; block paths must be real devices under `/dev`; CHAP
 secrets are sealed with the target IQN + initiator as associated data, never
 returned, and redacted from the rendered command list; the editors are hidden
-when the host lacks the LIO stack.
+when the host lacks the LIO stack. A zvol disk's kind, name and path are not
+editable in place (only its read-only flag): snapshot/clone endpoints refuse a
+backstore that is not `/dev/zvol/<pool>/homevault-iscsi/<name>`.
 
 ---
 

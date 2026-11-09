@@ -1414,6 +1414,22 @@ pub fn create_app(state: AppStateArc) -> Router {
             "/api/storage/iscsi/backstores/{id}",
             axum::routing::put(handle_iscsi_backstore_update).delete(handle_iscsi_backstore_delete),
         )
+        // Thin volumes: snapshot and clone a LUN (P2).
+        .route(
+            "/api/storage/iscsi/backstores/{id}/snapshots",
+            get(crate::handlers::iscsi::handle_iscsi_backstore_snapshots)
+                .post(crate::handlers::iscsi::handle_iscsi_backstore_snapshot_create),
+        )
+        .route(
+            "/api/storage/iscsi/backstores/{id}/snapshots/{snapshot}",
+            axum::routing::delete(
+                crate::handlers::iscsi::handle_iscsi_backstore_snapshot_delete,
+            ),
+        )
+        .route(
+            "/api/storage/iscsi/backstores/{id}/clone",
+            post(crate::handlers::iscsi::handle_iscsi_backstore_clone),
+        )
         .route(
             "/api/storage/iscsi/targets",
             post(handle_iscsi_target_create),

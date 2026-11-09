@@ -41,10 +41,16 @@ editing, deleting, switching the feature on/off and applying are **admin-only**
 | `PUT`    | `/api/storage/iscsi/targets/{id}` | `require_admin` — replace an export |
 | `DELETE` | `/api/storage/iscsi/targets/{id}` | `require_admin` |
 | `POST`   | `/api/storage/iscsi/apply` | `require_admin` — run `targetcli` now |
+| `GET`    | `/api/storage/iscsi/backstores/{id}/snapshots` | `require_auth` — snapshots of a thin volume |
+| `POST`   | `/api/storage/iscsi/backstores/{id}/snapshots` | `require_admin` — `{"name"}` |
+| `DELETE` | `/api/storage/iscsi/backstores/{id}/snapshots/{snapshot}` | `require_admin` |
+| `POST`   | `/api/storage/iscsi/backstores/{id}/clone` | `require_admin` — `{"name","snapshot","readonly?"}` |
 
 Every mutation answers with the **full payload**, so the screen never has to
 guess what a change did: `{ settings, capabilities, backstores, targets,
-defaults, paths, state, apply? }`. `state` carries `usable`, `enabled`,
+defaults, paths, zvol, state, apply? }`. `zvol` carries
+`{ available, pools, parent }` — the UI only offers a thin volume when `zfs` is
+installed and a ZFS pool exists. `state` carries `usable`, `enabled`,
 `pending`, `applied_at` and `exported_targets`; `apply` is present on the
 mutation that ran the pipeline and carries `{ applied, reason, reason_code,
 commands, failed }` with a **`reason_code`** (`no_targetcli`, `no_kernel`,
@@ -63,6 +69,32 @@ must already exist, and the result must stay under an allowed root — otherwise
 `..` would let the admin point a root-owned `targetcli` at any file on the
 system. `lun_count` is computed on every read, and a disk a LUN still serves
 cannot be deleted.
+
+**Thin volume (`kind = zvol`, P2, 2026-11-09).** HomeVault creates the disk
+itself as a **thin ZFS volume** under `<pool>/homevault-iscsi/<name>`, so the
+LUN is allocated on write instead of reserving its whole size, can be
+snapshotted instantly and can be cloned without copying a block. The dataset is
+the identity: the request names the pool and the size, never a path
+(`/dev/zvol/<dataset>` is derived), and the volume is only ever created in
+HomeVault's own folder. A non-ZFS pool is refused with the reason. The volume's
+kind, name and path are not editable in place — converting a file backstore
+into a zvol would silently re-point an exported LUN, so the answer is "create a
+new disk".
+
+Snapshots and clones are their own endpoints:
+
+```
+sudo zfs snapshot <pool>/homevault-iscsi/<name>@<snapshot>
+sudo zfs clone <pool>/homevault-iscsi/<name>@<snapshot> <pool>/homevault-iscsi/<clone>
+sudo zfs destroy <pool>/homevault-iscsi/<name>@<snapshot>
+sudo zfs destroy -r <pool>/homevault-iscsi/<name>       # disk + its snapshots
+```
+
+A clone becomes a **new backstore of kind `zvol`** with its own record, ready to
+be exported as another LUN; ZFS shares the snapshot's blocks until one side
+changes. `DELETE …/snapshots/{snapshot}` only ever targets a dataset
+HomeVault manages (the path must be `/dev/zvol/<pool>/homevault-iscsi/<name>`),
+so these endpoints cannot snapshot or destroy somebody else's dataset.
 
 **Export (target).** An IQN (≤223 chars, must parse as an iSCSI name and start
 with `iqn.`), 1–8 portals, 0–32 LUNs each mapping a number (0–16383) to a disk,

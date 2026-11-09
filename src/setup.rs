@@ -1495,6 +1495,8 @@ impl StorageBins<'_> {
             grant(self.zpool, "list *"),
             grant(self.zpool, "scrub *"),
             grant(self.zpool, "status *"),
+            grant(self.zfs, "clone *"),
+            grant(self.zfs, "create *"),
             grant(self.zfs, "destroy *"),
             grant(self.zfs, "get *"),
             grant(self.zfs, "list *"),
@@ -2453,6 +2455,8 @@ mod tests {
             );
         }
         for sub in [
+            "clone *",
+            "create *",
             "destroy *",
             "get *",
             "list *",

@@ -1,5 +1,22 @@
 # HomeVault — Test tracking
 
+## P2 iSCSI thin LUNs on ZFS (snapshots + clones) — 2026-11-09 (not run)
+
+> **Instruction followed: no test command was executed for this change.**
+> Static checks passed: `cargo check --lib`, `cargo check --tests`,
+> `cd frontend && npm run check` and `npm run build`.
+> **No `zfs` command is executed by these tests**: the integration cases use a
+> pool name that cannot exist, and the snapshot/clone cases run against a
+> file-backed backstore, which those endpoints refuse by design.
+
+| Coverage | Added / changed |
+|---|---|
+| Unit (`src/zvol.rs`) | **+6** — name/snapshot-name validation; dataset + device round-trip (`is_managed_dataset`, a sibling dataset refused); size bounds; exact `zfs create -p -s -V` / `snapshot` / `clone` / `destroy [-r]` argv; `zfs list` parsing for volumes (thin detection) and snapshots |
+| Unit (`src/setup.rs`) | **+2 assertions** — `zfs create *` and `zfs clone *` are per-subcommand grants |
+| Integration (`tests/iscsi_integration.rs`) | **+4** — a zvol needs an existing ZFS pool (missing, unknown and unsafe names); a file backstore refuses snapshot list/create/clone with a named error; snapshot names are validated before anything runs; a backstore cannot become a zvol in place |
+| E2E (`tests/e2e/storage/iscsi.spec.ts`) | **+3** — §7.1 the ZFS option appears with a pool and sends pool + size (no path); §7.2 absent without a pool; §7.3 the snapshot panel lists a snapshot and clones it into a new disk |
+| Docs | `docs/guides/iscsi.md`, `SCREENS.md`, `CHANGELOG.md`, RAG `iscsi`, `HOMEVAULT_TASKLIST_A_FAIRE.md` (P2‑17), `COMPARAISON_DSM_VS_HOMEVAULT.md` |
+
 ## P2 ZFS read cache / separate log (L2ARC / SLOG) — 2026-11-09 (not run)
 
 > **Instruction followed: no test command was executed for this change.**

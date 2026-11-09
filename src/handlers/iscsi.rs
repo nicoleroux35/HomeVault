@@ -70,9 +70,17 @@ pub struct SettingsRequest {
 #[derive(Debug, Deserialize)]
 pub struct BackstoreRequest {
     pub name: String,
-    /// `fileio` | `block`
+    /// `fileio` | `block` | `zvol`
     pub kind: String,
+    /// Ignored for `zvol`, whose path is derived from the pool and name.
+    #[serde(default)]
     pub path: String,
+    /// `zvol` only: the ZFS pool to create the thin volume in.
+    #[serde(default)]
+    pub pool: Option<String>,
+    /// `zvol` only: thin (sparse) from the first byte. Defaults to true.
+    #[serde(default)]
+    pub sparse: Option<bool>,
     #[serde(default)]
     pub size_bytes: i64,
     #[serde(default)]
@@ -212,6 +220,7 @@ fn payload(
     backstores: &[IscsiBackstore],
     targets: &[IscsiTarget],
     roots: &[String],
+    zfs_pools: &[String],
 ) -> serde_json::Value {
     serde_json::json!({
         "settings": settings_json(settings),
@@ -221,6 +230,13 @@ fn payload(
         "paths": {
             "fileio_root": default_fileio_root().to_string_lossy(),
             "allowed_roots": roots,
+        },
+        // Thin volumes: which ZFS pools a `zvol` backstore may live in, and
+        // whether `zfs` is even installed (the UI hides the option otherwise).
+        "zvol": {
+            "available": crate::zvol::available(),
+            "pools": zfs_pools,
+            "parent": crate::zvol::ZVOL_PARENT,
         },
         "defaults": {
             "portal_address": iscsi::DEFAULT_PORTAL_ADDRESS,
@@ -255,12 +271,24 @@ async fn current_payload(state: &Arc<AppState>) -> Result<serde_json::Value, Str
         .await
         .map_err(|e| format!("Failed to read the targets: {e}"))?;
     let roots = allowed_roots().await;
+    // Only a ZFS pool can host a thin volume; a failed scan leaves the option
+    // hidden rather than offering a pool that cannot be used.
+    let zfs_pools: Vec<String> = tokio::task::spawn_blocking(crate::pools::PoolService::scan_pools)
+        .await
+        .ok()
+        .and_then(Result::ok)
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|pool| pool.pool_type == crate::pools::PoolType::Zfs)
+        .map(|pool| pool.name)
+        .collect();
     Ok(payload(
         &settings,
         &capabilities,
         &backstores,
         &targets,
         &roots,
+        &zfs_pools,
     ))
 }
 
@@ -282,9 +310,46 @@ async fn validated_backstore(
         ));
     }
     let kind = body.kind.trim().to_ascii_lowercase();
-    if kind != "fileio" && kind != "block" {
-        return Err("A backstore kind must be 'fileio' or 'block'".to_string());
+    if kind != "fileio" && kind != "block" && kind != "zvol" {
+        return Err("A backstore kind must be 'fileio', 'block' or 'zvol'".to_string());
     }
+
+    // A zvol: HomeVault creates the thin volume itself, so the path is derived
+    // (never supplied) and the pool must really be a ZFS pool.
+    if kind == "zvol" {
+        let pool = body.pool.as_deref().unwrap_or("").trim().to_string();
+        if pool.is_empty() {
+            return Err("Choose the ZFS pool the volume lives in".to_string());
+        }
+        let pools = tokio::task::spawn_blocking(crate::pools::PoolService::scan_pools)
+            .await
+            .map_err(|e| format!("Pool scan task failed: {e}"))?
+            .map_err(|e| format!("Failed to scan pools: {e}"))?;
+        let Some(target) = pools.iter().find(|candidate| candidate.name == pool) else {
+            return Err(format!("No pool named '{pool}'"));
+        };
+        if target.pool_type != crate::pools::PoolType::Zfs {
+            return Err(format!(
+                "'{pool}' is not a ZFS pool: a thin volume needs ZFS (use a file or a block device otherwise)"
+            ));
+        }
+        if !crate::zvol::available() {
+            return Err("zfs is not installed on this server".to_string());
+        }
+        if body.size_bytes <= 0 {
+            return Err("A volume needs a size".to_string());
+        }
+        let size = crate::zvol::validate_size(body.size_bytes as u64)?;
+        let dataset = crate::zvol::dataset(&pool, &name)?;
+        return Ok((
+            name,
+            kind,
+            crate::zvol::device_path(&dataset),
+            size as i64,
+            body.readonly,
+        ));
+    }
+
     let path = body.path.trim().to_string();
     iscsi::validate_backstore_path(&path)?;
 
@@ -546,6 +611,27 @@ pub async fn handle_iscsi_backstore_create(
         Err(e) => return ResponseHelper::json_error(format!("Failed to check the path: {e}")),
     }
 
+    // A zvol is created before its row: a LUN must never point at a dataset
+    // that does not exist, and a failed insert destroys it again below.
+    let mut created_dataset: Option<String> = None;
+    if kind == "zvol" {
+        let pool = body.pool.as_deref().unwrap_or("").trim().to_string();
+        let sparse = body.sparse.unwrap_or(true);
+        let size = size_bytes as u64;
+        let volume = name.clone();
+        match tokio::task::spawn_blocking(move || crate::zvol::create(&pool, &volume, size, sparse))
+            .await
+        {
+            Ok(Ok(dataset)) => created_dataset = Some(dataset),
+            Ok(Err(e)) => {
+                return ResponseHelper::json_error(format!("Could not create the volume: {e}"))
+            }
+            Err(e) => {
+                return ResponseHelper::json_internal_error(format!("Volume task failed: {e}"))
+            }
+        }
+    }
+
     match repo
         .create_backstore(&name, &kind, &path, size_bytes, readonly)
         .await
@@ -560,7 +646,20 @@ pub async fn handle_iscsi_backstore_create(
                 Err(e) => ResponseHelper::json_error(e),
             }
         }
-        Err(e) => ResponseHelper::json_error(format!("Failed to save the backstore: {e}")),
+        Err(e) => {
+            // The row could not be written: do not leave an orphan dataset the
+            // UI cannot see (and a second create would then fail on it).
+            if let Some(dataset) = created_dataset {
+                if let Some(pool) = crate::zvol::pool_of_dataset(&dataset) {
+                    let volume = name.clone();
+                    let _ = tokio::task::spawn_blocking(move || {
+                        crate::zvol::destroy(&pool, &volume, false)
+                    })
+                    .await;
+                }
+            }
+            ResponseHelper::json_error(format!("Failed to save the backstore: {e}"))
+        }
     }
 }
 
@@ -575,20 +674,73 @@ pub async fn handle_iscsi_backstore_update(
         Ok(u) => u,
         Err(resp) => return resp,
     };
+    let repo = IscsiRepository::new(state.db.pool());
+    let existing = match repo.find_backstore(id).await {
+        Ok(Some(store)) => store,
+        Ok(None) => {
+            return ResponseHelper::json_error("That backstore no longer exists".to_string())
+        }
+        Err(e) => return ResponseHelper::json_error(format!("Failed to read the backstore: {e}")),
+    };
+
+    // A zvol is bound to its dataset: its kind, name and path are not editable
+    // here (renaming would move the data), and a file/block backstore cannot
+    // become one in place — that would silently re-point an exported LUN.
+    let stored_dataset = crate::zvol::dataset_from_device(&existing.path);
+    let requested = body.kind.trim().to_ascii_lowercase();
+    if let Some(dataset) = &stored_dataset {
+        if requested != "zvol" {
+            return ResponseHelper::json_error(
+                "This backstore is a ZFS volume: create a file or block backstore instead"
+                    .to_string(),
+            );
+        }
+        if body.name.trim() != existing.name {
+            return ResponseHelper::json_error(
+                "A ZFS volume cannot be renamed from here: create a new one and remove this LUN"
+                    .to_string(),
+            );
+        }
+        // The dataset is the identity: keep the stored path whatever the body
+        // says, and only let the read-only flag change.
+        let updated = match repo
+            .update_backstore(
+                id,
+                &existing.name,
+                "zvol",
+                &existing.path,
+                existing.size_bytes,
+                body.readonly,
+            )
+            .await
+        {
+            Ok(store) => store,
+            Err(e) => {
+                return ResponseHelper::json_error(format!("Failed to save the backstore: {e}"))
+            }
+        };
+        let _ = dataset;
+        crate::events::log_event(format!(
+            "Admin '{}' changed iSCSI backstore '{}' (read-only: {})",
+            admin, updated.name, body.readonly
+        ));
+        return match current_payload(&state).await {
+            Ok(payload) => ResponseHelper::json_success(payload),
+            Err(e) => ResponseHelper::json_error(e),
+        };
+    }
+    if requested == "zvol" {
+        return ResponseHelper::json_error(
+            "A ZFS volume is created as a new backstore, not by converting an existing one"
+                .to_string(),
+        );
+    }
+
     let roots = allowed_roots().await;
     let (name, kind, path, size_bytes, readonly) = match validated_backstore(&body, &roots).await {
         Ok(parts) => parts,
         Err(e) => return ResponseHelper::json_error(e),
     };
-
-    let repo = IscsiRepository::new(state.db.pool());
-    match repo.find_backstore(id).await {
-        Ok(Some(_)) => {}
-        Ok(None) => {
-            return ResponseHelper::json_error("That backstore no longer exists".to_string())
-        }
-        Err(e) => return ResponseHelper::json_error(format!("Failed to read the backstore: {e}")),
-    }
     match repo.backstore_name_taken(&name, Some(id)).await {
         Ok(true) => {
             return ResponseHelper::json_error(format!("A backstore named '{name}' already exists"))
@@ -669,15 +821,18 @@ pub async fn handle_iscsi_backstore_delete(
     }
 
     let delete_file = query.delete_file;
+    // Recognise our own thin volume by its device path: a zvol is destroyed
+    // with `zfs destroy -r` (snapshots included), never unlinked.
+    let stored_dataset = crate::zvol::dataset_from_device(&store.path);
     if delete_file {
-        if store.kind() == iscsi::BackstoreKind::Block {
+        if store.kind() == iscsi::BackstoreKind::Block && stored_dataset.is_none() {
             return ResponseHelper::json_error(
                 "A block backstore points at a device — HomeVault will not delete it".to_string(),
             );
         }
         if query.confirm.as_deref().map(str::trim) != Some(store.name.as_str()) {
             return ResponseHelper::json_error(format!(
-                "Type '{}' to confirm deleting the backing file",
+                "Type '{}' to confirm deleting the backing storage",
                 store.name
             ));
         }
@@ -701,7 +856,29 @@ pub async fn handle_iscsi_backstore_delete(
     }
 
     if delete_file {
-        if let Err(e) = iscsi::delete_backing_file(&store.path) {
+        if let Some(dataset) = &stored_dataset {
+            // Recursive: the volume may carry snapshots this endpoint's UI
+            // cannot see, and a partial destroy would leave the row pointing
+            // at half a volume. The name was typed to get here.
+            let Some(pool) = crate::zvol::pool_of_dataset(dataset) else {
+                return ResponseHelper::json_error("That volume has no pool".to_string());
+            };
+            let volume = store.name.clone();
+            let outcome =
+                tokio::task::spawn_blocking(move || crate::zvol::destroy(&pool, &volume, true))
+                    .await;
+            match outcome {
+                Ok(Ok(())) => {}
+                Ok(Err(e)) => {
+                    return ResponseHelper::json_error(format!(
+                        "The metadata was kept because the volume could not be destroyed: {e}"
+                    ))
+                }
+                Err(e) => {
+                    return ResponseHelper::json_internal_error(format!("Volume task failed: {e}"))
+                }
+            }
+        } else if let Err(e) = iscsi::delete_backing_file(&store.path) {
             return ResponseHelper::json_error(format!(
                 "The metadata was kept because the file could not be deleted: {e}"
             ));
@@ -715,7 +892,7 @@ pub async fn handle_iscsi_backstore_delete(
                 admin,
                 store.name,
                 if delete_file {
-                    " and deleted its backing file"
+                    " and deleted its backing storage"
                 } else {
                     ""
                 }
@@ -984,4 +1161,285 @@ async fn run_apply(pool: Arc<sqlx::SqlitePool>) -> IscsiApplyReport {
         commands: Vec::new(),
         failed: Some(e.to_string()),
     })
+}
+
+// ---------------------------------------------------------------------------
+// Thin volumes: snapshots and clones (P2, 2026-11-09)
+// ---------------------------------------------------------------------------
+
+/// The `(pool, volume name)` of a backstore that is one of HomeVault's own
+/// zvols. Anything else (a file, a raw device, a dataset we did not create) is
+/// refused, so these endpoints can never snapshot somebody else's volume.
+fn managed_zvol(store: &IscsiBackstore) -> Result<(String, String), String> {
+    let dataset = crate::zvol::dataset_from_device(&store.path)
+        .ok_or_else(|| format!("'{}' is not a ZFS volume managed here", store.name))?;
+    if !crate::zvol::is_managed_dataset(&dataset) {
+        return Err(format!(
+            "'{}' is a dataset outside the iSCSI volume folder",
+            store.name
+        ));
+    }
+    let pool = crate::zvol::pool_of_dataset(&dataset)
+        .ok_or_else(|| "That volume has no pool".to_string())?;
+    let name = dataset
+        .rsplit('/')
+        .next()
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| "That volume has no name".to_string())?;
+    Ok((pool, name.to_string()))
+}
+
+/// `GET /api/storage/iscsi/backstores/{id}/snapshots`
+pub async fn handle_iscsi_backstore_snapshots(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(id): Path<i64>,
+) -> Response {
+    if let Err(resp) = require_auth(&state, &headers).await {
+        return resp;
+    }
+    let repo = IscsiRepository::new(state.db.pool());
+    let store = match repo.find_backstore(id).await {
+        Ok(Some(store)) => store,
+        Ok(None) => {
+            return ResponseHelper::json_error("That backstore no longer exists".to_string())
+        }
+        Err(e) => return ResponseHelper::json_error(format!("Failed to read the backstore: {e}")),
+    };
+    let (pool, name) = match managed_zvol(&store) {
+        Ok(pair) => pair,
+        Err(e) => return ResponseHelper::json_error(e),
+    };
+    match tokio::task::spawn_blocking(move || crate::zvol::snapshots(&pool, &name)).await {
+        Ok(Ok(snapshots)) => ResponseHelper::json_success(serde_json::json!({
+            "backstore_id": id,
+            "snapshots": snapshots,
+        })),
+        Ok(Err(e)) => ResponseHelper::json_error(e),
+        Err(e) => ResponseHelper::json_internal_error(format!("Snapshot task failed: {e}")),
+    }
+}
+
+#[derive(Debug, Deserialize)]
+pub struct SnapshotRequest {
+    pub name: String,
+}
+
+/// `POST /api/storage/iscsi/backstores/{id}/snapshots`
+pub async fn handle_iscsi_backstore_snapshot_create(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(id): Path<i64>,
+    Json(body): Json<SnapshotRequest>,
+) -> Response {
+    let admin = match require_admin(&state, &headers).await {
+        Ok(u) => u,
+        Err(resp) => return resp,
+    };
+    let snapshot = match crate::zvol::validate_snapshot_name(&body.name) {
+        Ok(name) => name,
+        Err(e) => return ResponseHelper::json_error(e),
+    };
+    let repo = IscsiRepository::new(state.db.pool());
+    let store = match repo.find_backstore(id).await {
+        Ok(Some(store)) => store,
+        Ok(None) => {
+            return ResponseHelper::json_error("That backstore no longer exists".to_string())
+        }
+        Err(e) => return ResponseHelper::json_error(format!("Failed to read the backstore: {e}")),
+    };
+    let (pool, name) = match managed_zvol(&store) {
+        Ok(pair) => pair,
+        Err(e) => return ResponseHelper::json_error(e),
+    };
+    let store_name = store.name.clone();
+    let snapshot_name = snapshot.clone();
+    match tokio::task::spawn_blocking(move || crate::zvol::snapshot(&pool, &name, &snapshot_name))
+        .await
+    {
+        Ok(Ok(full)) => {
+            crate::events::log_event(format!(
+                "Admin '{admin}' snapshotted iSCSI volume '{store_name}' as '{snapshot}'"
+            ));
+            ResponseHelper::json_success(serde_json::json!({ "snapshot": full }))
+        }
+        Ok(Err(e)) => ResponseHelper::json_error(e),
+        Err(e) => ResponseHelper::json_internal_error(format!("Snapshot task failed: {e}")),
+    }
+}
+
+/// `DELETE /api/storage/iscsi/backstores/{id}/snapshots/{snapshot}`
+pub async fn handle_iscsi_backstore_snapshot_delete(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path((id, snapshot)): Path<(i64, String)>,
+) -> Response {
+    let admin = match require_admin(&state, &headers).await {
+        Ok(u) => u,
+        Err(resp) => return resp,
+    };
+    let snapshot = match crate::zvol::validate_snapshot_name(&snapshot) {
+        Ok(name) => name,
+        Err(e) => return ResponseHelper::json_error(e),
+    };
+    let repo = IscsiRepository::new(state.db.pool());
+    let store = match repo.find_backstore(id).await {
+        Ok(Some(store)) => store,
+        Ok(None) => {
+            return ResponseHelper::json_error("That backstore no longer exists".to_string())
+        }
+        Err(e) => return ResponseHelper::json_error(format!("Failed to read the backstore: {e}")),
+    };
+    let (pool, name) = match managed_zvol(&store) {
+        Ok(pair) => pair,
+        Err(e) => return ResponseHelper::json_error(e),
+    };
+    let store_name = store.name.clone();
+    let deleted = snapshot.clone();
+    match tokio::task::spawn_blocking(move || crate::zvol::destroy_snapshot(&pool, &name, &deleted))
+        .await
+    {
+        Ok(Ok(())) => {
+            crate::events::log_event(format!(
+                "Admin '{admin}' deleted the snapshot '{snapshot}' of iSCSI volume '{store_name}'"
+            ));
+            ResponseHelper::json_success(serde_json::json!({ "deleted": snapshot }))
+        }
+        Ok(Err(e)) => ResponseHelper::json_error(e),
+        Err(e) => ResponseHelper::json_internal_error(format!("Snapshot task failed: {e}")),
+    }
+}
+
+#[derive(Debug, Deserialize)]
+pub struct CloneRequest {
+    /// New volume (and backstore) name.
+    pub name: String,
+    /// The snapshot to clone.
+    pub snapshot: String,
+    #[serde(default)]
+    pub readonly: bool,
+}
+
+/// `POST /api/storage/iscsi/backstores/{id}/clone`
+///
+/// Clone one snapshot into a **new** thin volume and register it as its own
+/// backstore, so it can be exported as another LUN. Nothing is copied: ZFS
+/// shares the snapshot's blocks until one side changes.
+pub async fn handle_iscsi_backstore_clone(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(id): Path<i64>,
+    Json(body): Json<CloneRequest>,
+) -> Response {
+    let admin = match require_admin(&state, &headers).await {
+        Ok(u) => u,
+        Err(resp) => return resp,
+    };
+    let snapshot = match crate::zvol::validate_snapshot_name(&body.snapshot) {
+        Ok(name) => name,
+        Err(e) => return ResponseHelper::json_error(e),
+    };
+    let target = match crate::zvol::validate_name(&body.name) {
+        Ok(name) => name,
+        Err(e) => return ResponseHelper::json_error(e),
+    };
+    if !iscsi::valid_backstore_name(&target) {
+        return ResponseHelper::json_error(format!(
+            "'{target}' is not a valid backstore name: use letters, digits, '.', '_' or '-', \
+             at most {} characters",
+            iscsi::MAX_BACKSTORE_NAME
+        ));
+    }
+
+    let repo = IscsiRepository::new(state.db.pool());
+    let store = match repo.find_backstore(id).await {
+        Ok(Some(store)) => store,
+        Ok(None) => {
+            return ResponseHelper::json_error("That backstore no longer exists".to_string())
+        }
+        Err(e) => return ResponseHelper::json_error(format!("Failed to read the backstore: {e}")),
+    };
+    let (pool, source) = match managed_zvol(&store) {
+        Ok(pair) => pair,
+        Err(e) => return ResponseHelper::json_error(e),
+    };
+    let target_dataset = match crate::zvol::dataset(&pool, &target) {
+        Ok(dataset) => dataset,
+        Err(e) => return ResponseHelper::json_error(e),
+    };
+    let target_path = crate::zvol::device_path(&target_dataset);
+    match repo.backstore_name_taken(&target, None).await {
+        Ok(true) => {
+            return ResponseHelper::json_error(format!(
+                "A backstore named '{target}' already exists"
+            ))
+        }
+        Ok(false) => {}
+        Err(e) => return ResponseHelper::json_error(format!("Failed to check the name: {e}")),
+    }
+    match repo.backstore_path_taken(&target_path, None).await {
+        Ok(true) => {
+            return ResponseHelper::json_error(format!(
+                "Another backstore already uses {target_path}"
+            ))
+        }
+        Ok(false) => {}
+        Err(e) => return ResponseHelper::json_error(format!("Failed to check the path: {e}")),
+    }
+
+    // The clone keeps the source's volsize; read it back so the row records
+    // the truth rather than a guess.
+    let clone_pool = pool.clone();
+    let clone_source = source.clone();
+    let clone_snapshot = snapshot.clone();
+    let clone_target = target.clone();
+    let cloned = tokio::task::spawn_blocking(move || {
+        crate::zvol::clone(
+            &clone_pool,
+            &clone_source,
+            &clone_snapshot,
+            &clone_target,
+            true,
+        )
+    })
+    .await;
+    let dataset = match cloned {
+        Ok(Ok(dataset)) => dataset,
+        Ok(Err(e)) => return ResponseHelper::json_error(format!("Could not clone: {e}")),
+        Err(e) => return ResponseHelper::json_internal_error(format!("Clone task failed: {e}")),
+    };
+    let size_bytes = crate::zvol::list(&pool)
+        .ok()
+        .and_then(|volumes| {
+            volumes
+                .into_iter()
+                .find(|volume| volume.dataset == dataset)
+                .map(|volume| volume.volsize_bytes)
+        })
+        .unwrap_or_else(|| store.size_bytes.max(0) as u64) as i64;
+
+    match repo
+        .create_backstore(
+            &target,
+            "zvol",
+            &crate::zvol::device_path(&dataset),
+            size_bytes,
+            body.readonly,
+        )
+        .await
+    {
+        Ok(created) => {
+            crate::events::log_event(format!(
+                "Admin '{admin}' cloned iSCSI volume '{}@{}' into '{}'",
+                store.name, snapshot, created.name
+            ));
+            match current_payload(&state).await {
+                Ok(payload) => ResponseHelper::json_success(payload),
+                Err(e) => ResponseHelper::json_error(e),
+            }
+        }
+        Err(e) => ResponseHelper::json_error(format!(
+            "The clone '{dataset}' was created but its backstore could not be recorded: {e}"
+        )),
+    }
 }

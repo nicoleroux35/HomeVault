@@ -130,6 +130,7 @@ justifie.
 | **P1-35** | Explorer : emplacements réseau CIFS/NFS + versions Btrfs — livré 2026‑11‑09 | P1 | M | Dernier écart avec File Station |
 | **P1-36** | Téléchargeur : RSS, planification, limites/tâche, extraction auto — livré 2026‑11‑09 | P1 | M | Dernier écart avec Download Station |
 | **P2-16** | Cache SSD ZFS L2ARC/SLOG — livré 2026‑11‑09 | P2 | M | Accélération opt‑in sur SSD |
+| **P2-17** | iSCSI : LUN fins ZFS + snapshots/clones — livré 2026‑11‑09 | P2 | M | Export bloc avec snapshots |
 | **P2-1** | SMB AD/Kerberos complet (winbind, realm, idmap, keytab) — **gelé au partiel** (config ADS + join/leave ; DC réel seulement si cible entreprise) | P2 | L | Entreprise Windows |
 | **P2-2** | NFSv4 + Kerberos (`sec=krb5`) — **gelé au partiel** (flavor + validation keytab ; KDC réel seulement si cible entreprise) | P2 | L | Entreprise Unix |
 | **P2-3** | Thin provisioning — **gelé au partiel** (zvols ZFS thin/thick ; overcommit/LVM rejetés) | P2 | L | Sur‑allocation |
@@ -2081,6 +2082,32 @@ lecture) ou **SLOG** (journal séparé) attaché à un pool ZFS existant.
 Tests : 8 unitaires, 3 d'intégration (**aucune commande `zpool` exécutée**),
 E2E Storage §14 — écrits, **non exécutés**. Docs : `docs/guides/cache.md`,
 `docs/API.md`, `SCREENS.md`, FeatureDoc `cache`.
+
+### [x] P2-17 — iSCSI : LUN fins ZFS + snapshots/clones · M
+
+**Livré 2026‑11‑09.** Un disque partagé en iSCSI peut être un **volume ZFS
+fin** au lieu d'un fichier de taille fixe.
+
+- `src/zvol.rs` : dataset `<pool>/homevault-iscsi/<nom>`, appareil
+  `/dev/zvol/…` dérivé (jamais fourni), `zfs create -p -s -V`, `snapshot`,
+  `clone`, `destroy [-r]`, parseurs `zfs list` — tout pur et testé.
+- `kind: "zvol"` sur `POST /api/storage/iscsi/backstores` (`{pool, size_bytes,
+  sparse?}`) ; un pool non‑ZFS est refusé avec la raison.
+- Snapshots/clones : `GET/POST …/snapshots`, `DELETE …/snapshots/{snap}`,
+  `POST …/clone` — le clone devient un nouveau backstore exportable en LUN et
+  partage les blocs du snapshot jusqu'à divergence. Ces routes ne touchent
+  **que** `/dev/zvol/<pool>/homevault-iscsi/<nom>` : impossible de snapshooter
+  un dataset qui n'est pas à HomeVault.
+- Un zvol n'est pas convertible en place (kind/nom/chemin figés, seul
+  `readonly` change) : convertir un backstore re‑pointerait un LUN exporté.
+- Suppression : `zfs destroy -r` après saisie du nom (comme pour un fichier).
+- Sudoers : `zfs create *` et `zfs clone *` en plus.
+- UI : option « Volume fin (ZFS) » (seulement si `zfs` + pool ZFS), panneau
+  snapshots par disque (lister, prendre, cloner, supprimer).
+
+Tests : 6 unitaires, 4 d'intégration (**aucune commande `zfs` exécutée**), E2E
+iSCSI §7 — écrits, **non exécutés**. Docs : `docs/guides/iscsi.md`,
+`SCREENS.md`, FeatureDoc `iscsi`.
 
 ---
 

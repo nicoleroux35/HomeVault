@@ -49,6 +49,8 @@
     IconRefresh,
     IconInfoCircle,
     IconAlertTriangle,
+    IconCamera,
+    IconCopy,
   } from '@tabler/icons-svelte';
 
   interface Capabilities {
@@ -137,10 +139,20 @@
   interface BackstoreDraft {
     id: number | null;
     name: string;
-    kind: 'fileio' | 'block';
+    kind: 'fileio' | 'block' | 'zvol';
     path: string;
+    /** `zvol` only: the ZFS pool the thin volume lives in. */
+    pool: string;
+    /** `zvol` only: thin (sparse) from the first byte. */
+    sparse: boolean;
     size_gib: number;
     readonly: boolean;
+  }
+
+  interface ZvolSnapshot {
+    name: string;
+    short_name: string;
+    created: string;
   }
 
   interface PortalDraft {
@@ -174,6 +186,12 @@
   let backstores = $state<Backstore[]>([]);
   let targets = $state<Target[]>([]);
   let defaults = $state<Defaults>({ portal_address: '0.0.0.0', portal_port: 3260, iqn: '' });
+  // Thin volumes: which ZFS pools can host one, and whether `zfs` is present.
+  let zvolInfo = $state<{ available: boolean; pools: string[]; parent: string }>({
+    available: false,
+    pools: [],
+    parent: '',
+  });
   let liveState = $state<IscsiState>({
     usable: false,
     enabled: false,
@@ -192,6 +210,15 @@
   let storeError = $state('');
 
   let deleteStore = $state<Backstore | null>(null);
+
+  // Thin-volume snapshots: one panel per zvol backstore.
+  let snapshotStore = $state<Backstore | null>(null);
+  let snapshotList = $state<ZvolSnapshot[]>([]);
+  let snapshotName = $state('');
+  let cloneName = $state('');
+  let snapshotBusy = $state(false);
+  let snapshotError = $state('');
+  let snapshotNotice = $state('');
   let deleteFile = $state(false);
   let confirmName = $state('');
 
@@ -233,6 +260,7 @@
     settings = data.settings as Settings;
     capabilities = data.capabilities as Capabilities;
     backstores = (data.backstores ?? []) as Backstore[];
+    if (data.zvol) zvolInfo = data.zvol as typeof zvolInfo;
     targets = (data.targets ?? []) as Target[];
     if (data.defaults) defaults = data.defaults as Defaults;
     liveState = data.state as IscsiState;
@@ -240,7 +268,16 @@
   }
 
   function emptyStore(): BackstoreDraft {
-    return { id: null, name: '', kind: 'fileio', path: '', size_gib: 10, readonly: false };
+    return {
+      id: null,
+      name: '',
+      kind: 'fileio',
+      path: '',
+      pool: zvolInfo.pools[0] ?? '',
+      sparse: true,
+      size_gib: 10,
+      readonly: false,
+    };
   }
 
   function emptyTarget(): TargetDraft {
@@ -326,8 +363,11 @@
     storeDraft = {
       id: store.id,
       name: store.name,
-      kind: store.kind === 'block' ? 'block' : 'fileio',
+      kind:
+        store.kind === 'block' ? 'block' : store.kind === 'zvol' ? 'zvol' : 'fileio',
       path: store.path,
+      pool: zvolInfo.pools[0] ?? '',
+      sparse: true,
       size_gib: Math.max(1, Math.round(store.size_bytes / 1024 ** 3)),
       readonly: store.readonly,
     };
@@ -340,6 +380,92 @@
     storeError = '';
   }
 
+  // ------------------------------------------------------------------
+  // Thin-volume snapshots and clones (zvol backstores)
+  // ------------------------------------------------------------------
+
+  async function openSnapshots(store: Backstore) {
+    snapshotStore = store;
+    snapshotList = [];
+    snapshotName = '';
+    cloneName = `${store.name}-copy`;
+    snapshotError = '';
+    snapshotNotice = '';
+    await loadSnapshots();
+  }
+
+  function closeSnapshots() {
+    snapshotStore = null;
+    snapshotList = [];
+    snapshotError = '';
+    snapshotNotice = '';
+  }
+
+  async function loadSnapshots() {
+    if (!snapshotStore) return;
+    const resp = await api.get<{ snapshots: ZvolSnapshot[] }>(
+      `/storage/iscsi/backstores/${snapshotStore.id}/snapshots`,
+      { cache: false },
+    );
+    if (resp.success && resp.data) {
+      snapshotList = resp.data.snapshots ?? [];
+    } else {
+      snapshotError = resp.message || translate('iscsi.snapshot_load_failed');
+    }
+  }
+
+  async function createSnapshot() {
+    if (!snapshotStore || !snapshotName.trim()) return;
+    snapshotBusy = true;
+    snapshotError = '';
+    const resp = await api.post(
+      `/storage/iscsi/backstores/${snapshotStore.id}/snapshots`,
+      { name: snapshotName.trim() },
+    );
+    snapshotBusy = false;
+    if (resp.success) {
+      snapshotNotice = translate('iscsi.snapshot_created', { name: snapshotName.trim() });
+      snapshotName = '';
+      await loadSnapshots();
+    } else {
+      snapshotError = resp.message || translate('iscsi.snapshot_failed');
+    }
+  }
+
+  async function cloneSnapshot(snapshot: ZvolSnapshot) {
+    if (!snapshotStore || !cloneName.trim()) return;
+    snapshotBusy = true;
+    snapshotError = '';
+    const resp = await api.post(`/storage/iscsi/backstores/${snapshotStore.id}/clone`, {
+      name: cloneName.trim(),
+      snapshot: snapshot.short_name,
+    });
+    snapshotBusy = false;
+    if (resp.success && resp.data) {
+      applyPayload(resp.data);
+      snapshotNotice = translate('iscsi.clone_created', { name: cloneName.trim() });
+      await loadSnapshots();
+    } else {
+      snapshotError = resp.message || translate('iscsi.clone_failed');
+    }
+  }
+
+  async function deleteSnapshot(snapshot: ZvolSnapshot) {
+    if (!snapshotStore) return;
+    snapshotBusy = true;
+    snapshotError = '';
+    const resp = await api.delete(
+      `/storage/iscsi/backstores/${snapshotStore.id}/snapshots/${encodeURIComponent(snapshot.short_name)}`,
+    );
+    snapshotBusy = false;
+    if (resp.success) {
+      snapshotNotice = translate('iscsi.snapshot_deleted', { name: snapshot.short_name });
+      await loadSnapshots();
+    } else {
+      snapshotError = resp.message || translate('iscsi.snapshot_failed');
+    }
+  }
+
   async function saveStore() {
     storeError = '';
     busy = 'backstore';
@@ -347,8 +473,14 @@
     const body = {
       name: storeDraft.name.trim(),
       kind: storeDraft.kind,
-      path: storeDraft.path.trim(),
-      size_bytes: storeDraft.kind === 'fileio' ? Math.round(storeDraft.size_gib * 1024 ** 3) : 0,
+      // A zvol's path is derived server-side from the pool and the name.
+      path: storeDraft.kind === 'zvol' ? '' : storeDraft.path.trim(),
+      pool: storeDraft.kind === 'zvol' ? storeDraft.pool : undefined,
+      sparse: storeDraft.kind === 'zvol' ? storeDraft.sparse : undefined,
+      size_bytes:
+        storeDraft.kind === 'fileio' || storeDraft.kind === 'zvol'
+          ? Math.round(storeDraft.size_gib * 1024 ** 3)
+          : 0,
       readonly: storeDraft.readonly,
     };
     try {
@@ -712,7 +844,11 @@
                     <span class="flex items-center gap-2 flex-wrap">
                       <span class="font-semibold text-[var(--hv-shell-text-strong)]">{store.name}</span>
                       <Badge variant="secondary" size="sm">
-                        {store.kind === 'block' ? $t('iscsi.kind_block') : $t('iscsi.kind_fileio')}
+                        {store.kind === 'block'
+                          ? $t('iscsi.kind_block')
+                          : store.kind === 'zvol'
+                            ? $t('iscsi.kind_zvol')
+                            : $t('iscsi.kind_fileio')}
                       </Badge>
                       {#if store.readonly}
                         <Badge variant="info" size="sm">{$t('iscsi.backstore_readonly')}</Badge>
@@ -728,6 +864,15 @@
                     </span>
                   </div>
                   <div class="flex items-center gap-1 flex-none">
+                    {#if store.kind === 'zvol'}
+                      <button
+                        type="button"
+                        class={iconBtn}
+                        aria-label={$t('iscsi.snapshots_named', { name: store.name })}
+                        data-testid="iscsi-backstore-snapshots-{store.id}"
+                        onclick={() => openSnapshots(store)}
+                      ><IconCamera size={16} stroke={1.8} /></button>
+                    {/if}
                     <button
                       type="button"
                       class={iconBtn}
@@ -854,27 +999,44 @@
       <select class={inp} bind:value={storeDraft.kind} data-testid="iscsi-backstore-kind">
         <option value="fileio">{$t('iscsi.kind_fileio')}</option>
         <option value="block">{$t('iscsi.kind_block')}</option>
+        {#if zvolInfo.available && zvolInfo.pools.length > 0 && storeDraft.id === null}
+          <option value="zvol">{$t('iscsi.kind_zvol')}</option>
+        {/if}
       </select>
       <span class={hint}>
-        {storeDraft.kind === 'block' ? $t('iscsi.backstore_kind_block_hint') : $t('iscsi.backstore_kind_fileio_hint')}
+        {storeDraft.kind === 'block'
+          ? $t('iscsi.backstore_kind_block_hint')
+          : storeDraft.kind === 'zvol'
+            ? $t('iscsi.backstore_kind_zvol_hint')
+            : $t('iscsi.backstore_kind_fileio_hint')}
       </span>
     </label>
 
-    <label class="flex flex-col gap-1.5">
-      <span class={fieldLabel}>{$t('iscsi.backstore_path')}</span>
-      <input
-        class={cn(inp, 'font-mono')}
-        type="text"
-        bind:value={storeDraft.path}
-        data-testid="iscsi-backstore-path"
-        placeholder={storeDraft.kind === 'block' ? '/dev/disk/by-id/…' : '/path/to/disk.img'}
-      />
-      <span class={hint}>
-        {storeDraft.kind === 'block' ? $t('iscsi.backstore_path_block_hint') : $t('iscsi.backstore_path_hint')}
-      </span>
-    </label>
+    {#if storeDraft.kind === 'zvol'}
+      <label class="flex flex-col gap-1.5">
+        <span class={fieldLabel}>{$t('iscsi.zvol_pool')}</span>
+        <select class={inp} bind:value={storeDraft.pool} data-testid="iscsi-backstore-pool">
+          {#each zvolInfo.pools as pool (pool)}<option value={pool}>{pool}</option>{/each}
+        </select>
+        <span class={hint}>{$t('iscsi.zvol_pool_hint', { parent: zvolInfo.parent })}</span>
+      </label>
+    {:else}
+      <label class="flex flex-col gap-1.5">
+        <span class={fieldLabel}>{$t('iscsi.backstore_path')}</span>
+        <input
+          class={cn(inp, 'font-mono')}
+          type="text"
+          bind:value={storeDraft.path}
+          data-testid="iscsi-backstore-path"
+          placeholder={storeDraft.kind === 'block' ? '/dev/disk/by-id/…' : '/path/to/disk.img'}
+        />
+        <span class={hint}>
+          {storeDraft.kind === 'block' ? $t('iscsi.backstore_path_block_hint') : $t('iscsi.backstore_path_hint')}
+        </span>
+      </label>
+    {/if}
 
-    {#if storeDraft.kind === 'fileio'}
+    {#if storeDraft.kind === 'fileio' || storeDraft.kind === 'zvol'}
       <label class="flex flex-col gap-1.5">
         <span class={fieldLabel}>{$t('iscsi.backstore_size')}</span>
         <input
@@ -887,6 +1049,14 @@
         />
         <span class={hint}>{$t('iscsi.backstore_size_hint')}</span>
       </label>
+    {/if}
+
+    {#if storeDraft.kind === 'zvol'}
+      <Checkbox
+        bind:checked={storeDraft.sparse}
+        label={$t('iscsi.zvol_thin')}
+        description={$t('iscsi.zvol_thin_hint')}
+      />
     {/if}
 
     <Checkbox
@@ -907,6 +1077,84 @@
       >
         <IconCheck size={16} stroke={2} /> {$t('common.save')}
       </Button>
+    </div>
+  {/snippet}
+</Modal>
+
+<!-- ================= Snapshots of a thin volume =================
+     A zvol can be snapshotted instantly and cloned into a new LUN that shares
+     the blocks until one side changes. Only zvol backstores reach this panel. -->
+<Modal
+  open={snapshotStore !== null}
+  title={$t('iscsi.snapshots_title', { name: snapshotStore?.name ?? '' })}
+  size="md"
+  onclose={closeSnapshots}
+>
+  {#snippet children()}
+    <div class="flex flex-col gap-3" data-testid="iscsi-snapshots">
+      <p class="m-0 text-c-label text-[var(--hv-shell-text-2)]">{$t('iscsi.snapshots_hint')}</p>
+
+      {#if snapshotError}
+        <Alert variant="error">{snapshotError}</Alert>
+      {/if}
+      {#if snapshotNotice}
+        <p role="status" data-testid="iscsi-snapshot-notice" class="m-0 px-3 py-2 rounded-lg bg-[var(--hv-success-bg)] text-[var(--hv-success)] text-xs font-semibold">{snapshotNotice}</p>
+      {/if}
+
+      <div class="flex items-end gap-2 flex-wrap">
+        <label class="flex flex-col gap-1.5 flex-1 min-w-[180px]">
+          <span class={fieldLabel}>{$t('iscsi.snapshot_name')}</span>
+          <input class={inp} type="text" bind:value={snapshotName} placeholder="before-upgrade" data-testid="iscsi-snapshot-name" />
+        </label>
+        <Button
+          variant="primary"
+          onclick={createSnapshot}
+          disabled={snapshotBusy || !snapshotName.trim()}
+          data-testid="iscsi-snapshot-create"
+        ><IconCamera size={15} stroke={2} /> {$t('iscsi.snapshot_create')}</Button>
+      </div>
+
+      {#if snapshotList.length === 0}
+        <p class="m-0 text-c-label text-[var(--hv-shell-text-2)]" data-testid="iscsi-snapshot-empty">{$t('iscsi.snapshot_none')}</p>
+      {:else}
+        <div class="flex flex-col gap-2" data-testid="iscsi-snapshot-list">
+          {#each snapshotList as snapshot (snapshot.name)}
+            <div class="flex items-center justify-between gap-3 flex-wrap px-3 py-2 rounded-lg bg-[var(--hv-shell-border-soft)] border border-[var(--hv-shell-border)]">
+              <div class="flex flex-col gap-0.5 min-w-0">
+                <span class="font-semibold text-[var(--hv-shell-text-strong)] font-mono break-all">{snapshot.short_name}</span>
+                <span class="text-c-label text-[var(--hv-shell-text-2)]">{snapshot.created}</span>
+              </div>
+              <div class="flex items-center gap-1 flex-none">
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  onclick={() => cloneSnapshot(snapshot)}
+                  disabled={snapshotBusy || !cloneName.trim()}
+                  data-testid={`iscsi-snapshot-clone-${snapshot.short_name}`}
+                ><IconCopy size={14} stroke={2} /> {$t('iscsi.snapshot_clone')}</Button>
+                <button
+                  type="button"
+                  class={cn(iconBtn, 'hover:bg-[var(--hv-error-bg)] hover:text-[var(--hv-error)]')}
+                  aria-label={$t('iscsi.snapshot_delete_named', { name: snapshot.short_name })}
+                  onclick={() => deleteSnapshot(snapshot)}
+                  disabled={snapshotBusy}
+                  data-testid={`iscsi-snapshot-delete-${snapshot.short_name}`}
+                ><IconTrash size={15} stroke={1.8} /></button>
+              </div>
+            </div>
+          {/each}
+        </div>
+        <label class="flex flex-col gap-1.5">
+          <span class={fieldLabel}>{$t('iscsi.clone_name')}</span>
+          <input class={inp} type="text" bind:value={cloneName} data-testid="iscsi-clone-name" />
+          <span class={hint}>{$t('iscsi.clone_name_hint')}</span>
+        </label>
+      {/if}
+    </div>
+  {/snippet}
+  {#snippet footer()}
+    <div class="flex justify-end">
+      <Button variant="primary" onclick={closeSnapshots}>{$t('common.close')}</Button>
     </div>
   {/snippet}
 </Modal>
