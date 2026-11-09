@@ -270,7 +270,10 @@ pub fn validate_share_mount(path: &str) -> Result<(), String> {
     if path.contains("..") || path.contains(':') || path.chars().any(char::is_whitespace) {
         return Err(format!("invalid share_mount: {path:?}"));
     }
-    if path.split('/').any(|part| part.is_empty()) {
+    // Skip the leading empty segment produced by the absolute-path slash:
+    // `"/media".split('/')` is `["", "media"]`, and only empty components
+    // *after* the first slash (`"/mnt//media"`) are malformed.
+    if path.split('/').skip(1).any(|part| part.is_empty()) {
         return Err(format!("invalid share_mount: {path:?}"));
     }
     Ok(())

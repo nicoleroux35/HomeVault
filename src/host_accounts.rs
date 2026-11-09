@@ -117,6 +117,18 @@ pub fn host_sync_enabled() -> bool {
     }
 }
 
+/// True when a `smbpasswd` failure means "there is nothing to change" rather
+/// than a real error: the account has no passdb entry, or the process may not
+/// run `smbpasswd` (not root, Samba not installed). Samba sync is
+/// best-effort — the database write stays authoritative for the web login.
+fn samba_sync_is_noop(stderr: &str) -> bool {
+    stderr.contains("Failed to find user")
+        || stderr.contains("does not exist")
+        || stderr.contains("No such user")
+        || stderr.contains("When run by root")
+        || stderr.contains("Permission denied")
+}
+
 /// Lifecycle operations on the Linux account backing a HomeVault account.
 pub struct HostAccountService;
 
@@ -505,11 +517,7 @@ impl HostAccountService {
             Ok(output) if output.status.success() => Ok(()),
             Ok(output) => {
                 let stderr = String::from_utf8_lossy(&output.stderr);
-                // No passdb entry is the desired end state.
-                if stderr.contains("Failed to find user")
-                    || stderr.contains("does not exist")
-                    || stderr.contains("No such user")
-                {
+                if samba_sync_is_noop(&stderr) {
                     return Ok(());
                 }
                 Err(HostAccountError::Failed {
@@ -517,6 +525,9 @@ impl HostAccountService {
                     message: stderr.trim().to_string(),
                 })
             }
+            // `smbpasswd` is not installed (or not executable here): Samba is
+            // simply not part of this deployment, so there is nothing to sync.
+            Err(HostAccountError::Io { .. }) => Ok(()),
             Err(e) => Err(e),
         }
     }
@@ -534,10 +545,7 @@ impl HostAccountService {
             Ok(output) if output.status.success() => Ok(()),
             Ok(output) => {
                 let stderr = String::from_utf8_lossy(&output.stderr);
-                if stderr.contains("Failed to find user")
-                    || stderr.contains("does not exist")
-                    || stderr.contains("No such user")
-                {
+                if samba_sync_is_noop(&stderr) {
                     return Ok(());
                 }
                 Err(HostAccountError::Failed {
@@ -545,6 +553,7 @@ impl HostAccountService {
                     message: stderr.trim().to_string(),
                 })
             }
+            Err(HostAccountError::Io { .. }) => Ok(()),
             Err(e) => Err(e),
         }
     }
@@ -862,6 +871,22 @@ mod tests {
         assert!(HostAccountService::smbpasswd_input("pwd\rroot:evil").is_err());
     }
 
+    #[test]
+    fn test_samba_sync_treats_a_missing_entry_or_privilege_as_a_noop() {
+        for benign in [
+            "Failed to find user hv-x in passdb",
+            "user hv-x does not exist",
+            "No such user hv-x",
+            "When run by root:\n    smbpasswd [options] [username]",
+            "Permission denied",
+        ] {
+            assert!(samba_sync_is_noop(benign), "{benign:?}");
+        }
+        for real in ["NT_STATUS_ACCESS_DENIED", "failed to open passdb", ""] {
+            assert!(!samba_sync_is_noop(real), "{real:?}");
+        }
+    }
+
     #[tokio::test]
     async fn test_samba_sync_is_idempotent_when_samba_is_absent_or_user_missing() {
         // These must not panic or hang when `smbpasswd`/the account is absent:
@@ -869,7 +894,11 @@ mod tests {
         // best-effort and keeps the database write authoritative.
         let name = "hv-missing-account-xyz";
         assert!(HostAccountService::delete_samba_account(name).await.is_ok());
-        assert!(HostAccountService::set_samba_locked(name, true).await.is_ok());
-        assert!(HostAccountService::set_samba_locked(name, false).await.is_ok());
+        assert!(HostAccountService::set_samba_locked(name, true)
+            .await
+            .is_ok());
+        assert!(HostAccountService::set_samba_locked(name, false)
+            .await
+            .is_ok());
     }
 }

@@ -1,5 +1,36 @@
 # HomeVault — Test tracking
 
+## 2026-11-09 — DSM-parity verification fixes (written, not run)
+
+> **No Rust, integration, E2E or installer suite was executed for this pass**,
+> per the maintainer's instruction. Static checks only: `bash -n` on
+> `installer/install.sh` and both installer test scripts, `cargo check --lib`,
+> `cargo check --tests`.
+>
+> The fixes below close the 23 failures reported by the first full
+> `cargo test --lib` run on `910a84f` (2 804 passed / 23 failed). Two of them
+> were functional blockers, not test drift: the media catalog rejected every
+> absolute `share_mount`, and the GPU block was injected at column 0.
+
+| Suite | Delta | Coverage |
+|---|---|---|
+| Unit (`src/app_catalog/manifest.rs`) | existing | `share_mount` accepts `/media` and `/mnt/media`; refuses relative, root, trailing slash, traversal, whitespace, `:`, and `//` |
+| Unit (`src/app_catalog/mod.rs`) | existing | `replace_block` indents every injected line (GPU `devices:` under its service) and drops a removed line cleanly |
+| Unit (`src/docker.rs`) | matrix extended | valid: `redis`, `redis:7`, `ghcr.io/acme/app:1.2`, `localhost:5000/app`, `registry.example.com:5000/team/app:1.2.3`; refused: `redis:tag/slash`, `redis:7:8`, `registry:abc/app`, `registry:0/app`, `/app`, `app/` |
+| Unit (`src/downloader_rss.rs`) | existing | Atom `<link rel="enclosure" length="2048">` yields `size = Some(2048)` |
+| Unit (`src/email_oauth.rs`) | existing | a redirect URL with an internal space is refused before registration |
+| Unit (`src/host_accounts.rs`) | +1 | `samba_sync_is_noop` recognises no-entry, non-root usage and permission denial; real failures stay errors |
+| Unit (`src/handlers/journal.rs`) | extended | LF and CRLF in a message become one space; the CSV has exactly header + one record per entry |
+| Unit (`src/rag_indexers.rs`) | +2 FeatureDocs | `email-oauth` and `remote-mounts` are indexed; every guide still maps to exactly one `FeatureDoc` |
+| Unit (`src/dependencies.rs`) | +1 spec, 2 tests rewritten | `bash` is a base binary; `net`/`smbpasswd` are probed under `samba`; the rendered unit is executed via `render_service_unit` (root and unprivileged modes); bootstrap flags include `--verify-manifest` |
+| Unit (`src/setup.rs`) | rewritten | the `incus export/import` grants are scoped to `base_dir()/vm/exports`, not a hardcoded `/srv/homevault` |
+| Unit (`src/shares.rs`) | rewritten | `server` remains refused; `ads`/`domain` require a realm and a valid idmap and are accepted with both |
+| Unit (`src/ws_discovery.rs`) | corrected | a newline in the NetBIOS/workgroup input cannot add a directive and truncates to 15 characters |
+| Installer (`installer/tests/update-engine.test.sh`) | +1 assertion | `history.jsonl` has exactly one line per result and that line parses with `json.loads` |
+| E2E (`tests/e2e/docker/docker.spec.ts`) | unchanged | 15.1/15.3b already cover installing a media app on a share with GPU opt-in; **not re-run** |
+
+**Still to run before calling these "delivered"** (`COMPARAISON_DSM_VS_HOMEVAULT.md` §6.4): `cargo test` (unit + the 109 integration suites), `cargo fmt --check`, `npm run check && npm run build`, the targeted E2E specs, and the two installer suites.
+
 ## P1-28 — kernel stability + explicit monitoring choice — 2026-11-09 (not run)
 
 > **No Rust or E2E test was executed for this change.** Static checks passed:

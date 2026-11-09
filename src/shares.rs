@@ -4326,14 +4326,41 @@ mod tests {
     }
 
     #[test]
-    fn test_validate_smb_config_rejects_unimplemented_domain_auth() {
-        for mode in ["domain", "server", "ads"] {
+    fn test_validate_smb_config_requires_a_realm_for_ads_and_rejects_server() {
+        // P2-1: `ads`/`domain` are configurable, but only with the realm and
+        // idmap Samba actually needs. A bare mode is still a 400 rather than a
+        // silently broken daemon; `server` remains unimplemented.
+        for mode in ["domain", "ads"] {
             let mut config = SmbConfig::default();
             config.security_mode = mode.to_string();
-            let error =
-                validate_smb_config(&config).expect_err("domain authentication is not implemented");
-            assert!(error.contains("not implemented"), "{error}");
+            let error = validate_smb_config(&config).expect_err("a realm is required");
+            assert!(error.contains("requires a DNS realm"), "{error}");
+
+            config.realm = "EXAMPLE.LAN".to_string();
+            assert!(validate_smb_config(&config).is_ok(), "{mode} with a realm");
+
+            for bad in ["EXAMPLE", "EX AMPLE.LAN", "EXAMPLE/LAN", "[EXAMPLE.LAN]"] {
+                config.realm = bad.to_string();
+                assert!(
+                    validate_smb_config(&config).is_err(),
+                    "{mode} must refuse realm {bad:?}"
+                );
+            }
+            config.realm = "EXAMPLE.LAN".to_string();
+            for bad in ["0-100", "100-100", "abc-def", "100"] {
+                config.idmap_range = bad.to_string();
+                assert!(
+                    validate_smb_config(&config).is_err(),
+                    "{mode} must refuse idmap {bad:?}"
+                );
+            }
         }
+
+        let mut config = SmbConfig::default();
+        config.security_mode = "server".to_string();
+        let error = validate_smb_config(&config).expect_err("server mode is not implemented");
+        assert!(error.contains("not implemented"), "{error}");
+
         for version in ["NT1", "SMB1", "CIFS"] {
             let mut config = SmbConfig::default();
             config.protocol_version = version.to_string();

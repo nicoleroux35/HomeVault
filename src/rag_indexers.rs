@@ -1305,6 +1305,16 @@ Buckets without samples (the server was down) show as gaps in the chart, never a
 
 Power actions can also be scheduled from the Scheduled Tasks app (for example a nightly suspend)."#.to_string(),
         },
+        FeatureDoc {
+            id: "email-oauth".to_string(),
+            title: "OAuth2 email (Gmail / Microsoft 365)".to_string(),
+            content: r#"OAuth2 email lets the notification relay sign in to Gmail or Microsoft 365 without an application password, which both providers now require for SMTP. Under Settings, Notifications, choose the provider, paste the OAuth client ID and client secret created in the provider's console, and copy the exact callback URL the card shows into that console. Press Connect, sign in at the provider, and the card reports Connected with the date. HomeVault stores the client secret and the refresh token encrypted on the appliance, never shows them again, and uses the short-lived access token to send mail; the account password is never stored. If the provider revokes access, the next send fails with the provider's reason and the card offers Reauthorize rather than silently falling back to a password. Disconnecting deletes the stored tokens and the cached access token. The callback is public by necessity, but it is bound to the browser that started the flow: a single-use state cookie that expires after ten minutes is required, so a copied callback link cannot complete someone else's authorization. The OAuth configuration is only reachable by an administrator."#.to_string(),
+        },
+        FeatureDoc {
+            id: "remote-mounts".to_string(),
+            title: "Network locations (CIFS / NFS)".to_string(),
+            content: r#"Network locations mount an SMB/CIFS or NFS share from another NAS or computer and show it in the File Explorer like a local folder, so files can be copied between the two without a terminal. Only an administrator can add or change a location: pick the protocol, the server name or address, the share or export name, and the account when the server needs one. The name becomes a folder under the network locations sidebar, and HomeVault derives the mount point itself — a request can never choose an arbitrary host path. Mounting is read-only unless the administrator explicitly asks for read-write, and the stored password lives in a private file readable only by the service account; it is never put on a command line, in a log or in an API response. Only a documented set of mount options is accepted, so a crafted option cannot inject another filesystem or a credential path. A location stays mounted across a restart when it is enabled, can be mounted or unmounted on demand, and names the missing helper (mount.cifs or mount.nfs) instead of failing silently when the package is absent. Deleting the location removes its credential file."#.to_string(),
+        },
 
     ]
 }
@@ -1538,6 +1548,8 @@ mod tests {
         ("fan-control", "fan-control.md"),
         ("ups-server", "ups-server.md"),
         ("guided-redundancy", "guided-redundancy.md"),
+        ("email-oauth", "email-oauth.md"),
+        ("remote-mounts", "remote-mounts.md"),
     ];
 
     fn guides_dir() -> std::path::PathBuf {

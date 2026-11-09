@@ -208,6 +208,13 @@ fn check_rest_server() -> bool {
 fn check_smbd() -> bool {
     binary_present("smbd", "/usr/sbin/smbd")
 }
+/// The Samba command-line half: `net` (domain join/leave, `src/shares.rs`)
+/// and `smbpasswd` (Linux account credentials, `src/host_accounts.rs`).
+/// Both ship in the `samba` package, but a stripped image can provide `smbd`
+/// without them, so the dependency card names the missing one.
+fn check_samba_cli() -> bool {
+    binary_present("net", "/usr/bin/net") && binary_present("smbpasswd", "/usr/bin/smbpasswd")
+}
 fn check_exportfs() -> bool {
     binary_present("exportfs", "/usr/sbin/exportfs")
 }
@@ -606,6 +613,15 @@ fn specs() -> Vec<DependencySpec> {
             required: false,
             used_by: "Windows network discovery (WS-Discovery)",
             check_installed: crate::ws_discovery::available,
+            check_running: None,
+        },
+        DependencySpec {
+            name: "net / smbpasswd",
+            package: "samba",
+            category: "Shares",
+            required: false,
+            used_by: "Active Directory join/leave + Samba account credentials",
+            check_installed: check_samba_cli,
             check_running: None,
         },
         DependencySpec {
@@ -1322,6 +1338,9 @@ mod tests {
     /// e2fsprogs), or requested by `install.sh`'s *required* group (iproute2,
     /// iputils-ping).
     const BASE_BINARIES: &[&str] = &[
+        // `bash` is Essential in Debian/Ubuntu and is the interpreter the
+        // signed-update engine invokes (`src/update_engine.rs`).
+        "bash",
         "blkid",
         // systemd, like `systemctl` / `journalctl` / `timedatectl` below: the
         // mDNS hostname is set and read back through `busctl` against
@@ -1615,11 +1634,25 @@ mod tests {
             !code_uses_sudo_e,
             "install.sh must not rely on `sudo -E` (refused by default sudoers)"
         );
-        // --package and --dry-run must never elevate or pop a window.
-        assert!(
-            text.contains("--package|-p|--dry-run|--help|-h) HV_BOOTSTRAP=0"),
-            "--package/--dry-run/--help must skip the terminal relaunch and sudo elevation"
-        );
+        // --package, --dry-run, --verify-manifest and --help must never
+        // elevate or pop a window.
+        let bootstrap = text
+            .lines()
+            .find(|l| l.contains("HV_BOOTSTRAP=0") && l.contains("--package"))
+            .expect("install.sh must switch off bootstrap for the non-install modes");
+        for flag in [
+            "--package",
+            "-p",
+            "--dry-run",
+            "--verify-manifest",
+            "--help",
+            "-h",
+        ] {
+            assert!(
+                bootstrap.contains(flag),
+                "{flag} must skip the terminal relaunch and sudo elevation"
+            );
+        }
     }
 
     #[test]
@@ -1802,45 +1835,58 @@ mod tests {
 
     #[test]
     fn test_install_sh_embeds_a_complete_systemd_unit() {
-        // `install.sh` is the only installer file: the systemd unit it writes
-        // inline (there is no sibling `homevault.service` any more) is the
-        // single source of truth. Pin the load-bearing directives — a silently
-        // dropped `ExecStart`/`EnvironmentFile`/... would otherwise only
+        // `install.sh` is the only installer file: the unit is rendered by
+        // `render_service_unit` (P2-7) instead of a static heredoc, so the
+        // test renders the real function rather than grepping its template.
+        // The hardening block is part of the output; a silently dropped
+        // `ExecStart`/`EnvironmentFile`/`ProtectSystem` would otherwise only
         // surface on a fresh deploy.
-        let install = installer_file("install.sh");
-        let unit = directives(heredoc_body(&install, "cat > \"$SERVICE_FILE\" <<EOF"));
+        let root_unit = render_installer_unit("root", "root", "/root");
+        let unit = directives(root_unit.lines());
         for want in [
             "Description=HomeVault Server",
             "After=network.target",
             "Type=simple",
-            "WorkingDirectory=$INSTALL_DIR",
-            "ExecStart=$INSTALL_DIR/homevault",
+            "WorkingDirectory=/opt/homevault",
+            "ExecStart=/opt/homevault/homevault",
             "Restart=on-failure",
-            "Environment=\"PORT=$PORT\"",
-            "Environment=\"DATA_DIRECTORY=$DATA_DIR\"",
+            "Environment=\"PORT=8080\"",
+            "Environment=\"DATA_DIRECTORY=/srv/homevault\"",
             "Environment=\"HV_HOST_SYNC=1\"",
-            "EnvironmentFile=-$ENV_FILE",
+            "EnvironmentFile=-/etc/homevault/homevault.env",
             "WantedBy=multi-user.target",
-        ] {
-            assert!(
-                unit.contains(&want),
-                "the systemd unit install.sh writes is missing `{want}`"
-            );
-        }
-        // The deployment model is explicit: `root` by default, `homevault`
-        // with `HV_SERVICE_USER=homevault`. Both modes render the same unit
-        // shape, so a missing `User=`/`Group=` would silently fall back to
-        // root even in the unprivileged mode.
-        for want in [
-            "User=$RUN_USER",
-            "Group=$RUN_GROUP",
+            "User=root",
+            "Group=root",
             "AmbientCapabilities=CAP_NET_BIND_SERVICE",
+            // P2-7 hardening, measured on the rendered unit.
+            "ProtectSystem=true",
+            "ReadOnlyPaths=-/opt/homevault",
+            "PrivateTmp=true",
+            "RestrictSUIDSGID=true",
+            "LockPersonality=true",
+            "RestrictRealtime=true",
+            "ProtectKernelLogs=true",
+            "NoNewPrivileges=true",
         ] {
             assert!(
                 unit.contains(&want),
-                "the HomeVault unit install.sh writes is missing `{want}`"
+                "the systemd unit install.sh renders is missing `{want}`"
             );
         }
+
+        // The unprivileged deployment keeps `NoNewPrivileges` off: `sudo` is
+        // its whole privilege path, so setting it would break every feature
+        // that shells out to a host tool.
+        let unprivileged = render_installer_unit("homevault", "homevault", "/home/homevault");
+        let unit = directives(unprivileged.lines());
+        assert!(unit.contains(&"User=homevault"), "{unprivileged}");
+        assert!(unit.contains(&"Group=homevault"), "{unprivileged}");
+        assert!(
+            !unit.contains(&"NoNewPrivileges=true"),
+            "NoNewPrivileges must stay off in the unprivileged mode"
+        );
+
+        let install = installer_file("install.sh");
         assert!(
             install.contains("HV_SERVICE_USER"),
             "install.sh must document the HV_SERVICE_USER deployment switch"
@@ -1849,6 +1895,39 @@ mod tests {
             install.contains("--install-sudoers"),
             "install.sh must render the scoped sudoers file before starting an unprivileged unit"
         );
+    }
+
+    /// Renders `render_service_unit` from `install.sh` with deterministic
+    /// values, exactly as the installer writes it. The shell only prints; it
+    /// touches no host file and needs no root.
+    fn render_installer_unit(run_user: &str, run_group: &str, run_home: &str) -> String {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let script = r#"
+HV_LIB_ONLY=1
+source "$1/installer/install.sh"
+INSTALL_DIR=/opt/homevault
+PORT=8080
+DATA_DIR=/srv/homevault
+ENV_FILE=/etc/homevault/homevault.env
+HTTPS_PORT=8443
+render_service_unit "$2" "$3" "" "$4"
+"#;
+        let output = std::process::Command::new("bash")
+            .arg("-c")
+            .arg(script)
+            .arg("homevault-unit-test")
+            .arg(root)
+            .arg(run_user)
+            .arg(run_group)
+            .arg(run_home)
+            .output()
+            .expect("bash must be available to render the installer unit");
+        assert!(
+            output.status.success(),
+            "render_service_unit failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8(output.stdout).expect("the unit is UTF-8")
     }
 
     #[test]

@@ -408,14 +408,14 @@ fn replace_block(yaml: &str, placeholder: &str, value: Option<&str>) -> String {
         let suffix = &body[index + placeholder.len()..];
         match value.filter(|v| !v.is_empty()) {
             Some(value) if prefix.trim().is_empty() => {
-                let mut first = true;
+                // The placeholder sits alone on its line. Every line of the
+                // replacement inherits that line's indentation — including
+                // the first one, otherwise an indented `{{GPU_DEVICES}}`
+                // would inject `devices:` at column 0 and break the YAML.
                 for part in value.split('\n') {
-                    if !first {
-                        out.push_str(prefix);
-                    }
+                    out.push_str(prefix);
                     out.push_str(part);
                     out.push('\n');
-                    first = false;
                 }
             }
             Some(value) => {

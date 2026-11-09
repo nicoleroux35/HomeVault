@@ -137,6 +137,11 @@ eq "result: previous version" "1.0.0" \
         "$WORK/data/updates/last-result.json")"
 eq "result: one history line" "1" \
     "$(wc -l <"$WORK/data/updates/history.jsonl" | tr -d ' ')"
+# Each line must be a complete JSON object: `history.jsonl` is consumed line by
+# line, unlike the pretty-printed `last-result.json`.
+eq "result: history line is valid JSONL" "succeeded" \
+    "$(python3 -c 'import json,sys; print(json.loads(open(sys.argv[1]).readline())["status"])' \
+        "$WORK/data/updates/history.jsonl")"
 
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
 [[ "$FAIL" -eq 0 ]]

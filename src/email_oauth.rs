@@ -300,6 +300,13 @@ pub fn validate_redirect_url(value: &str) -> Result<String, String> {
     if value.chars().any(char::is_control) {
         return Err("The redirect URL must not contain control characters".to_string());
     }
+    // `url::Url::parse` accepts an internal space and percent-encodes it, but
+    // the callback URL is compared verbatim with the provider's registration;
+    // a space can never be part of a real redirect, so refuse it here instead
+    // of registering a value the provider will not match.
+    if value.chars().any(char::is_whitespace) {
+        return Err("The redirect URL must not contain spaces".to_string());
+    }
     let parsed = url::Url::parse(value)
         .map_err(|_| "The redirect URL must be an absolute URL".to_string())?;
     if parsed.scheme() != "http" && parsed.scheme() != "https" {

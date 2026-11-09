@@ -528,6 +528,11 @@ until every supported release is re-signed.
 manifest fields, archive digest/size, the smoke test, atomic swap, rollback and
 the result/history file. It is run by hand, not by the installer.
 
+`data/updates/last-result.json` is pretty-printed for humans, while
+`data/updates/history.jsonl` is **one compact JSON object per line** — a
+consumer can read it with `readline()` or `jq -c` without parsing a
+multi-line record.
+
 ### Apply from the web UI (2026-11-09)
 
 The *Apply update* button is the same engine, started from Settings instead of

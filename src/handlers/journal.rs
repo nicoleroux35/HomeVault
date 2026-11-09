@@ -711,16 +711,21 @@ fn journal_to_csv(entries: &[JournalEntry]) -> String {
             if index > 0 {
                 out.push(',');
             }
-            if field.contains(',')
-                || field.contains('"')
-                || field.contains('\n')
-                || field.contains('\r')
-            {
+            // One record per line: an embedded newline would still be legal
+            // RFC 4180 inside quotes, but every consumer of this export
+            // (spreadsheet, `cut`, `wc -l`) treats a record as a line. A line
+            // break inside a message becomes a space, so the file cannot
+            // silently gain a record.
+            let field = field
+                .replace("\r\n", " ")
+                .replace('\r', " ")
+                .replace('\n', " ");
+            if field.contains(',') || field.contains('"') {
                 out.push('"');
                 out.push_str(&field.replace('"', "\"\""));
                 out.push('"');
             } else {
-                out.push_str(field);
+                out.push_str(&field);
             }
         }
         out.push('\n');
@@ -1530,7 +1535,7 @@ mod tests {
 
     #[test]
     fn test_journal_csv_quotes_commas_quotes_and_newlines() {
-        let entries = vec![JournalEntry {
+        let mut entries = vec![JournalEntry {
             timestamp: Some("2026-11-09T10:00:00+00:00".to_string()),
             unit: Some("homevault".to_string()),
             priority: Some(6),
@@ -1541,6 +1546,14 @@ mod tests {
         let csv = journal_to_csv(&entries);
         assert!(csv.starts_with("timestamp,unit,priority,pid,message\n"));
         assert!(csv.contains("\"a, b \"\"quoted\"\" next\""));
+        // Header + exactly one record: a message newline must not create a
+        // second line the reader would interpret as another entry.
+        assert_eq!(csv.lines().count(), 2, "{csv:?}");
+
+        entries[0].message = "windows\r\nline\rbreak".to_string();
+        let csv = journal_to_csv(&entries);
+        assert!(csv.contains("windows line break"), "{csv:?}");
+        assert_eq!(csv.lines().count(), 2, "{csv:?}");
     }
 
     #[test]

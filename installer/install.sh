@@ -682,11 +682,12 @@ with open(tmp, "w", encoding="utf-8") as fh:
     json.dump(doc, fh, ensure_ascii=False, indent=2)
     fh.write("\n")
 os.replace(tmp, result_path)
+# `history.jsonl` is one *compact* JSON object per line, so a consumer can
+# read it with `readline()`/`jq -c`. `last-result.json` above stays pretty for
+# humans; copying it verbatim here wrote a 7-line record and broke JSONL.
 try:
-    with open(result_path, encoding="utf-8") as fh:
-        line = fh.read()
     with open(history_path, "a", encoding="utf-8") as fh:
-        fh.write(line)
+        fh.write(json.dumps(doc, ensure_ascii=False) + "\n")
 except OSError:
     pass
 PY

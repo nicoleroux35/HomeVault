@@ -3101,16 +3101,19 @@ mod tests {
     fn test_vm_export_grants_are_confined_to_the_export_folder() {
         // `incus export|import` moves a whole machine: an unscoped grant would
         // let a compromised argv write (or read) any file as root. Both the
-        // plain and the `--compressed` shape must pin the archive path.
+        // plain and the `--compressed` shape must pin the archive path to the
+        // data directory the service actually runs with (not a hardcoded
+        // `/srv/homevault`: `DATA_DIRECTORY` can move it).
+        let export_root = format!("{}/vm/exports", crate::config::paths::base_dir().display());
         let sudoers = SetupService::sudoers_body_for_tests();
         for want in [
-            "incus export * /srv/homevault/vm/exports/*",
-            "incus export --compressed * /srv/homevault/vm/exports/*",
-            "incus import /srv/homevault/vm/exports/*",
-            "incus import /srv/homevault/vm/exports/* *",
+            format!("incus export * {export_root}/*"),
+            format!("incus export --compressed * {export_root}/*"),
+            format!("incus import {export_root}/*"),
+            format!("incus import {export_root}/* *"),
         ] {
             assert!(
-                sudoers.contains(want),
+                sudoers.contains(&want),
                 "the sudoers file is missing the scoped grant `{want}`"
             );
         }

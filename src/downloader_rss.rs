@@ -341,6 +341,16 @@ pub fn parse_feed(xml_text: &str) -> Result<Vec<RssItem>, String> {
                         match href {
                             Some(href) if rel.as_deref() == Some("enclosure") => {
                                 pending.enclosure = href;
+                                // Atom carries the size on the same element
+                                // (`<link rel="enclosure" href="…"
+                                // length="2048"/>`), exactly like RSS.
+                                if let Some(length) = attributes
+                                    .iter()
+                                    .find(|a| a.name.local_name.eq_ignore_ascii_case("length"))
+                                    .and_then(|a| a.value.trim().parse::<u64>().ok())
+                                {
+                                    pending.enclosure_size = Some(length);
+                                }
                             }
                             Some(href) => {
                                 if pending.atom_link.is_empty() {

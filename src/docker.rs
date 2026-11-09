@@ -194,13 +194,41 @@ pub fn validate_image_reference(reference: &str) -> Result<(), String> {
     }
 
     // A tag is the colon after the last slash (a registry port is before it).
-    let last_segment = reference
-        .rfind('/')
-        .map(|index| &reference[index + 1..])
-        .unwrap_or(reference);
+    // A colon is legal in exactly two places: the registry port in the first
+    // segment and the tag separator in the last one. Anywhere else
+    // (`redis:tag/slash`, `app:1:2`) it is a malformed reference, not a path.
+    let segments: Vec<&str> = reference.split('/').collect();
+    if segments.iter().any(|segment| segment.is_empty()) {
+        return Err("the image path has an empty segment".to_string());
+    }
+    if segments.len() > 1 {
+        if let Some((host, port)) = segments[0].split_once(':') {
+            let valid_port = !host.is_empty()
+                && !port.is_empty()
+                && port.chars().all(|c| c.is_ascii_digit())
+                && port.parse::<u16>().map(|p| p > 0).unwrap_or(false);
+            if !valid_port {
+                return Err(format!(
+                    "invalid registry host or port in {:?}",
+                    segments[0]
+                ));
+            }
+        }
+        for segment in &segments[1..segments.len() - 1] {
+            if segment.contains(':') {
+                return Err(
+                    "a colon is only valid in the registry port or the final tag".to_string(),
+                );
+            }
+        }
+    }
+    let last_segment = *segments.last().unwrap_or(&reference);
     if let Some((name, tag)) = last_segment.rsplit_once(':') {
         if name.is_empty() {
             return Err("the image name is missing before the tag".to_string());
+        }
+        if name.contains(':') {
+            return Err("the image name must not contain a colon".to_string());
         }
         let valid = tag.len() <= 128
             && !tag.is_empty()
@@ -3303,10 +3331,24 @@ Build Cache     0         0         0B        0B
             String::from("redis:bad tag"),
             String::from("redis:-leading-dash"),
             String::from("redis:tag/slash"),
+            String::from("redis:7:8"),
+            String::from("registry:abc/app"),
+            String::from("registry:0/app"),
+            String::from("/app"),
+            String::from("app/"),
             String::from("redis;rm -rf"),
             String::new(),
         ] {
             assert!(validate_image_reference(&bad).is_err(), "{bad:?}");
+        }
+        for good in [
+            "redis",
+            "redis:7",
+            "ghcr.io/acme/app:1.2",
+            "localhost:5000/app",
+            "registry.example.com:5000/team/app:1.2.3",
+        ] {
+            assert!(validate_image_reference(good).is_ok(), "{good:?}");
         }
         assert!(
             validate_image_reference(&format!("ghcr.io/acme/app@sha256:{}", "0".repeat(64)))

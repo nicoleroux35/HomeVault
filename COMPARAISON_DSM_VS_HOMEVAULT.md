@@ -13,7 +13,7 @@
 
 | Champ | Valeur |
 |---|---|
-| Baseline HomeVault | commit `6cc87ed`, 08/11/2026 |
+| Baseline HomeVault | `910a84f`, 09/11/2026 — plus les correctifs de vérification du 09/11/2026 (§8) |
 | Firmware DSM analysé | 7.4.1‑90080 (DS925+), image `/media/nicolas/500GB/Projets/DSM7/DSM_DS925+_90080` |
 | Périmètre | 30 apps intégrées du launcher + 16 apps du catalogue Docker |
 | Méthode | Vérification du code (`src/`, `frontend/`, `catalog/`), des guides `docs/guides/` et du backlog `HOMEVAULT_TASKLIST_A_FAIRE.md` |
@@ -27,7 +27,7 @@
 L'analyse du 04/11/2026 (baseline `c37c803`) est en partie périmée. Ces manques
 qu'elle listait sont **désormais livrés** et ne doivent plus être comptés :
 
-| Ancien « manque » | État réel au HEAD `6cc87ed` |
+| Ancien « manque » | État réel au HEAD `910a84f` (plus §8) |
 |---|---|
 | Routes statiques, proxy sortant, client WireGuard | ✅ livrés (P1‑7, P1‑8, P1‑17) |
 | GeoIP, rétention métriques, expiration mot de passe | ✅ livrés (P1‑14, P1‑3, P1‑2) |
@@ -68,7 +68,7 @@ cas de désaccord avec le backlog, `HOMEVAULT_TASKLIST_A_FAIRE.md` §1bis gagne.
 | **Storage** | Storage Manager | 🟡 | **Cache SSD ZFS L2ARC/SLOG livré** (P2‑16, opt‑in, SSD obligatoire) ; restent SHR/SHR2, thin provisioning complet (seuls les zvol ZFS sont couverts), déduplication (design seulement), KMIP, WORM, extension DX525, mise à jour firmware disques |
 | **RAID** | Storage Manager (création de volume) / Storage Advisor | 🟡 | SHR/SHR2, ajout automatique de spare, extension à chaud, RAID F1, vitesse et moniteur de resync (migration de niveau déjà faite) |
 | **Explorer** | File Station | ⭐ / ✅ | **Emplacements réseau CIFS/NFS montés et parcourus** et **versions Btrfs dans Rewind** livrés (P1‑35) ; cloud via rclone ; restent les vignettes vidéo/PDF (P2 opt‑in), les ACL Windows et le transcodage |
-| **Shares** | Control Panel > Dossier partagé + Services de fichiers | 🟡 | ACL Windows non simulées (POSIX uniquement) ; validation réelle DC/keytab AD ; NFSv4 Kerberos à valider sur matériel ; WS‑Discovery absent ; SMB multicanal, chiffrement, Previous Versions, Time Machine, rsync, FTP jails : **faits** |
+| **Shares** | Control Panel > Dossier partagé + Services de fichiers | 🟡 | ACL Windows non simulées (POSIX uniquement) ; validation réelle DC/keytab AD ; NFSv4 Kerberos à valider sur matériel. **WS‑Discovery livré** (P1‑29) ; SMB multicanal, chiffrement, Previous Versions, Time Machine, rsync, FTP jails : **faits** |
 | **Quotas** | Control Panel > Quota | ✅ / ⭐ | Parité solide (utilisateur, partage, transfert) **+ historique horaire et alerte à 90 %** (P1‑32, rétention 90 j) |
 | **USB Copy** | USB Copy | ✅ | Ajouter déclenchement physique one‑touch et règles multiples si le matériel le permet |
 | **iSCSI** | SAN Manager | ✅ / 🟡 | **LUN fins ZFS avec snapshots et clones livrés** (P2‑17) ; restent Fibre Channel, multipath, VAAI. CHAP et apply‑now sont faits |
@@ -87,7 +87,7 @@ cas de désaccord avec le backlog, `HOMEVAULT_TASKLIST_A_FAIRE.md` §1bis gagne.
 | **Traffic control** | Control Panel > Trafic | 🟡 | Classification par app/protocole, DSCP, shaping entrant (aujourd'hui egress seulement) |
 | **Docker** | Container Manager | ⭐ / ✅ | Mises à jour planifiées/auto, graphiques ressources, compose (fait), registries privés (fait), exec/logs (fait) |
 | **Virtual Machines** | Virtual Machine Manager | ✅ / 🟡 | **Export/import d'archive (OVA) livré** (P2‑18) ; restent migration à chaud, HA, switches virtuels, passthrough USB/PCI. Clone, snapshots, VNC, cloud‑init : faits |
-| **Scheduled Tasks** | Task Scheduler | 🟡 | Seulement **4 types** (`command`, `snapshot`, `smart_test`, `power`). Ajouter backup, scrub, purge corbeille, Docker, notification, rsync, historique |
+| **Scheduled Tasks** | Task Scheduler | 🟡 | **5 types** (`command`, `snapshot`, `smart_test`, `power`, `service`) + **5 services** (`docker_update`, `trash_purge`, `db_backup`, `notification`, `downloader_rss`). Restent : rsync, historique consolidé ; scrub et restic gardent leur ordonnanceur dédié (décision P1‑31) |
 | **Settings** | Control Panel | 🟡 | **MAJ signée + atomique + rollback livrée** (P2‑8, déclenchable depuis l'écran) ; restent portail de connexion personnalisé, options régionales, périphériques externes, LED/bip/LCM |
 | **Users** | Control Panel > Utilisateur & Groupe | ✅ | Groupes imbriqués, historique de mots de passe, verrouillage d'inactivité. Expiration, quotas, grants, managers délégués, sync Samba : faits |
 | **Groups** | Control Panel > Utilisateur & Groupe | ✅ | Groupes imbriqués, quotas de groupe |
@@ -160,7 +160,7 @@ Référence opérationnelle : `HOMEVAULT_TASKLIST_A_FAIRE.md` §1bis.
 | **P1** | **MAJ Docker planifiées/auto** | Docker | Hygiène de patch = sécurité | Opt‑in, jamais de redémarrage surprise | S/M | nouveau |
 | **P1** | **Historique/alertes quotas + filtres/export Journal** | Quotas, Journal | Visibilité sans surveillance | — | S | nouveau |
 | **P1** | **WireGuard UX** (QR, 1‑clic, DDNS) | VPN | L'accès distant est le vrai besoin domestique | Remplacer « serveur OpenVPN », pas l'ajouter | S/M | nouveau |
-| **P1** | **Unifier les tâches planifiées** sur les ordonnanceurs existants | Scheduled Tasks | 4 types exposés contre 13 boucles déjà présentes | **Un seul moteur** : exposer/rediriger, ne pas dupliquer | S/M | nouveau |
+| **P1** | **Unifier les tâches planifiées** sur les ordonnanceurs existants | Scheduled Tasks | 5 types exposés contre 13 boucles déjà présentes | **Un seul moteur** : exposer/rediriger, ne pas dupliquer | S/M | P1‑31 |
 
 **État au 2026‑11‑08.** P2‑8 est livré côté **installeur** : manifeste signé
 vérifié avant téléchargement, application atomique, `homevault.previous`
@@ -187,7 +187,8 @@ l'authentification (acteur/action/IP), API admin `GET /api/audit` +
 
 **P1‑16 — OAuth2 e‑mail (livré le 2026‑11‑09).** Le relais SMTP peut
 s'authentifier auprès de Gmail et de Microsoft 365 **sans mot de passe
-applicatif** :
+applicatif**. *L’URL de redirection refuse désormais tout espace interne
+(2026‑11‑09, §8).*
 
 - `src/email_oauth.rs` : flux code d'autorisation, URL par fournisseur
   (Google : `access_type=offline` + `prompt=consent`, scope
@@ -239,7 +240,10 @@ reconstruction complète sur VM.
 | **P2 ✅** | Syncthing navigateur de versions | **P2** intégration UI seule (Syncthing gère déjà les versions) : **livré** (P2‑19) | Faible effort, pas de nouveau moteur | S/M | nouveau |
 | **P2 ✅** | Calendrier/Contacts manquants | **App catalogue** (Radicale/Baïkal), pas natif : **livré** (P2‑20, Baïkal) | Cohérent avec le backlog §6 | S | nouveau |
 
-**P1‑34 — Intégration média (livrée).**
+**P1‑34 — Intégration média (livrée).** *Corrigé le 2026‑11‑09 (§8) : la
+validation refusait tout chemin absolu et le bloc GPU était injecté sans
+indentation ; les deux défauts sont fermés et couverts par les tests unitaires
+existants.*
 
 - **Le manifeste décide** : Jellyfin (`share_mount = "/media"`), Immich
   (`/mnt/media`) et Navidrome (`/music`) montent `{{SHARE_DIR}}:<montage>:ro`.
@@ -282,7 +286,7 @@ reconstruction complète sur VM.
   `SCREENS.md`, FeatureDocs `explorer`/`snapshots`.
 
 **P1‑36 — Téléchargeur : RSS, planification, limites par tâche, extraction auto
-(livré).**
+(livré).** *La taille d’une enclosure Atom est désormais lue (2026‑11‑09, §8).*
 
 - `src/downloader_rss.rs` : parseur RSS 2.0/Atom pur (seuls les éléments avec
   une URL téléchargeable sont retenus), marqueur `seen` borné (500) par flux,
@@ -525,7 +529,7 @@ PHP 8.1/Redis 4.0.
 - **Versions Syncthing** : `src/syncthing_versions.rs` (politique, parsing,
   validation), `src/handlers/syncthing.rs` (`/folders/{id}/versions*`), dialogue
   dans `frontend/src/routes/Syncthing.svelte` — P2‑19
-- **13 ordonnanceurs déjà existants** (`src/web/mod.rs:2809-2850`) : une
+- **13 ordonnanceurs déjà existants** (`src/web/mod.rs:3011-3050`) : une
   « tâche planifiée backup/scrub/corbeille » doit les exposer, pas les dupliquer
 - Serveur OpenVPN absent, client seul : `src/handlers/vpn.rs:953-1002` ;
   le commentaire d'en‑tête `src/vpn.rs:9` a été corrigé le 2026‑11‑08
@@ -577,6 +581,7 @@ Tout item retenu qui touche des données personnelles met à jour `PRIVACY.md` :
 | Montages CIFS/NFS (P1‑35) | credentials distants | fichier **0600**, jamais en argv/log/réponse, opt‑in, documenté (RoPA ligne 18) |
 | Téléchargeur RSS (P1‑36) | URLs de flux (jeton possible dans le chemin) | fichier 0600, adresse loopback privée refusée, pas de télémétrie, limites par tâche (RoPA ligne 19) |
 | WireGuard UX | clés privées | jamais loguées, jamais renvoyées en clair |
+| OAuth2 e‑mail (P1‑16) | client secret + refresh token | scellés (`hv1:`) dans `data/email_oauth.json` en 0600, jamais renvoyés par l’API ni journalisés ; jeton d’accès en mémoire seulement ; état OAuth à usage unique lié au navigateur (RoPA ligne 20) |
 
 ### 6.4 Définition d'une « vraie avancée »
 
@@ -616,7 +621,8 @@ installeur).**
   le binaire fautif est conservé en `homevault.failed`, le service est relancé
   sur la version précédente, et l'échec est enregistré.
 - Résultat + historique écrits dans `data/updates/last-result.json` et
-  `history.jsonl` ; `GET /settings/version` expose `last_update` et l'écran
+  `history.jsonl` *(l’historique est désormais un objet JSON compact par ligne,
+  §8)* ; `GET /settings/version` expose `last_update` et l'écran
   Settings affiche *Applied / Rolled back / Failed*.
 - Nouveau mode `--verify-manifest` (sans root) et signature du manifeste au
   `--package` via `HV_SIGNING_KEY` (la clé privée n'est jamais commitée).
@@ -916,3 +922,65 @@ feuille §3.2 est livrée** : les trois P1 (média, Explorer, téléchargeur) et
 cinq P2 (cache SSD ZFS L2ARC/SLOG, LUN fins iSCSI, export/import VM, versions
 Syncthing, calendrier/contacts en app catalogue). Restent les finitions
 P2‑7/P2‑8 (terrain, clé de production) et le test VM de P2‑9.
+
+---
+
+## 8. Correctifs de vérification — 2026‑11‑09
+
+> **Contexte.** Le premier passage complet de `cargo test --lib` sur le HEAD
+> `910a84f` a rendu **2 804 tests verts et 23 échecs**. Les causes étaient
+> réelles, pas des tests obsolètes dans leur majorité : l’intégration média
+> (P1‑34) refusait ses propres manifestes et le bloc GPU cassait le YAML. Le
+> firmware DSM 7.4.1 reste la **référence de comportement** ; aucun code du
+> firmware n’est copié, et les décisions §3.3 (rejets/gels) sont inchangées.
+
+### 8.1 Catalogue média — P1‑34 débloqué
+
+| Défaut | Correction | Test |
+|---|---|---|
+| `validate_share_mount` refusait **tout** chemin absolu (`"/media".split('/')` commence par un segment vide) : Jellyfin, Immich et Navidrome ne chargeaient pas (catalogue 16 → 13) | `split('/').skip(1)` : seuls les composants vides **après** le premier slash sont refusés (`/mnt//media`) | `manifest::tests::test_share_mount_validation_and_default_folder` (déjà écrit, désormais valide) |
+| `replace_block` n’indentait pas la **première** ligne du bloc injecté : un `{{GPU_DEVICES}}` indenté produisait `devices:` en colonne 0, donc un compose invalide | chaque ligne reçoit le préfixe de la ligne porteuse, première comprise | `app_catalog::tests::test_replace_block_reindents_and_drops_whole_lines` |
+
+### 8.2 Bugs isolés corrigés
+
+| Module | Défaut | Correction | Test |
+|---|---|---|---|
+| `src/docker.rs` | `redis:tag/slash` accepté (le tag n’était cherché qu’après le dernier slash) | analyse par segments : un `:` n’est valide que comme port de registre (numérique, 1–65535) dans le premier segment ou comme séparateur de tag dans le dernier | matrice accept/refus étendue (`redis:7`, `localhost:5000/app`, `redis:7:8`, `registry:abc/app`, `/app`, `app/`) |
+| `src/downloader_rss.rs` | la taille d’un `<link rel="enclosure">` Atom était ignorée | lecture de l’attribut `length` sur l’enclosure Atom, comme pour RSS | `test_parse_atom_uses_the_enclosure_link` |
+| `src/email_oauth.rs` | une URL de redirection contenant un espace était acceptée (le parseur l’encodait) | refus explicite de tout espace interne avant l’enregistrement chez le fournisseur | `test_redirect_url_validation` |
+| `src/host_accounts.rs` | `smbpasswd` non-root (ou Samba absent) faisait échouer la suppression/le verrouillage d’un compte | `samba_sync_is_noop` reconnaît « When run by root »/« Permission denied » ; une absence du binaire est un no-op ; la base reste autoritaire | test unitaire du prédicat + test async existant |
+| `src/handlers/journal.rs` | un message multiligne créait un second enregistrement dans l’export CSV | les sauts de ligne sont remplacés par une espace avant le quoting : un enregistrement = une ligne | test CSV étendu (LF et CRLF, `lines() == 2`) |
+| `src/rag_indexers.rs` | `email-oauth.md` et `remote-mounts.md` n’étaient pas indexés | deux `FeatureDoc` ajoutés (`email-oauth`, `remote-mounts`) + table id → guide | `test_every_guide_has_a_feature_doc` |
+| `src/dependencies.rs` | `bash`, `net`, `smbpasswd` exécutés sans source d’installation | `bash` en base (Essential) ; `net`/`smbpasswd` rattachés au paquet `samba` avec un probe dédié | `test_every_commanded_binary_has_an_install_source` |
+| `installer/install.sh` | `history.jsonl` recopiait le JSON **indenté** de `last-result.json` : 7 lignes par enregistrement, JSONL invalide | l’historique écrit `json.dumps(doc) + "\n"` ; `last-result.json` reste lisible par un humain | test installeur : une ligne + `json.loads` de cette ligne |
+
+### 8.3 Tests périmés réalignés sur le produit
+
+| Test | Pourquoi il était rouge | Réalignement |
+|---|---|---|
+| `dependencies::test_install_sh_embeds_a_complete_systemd_unit` | P2‑7 a remplacé le heredoc statique par `render_service_unit` | le test **rend la vraie fonction** (sourcée avec `HV_LIB_ONLY=1`) et vérifie le durcissement root vs non-root |
+| `dependencies::test_install_sh_elevates_through_sudo_and_forwards_release_knobs` | `--verify-manifest` a rejoint la liste des modes sans élévation | la ligne bootstrap est lue et chaque drapeau vérifié |
+| `setup::test_vm_export_grants_are_confined_to_the_export_folder` | `/srv/homevault` était codé en dur alors que le chemin vient de `base_dir()` | le test dérive le préfixe de `config::paths::base_dir()` |
+| `shares::test_validate_smb_config_rejects_unimplemented_domain_auth` | `ads`/`domain` sont configurables depuis P2‑1, avec realm et idmap | `server` reste refusé ; `ads`/`domain` sans realm refusés, avec realm + idmap valides acceptés |
+| `ws_discovery::test_render_unit_cannot_be_broken_by_a_newline` | l’attente tronquait le workgroup à 14 caractères au lieu de 15 | attente corrigée (`WORKGROUPEExecSt`) |
+
+### 8.4 Ce qui n’a pas été exécuté
+
+Conformément à la consigne du mainteneur, les tests ont été **écrits ou
+corrigés mais pas exécutés** dans cette passe. Les vérifications statiques
+faites : `bash -n` sur `install.sh` et les deux suites d’installeur,
+`cargo check --lib`, `cargo check --tests`. Restent à lancer sur un hôte :
+`cargo test` (unitaire + 109 suites d’intégration), `cargo fmt --check`,
+`npm run check && npm run build`, les E2E ciblés, puis reporter les compteurs
+dans `TESTING.md`.
+
+### 8.5 Documentation et vie privée
+
+- `PRIVACY.md` : **RoPA ligne 20** (client secret + refresh token OAuth2) et
+  ligne sortante vers les points d’échange Google/Microsoft 365.
+- `docs/guides/rag.md` : la base de connaissances passe à **78 FeatureDocs**,
+  avec `email-oauth` et `remote-mounts`.
+- `docs/guides/settings.md` : distinction explicite entre
+  `last-result.json` (lisible) et `history.jsonl` (un objet JSON compact par
+  ligne).
+- `TESTING.md` : section dédiée du 2026‑11‑09 (tests écrits, non exécutés).
