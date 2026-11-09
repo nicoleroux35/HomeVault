@@ -3361,6 +3361,17 @@ class ApiClient {
     return this.get('/storage/raid/devices', { ttl: 10000 });
   }
 
+  /** RAID resync-speed profile (FIAB-10, admin). */
+  async getRaidSpeed() {
+    return this.get('/storage/raid/resync-speed', { cache: false });
+  }
+
+  async setRaidSpeed(profile: 'low' | 'balanced' | 'fast') {
+    const res = await this.put('/storage/raid/resync-speed', { profile });
+    this.invalidateCache('/storage/raid');
+    return res;
+  }
+
   async createRaid(data: {
     name: string;
     level: string;

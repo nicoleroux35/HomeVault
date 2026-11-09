@@ -313,6 +313,11 @@ pub async fn handle_raid_create(
                         name, mount_point
                     ),
                 );
+                // FIAB-10: the md module is loaded now; apply the saved
+                // resync profile so a rebuild starts at the chosen speed.
+                if let Err(e) = crate::raid_stability::apply_saved_speed_profile().await {
+                    tracing::warn!("Could not apply the RAID resync speed: {e}");
+                }
             }
             Err(e) => {
                 crate::events::log_event_warn(format!(
@@ -387,6 +392,9 @@ pub async fn handle_raid_rebuild(
                 "Admin '{}' started a rebuild of RAID array '{}'",
                 admin_username, name
             ));
+            if let Err(e) = crate::raid_stability::apply_saved_speed_profile().await {
+                tracing::warn!("Could not apply the RAID resync speed: {e}");
+            }
             ResponseHelper::json_success(serde_json::json!({ "message": "RAID rebuild started" }))
         }
         Err(e) => ResponseHelper::json_error(format!("Failed to rebuild RAID: {}", e)),

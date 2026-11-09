@@ -353,9 +353,13 @@ readiness for this app (ROADMAP 8):
 - **Speed profiles** — `low` (1 000–25 000 kB/s), `balanced`
   (5 000–100 000) and `fast` (25 000–500 000). `apply_speed_profile` writes
   `/proc/sys/dev/raid/speed_limit_min` and `_max` through `sudo tee`; `mdadm`
-  has no API for these. A write failure is returned to the caller, never
-  swallowed. No endpoint or UI calls it yet, so HomeVault never changes the
-  host's limits on its own.
+  has no API for these. **FIAB-10 (2026-11-09)** exposes the choice:
+  `GET/PUT /api/storage/raid/resync-speed` (admin), persisted in
+  `data/state/raid-speed.json`, re-applied after boot, array creation and a
+  rebuild. The Storage → RAID screen has a profile selector. A PUT on a host
+  without `/proc/sys/dev/raid` still persists the choice and answers
+  `applied: false` with the kernel reason, so a profile can be set before the
+  first array exists.
 - **Event parsing** — `parse_monitor_event` reads the line
   `md/array <event> <device>` that `mdadm --monitor --program` would emit
   (`Fail`, `DegradedArray`, `SpareActive`, `RebuildStarted`,

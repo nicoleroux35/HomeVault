@@ -77,6 +77,52 @@ pub fn speed_files(profile: SpeedProfile) -> Vec<(&'static str, String)> {
     ]
 }
 
+/// Path of the persisted resync-speed profile.
+fn speed_path() -> PathBuf {
+    crate::config::paths::data_dir()
+        .join("state")
+        .join("raid-speed.json")
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+struct SpeedState {
+    profile: String,
+}
+
+/// The profile last saved by the admin. `Low` is the safe default: a rebuild
+/// must not starve the shares it protects.
+pub fn load_speed_profile() -> SpeedProfile {
+    std::fs::read_to_string(speed_path())
+        .ok()
+        .and_then(|raw| serde_json::from_str::<SpeedState>(&raw).ok())
+        .and_then(|state| SpeedProfile::parse(&state.profile))
+        .unwrap_or(SpeedProfile::Low)
+}
+
+/// Persists the choice even when the host has no md array yet: the profile is
+/// applied at the next boot or as soon as an array is created.
+pub fn save_speed_profile(profile: SpeedProfile) -> Result<(), String> {
+    if let Some(parent) = speed_path().parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("could not create {}: {e}", parent.display()))?;
+    }
+    let raw = serde_json::to_string(&SpeedState {
+        profile: profile.as_str().to_string(),
+    })
+    .map_err(|e| format!("could not encode the RAID speed profile: {e}"))?;
+    AtomicWriter::write(&speed_path(), &raw)
+        .map_err(|e| format!("could not save the RAID speed profile: {e}"))
+}
+
+/// Applies the saved profile; called at startup and after an array is created
+/// or rebuilt. A host without `/proc/sys/dev/raid` returns the kernel error,
+/// which the caller reports instead of pretending the setting is active.
+pub async fn apply_saved_speed_profile() -> Result<SpeedProfile, String> {
+    let profile = load_speed_profile();
+    apply_speed_profile(profile).await?;
+    Ok(profile)
+}
+
 /// Write both limits through `sudo tee`. `mdadm` has no API for these; they
 /// are plain sysctls and a write failure is returned, never ignored.
 pub async fn apply_speed_profile(profile: SpeedProfile) -> Result<(), String> {
@@ -261,6 +307,13 @@ pub async fn poll_once(state: &Arc<AppState>) -> Result<Vec<String>, String> {
 
 pub async fn run_monitor_loop(state: Arc<AppState>) {
     tokio::time::sleep(STARTUP_DELAY).await;
+    // FIAB-10: the sysctls are volatile kernel state. Re-apply the saved
+    // profile once the md module is loaded; a host without RAID logs at debug
+    // and the monitor keeps running.
+    match apply_saved_speed_profile().await {
+        Ok(profile) => tracing::info!("RAID resync speed profile applied: {}", profile.as_str()),
+        Err(e) => tracing::debug!("RAID resync speed not applied: {e}"),
+    }
     loop {
         if let Err(e) = poll_once(&state).await {
             tracing::warn!("RAID monitor: {e}");
@@ -291,6 +344,22 @@ mod tests {
             assert_eq!(files[0].0, "/proc/sys/dev/raid/speed_limit_min");
             assert_eq!(files[0].1, min.to_string());
         }
+    }
+
+    #[test]
+    fn speed_profile_state_round_trips_and_unknown_falls_back() {
+        let raw = serde_json::to_string(&SpeedState {
+            profile: "balanced".to_string(),
+        })
+        .unwrap();
+        let parsed: SpeedState = serde_json::from_str(&raw).unwrap();
+        assert_eq!(
+            SpeedProfile::parse(&parsed.profile),
+            Some(SpeedProfile::Balanced)
+        );
+        assert!(SpeedProfile::parse("turbo").is_none());
+        let unknown: SpeedState = serde_json::from_str(r#"{"profile":"turbo"}"#).unwrap();
+        assert_eq!(SpeedProfile::parse(&unknown.profile), None);
     }
 
     #[test]

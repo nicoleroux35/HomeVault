@@ -101,6 +101,21 @@ confirm the restart/backoff path.
 disposable VM (remove the system disk, install fresh, restore DB + config from
 an off-machine copy, re-attach the pool, measure RTO/RPO).
 
+## 2026-11-09 — RAID resync speed control (FIAB-10, written, not run)
+
+> **No test was executed.** Static checks: `cargo check --lib`,
+> `cargo check --tests`, `npm run check` (0 errors / 0 warnings).
+
+| Suite | Coverage |
+|---|---|
+| Unit (`src/raid_stability.rs`) | saved profile round-trips; an unknown stored profile parses to none (loader falls back to `low`); existing profile/limit matrix kept |
+| Integration (`tests/storage_integration.rs`) | GET/PUT `/api/storage/raid/resync-speed` are admin-only (member 403); GET returns `low`/`balanced`/`fast`; an unknown profile is a `400` before any sysctl write |
+| Frontend (`Storage.svelte`) | admin-only selector, save action, `applied`/pending notice, 4 locales |
+
+**Still to run:** the tests above plus a real rebuild on an md array to verify
+the sysctls survive a reboot and the shares stay responsive under the `low`
+profile.
+
 ## P1-28 — kernel stability + explicit monitoring choice — 2026-11-09 (not run)
 
 > **No Rust or E2E test was executed for this change.** Static checks passed:

@@ -83,6 +83,7 @@ pub mod firewall;
 pub mod groups;
 pub mod guided_redundancy;
 pub mod health_probe;
+pub mod raid_speed;
 pub mod scheduler_health;
 pub mod identity;
 pub mod iscsi;

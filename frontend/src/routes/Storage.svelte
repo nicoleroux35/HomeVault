@@ -20,6 +20,7 @@
      ======================================================================== -->
 <script lang="ts">
   import { onMount, onDestroy } from 'svelte';
+  import { get } from 'svelte/store';
   import { api } from '$lib/services/api';
   import { onAppVisible } from '$lib/utils/autoRevalidate';
   import { Spinner, Badge, Modal, Button, Toggle, Alert } from '$lib/components/theme';
@@ -237,6 +238,37 @@
   }
   let virtualDisks: VirtualDisk[] = [];
   let virtualBusy = '';
+
+  // ── RAID resync speed (FIAB-10) ──
+  type RaidSpeed = 'low' | 'balanced' | 'fast';
+  let raidSpeedProfile: RaidSpeed = 'low';
+  let raidSpeedBusy = false;
+  let raidSpeedNotice = '';
+
+  async function loadRaidSpeed() {
+    if (!get(isAdmin)) return;
+    const r = await api.getRaidSpeed();
+    if (r.success && r.data) {
+      raidSpeedProfile = (r.data as { profile: RaidSpeed }).profile;
+      const warning = (r.data as { warning?: string | null }).warning;
+      raidSpeedNotice = warning || '';
+    }
+  }
+
+  async function saveRaidSpeed() {
+    raidSpeedBusy = true;
+    const r = await api.setRaidSpeed(raidSpeedProfile);
+    raidSpeedBusy = false;
+    if (!r.success) {
+      raidSpeedNotice = r.message || r.error || translate('storage.raid_speed_failed');
+      return;
+    }
+    const data = r.data as { applied: boolean; warning?: string | null } | null;
+    raidSpeedNotice = data?.applied
+      ? translate('storage.raid_speed_saved')
+      : data?.warning || translate('storage.raid_speed_pending');
+    await loadVirtualDisks();
+  }
 
   interface RaidLevelOption {
     level: string;
@@ -681,6 +713,7 @@
       loadImportablePools(),
       loadSnapshotSchedules(),
     ]);
+    await loadRaidSpeed();
     loading = false;
     setTimeout(() => heroVisible = true, 100);
 
@@ -1687,6 +1720,32 @@
                 </div>
               {/each}
             </div>
+          </div>
+        {/if}
+
+        {#if $isAdmin}
+          <div
+            data-testid="storage-raid-speed"
+            class="mb-4 px-5 py-4 rounded-2xl bg-[var(--hv-shell-card)] border border-[var(--hv-shell-border)] shadow-[var(--hv-shell-shadow-card)]"
+          >
+            <h3 class="m-0 text-c-card-title font-bold text-[var(--hv-shell-text-strong)]">{$t('storage.raid_speed_title')}</h3>
+            <p class="m-0 mt-1 text-xs text-[var(--hv-shell-text-2)]">{$t('storage.raid_speed_hint')}</p>
+            <div class="mt-3 flex items-end gap-3 flex-wrap">
+              <label class="flex flex-col gap-1 text-xs text-[var(--hv-shell-text-2)]">
+                <span>{$t('storage.raid_speed_profile')}</span>
+                <select class={inpSel} bind:value={raidSpeedProfile} data-testid="storage-raid-speed-select">
+                  <option value="low">{$t('storage.raid_speed_low')}</option>
+                  <option value="balanced">{$t('storage.raid_speed_balanced')}</option>
+                  <option value="fast">{$t('storage.raid_speed_fast')}</option>
+                </select>
+              </label>
+              <Button variant="primary" disabled={raidSpeedBusy} onclick={saveRaidSpeed}>
+                {$t('common.save')}
+              </Button>
+            </div>
+            {#if raidSpeedNotice}
+              <p class="m-0 mt-2 text-xs text-[var(--hv-shell-text-2)]" data-testid="storage-raid-speed-notice">{raidSpeedNotice}</p>
+            {/if}
           </div>
         {/if}
 

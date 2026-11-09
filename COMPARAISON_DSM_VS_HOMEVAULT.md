@@ -1132,3 +1132,27 @@ dans `TESTING.md`.
 - **Reste FIAB‑04/FIAB‑05** : la preuve de reprise (retirer le disque système,
   réinstaller, restaurer base + configuration hors machine) et le RTO/RPO
   restent à exécuter sur VM ; c’est le scénario P2‑9.
+
+---
+
+## 12. Vitesse de reconstruction RAID — 2026‑11‑09 (FIAB‑10)
+
+> DSM expose une vitesse de reconstruction dans Storage Manager. HomeVault
+> avait les trois profils (`low`/`balanced`/`fast`) et l’écriture des deux
+> sysctls, mais aucun écran ne les appelait : le réglage restait théorique.
+
+- `GET/PUT /api/storage/raid/resync-speed` (admin) : profils `low`
+  (1 000–25 000 kB/s), `balanced` (5 000–100 000), `fast` (25 000–500 000).
+- Le choix est **persisté** dans `data/state/raid-speed.json` puis appliqué
+  par `sudo tee` sur `speed_limit_min`/`_max`. Un hôte sans module md renvoie
+  `applied:false` + la raison du noyau **sans perdre le choix** : il s’applique
+  à la création du premier volume.
+- Réapplication au démarrage (boucle RAID), après **création** d’un volume et
+  après le lancement d’une **reconstruction**.
+- UI Storage → RAID : sélecteur Low/Balanced/Fast + état (appliqué / en
+  attente), libellés dans les 4 langues.
+- Tests écrits, non exécutés : sérialisation du profil, refus d’un profil
+  inconnu avant tout sysctl, endpoint admin-only (GET/PUT) et forme du payload.
+- Reste FIAB‑10 : le test terrain d’une reconstruction réelle (le profil doit
+  survivre au reboot et la reconstruction ne doit pas affamer les partages) et
+  l’évaluation de `--consistency-policy=ppl` sur RAID5.

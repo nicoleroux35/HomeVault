@@ -544,6 +544,8 @@ but reported as not enforced (with a `reason_code`), never as applied. See
 | GET | `/storage/importable-pools` | auth | `handle_importable_pools_list` — foreign ZFS/Btrfs pools on attached disks |
 | POST | `/storage/import-pool` | admin | `handle_import_pool` — `{ name, pool_type, new_name? }`, ZFS `zpool import` / Btrfs mount |
 | GET | `/storage/raid` | auth | `handle_raid_arrays_list` — legacy; Storage's Virtual-disks tab is preferred |
+| GET | `/storage/raid/resync-speed` | admin | saved RAID resync profile (`low`/`balanced`/`fast`), `min_kbps`/`max_kbps`, `kernel_available` |
+| PUT | `/storage/raid/resync-speed` | admin | `{profile}` — validates, persists in `data/state/raid-speed.json`, applies the two sysctls; `applied:false` + `warning` when the md module is not loaded yet |
 | POST | `/storage/raid/{name}/rebuild` | admin | `handle_raid_rebuild` — reused by Storage's Rebuild button; the optional `replacement_device` passes the same free-device gate as creation |
 | POST | `/storage/virtual-disks/{name}/grow` | admin | `handle_virtual_disk_grow` — mdadm only: `{ device }` (a free whole disk) → `mdadm --add` + `--grow --raid-devices N+1`; the reshape runs in the background (raid0/raid10 and non-mdadm technologies refused) |
 | GET | `/storage/virtual-disks/{name}/level-options` | auth | `handle_virtual_disk_level_options` — mdadm only: `{ current_level, member_count, reshape_in_progress, options[{ level, allowed, reason? }] }`; every refusal names its reason, all targets are listed |

@@ -250,6 +250,9 @@ and in the Groups screen.
 - **Add disk** (grow an mdadm array) and **Change RAID level** (mdadm in-place
   migration: only the allowed targets are selectable, each refused level shows
   its reason, and the action waits for an explicit backup acknowledgement)
+- **RAID rebuild speed** (admin, FIAB-10): Low/Balanced/Fast profile persisted
+  and re-applied at boot and after creating/rebuilding an array; when the host
+  has no md module yet the choice is kept and the card says it will apply later
 - **Btrfs rollback layout**: reports legacy vs `@`/`@snapshots`, migrates an
   existing pool after the pool name is typed; a migrated pool's snapshot list
   gains **Roll back** (safety snapshot, `@` swap, previous subvolume kept)

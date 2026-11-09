@@ -1397,6 +1397,11 @@ pub fn create_app(state: AppStateArc) -> Router {
         .route("/api/storage/raid", get(handle_raid_arrays_list))
         .route("/api/storage/raid", post(handle_raid_create))
         .route(
+            "/api/storage/raid/resync-speed",
+            get(crate::handlers::raid_speed::handle_raid_speed_get)
+                .put(crate::handlers::raid_speed::handle_raid_speed_put),
+        )
+        .route(
             "/api/storage/raid/devices",
             get(handle_raid_available_devices),
         )

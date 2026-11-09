@@ -196,6 +196,11 @@ fn storage_router(state: Arc<AppState>) -> Router {
         )
         .route("/api/storage/import-pool", post(handle_import_pool))
         .route(
+            "/api/storage/raid/resync-speed",
+            get(homevault::handlers::raid_speed::handle_raid_speed_get)
+                .put(homevault::handlers::raid_speed::handle_raid_speed_put),
+        )
+        .route(
             "/api/storage/btrfs/policies",
             get(homevault::handlers::btrfs_maintenance::handle_policies_list)
                 .put(homevault::handlers::btrfs_maintenance::handle_policy_upsert)
@@ -1461,6 +1466,51 @@ async fn zfs_volumes_validate_before_touching_the_host() {
         "/api/storage/zfs/volumes",
         Some(&token),
         Some(json!({ "name": "tank/data", "size_bytes": 1, "thin": true })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+}
+
+#[tokio::test]
+async fn raid_resync_speed_is_admin_only_and_validates_the_profile() {
+    let (state, _tmp, _guard) = setup_state().await;
+    create_test_user(&state, "member", "Password123!", 1).await;
+    create_test_user(&state, "admin", "Password123!", 2).await;
+    let mut router = storage_router(state);
+    let member = login(&mut router, "member", "Password123!").await;
+    let admin = login(&mut router, "admin", "Password123!").await;
+
+    let (status, _) = send(
+        &mut router,
+        Method::GET,
+        "/api/storage/raid/resync-speed",
+        Some(&member),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+
+    let (status, body) = send(
+        &mut router,
+        Method::GET,
+        "/api/storage/raid/resync-speed",
+        Some(&admin),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(matches!(
+        body["data"]["profile"].as_str(),
+        Some("low" | "balanced" | "fast")
+    ));
+
+    // An unknown profile is refused before any sysctl write.
+    let (status, body) = send(
+        &mut router,
+        Method::PUT,
+        "/api/storage/raid/resync-speed",
+        Some(&admin),
+        Some(json!({ "profile": "turbo" })),
     )
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
