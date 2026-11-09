@@ -8,6 +8,24 @@ follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **Signed community app stores (2026-11-09, P1-27).** Third-party catalog
+  content is now verifiable before it is trusted:
+  - `homevault-store.toml` and every app's `homevault-app.toml` can carry a
+    detached Ed25519 signature (`<file>.sig`, hex or base64 over the exact
+    bytes), checked at sync **and** at load time so a checkout edited after the
+    clone stops being offered;
+  - the trust anchor is a 32-byte public key from `HV_CATALOG_PUBKEY` (inline
+    or a path), the compile-time `HOMEVAULT_CATALOG_PUBKEY`, or
+    `/usr/local/lib/homevault/catalog-key.ed25519`; the installer copies the
+    env value there so the service does not depend on it;
+  - no key = the historical behaviour (stores load, shown **Unsigned**);
+    `HV_REQUIRE_SIGNED_STORES=1` makes the key mandatory;
+  - the Docker store list returns `signature` (`verified`/`unconfigured`/
+    `invalid`), `signature_error` and a zero `app_count` for a refused store,
+    and the screen shows **Signed / Unsigned / Signature refused** on the row.
+  Tests: 7 unit (`catalog_signature`), 1 integration (`app_catalog`), installer
+  `bash -n` (written, not run).
+
 - **SMTP OAuth2 for Gmail and Microsoft 365 (2026-11-09, P1-16).** The relay
   no longer needs an app password that the providers are retiring:
   - a new **OAuth2** card under Settings → Notifications saves the provider,

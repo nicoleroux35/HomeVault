@@ -300,6 +300,10 @@ export interface DockerAppStore {
   last_synced_at: number | null;
   last_error: string | null;
   app_count: number;
+  /** P1-27: `verified`, `unconfigured` or `invalid`. */
+  signature: 'verified' | 'unconfigured' | 'invalid';
+  /** Why a store with an `invalid` signature is refused. */
+  signature_error: string | null;
 }
 
 /** `GET /docker/catalog/updates`. */

@@ -108,6 +108,7 @@ if [[ "$HV_BOOTSTRAP" -eq 1 && $EUID -ne 0 ]]; then
     _hv_envs=(HV_INSTALLER_STAGE=reexec)
     for _hv_v in HV_RELEASE_BASE HV_RELEASE_URL HV_RELEASE_SHA256 HV_RELEASE_TOKEN \
                  HV_RELEASE_MANIFEST HV_RELEASE_SIGNATURE HV_RELEASE_PUBKEY \
+                 HV_CATALOG_PUBKEY \
                  HV_APPARMOR HV_APPARMOR_ENFORCE \
                  HV_MODE HV_YES HV_SKIP_OPTIONAL HV_SERVICE_USER DATA_DIRECTORY PORT HTTPS_PORT; do
         if [[ -n "${!_hv_v:-}" ]]; then _hv_envs+=("$_hv_v=${!_hv_v}"); fi
@@ -317,6 +318,9 @@ Environment:
                         /usr/local/lib/homevault/release-key.pem)
   HV_SIGNING_KEY        maintainer: private key used by --package to sign the
                         manifest it writes (never commit this file)
+  HV_CATALOG_PUBKEY     Ed25519 public key of community app stores (inline
+                        hex/base64 or a path); installed for P1-27. Without
+                        it, stores are listed as unsigned.
   HV_YES=1              same as --yes
   HV_MODE=cli|tui       same as --cli / --tui
   HV_SERVICE_USER       root (default) or homevault
@@ -2533,6 +2537,26 @@ fi
 render_update_unit "$INSTALL_DIR" > /etc/systemd/system/homevault-update.service
 chmod 0644 /etc/systemd/system/homevault-update.service
 ok "Update engine unit written to /etc/systemd/system/homevault-update.service"
+
+# Catalog trust anchor (P1-27). HV_CATALOG_PUBKEY may be the inline key
+# (hex/base64) or a path to it; either way it is installed at the path the
+# binary checks by default, so the service environment does not have to carry
+# it. No key = the historical unsigned behaviour (stores are listed as
+# "Unsigned"); HV_REQUIRE_SIGNED_STORES=1 makes the key mandatory at runtime.
+if [[ -n "${HV_CATALOG_PUBKEY:-}" ]]; then
+    mkdir -p /usr/local/lib/homevault
+    if [[ -f "$HV_CATALOG_PUBKEY" ]]; then
+        install -m 0644 -o root -g root "$HV_CATALOG_PUBKEY" \
+            /usr/local/lib/homevault/catalog-key.ed25519 2>/dev/null \
+            && ok "Catalog public key installed at /usr/local/lib/homevault/catalog-key.ed25519" \
+            || warn "Could not install the catalog public key — community stores stay unsigned"
+    else
+        printf '%s\n' "$HV_CATALOG_PUBKEY" > /usr/local/lib/homevault/catalog-key.ed25519 \
+            && chmod 0644 /usr/local/lib/homevault/catalog-key.ed25519 \
+            && ok "Catalog public key written to /usr/local/lib/homevault/catalog-key.ed25519" \
+            || warn "Could not write the catalog public key — community stores stay unsigned"
+    fi
+fi
 
 # Optional AppArmor confinement (P2-7). Opt-in: a wrong profile can block a
 # disk, network or Samba operation, so compliance is never claimed silently.

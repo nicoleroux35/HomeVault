@@ -958,7 +958,7 @@ Representative endpoints:
 | POST | `/docker/catalog/update-all` | admin | sequential update queue over every pending update → `{updated[], failed[]}` |
 | GET/PUT | `/docker/updates/schedule` | admin | opt-in scheduled catalog updates: `enabled` (default false), `interval_hours` (6–168), last run/result/error, `docker_available` |
 | POST | `/docker/updates/run-now` | admin | one update pass now, same path as update-all → `{report, schedule}` |
-| GET/POST/DELETE | `/docker/stores` (+ `/{id}/sync`) | admin | community catalog git repos |
+| GET/POST/DELETE | `/docker/stores` (+ `/{id}/sync`) | admin | community catalog git repos; each row carries `signature` (`verified`/`unconfigured`/`invalid`), `signature_error` and `app_count` (0 when refused) |
 | POST | `/docker/daemon/start` | admin | start the Docker daemon via systemd (**also enables it for boot persistence**) |
 | GET | `/docker/daemon/logs` | admin | last 100 lines of the daemon's journal, for diagnosing why it is down |
 | GET | `/docker/port-check` | admin | `?port=N` — is a host port free to publish a container on (host `ss` + other containers + HomeVault's web port); re-checked server-side on create/install |

@@ -84,6 +84,45 @@ Logic lives in `src/app_catalog/{mod,manifest,store,updates}.rs`.
   gate's per-app `get_project` probes onto the blocking pool: a first install
   pulls images for minutes and pinned a runtime worker for its whole duration.
 
+### Signed community stores (P1-27, 2026-11-09)
+
+A community store is third-party content, so a keyed build verifies it before a
+single manifest reaches the catalog. The check runs at **sync** time (a refused
+store is not registered) and again at **load** time (a checkout edited on disk
+after the clone stops being offered).
+
+| Piece | Value |
+|---|---|
+| Signed files | `homevault-store.toml` and every app's `homevault-app.toml` |
+| Signature | detached, exact file bytes, `<file>.sig`, hex or standard base64, 64-byte Ed25519 |
+| Public key | 32 raw bytes, hex/base64: `HV_CATALOG_PUBKEY` (inline or absolute path), else the compile-time `HOMEVAULT_CATALOG_PUBKEY`, else `/usr/local/lib/homevault/catalog-key.ed25519` |
+| Hard mode | `HV_REQUIRE_SIGNED_STORES=1` makes a **missing key** itself refuse every store |
+| Status | `verified`, `unconfigured` (no key: historical behaviour) or `invalid` (missing/malformed/mismatched); `GET /api/docker/stores` returns it with the bounded reason |
+
+The Docker screen shows a **Signed / Unsigned / Signature refused** badge on
+each store row; a refused store keeps its installed containers but its apps
+disappear from the catalog (never loaded, never offered for install).
+
+Signing a store (release tooling):
+
+```bash
+# One release key. Keep the private key offline; ship only the 32-byte public key.
+openssl genpkey -algorithm ED25519 -out catalog-signing-key.pem
+openssl pkey -in catalog-signing-key.pem -pubout -outform DER | tail -c 32 | xxd -p -c 64 \
+  > catalog-key.ed25519
+
+# Each manifest, after every edit (hex signature next to it).
+for f in homevault-store.toml */homevault-app.toml; do
+  openssl pkeyutl -sign -inkey catalog-signing-key.pem -rawin -in "$f" -out "$f.sig.bin"
+  xxd -p -c 64 "$f.sig.bin" > "$f.sig"
+  rm "$f.sig.bin"
+done
+```
+
+The installer copies `HV_CATALOG_PUBKEY` (a path or the inline key) to
+`/usr/local/lib/homevault/catalog-key.ed25519`, so a deployment does not depend
+on the service environment carrying it.
+
 ### App catalog phase B — dependencies, settings, compatibility (2026-10-13)
 
 Catalog phase-B additions on the same package shape (no new manifest file):

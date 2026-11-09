@@ -513,3 +513,82 @@ async fn test_install_rejects_gpu_for_an_app_without_hardware_support() {
         .unwrap_or_default()
         .contains("does not support hardware acceleration"));
 }
+
+// ---------------------------------------------------------------------------
+// P1-27 — community stores report their signature state
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_stores_list_reports_the_catalog_signature_state() {
+    let (state, _tmp, _g) = setup_state().await;
+    mk_user(&state, "admin", "pw012345", 2).await;
+
+    // A store row plus a checkout on disk. No key is configured in this
+    // environment, so the historical unsigned state must be reported — not a
+    // silent "verified".
+    let repo = homevault::storage::AppStoreRepository::new(state.db.pool());
+    repo.add("demo", "Demo", "https://example.com/demo.git", "admin")
+        .await
+        .expect("store row");
+    let dir = homevault::app_catalog::store::store_dir("demo");
+    std::fs::create_dir_all(dir.join("app")).unwrap();
+    std::fs::write(
+        dir.join("homevault-store.toml"),
+        "id = \"demo\"\nname = \"Demo\"\n",
+    )
+    .unwrap();
+    std::fs::write(dir.join("app").join("homevault-app.toml"), "id = \"app\"\n").unwrap();
+
+    let mut r = router(state.clone());
+    let token = login(&mut r, "admin", "pw012345").await;
+    let (status, body) = send(
+        &mut r,
+        Method::GET,
+        "/api/docker/stores",
+        Some(&token),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let store = &body["data"][0];
+    assert_eq!(store["signature"], json!("unconfigured"));
+    assert_eq!(store["app_count"], json!(1));
+    assert!(store["signature_error"].is_null(), "{body}");
+
+    // Hard mode without a key: the store is refused, its apps are not counted,
+    // and the reason is returned instead of a silent empty catalog.
+    std::env::set_var("HV_REQUIRE_SIGNED_STORES", "1");
+    let (status, body) = send(
+        &mut r,
+        Method::GET,
+        "/api/docker/stores",
+        Some(&token),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let store = &body["data"][0];
+    assert_eq!(store["signature"], json!("invalid"));
+    assert_eq!(store["app_count"], json!(0));
+    assert!(
+        store["signature_error"]
+            .as_str()
+            .is_some_and(|m| m.contains("no Ed25519 public key is configured")),
+        "{body}"
+    );
+
+    // The catalog itself no longer offers that store's app, while the setting
+    // is still in force.
+    let (status, body) = send(
+        &mut r,
+        Method::GET,
+        "/api/docker/catalog",
+        Some(&token),
+        None,
+    )
+    .await;
+    std::env::remove_var("HV_REQUIRE_SIGNED_STORES");
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let text = body.to_string();
+    assert!(!text.contains("demo:app"), "{body}");
+}

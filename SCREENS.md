@@ -572,7 +572,7 @@ The screen refreshes on tab switch, on window focus and every 45 s
 - Docker Hub search and image discovery
 
 ### App Catalog
-- Manifest-driven packages from the embedded store plus admin-added community stores (16 built-in: Baïkal, BookStack, FreshRSS, Gitea, Grafana, Home Assistant, Immich, Jellyfin, n8n, Navidrome, ownCloud, Paperless-ngx, Pi-hole, Uptime Kuma, Vaultwarden, Vikunja)
+- Manifest-driven packages from the embedded store plus admin-added community stores (16 built-in: Baïkal, BookStack, FreshRSS, Gitea, Grafana, Home Assistant, Immich, Jellyfin, n8n, Navidrome, ownCloud, Paperless-ngx, Pi-hole, Uptime Kuma, Vaultwarden, Vikunja); each community store row shows its **Ed25519 signature state** (Signed / Unsigned / Signature refused) with the reason, and a refused store's apps are not offered
 - One-click install/uninstall with dependency, settings and compatibility review; per-app reverse proxy with optional auth gate; per-app logs; update detection and "update all"; an opt-in **Scheduled updates** disclosure (interval 6–168 h, first run one interval after enabling, never a restart without an update, Run now)
 - **Media apps (Immich, Jellyfin, Navidrome)**: the install dialog offers a **Library** selector (default: the app's own folder, or one of the configured shares, mounted read-only) and a **GPU** checkbox for hardware transcoding (disabled with the reason when the host has no `/dev/dri`). The installed card shows the bound share; both choices survive updates
 

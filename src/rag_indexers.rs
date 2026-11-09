@@ -464,7 +464,11 @@ RAID levels: RAID0 (stripe), RAID1 (mirror), RAID5 (parity), RAID6 (double parit
   library (read-only, chosen at install) and use the graphics card (/dev/dri)
   for hardware transcoding when the host has one; both choices are kept on
   updates
-- Community stores: add third-party app repositories
+- Community stores: add third-party app repositories; when an Ed25519
+  catalog public key is configured, each store and each of its app manifests
+  must carry a valid detached signature. The store list shows Signed, Unsigned
+  or Signature refused with the reason, and a refused store's apps are not
+  loaded or offered for install
 - Per-app reverse proxy with session-cookie auth gate
 - Port conflict detection before container creation
 - Docker Compose deploy and management, including pulling the newest images

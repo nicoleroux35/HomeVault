@@ -22,6 +22,7 @@ pub mod api_contract;
 /// Core web framework modules
 pub mod auth;
 pub mod auto_block;
+pub mod catalog_signature;
 pub mod config;
 pub mod handlers;
 pub mod network;

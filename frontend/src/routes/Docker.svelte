@@ -2009,8 +2009,16 @@
           {/if}
           {#each appStores as s (s.id)}
             <div class="flex items-center gap-2 px-3 py-2 rounded-lg bg-[var(--hv-shell-border-soft)] border border-[var(--hv-shell-border)]">
-              <div class="flex-1 min-w-0"><span class="block text-c-base font-semibold text-[var(--hv-shell-text-strong)]">{s.name}</span><span class="block text-c-xs text-[var(--hv-shell-text-2)]">{s.git_url}{#if s.last_error}<span class="text-[var(--hv-error)]"> · {s.last_error}</span>{:else if !s.last_synced_at}<span> · {$t('docker.stores_never_synced')}</span>{/if}</span></div>
+              <div class="flex-1 min-w-0"><span class="block text-c-base font-semibold text-[var(--hv-shell-text-strong)]">{s.name}</span><span class="block text-c-xs text-[var(--hv-shell-text-2)]">{s.git_url}{#if s.last_error}<span class="text-[var(--hv-error)]"> · {s.last_error}</span>{:else if s.signature_error}<span class="text-[var(--hv-error)]"> · {s.signature_error}</span>{:else if !s.last_synced_at}<span> · {$t('docker.stores_never_synced')}</span>{/if}</span></div>
               <span class="px-2 py-0.5 rounded-full bg-[var(--hv-primary-light)] text-[var(--hv-primary)] text-c-xs font-bold">{ $t('docker.stores_app_count', { count: String(s.app_count) })}</span>
+              <!-- P1-27: the trust anchor is visible, not implied. -->
+              {#if s.signature === 'verified'}
+                <span class="px-2 py-0.5 rounded-full bg-[var(--hv-success-bg)] text-[var(--hv-success)] text-c-xs font-bold" data-testid="docker-store-signature" data-state="verified">{$t('docker.stores_signature_verified')}</span>
+              {:else if s.signature === 'invalid'}
+                <span class="px-2 py-0.5 rounded-full bg-[var(--hv-error-bg)] text-[var(--hv-error)] text-c-xs font-bold" title={s.signature_error ?? ''} data-testid="docker-store-signature" data-state="invalid">{$t('docker.stores_signature_invalid')}</span>
+              {:else}
+                <span class="px-2 py-0.5 rounded-full bg-[var(--hv-shell-border)] text-[var(--hv-shell-text-2)] text-c-xs font-bold" data-testid="docker-store-signature" data-state="unconfigured">{$t('docker.stores_signature_unconfigured')}</span>
+              {/if}
               <button class={actionIconBtn} disabled={storeBusy} onclick={() => syncStore(s)} aria-label={$t('docker.stores_sync')}><IconRefresh size={16} /></button>
               <button class={cn(actionIconBtn, dangerHover)} disabled={storeBusy} onclick={() => removeStore(s)} aria-label={$t('docker.stores_remove')}><IconTrash size={16} /></button>
             </div>

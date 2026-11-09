@@ -38,6 +38,7 @@ qu'elle listait sont **désormais livrés** et ne doivent plus être comptés :
 | OpenAPI, DDNS 7 fournisseurs, SNMP v3 | ✅ livrés |
 | Table d'audit | ✅ **livrée le 2026‑11‑08, filtres structurés UI le 2026‑11‑09** (P1‑18 : table, API, export, source Journal, filtres gravité/utilisateur/action/dates, pagination, rétention 90 j) |
 | Signature + atomicité de mise à jour | ✅ **installeur 2026‑11‑08 + Apply update dans Settings 2026‑11‑09** (P2‑8 ; reste la clé de production) |
+| Signature des stores communautaires | ✅ **livrée le 2026‑11‑09** (P1‑27 : Ed25519 détachée sur le descripteur et chaque manifeste d’app, vérifiée au sync et au chargement, badge Signed/Unsigned/refused) |
 | OAuth2 e‑mail (Gmail / Microsoft 365) | ✅ **livré le 2026‑11‑09** (P1‑16 : flux code, refresh token scellé, msmtp `oauthbearer`/`xoauth2`, carte Settings — aucun mot de passe applicatif) |
 | Isolation d'exécution | 🟡 **installeur livré le 2026‑11‑08** (P2‑7 partiel : systemd durci + AppArmor opt‑in ; validation terrain/enforce restante) |
 | Restauration bare‑metal | 🟡 **drill non destructif livré le 2026‑11‑08** (P2‑9 partiel : snapshot DB + archive config + état backup vérifiés ; test de reconstruction VM restant) |
@@ -715,6 +716,29 @@ Implémentation : `JournalQuery` → `audit_query_from_journal`
 `src/audit.rs`, donc la même valeur invalide donne le même message sur
 `/api/audit` et sur `/api/journal/entries`. Tests écrits, non exécutés :
 2 unitaires, 5 d'intégration, E2E Journal §13 (5).
+
+**P1‑27 — signature des stores communautaires (livrée le 2026‑11‑09).**
+
+- `src/catalog_signature.rs` : signatures Ed25519 **détachées**
+  (`<fichier>.sig`, hex ou base64, sur les octets exacts) du descripteur
+  `homevault-store.toml` et de chaque `homevault-app.toml`.
+- Vérification **au sync** (un store refusé n'est pas enregistré) **et au
+  chargement** (`scan_store`) : un checkout modifié après le clone cesse
+  d'être proposé, sans toucher aux conteneurs déjà installés.
+- Ancre de confiance : `HV_CATALOG_PUBKEY` (inline ou chemin), puis
+  `HOMEVAULT_CATALOG_PUBKEY` à la compilation, puis
+  `/usr/local/lib/homevault/catalog-key.ed25519`. L'installeur copie la valeur
+  d'environnement à cet emplacement ; `HV_REQUIRE_SIGNED_STORES=1` rend la clé
+  obligatoire, sans clé les stores restent chargeables et affichés *Unsigned*.
+- `GET /docker/stores` expose `signature` (`verified`/`unconfigured`/
+  `invalid`), `signature_error` et `app_count` (0 pour un store refusé) ;
+  l'écran Docker affiche **Signed / Unsigned / Signature refused**.
+- Le pinning obligatoire des images reste **rejeté** (décision du 2026‑11‑06) ;
+  seul le digest mal formé est refusé avant `docker pull`.
+- Tests écrits mais **non exécutés** : 7 unitaires (`catalog_signature`), 1
+  d'intégration (`app_catalog`), `bash -n` de l'installeur. Docs :
+  `docs/guides/docker.md` (commandes de signature), `docs/API.md`,
+  `SCREENS.md`, FeatureDoc `docker`.
 
 **P2‑9 — restauration bare‑metal (drill livré, test VM restant).**
 

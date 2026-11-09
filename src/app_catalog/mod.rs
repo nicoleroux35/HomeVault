@@ -192,6 +192,16 @@ fn scan_store(store_id: &str, store_name: &str) -> Vec<CatalogApp> {
     if !dir.is_dir() {
         return Vec::new();
     }
+    // P1-27: re-check the signature at load time, not only at sync time. A
+    // store edited on disk after the clone must not reach the catalog (the
+    // installed containers are unaffected; they simply stop being offered).
+    match crate::catalog_signature::state_for_store(&dir) {
+        crate::catalog_signature::SignatureState::Invalid(reason) => {
+            tracing::warn!("store {store_id}: signature refused, apps hidden: {reason}");
+            return Vec::new();
+        }
+        _ => {}
+    }
     store::app_dirs(&dir)
         .into_iter()
         .filter_map(|app_dir| {

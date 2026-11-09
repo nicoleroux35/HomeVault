@@ -1392,6 +1392,10 @@ struct StoreView {
     last_synced_at: Option<i64>,
     last_error: Option<String>,
     app_count: usize,
+    /// P1-27: `verified`, `unconfigured` or `invalid`.
+    signature: String,
+    /// Why an `invalid` store is refused (bounded, no key material).
+    signature_error: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1416,10 +1420,18 @@ pub async fn handle_stores_list(
         stores
             .into_iter()
             .map(|s| {
-                let app_count = if s.enabled {
-                    app_store::app_dirs(&app_store::store_dir(&s.id)).len()
+                let dir = app_store::store_dir(&s.id);
+                let signature = crate::catalog_signature::state_for_store(&dir);
+                let app_count = if s.enabled && signature.as_str() != "invalid" {
+                    app_store::app_dirs(&dir).len()
                 } else {
                     0
+                };
+                let signature_error = match &signature {
+                    crate::catalog_signature::SignatureState::Invalid(reason) => {
+                        Some(reason.clone())
+                    }
+                    _ => None,
                 };
                 StoreView {
                     id: s.id,
@@ -1429,6 +1441,8 @@ pub async fn handle_stores_list(
                     last_synced_at: s.last_synced_at,
                     last_error: s.last_error,
                     app_count,
+                    signature: signature.as_str().to_string(),
+                    signature_error,
                 }
             })
             .collect::<Vec<_>>()

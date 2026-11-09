@@ -119,7 +119,7 @@ justifie.
 | **P1-24** | Digest des gros téléchargements + checksums de chunks d'upload ✅ | P1 | M | Intégrité prouvée au‑delà de 64 Mio |
 | **P1-25** | Vérification finale rsync/rclone (`--checksum`, `rclone check`) ✅ | P1 | S/M | Une sync n'est pas « OK » sans comparaison |
 | **P1-26** | Réplication : Btrfs over SSH + vérification destination ✅ | P1 | M/L | Parité ZFS et copie distante prouvée |
-| **P1-27** | Chaîne d'approvisionnement : images Docker par digest + signature du catalogue — **partiel assumé** (signature à finir ; pinning obligatoire rejeté) | P1 | M | Pas d'image/catalogue substitué |
+| **P1-27** | Chaîne d'approvisionnement : images Docker par digest + signature du catalogue — **livré 2026‑11‑09** (pinning obligatoire rejeté, signature des stores faite) | P1 | M | Pas d'image/catalogue substitué |
 | **P1-28** | Stabilité système : `LimitNOFILE`, `sysctl`, `smartd`/`mdmonitor`, write cache + UPS — **partiel assumé** (avertissement installateur suffit ; carte UI rejetée) | P1 | S/M | Moins de coupures évitables |
 | **P1-29** | SMB WS-Discovery (découverte Windows) — livré 2026‑11‑08 | P1 | S | Découverte sans config |
 | **P1-30** | Mises à jour Docker planifiées/auto — livré 2026‑11‑09 | P1 | S/M | Hygiène de patch |
@@ -191,11 +191,11 @@ justifie.
 > récupération en `ro` lève désormais une notification.
 >
 > **P1 : livrés** P1-22 (options + boucle balance/TRIM), P1-23, P1-24, P1-25
-> (vérification + `transfer_history`) et P1-26. **Partiels** : P1-21 (profils,
-> moniteur et suggestion de spare ; ajout du spare toujours manuel), P1-27
-> (digest mal formé refusé, pinning strict opt-in ; signature du catalogue non
-> imposée) et P1-28 (unité/sysctl + avertissement installateur ; avertissements
-> UI non exposés).
+> (vérification + `transfer_history`) et P1-26. **Partiel** : P1-21 (profils,
+> moniteur et suggestion de spare ; ajout du spare toujours manuel). P1-27 est
+> **livré** (digest mal formé refusé, pinning strict opt-in, signature Ed25519
+> des stores vérifiée au sync et au chargement). **Partiel** : P1-28
+> (unité/sysctl + avertissement installateur ; avertissements UI non exposés).
 >
 > **P2 : livrés** P2-10 (prédiction + carte UI), P2-11 (politiques de
 > compression + onglet Storage + boucle mensuelle), P2-12 (rapport
@@ -208,8 +208,7 @@ justifie.
 >
 > Les P0 sont fonctionnellement terminés. Après la revue de valeur du
 > 2026‑11‑06 (ci-dessous), la suite prioritaire est **P2-7 (enforce/terrain),
-> P2-8 (reste la clé de production), P2-9 (test VM), P1-16**, puis les finitions
-> P1-27/P1-28.
+> P2-8 (reste la clé de production), P2-9 (test VM)**, puis la finition P1-28.
 > Les autres items sont gelés ou rejetés pour la cible actuelle.
 
 ---
@@ -1616,7 +1615,7 @@ blocs) ; aucun scrub destination n'est lancé.*
   backoff sur coupure SSH.
 - Tests : plan de commandes, parsing destination, reprise après coupure.
 
-### [~] P1-27 — Chaîne d'approvisionnement : digest + signature · M
+### [x] P1-27 — Chaîne d'approvisionnement : digest + signature · M · **livré 2026‑11‑09**
 
 **Décision 2026‑11‑06 : finir la signature seulement.** Le pinning obligatoire
 de toutes les images est rejeté (il casserait les mises à jour du catalogue) ;
@@ -1629,8 +1628,26 @@ stricte, `pinned_digest`/`is_pinned`, `verify_ed25519` et `verify_artifact`
 est refusé côté HomeVault. `HOMEVAULT_REQUIRE_PINNED_IMAGES=1` fait en plus
 refuser une installation catalogue dont un `image:` du compose rendu n'est pas
 épinglé `@sha256:…`, avec la liste des images fautives.
-*Restent ouverts : signature et vérification des manifestes du catalogue, et
-clé Ed25519 publique configurée dans ce build.*
+**Livré 2026‑11‑09 (signature des stores).** `src/catalog_signature.rs` vérifie
+une signature Ed25519 détachée (`<fichier>.sig`, hex ou base64, sur les octets
+exacts) de `homevault-store.toml` **et** de chaque `homevault-app.toml` :
+
+- à la synchronisation (un store refusé n'est pas enregistré) **et** au
+  chargement (`scan_store`), donc un checkout modifié après le clone cesse
+  d'être proposé ;
+- ancre de confiance : `HV_CATALOG_PUBKEY` (clé inline ou chemin), puis
+  `HOMEVAULT_CATALOG_PUBKEY` à la compilation, puis
+  `/usr/local/lib/homevault/catalog-key.ed25519` ; l'installeur copie la valeur
+  d'environnement à cet emplacement (0644) ;
+- sans clé : comportement historique, l'UI affiche **Unsigned** ;
+  `HV_REQUIRE_SIGNED_STORES=1` rend la clé obligatoire ;
+- `GET /docker/stores` renvoie `signature` (`verified`/`unconfigured`/
+  `invalid`), `signature_error` et un `app_count` à 0 pour un store refusé ;
+  l'écran Docker affiche **Signed / Unsigned / Signature refused**.
+- Tests écrits mais **non exécutés** : 7 unitaires (`catalog_signature`), 1
+  d'intégration (`app_catalog`), `bash -n` de l'installeur.
+- Docs : `docs/guides/docker.md` (section « Signed community stores » avec les
+  commandes de signature), `docs/API.md`, `SCREENS.md`, FeatureDoc `docker`.
 
 - Épingler les images Docker par digest (`@sha256:…`) et vérifier avant
   `docker pull`.
@@ -2290,8 +2307,9 @@ Vérifié dans le code au 04/11/2026 (réserves d'intégrité ajoutées le
 > - **Rclone** : la vérification finale et l’écriture dans `transfer_history`
 >   sont livrées (P1-25).
 > - **Catalogue/Docker** : un digest mal formé est refusé avant `docker pull`
->   (P1-27) ; le pinning strict est opt-in et la signature du catalogue reste
->   à faire (décision : signature seulement, pas de pin obligatoire).
+>   (P1-27) ; le pinning strict est opt-in et la signature Ed25519 des stores
+>   communautaires est livrée (vérifiée au sync et au chargement) — décision :
+>   signature seulement, pas de pin obligatoire.
 
 ---
 
@@ -2378,7 +2396,7 @@ Shares, docs et `TESTING.md` à jour.
 - [x] P1-24 digest gros téléchargements/chunks
 - [x] P1-25 vérification rsync/rclone + `transfer_history`
 - [x] P1-26 réplication Btrfs over SSH + vérification destination
-- [~] P1-27 digest/signature chaîne d'approvisionnement (pinning strict opt-in ; signature non imposée)
+- [x] P1-27 digest/signature chaîne d'approvisionnement — livré 2026‑11‑09 (pinning strict opt-in ; signature des stores vérifiée)
 - [~] P1-28 stabilité système (unité, sysctl, helpers ; avertissements non exposés)
 
 ### Trimestre — « Structure »
@@ -2467,8 +2485,8 @@ Shares, docs et `TESTING.md` à jour.
   de P0-7, `x-systemd.*`, température sur 3 échantillons, backoff et
   notification `backup.jobs` sont livrés). Après la **revue de valeur du
   2026‑11‑06**, les prochains chantiers ouverts sont **P2-7 (enforce +
-  terrain), P2-8 (clé de production), P2-9 (test VM)**, puis les finitions
-  P1-27/P1-28 ; les autres items sont gelés ou rejetés.
+  terrain), P2-8 (clé de production), P2-9 (test VM)**, puis la finition
+  P1-28 ; les autres items sont gelés ou rejetés.
 - **Tests** : `cargo check --lib`, `cargo test --lib --no-run` et les
   `--no-run` de `replication_integration`, `iscsi_integration`,
   `storage_integration`, `raid_integration`, `rclone_integration`,

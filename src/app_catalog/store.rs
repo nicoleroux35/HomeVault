@@ -140,6 +140,11 @@ pub fn sync(git_url: &str, dest: &Path) -> Result<StoreDescriptor, String> {
         ));
     }
 
+    // P1-27: a keyed build refuses an unsigned or tampered checkout before the
+    // store is registered. The check runs again on every load (`scan_store`),
+    // because a checkout can be edited on disk after this sync.
+    crate::catalog_signature::verify_store_checkout(dest)?;
+
     read_descriptor(dest)
 }
 
