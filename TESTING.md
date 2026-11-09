@@ -1,5 +1,22 @@
 # HomeVault — Test tracking
 
+## P1 Explorer — network locations (CIFS/NFS) + Btrfs versions — 2026-11-09 (not run)
+
+> **Instruction followed: no test command was executed for this change.**
+> Static checks passed: `cargo check --lib`, `cargo check --tests`,
+> `cd frontend && npm run check` and `npm run build`.
+> **No mount is ever executed by any of these tests.** The integration suite
+> drives only the refusal paths and "save without connecting"; the E2E suite
+> opens the dialog and reads the API.
+
+| Coverage | Added / changed |
+|---|---|
+| Unit (`src/remote_mounts.rs`) | **+10** — name/server/source validation (traversal, spaces, `:`/IPv6, `-o…`, path-in-share); per-protocol option allowlist (credentials/`rw`/`suid` refused, duplicates collapse, cap); account fields cannot inject a credentials key; exact `mount`/`umount` argv for CIFS and NFS; credentials body; `/proc/mounts` parsing with octal escapes and segment boundaries; `target_for` derives from the name only; store round-trip + forward-compatible defaults |
+| Unit (`src/snapshots.rs`) | **+2** — `deepest_containing_root` respects segment boundaries (`/srv/photos` vs `/srv/photos2`); `version_path_in_snapshot` appends only the part below the share and refuses a sibling folder or an empty root |
+| Integration (`tests/remote_mounts_integration.rs`) | **+7** — admin gate (401/403/200 shape); unsafe name; injected server, path-in-share; credential option; save-without-connecting (or `503` naming the helper) + duplicate refusal + delete; name validated before any syscall; reconcile with nothing configured |
+| E2E (`tests/e2e/explorer/explorer.spec.ts`) | **+3** — §19.1 the panel and its Add dialog (safe defaults, skips when no helper); §19.2 an unsafe name is refused with the rule inline; §19.3 the API never leaks a password |
+| Docs | `docs/guides/remote-mounts.md` (new), `docs/guides/explorer.md`, `docs/INDEX.md`, `docs/API.md`, `PRIVACY.md` (RoPA ligne 18), `SCREENS.md` (§16/16c), `CHANGELOG.md`, RAG `explorer`/`snapshots`, `installer/install.sh` + dependency registry (cifs-utils/nfs-common), `HOMEVAULT_TASKLIST_A_FAIRE.md` (P1‑35), `COMPARAISON_DSM_VS_HOMEVAULT.md` |
+
 ## P1 media integration (share binding + hardware transcoding) — 2026-11-09 (not run)
 
 > **Instruction followed: no test command was executed for this change.**

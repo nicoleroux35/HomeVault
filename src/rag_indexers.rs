@@ -254,9 +254,15 @@ Widgets can be rearranged by drag-and-drop. Monitor panels (Resource, RAID, Secu
 - Recently visited folders, remembered per account and shared across browsers
 - Favorites / pinned folders
 - Safe-eject external drives
-- Rewind: a per-file timeline of past ZFS snapshots, restore an older version by copying it out
+- Rewind: a per-file timeline of past snapshots — ZFS (.zfs/snapshot) and
+  Btrfs (.snapshots/<share>/<name>) — restore an older version by copying it out
 - Browse past ZFS snapshots (read-only, copy to restore)
 - Discover nearby network (SMB) shares from the toolbar
+- Network locations: mount a share from another NAS or computer (SMB/CIFS or
+  NFS) under /mnt/homevault-remote and browse it like a local folder. An
+  administrator picks one of the configured shares; the mount is read-only by
+  default, reconnects after a restart when asked, and its password is kept in a
+  private credentials file that is never returned by the interface
 - Format a spare drive as ext4 or exfat
 - Share a folder directly to the Shares app
 - Instant copy on copy-on-write filesystems (Btrfs, reflink-enabled XFS): a
@@ -941,7 +947,7 @@ This screen only creates. Listing the arrays, verifying or scrubbing them, rebui
             content: r#"Point-in-time snapshots of ZFS and Btrfs pools: create them, list them, delete them, and roll a pool back to one.
 
 Where snapshots are used:
-- The File Explorer can browse the snapshots that cover a folder (read-only, on ZFS), so an older version of a file can be copied back out without rolling anything back.
+- The File Explorer can browse the snapshots that cover a folder (read-only, on ZFS and Btrfs), so an older version of a file can be copied back out without rolling anything back.
 - Backups lists the snapshots of a repository.
 - A virtual machine can take a snapshot and be restored to it.
 - Storage's Snapshots tab manages scheduled snapshots: each schedule takes a snapshot on a cron and applies GFS (grandfather-father-son) retention — keep the newest N hourly, daily, weekly, monthly and yearly generations. A schedule can cover a whole pool or one share. A share schedule snapshots the dataset or subvolume that contains the share, applies its retention there, and keeps only that backend's snapshots in view, so each folder can have its own policy. Pruning only ever deletes snapshots carrying the schedule's own prefix (default hv-auto-); manual and backup snapshots are never touched. Schedules are admin-only.

@@ -83,13 +83,13 @@ that grant.
 | `/explorer/trash/{id}` | DELETE | — | permanently delete one trashed item |
 | `/explorer/trash/policy` | GET / PUT | `{ retention_days, max_bytes }` (PUT) | trash retention policy (see *Trash retention & auto-purge*); GET any signed-in, PUT admin |
 | `/explorer/trash/purge-now` | POST (admin) | — | run the retention pass now with the saved policy |
-| `/explorer/roots` | GET | — | labelled sidebar roots: `[{path, kind, name, permission}]` — session user's home, each granted root (`kind` = users/shares/media/appdata/system/storage), then every mounted virtual disk (`kind:"virtualdisk"`). A member only sees their home and their grants |
+| `/explorer/roots` | GET | — | labelled sidebar roots: `[{path, kind, name, permission}]` — session user's home, each granted root (`kind` = users/shares/media/appdata/system/storage), every mounted virtual disk (`kind:"virtualdisk"`) and every mounted network location (`kind:"network"`). A member only sees their home and their grants |
 | `/explorer/save` | POST | `{ path, content }` | inline text/code editor — atomic temp-file + rename, 5 MB cap |
-| `/explorer/snapshots` | GET | `?path=` | ZFS snapshots covering that path, each with a read-only `browse_path` under `.zfs/snapshot/` |
+| `/explorer/snapshots` | GET | `?path=` | ZFS snapshots covering that path, each with a read-only `browse_path` under `.zfs/snapshot/` (the per-share snapshot list, which also covers Btrfs, is `/api/shares/{name}/{type}/snapshots`) |
 | `/explorer/eject` | POST (admin) | `?path=<mount>` | safe-eject a removable drive — guarded by `is_removable_block_device` (can never `umount` an internal disk) |
 | `/explorer/recents` | GET / POST / DELETE | `?path=<key>` (POST) | the session user's recently-visited folders: list (newest first), touch (record/refresh one), clear (all). Stored server-side, per user, in `recent_repo` (`explorer_recents`, migration 039) — not `localStorage` |
 | `/explorer/tags` | GET / POST / DELETE | `?path=` / `{ path, tag }` / `{ path, tag }` | private file/folder tags per user; list can be scoped to one path |
-| `/explorer/history` | GET | `?path=` | **Rewind** — the ZFS snapshot timeline covering that file/folder, oldest→newest, each with a read-only `snapshot_path` under `.zfs/snapshot/`. Empty outside ZFS |
+| `/explorer/history` | GET | `?path=` | **Rewind** — the snapshot timeline covering that file/folder, oldest→newest, each with a read-only path: `.zfs/snapshot/…` on a ZFS dataset, `.snapshots/<share>/<name>/…` on Btrfs. Empty when neither backend covers the path |
 | `/explorer/network-discovery` | GET (admin) | — | **SMB/network discovery** — nearby shares found via `smbtree` (SMB workgroups/hosts/shares) and Avahi/mDNS (`_smb._tcp` etc.), returned as a flat `NetworkResource[]` (`kind`, `name`, `host`, `address`, `share?`). Best-effort: missing tools yield an empty list, never an error |
 | `/explorer/format` | POST (admin) | `{ device, fstype, label? }` | format a block device as `ext4` or `exfat` (`mkfs.*` under `sudo`). `fstype` is validated against the two-value allow-list and the device against the available-disk list **before** any `mkfs` runs |
 
@@ -646,11 +646,16 @@ a misleading half-populated tree.
 ## Later features (2026-10-13)
 
 - **Rewind (per-file snapshot timeline)** — `GET /explorer/history?path=` returns
-  the ZFS snapshots that cover a path, oldest first, each carrying a read-only
-  `snapshot_path` under `.zfs/snapshot/`. The toolbar "Rewind" modal lists them
-  and restores by **copying out of the snapshot** (the same read-only
-  `snapshotMode` copy path as the Snapshots dropdown) — there is no dedicated
-  restore endpoint. Outside ZFS the list is empty and the modal says so.
+  the snapshots that cover a path, oldest first, each carrying a read-only
+  `snapshot_path`. The toolbar "Rewind" modal lists them and restores by
+  **copying out of the snapshot** (the same read-only `snapshotMode` copy path
+  as the Snapshots dropdown) — there is no dedicated restore endpoint.
+  **ZFS** uses `.zfs/snapshot/<name>/…`; **Btrfs** uses the pool's
+  `.snapshots/<share>/<name>/…` tree (2026-11-09), resolved from the share that
+  contains the path and the pool that holds that share, so a Btrfs pool gets the
+  same timeline without `.zfs`. The Btrfs lookup only runs when the ZFS one
+  found nothing, so a ZFS pool never pays for a pool scan. When neither backend
+  covers the path the list is empty and the modal says so.
 - **Server-side recents** — the sidebar's "Recent" list is now stored per user
   in the database (`explorer_recents`, migration `039_explorer_recents.sql`,
   `src/storage/recent_repo.rs`), not in `localStorage`, so it follows the account
@@ -1004,8 +1009,12 @@ work, and the last one whose host commands had no deadline.
   `/mnt` both classify as `media`), `rootLabel` appends the root path so the
   sidebar and breadcrumb stay distinct.
 - **Rewind restores by copy, not by writing into the snapshot.** The snapshot
-  path is read-only (`.zfs/snapshot/…`); "restore" copies the old version out to
-  a chosen destination, so a snapshot is never mutated.
+  path is read-only (`.zfs/snapshot/…`, or `.snapshots/<share>/<name>/…` on
+  Btrfs); "restore" copies the old version out to a chosen destination, so a
+  snapshot is never mutated.
+- **A remote share is never mounted from a request path.** Network locations
+  live under `/mnt/homevault-remote/<validated name>`; see
+  [guides/remote-mounts.md](./remote-mounts.md).
 - **Verified live** (real files, real HTTP calls, not just code review):
   owner resolution, preview gating (text vs. binary), recursive search
   finding a deeply nested file, full trash lifecycle (trash → list → restore

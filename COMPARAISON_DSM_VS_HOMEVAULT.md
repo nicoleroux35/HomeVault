@@ -64,7 +64,7 @@ cas de désaccord avec le backlog, `HOMEVAULT_TASKLIST_A_FAIRE.md` §1bis gagne.
 |---|---|---|---|
 | **Storage** | Storage Manager | 🟡 | SHR/SHR2, thin provisioning complet (seuls les zvol ZFS sont couverts), déduplication (design seulement), cache SSD L2ARC/SLOG (le « cache » actuel est un mover de pool), KMIP, WORM, extension DX525, mise à jour firmware disques |
 | **RAID** | Storage Manager (création de volume) / Storage Advisor | 🟡 | SHR/SHR2, ajout automatique de spare, extension à chaud, RAID F1, vitesse et moniteur de resync (migration de niveau déjà faite) |
-| **Explorer** | File Station | ⭐ / 🟡 | **Montages VFS distants (CIFS/NFS/cloud)** absents ; vignettes **images seulement** (pas de vidéo/PDF) ; historique de versions **ZFS seulement** (pas Btrfs) ; ACL Windows ; favoris ; transcodage |
+| **Explorer** | File Station | ⭐ / ✅ | **Emplacements réseau CIFS/NFS montés et parcourus** et **versions Btrfs dans Rewind** livrés (P1‑35) ; cloud via rclone ; restent les vignettes vidéo/PDF (P2 opt‑in), les ACL Windows et le transcodage |
 | **Shares** | Control Panel > Dossier partagé + Services de fichiers | 🟡 | ACL Windows non simulées (POSIX uniquement) ; validation réelle DC/keytab AD ; NFSv4 Kerberos à valider sur matériel ; WS‑Discovery absent ; SMB multicanal, chiffrement, Previous Versions, Time Machine, rsync, FTP jails : **faits** |
 | **Quotas** | Control Panel > Quota | ✅ / ⭐ | Parité solide (utilisateur, partage, transfert) **+ historique horaire et alerte à 90 %** (P1‑32, rétention 90 j) |
 | **USB Copy** | USB Copy | ✅ | Ajouter déclenchement physique one‑touch et règles multiples si le matériel le permet |
@@ -193,7 +193,7 @@ reconstruction complète sur VM.
 | Priorité | Proposition initiale | Recadrage retenu | Pourquoi | Effort | Réf. |
 |---|---|---|---|---|---|
 | **P1 ✅** | « Média first‑class » (apps natives) | **Intégration média** : installation 1‑clic + **binding sur un partage** + backup/rétention + reverse‑proxy + accès distant + détection transcodage HW — **partage + transcodage livrés** | Le backlog §6 rejette le natif ; l'usage n°1 d'un NAS reste à couvrir par le catalogue | M | nouveau |
-| **P1** | Explorer : CIFS/NFS/cloud, vignettes vidéo/PDF, versions Btrfs, favoris | **CIFS/NFS + favoris + versions Btrfs** en P1 ; cloud via rclone existant ; **vignettes vidéo/PDF en P2 opt‑in** (ffmpeg/poppler = surface + CPU) | Dernier vrai écart avec File Station | M | nouveau |
+| **P1 ✅** | Explorer : CIFS/NFS/cloud, vignettes vidéo/PDF, versions Btrfs, favoris | **CIFS/NFS + favoris + versions Btrfs** : **livrés** (P1‑35) ; cloud via rclone existant ; **vignettes vidéo/PDF en P2 opt‑in** (ffmpeg/poppler = surface + CPU) | Dernier vrai écart avec File Station | M | nouveau |
 | **P1** | Téléchargeur : NZB, RSS, planification, limites, extraction | **RSS + planification + limites/tâche + extraction auto** ; **NZB/eMule rejetés** | Niche, credentials, exposition légale | M | nouveau |
 | **P2** | Cache SSD L2ARC/SLOG | **Opt‑in ZFS**, jamais par défaut (exige un SSD) | Gain réel seulement sur matériel adapté | M | nouveau |
 | **P2** | iSCSI snapshots/clones de LUN, thin LUN | **P2 home‑lab** ; le thin zvol existe déjà | Usage domestique marginal | M | nouveau |
@@ -223,6 +223,25 @@ reconstruction complète sur VM.
 - Tests **écrits, non exécutés** : 10 unitaires, 3 d'intégration, E2E Docker
   15.1/15.3b. Docs : `docs/guides/docker.md`, `docs/API.md`, `SCREENS.md`,
   FeatureDoc `docker`.
+
+**P1‑35 — Explorer : emplacements réseau CIFS/NFS + versions Btrfs (livré).**
+
+- **Emplacements réseau** : un partage d'un autre NAS se monte sous
+  `/mnt/homevault-remote/<nom>` (slug validé ; le point de montage ne vient
+  jamais de la requête) et se parcourt comme un dossier. Le serveur construit
+  l'argv de `mount` depuis `data/remote_mounts.json` ; le mot de passe CIFS
+  n'existe que dans un fichier **0600** passé en `credentials=<chemin>`
+  (jamais argv, log ou réponse). Options en liste blanche par protocole,
+  `ro`/`rw` = champ dédié (lecture seule par défaut), délais bornés + stderr de
+  l'outil, `503` nommant `mount.cifs`/`mount.nfs` s'il manque. Remontage au
+  démarrage des emplacements `enabled`.
+- **Versions Btrfs** : Rewind lit `.snapshots/<partage>/<nom>/…` quand le
+  partage vit sur Btrfs (résolution partage → pool, frontières de segments
+  respectées), uniquement si ZFS n'a rien trouvé.
+- Tests **écrits, non exécutés** : 12 unitaires, 7 d'intégration (**aucun
+  montage exécuté**), E2E Explorer §19. Docs :
+  `docs/guides/remote-mounts.md`, `docs/guides/explorer.md`, `docs/API.md`,
+  `SCREENS.md`, FeatureDocs `explorer`/`snapshots`.
 
 ### 3.3 Geler ou rejeter — parité sans valeur pour la cible
 
@@ -268,6 +287,11 @@ PHP 8.1/Redis 4.0.
    Restent la rétention/sauvegarde média (le partage est couvert par Restic) et
    la validation DLNA/reconnaissance ML — pas des apps natives, conformément au
    §3.2.
+3bis. **Le dernier écart de fichier est comblé** : l'Explorer monte des
+   partages CIFS/NFS d'un autre serveur (emplacements réseau, lecture seule par
+   défaut, mot de passe en fichier 0600) et affiche les versions Btrfs dans
+   Rewind, comme ZFS (P1‑35). Restent les vignettes vidéo/PDF (P2 opt‑in) et les
+   ACL Windows.
 4. **Les écarts entreprise et de niche sont gelés ou rejetés**, pas reportés
    indéfiniment : AD/Kerberos/ACL Windows, serveur OpenVPN, L2TP, SHR/SHR2,
    NZB/eMule, KMIP/WORM, HA, IDS. Les traiter comme des régressions serait
@@ -329,6 +353,14 @@ PHP 8.1/Redis 4.0.
   `src/app_catalog/mod.rs`, `media_share`/`gpu` à l'install et mémorisés dans
   `.install.toml` (`src/handlers/docker_catalog.rs`), `apply_update` rend
   depuis le marqueur (`src/app_catalog/updates.rs`) — P1‑34
+- **Emplacements réseau** : `src/remote_mounts.rs` (validation, argv, 0600
+  credentials, `/proc/mounts`, réconciliation),
+  `src/handlers/remote_mounts.rs` (`/api/remote-mounts`), racine `network`
+  dans `explorer_roots_for_session`, panneau
+  `frontend/src/lib/components/explorer/RemoteMountPanel.svelte` (P1‑35)
+- **Versions Btrfs** : `btrfs_versions_for_path` + `version_path_in_snapshot`
+  + `deepest_containing_root` (`src/snapshots.rs`), branchés dans
+  `handle_explorer_history` (`src/handlers/explorer.rs`) — P1‑35
 - **13 ordonnanceurs déjà existants** (`src/web/mod.rs:2809-2850`) : une
   « tâche planifiée backup/scrub/corbeille » doit les exposer, pas les dupliquer
 - Serveur OpenVPN absent, client seul : `src/handlers/vpn.rs:953-1002` ;
@@ -378,7 +410,7 @@ Tout item retenu qui touche des données personnelles met à jour `PRIVACY.md` :
 |---|---|---|
 | Table d'audit (P1‑18) | acteur, IP, action, horodatage | admin‑only, rétention bornée, pas de contenu de fichier |
 | Intégration média | photos/vidéos, métadonnées, visages (ML Immich) | traitement **local**, aucune API cloud, opt‑in |
-| Montages CIFS/NFS | credentials distants | stockage chiffré/0600, opt‑in, documenté |
+| Montages CIFS/NFS (P1‑35) | credentials distants | fichier **0600**, jamais en argv/log/réponse, opt‑in, documenté (RoPA ligne 18) |
 | Téléchargeur RSS/scheduling | URLs, credentials éventuels | pas de télémétrie, limites par tâche |
 | WireGuard UX | clés privées | jamais loguées, jamais renvoyées en clair |
 
@@ -607,6 +639,28 @@ Journal — l'API les porte déjà.
   Docker 15.1/15.3b.
 - Docs : `docs/guides/docker.md` (§ « Media integration »), `docs/API.md`,
   `SCREENS.md`, FeatureDoc `docker`.
+
+**P1‑35 — Explorer : emplacements réseau CIFS/NFS + versions Btrfs (livré).**
+
+- `src/remote_mounts.rs` : nom = slug `[a-z0-9-]` (≤ 32) devenant
+  `/mnt/homevault-remote/<nom>`, validation du serveur (nom DNS ou IPv4),
+  du partage/export et des options (liste blanche par protocole), argv
+  `mount -t <fs> -o …` construit côté serveur, mot de passe en fichier 0600
+  passé en `credentials=`, parsing de `/proc/mounts` (échappements octaux),
+  réconciliation au démarrage des emplacements `enabled`.
+- `src/handlers/remote_mounts.rs` : `GET/POST /api/remote-mounts`,
+  `PUT/DELETE /{name}`, `POST /{name}/mount|unmount`, `POST /reconcile` —
+  tous admin, journalisés ; un helper absent est un `503` nommé.
+- `src/snapshots.rs` : `btrfs_versions_for_path` (partage → pool → liste des
+  snapshots, chemins de version pointant sur le fichier), branché dans
+  `handle_explorer_history` quand ZFS n'a rien trouvé.
+- Panneau `RemoteMountPanel.svelte` dans la barre latérale (admin), racines
+  `kind: "network"` dans `explorer_roots_for_session`.
+- Tests écrits mais **non exécutés** : 10 unitaires, 7 d'intégration (aucun
+  montage), E2E Explorer §19.
+- Docs : `docs/guides/remote-mounts.md` (nouveau), `docs/guides/explorer.md`,
+  `docs/INDEX.md`, `docs/API.md`, `SCREENS.md`, FeatureDocs
+  `explorer`/`snapshots`.
 
 **Reste sur P2‑9** : le test de reconstruction complète sur une VM jetable
 (boot, installation, restauration DB + configuration + données, vérification)

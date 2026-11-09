@@ -5567,6 +5567,25 @@ pub async fn explorer_roots_for_session(
         }
     }
 
+    // Network locations (CIFS/NFS) that are actually mounted. Same gate as
+    // pools: the file search skips them, because walking a remote share from
+    // every search would be slow and is not what the sidebar promises.
+    if include_pools {
+        if let Ok(network) = tokio::task::spawn_blocking(crate::remote_mounts::list).await {
+            for view in network.into_iter().filter(|view| view.mounted) {
+                if roots.iter().any(|r| r.path == view.target) {
+                    continue;
+                }
+                roots.push(ExplorerRoot {
+                    path: view.target.clone(),
+                    kind: "network".to_string(),
+                    name: view.mount.name.clone(),
+                    permission: "full".to_string(),
+                });
+            }
+        }
+    }
+
     Ok(roots)
 }
 
@@ -6317,6 +6336,25 @@ pub async fn handle_explorer_history(
                 });
             }
         }
+
+        // Btrfs: the same timeline, read from the pool's `.snapshots` tree.
+        // Only consulted when ZFS had nothing, so a ZFS pool never pays for a
+        // pool scan; a Btrfs share gets its versions even though `.zfs` does
+        // not exist there.
+        if versions.is_empty() {
+            if let Some(Ok(snapshots)) = crate::snapshots::btrfs_versions_for_path(&target) {
+                for snapshot in snapshots {
+                    if std::path::Path::new(&snapshot.browse_path).exists() {
+                        versions.push(HistoryVersion {
+                            name: snapshot.snapshot.name,
+                            created: snapshot.snapshot.created,
+                            browse_path: snapshot.browse_path,
+                        });
+                    }
+                }
+            }
+        }
+
         serde_json::json!({
             "path": target,
             "current": current.unwrap_or(serde_json::json!({"exists": false})),

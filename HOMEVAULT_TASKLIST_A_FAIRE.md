@@ -127,6 +127,7 @@ justifie.
 | **P1-32** | Historique/alertes quotas + export Journal — livré 2026‑11‑09 | P1 | S | Visibilité sans surveillance |
 | **P1-33** | WireGuard UX (QR, 1‑clic, endpoint DDNS) — livré 2026‑11‑09 | P1 | S/M | Accès distant simple |
 | **P1-34** | Intégration média (partage + transcodage matériel) — livré 2026‑11‑09 | P1 | M | Le besoin n°1 d'un NAS familial |
+| **P1-35** | Explorer : emplacements réseau CIFS/NFS + versions Btrfs — livré 2026‑11‑09 | P1 | M | Dernier écart avec File Station |
 | **P2-1** | SMB AD/Kerberos complet (winbind, realm, idmap, keytab) — **gelé au partiel** (config ADS + join/leave ; DC réel seulement si cible entreprise) | P2 | L | Entreprise Windows |
 | **P2-2** | NFSv4 + Kerberos (`sec=krb5`) — **gelé au partiel** (flavor + validation keytab ; KDC réel seulement si cible entreprise) | P2 | L | Entreprise Unix |
 | **P2-3** | Thin provisioning — **gelé au partiel** (zvols ZFS thin/thick ; overcommit/LVM rejetés) | P2 | L | Sur‑allocation |
@@ -1728,6 +1729,34 @@ pas, type inconnu, partage non configuré, GPU refusé), 4 assertions
 d'intégration sur `install-review`, E2E Docker 15.1/15.3b — écrits,
 **non exécutés**. Docs : `docs/guides/docker.md` (section « Media
 integration »), `docs/API.md`, `SCREENS.md`, FeatureDoc `docker`.
+
+### [x] P1-35 — Explorer : emplacements réseau CIFS/NFS + versions Btrfs · M
+
+**Livré 2026‑11‑09.** L'Explorer couvre les deux manques restants face à
+File Station, sans nouveau démon.
+
+- **Emplacements réseau** : un partage d'un autre NAS ou ordinateur se monte
+  sous `/mnt/homevault-remote/<nom>` (nom = slug validé, jamais un chemin de la
+  requête) et se parcourt comme un dossier. La définition (protocole, serveur,
+  partage/export, options, lecture seule, reconnexion au démarrage) vit dans
+  `data/remote_mounts.json` ; le serveur construit lui‑même l'argv de `mount`.
+  Le mot de passe CIFS n'existe que dans un fichier **0600** passé en
+  `credentials=<chemin>` — jamais en argv, dans un log ou dans une réponse
+  (`has_credentials` seulement). Options en liste blanche par protocole,
+  `ro`/`rw` = champ dédié (lecture seule par défaut), délais bornés avec le
+  stderr de l'outil, `503` nommant `mount.cifs`/`mount.nfs` quand il manque.
+  Remontage au démarrage des emplacements `enabled` + bouton **Reconnecter**.
+- **Versions Btrfs** : Rewind ne lisait que `.zfs/snapshot` ; il lit maintenant
+  l'arbre `.snapshots/<partage>/<nom>/…` quand le partage vit sur Btrfs, avec
+  résolution partage → pool et frontières de segments (`/srv/photos` ne matche
+  pas `/srv/photos2`). La recherche Btrfs ne s'exécute que si ZFS n'a rien
+  trouvé, donc un pool ZFS ne paie pas de scan.
+
+Tests : 10 unitaires `src/remote_mounts.rs`, 2 unitaires `src/snapshots.rs`,
+7 d'intégration (`tests/remote_mounts_integration.rs` — **aucun montage
+exécuté**), E2E Explorer §19 — écrits, **non exécutés**. Docs :
+`docs/guides/remote-mounts.md` (nouveau), `docs/guides/explorer.md`,
+`docs/INDEX.md`, `docs/API.md`, `SCREENS.md`, FeatureDocs `explorer`/`snapshots`.
 
 ---
 

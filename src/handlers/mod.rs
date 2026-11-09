@@ -93,6 +93,7 @@ pub mod monitor_layout;
 pub mod network;
 pub mod notifications;
 pub mod oidc;
+pub mod remote_mounts;
 pub mod openapi;
 pub mod passkey;
 pub mod password_policy;

@@ -37,12 +37,13 @@
   import { explorerIntent } from '$lib/stores/explorerIntent';
   import { get } from 'svelte/store';
   import FolderPicker from '$lib/components/theme/FolderPicker.svelte';
-  import { IconAlertCircle, IconArchive, IconArrowBackUp, IconArrowUp, IconBolt, IconClock, IconCloud, IconCloudCheck, IconCloudUpload, IconCopy, IconDatabase, IconDownload, IconHistory, IconInbox, IconPlayerEject, IconPencil, IconEye, IconFileZip, IconFolderMinus, IconFolderOpen, IconFolderPlus, IconLink, IconServer, IconHome, IconLayoutGrid, IconList, IconLoader, IconLock, IconPlus, IconRefresh, IconSearch, IconShare, IconShield, IconShieldCheckered, IconStar, IconStarFilled, IconTag, IconTrash, IconUpload, IconUsb, IconX, IconArrowsExchange } from '@tabler/icons-svelte';
+  import { IconAlertCircle, IconArchive, IconArrowBackUp, IconArrowUp, IconBolt, IconClock, IconCloud, IconCloudCheck, IconCloudUpload, IconCopy, IconDatabase, IconDownload, IconHistory, IconInbox, IconPlayerEject, IconPencil, IconEye, IconFileZip, IconFolderMinus, IconFolderOpen, IconFolderPlus, IconLink, IconServer, IconHome, IconLayoutGrid, IconList, IconLoader, IconLock, IconPlus, IconRefresh, IconSearch, IconShare, IconShield, IconShieldCheckered, IconStar, IconStarFilled, IconTag, IconTrash, IconUpload, IconUsb, IconX, IconArrowsExchange, IconNetwork } from '@tabler/icons-svelte';
   import ShareLinkModal from '$lib/components/explorer/ShareLinkModal.svelte';
   import FileRequestModal from '$lib/components/explorer/FileRequestModal.svelte';
   import TransferTray from '$lib/components/explorer/TransferTray.svelte';
   import ExplorerWidget from '$lib/components/explorer/ExplorerWidget.svelte';
   import IsoMountPanel from '$lib/components/explorer/IsoMountPanel.svelte';
+  import RemoteMountPanel from '$lib/components/explorer/RemoteMountPanel.svelte';
 
   interface FileEntry {
     name: string;
@@ -1842,7 +1843,7 @@
             ondrop={(e) => sidebarDrop(e, root.path)}
           >
             {#snippet icon()}
-              {#if root.kind === 'home'}<IconHome size={18} class="text-[var(--hv-shell-text-2)]" />{:else if root.kind === 'media'}<IconUsb size={18} class="text-[var(--hv-shell-text-2)]" />{:else if root.kind === 'appdata'}<IconServer size={18} class="text-[var(--hv-shell-text-2)]" />{:else if root.kind === 'virtualdisk'}<IconDatabase size={18} class="text-[var(--hv-primary)]" />{:else}<IconFolderOpen size={18} class="text-[var(--hv-shell-text-2)]" />{/if}
+              {#if root.kind === 'home'}<IconHome size={18} class="text-[var(--hv-shell-text-2)]" />{:else if root.kind === 'media'}<IconUsb size={18} class="text-[var(--hv-shell-text-2)]" />{:else if root.kind === 'network'}<IconNetwork size={18} class="text-[var(--hv-primary)]" />{:else if root.kind === 'appdata'}<IconServer size={18} class="text-[var(--hv-shell-text-2)]" />{:else if root.kind === 'virtualdisk'}<IconDatabase size={18} class="text-[var(--hv-primary)]" />{:else}<IconFolderOpen size={18} class="text-[var(--hv-shell-text-2)]" />{/if}
             {/snippet}
           </WindowSidebarItem>
         {/each}
@@ -1891,6 +1892,21 @@
       onunmounted={(point) => {
         if (currentPath === point || currentPath.startsWith(point + '/')) {
           void loadDirectory('/');
+        }
+      }}
+    />
+
+    <!-- Network locations (CIFS/NFS). Admin-only: a mount carries a
+         credential and runs root-owned `mount`; the server answers 403 to a
+         member, so the section is not rendered for them. -->
+    <RemoteMountPanel
+      {isAdmin}
+      askConfirm={(message) => dlg.ask(message)}
+      onmounted={(point) => { void loadRoots(); void loadDirectory(point); }}
+      onunmounted={(point) => {
+        if (currentPath === point || currentPath.startsWith(point + '/')) {
+          void loadDirectory('/');
+          void loadRoots();
         }
       }}
     />

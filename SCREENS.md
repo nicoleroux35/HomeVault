@@ -404,6 +404,7 @@ and in the Groups screen.
 - Dual view: list and grid
 - Folder navigation: breadcrumb, parent folder, entries with size, permissions, owner
 - Sidebar: physical disks, removable disks, favorite locations and private file tags (with an all-folders filter)
+- **Network locations** (admin): CIFS/SMB and NFS shares on another NAS or computer, mounted under `/mnt/homevault-remote` and browsable like any folder, with connect/disconnect, read-only by default and reconnect-after-restart
 - File operations:
   - Create a folder
   - Rename
@@ -460,6 +461,25 @@ filesystem (`/proc/mounts`) is the authority on what is mounted, not the index;
 a failed mount detaches its loop device.
 
 **Guides:** [guides/iso-mount.md](./guides/iso-mount.md)
+
+---
+
+## 16c. Explorer sidebar — Network locations (CIFS/NFS)
+
+**Screen:** the **Network locations** panel in the Explorer sidebar →
+`frontend/src/lib/components/explorer/RemoteMountPanel.svelte`
+
+**Features:**
+- The configured network locations with their state (Connected / Not connected), `server:share`, read-only or read-write, and the last error under an entry that failed
+- A per-row **connect/disconnect** action, named after the location, plus **Edit** and **Remove**
+- **Add a network location**: name (a lowercase slug used as the folder name), protocol (Windows/SMB share or NFS export), server, share name or export path, optional user name / password / domain for SMB, read-only (on by default), "reconnect automatically after a restart" and "connect now"
+- "Reconnect all at startup locations" re-runs the boot pass without restarting HomeVault
+- A host with neither `mount.cifs` nor `mount.nfs` says so in place, with no Add action offered
+- Only administrators see the panel (the list reveals which remote hosts the appliance talks to)
+
+**Invariants:** the mount point is `/mnt/homevault-remote/<validated name>` and never comes from the request; a password lives only in a 0600 credentials file (never argv, log or response); options are a per-protocol allowlist and `ro`/`rw` is its own field; every host command has a deadline and reports the tool's own stderr; the panel never uses `window.confirm`.
+
+**Guides:** [guides/remote-mounts.md](./guides/remote-mounts.md)
 
 ---
 

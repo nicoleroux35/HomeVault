@@ -265,6 +265,16 @@ fn check_avahi_browse() -> bool {
 fn check_smbtree() -> bool {
     binary_present("smbtree", "/usr/bin/smbtree")
 }
+// Explorer's network locations mount SMB shares through `mount.cifs`
+// (`cifs-utils`) and NFS exports through `mount.nfs` (`nfs-common`). Neither
+// ships in a minimal base, so the panel reports which one is missing instead
+// of failing the mount with a generic error.
+fn check_mount_cifs() -> bool {
+    binary_present("mount.cifs", "/usr/sbin/mount.cifs")
+}
+fn check_mount_nfs() -> bool {
+    binary_present("mount.nfs", "/usr/sbin/mount.nfs")
+}
 fn check_snmp_client() -> bool {
     binary_present("snmpget", "/usr/bin/snmpget")
 }
@@ -853,6 +863,28 @@ fn specs() -> Vec<DependencySpec> {
             required: false,
             used_by: "Explorer — network discovery (SMB workgroups/hosts/shares)",
             check_installed: check_smbtree,
+            check_running: None,
+        },
+        // Network locations (src/remote_mounts.rs): `mount -t cifs` delegates
+        // to `mount.cifs`, which ships in `cifs-utils` — not in the base. The
+        // panel names the missing helper instead of offering a dead button.
+        DependencySpec {
+            name: "mount.cifs",
+            package: "cifs-utils",
+            category: "Network",
+            required: false,
+            used_by: "Explorer — network locations (mount an SMB/CIFS share from another server)",
+            check_installed: check_mount_cifs,
+            check_running: None,
+        },
+        // Same for NFS: `mount -t nfs` needs `mount.nfs` from `nfs-common`.
+        DependencySpec {
+            name: "mount.nfs",
+            package: "nfs-common",
+            category: "Network",
+            required: false,
+            used_by: "Explorer — network locations (mount an NFS export from another server)",
+            check_installed: check_mount_nfs,
             check_running: None,
         },
         // --- Monitoring ---

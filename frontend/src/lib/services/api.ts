@@ -30,6 +30,7 @@
  */
 
 import type { ApiResponse, DbBackupEntry, DbBackupStatus, LoginRequest, LoginResponse, RestoreDrillReport, SetupAdminRequest, SetupStatus } from '$lib/types/api';
+import type { RemoteMountRequest, RemoteMountView } from '$lib/types/explorer';
 import type {
   DockerAppStore,
   DockerAppUpdateStatus,
@@ -2560,6 +2561,54 @@ class ApiClient {
   /** Unmounts one image by its id (never by a path). */
   async unmountIso(id: string) {
     return this.delete(`/explorer/iso/${encodeURIComponent(id)}`);
+  }
+
+  // --- Network locations (CIFS/NFS remote mounts) --------------------------
+
+  /**
+   * Every configured network location with its live state, plus which
+   * protocols this host can mount. `available: false` means neither
+   * `mount.cifs` nor `mount.nfs` is installed — the panel says so instead of
+   * offering a button that always fails (docs/API.md, capability contract).
+   */
+  async listRemoteMounts() {
+    return this.get<{
+      available: boolean;
+      kinds: string[];
+      root: string;
+      mounts: RemoteMountView[];
+    }>('/remote-mounts', { cache: false });
+  }
+
+  /** Adds a network location; `mount_now` brings it up in the same call. */
+  async createRemoteMount(payload: RemoteMountRequest) {
+    return this.post<RemoteMountView>('/remote-mounts', payload);
+  }
+
+  /** Edits one location. A blank password keeps the stored one. */
+  async updateRemoteMount(name: string, payload: RemoteMountRequest) {
+    return this.put<RemoteMountView>(`/remote-mounts/${encodeURIComponent(name)}`, payload);
+  }
+
+  /** Unmounts (when up) and forgets one location, credentials included. */
+  async deleteRemoteMount(name: string) {
+    return this.delete(`/remote-mounts/${encodeURIComponent(name)}`);
+  }
+
+  async mountRemoteMount(name: string) {
+    return this.post<RemoteMountView>(`/remote-mounts/${encodeURIComponent(name)}/mount`);
+  }
+
+  async unmountRemoteMount(name: string) {
+    return this.post(`/remote-mounts/${encodeURIComponent(name)}/unmount`);
+  }
+
+  /** Mounts every enabled location that is not up yet (the boot pass). */
+  async reconcileRemoteMounts() {
+    return this.post<{
+      failed: Array<{ name: string; error: string }>;
+      mounts: RemoteMountView[];
+    }>('/remote-mounts/reconcile');
   }
 
   /** ZFS snapshots that cover a directory, with read-only browse paths. */

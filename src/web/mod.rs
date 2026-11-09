@@ -1861,6 +1861,29 @@ pub fn create_app(state: AppStateArc) -> Router {
             "/api/explorer/iso/{id}",
             axum::routing::delete(crate::handlers::iso_mount::handle_iso_unmount),
         )
+        // Network locations (CIFS/NFS remote mounts)
+        .route(
+            "/api/remote-mounts",
+            get(crate::handlers::remote_mounts::handle_remote_mounts_list)
+                .post(crate::handlers::remote_mounts::handle_remote_mount_create),
+        )
+        .route(
+            "/api/remote-mounts/reconcile",
+            post(crate::handlers::remote_mounts::handle_remote_mounts_reconcile),
+        )
+        .route(
+            "/api/remote-mounts/{name}",
+            put(crate::handlers::remote_mounts::handle_remote_mount_update)
+                .delete(crate::handlers::remote_mounts::handle_remote_mount_delete),
+        )
+        .route(
+            "/api/remote-mounts/{name}/mount",
+            post(crate::handlers::remote_mounts::handle_remote_mount_mount),
+        )
+        .route(
+            "/api/remote-mounts/{name}/unmount",
+            post(crate::handlers::remote_mounts::handle_remote_mount_unmount),
+        )
         // Shares
         .route("/api/shares", get(handle_shares_list))
         .route("/api/shares", post(handle_share_create))
@@ -3079,6 +3102,21 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             crate::handlers::docker_catalog::proxy_restore_entries().await,
         )
         .await;
+    });
+
+    // Network locations (CIFS/NFS): remount the ones marked "mount at boot".
+    // A NAS that is off, or a share that was deleted on the other end, is a
+    // warning — never a reason to keep HomeVault from starting.
+    tokio::spawn(async {
+        match tokio::task::spawn_blocking(crate::remote_mounts::reconcile).await {
+            Ok(failures) if !failures.is_empty() => tracing::warn!(
+                "remote mount restore: {}/{} network location(s) not restored",
+                failures.len(),
+                crate::remote_mounts::load().len()
+            ),
+            Ok(_) => {}
+            Err(e) => tracing::warn!("remote mount restore task failed: {e}"),
+        }
     });
 
     // Generic reverse proxy (phase C2): one host-routed listener for the

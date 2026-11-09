@@ -1548,6 +1548,12 @@ install_optional samba "Samba (SMB/CIFS)"
 # `samba` recommends it, but a host with recommends disabled would miss it.
 install_optional samba-common-bin "Samba client tools (smbtree: SMB discovery)"
 install_optional nfs-kernel-server "NFS server"
+# Network locations (Explorer → mount a share from *another* server): the
+# server side above is not enough — `mount -t cifs` delegates to `mount.cifs`
+# (cifs-utils) and `mount -t nfs` to `mount.nfs` (nfs-common). The panel names
+# whichever is missing rather than offering a button that cannot work.
+install_optional cifs-utils "SMB client (mount a CIFS share: network locations)"
+install_optional nfs-common "NFS client (mount an NFS export: network locations)"
 install_optional vsftpd "FTP server (vsftpd)"
 # WebDAV uses a built-in Python server — no external package needed.
 # SFTP runs a *second*, dedicated sshd instance on its own port (see

@@ -8,6 +8,36 @@ follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **Network locations — CIFS/NFS remote mounts in the Explorer (2026-11-09, P1).**
+  A share on another NAS or computer is now browsable like any folder, without
+  a new daemon:
+  - every mount lands on `/mnt/homevault-remote/<name>` where `name` is a
+    validated lowercase slug — a request never names a target path, so a
+    location can never be mounted over `/etc` or a pool;
+  - the server builds the `mount` argv from a stored definition
+    (`data/remote_mounts.json`); a CIFS password lives only in a **0600**
+    credentials file and is passed as `credentials=<path>`, never on the
+    command line, in a log line or in an API response (`has_credentials` only);
+  - options are a per-protocol allowlist, `ro`/`rw` is its own field
+    (read-only by default), and every command has a deadline that reports the
+    tool's own stderr;
+  - `enabled` locations are remounted at startup (a NAS that is off is a
+    warning, never a boot failure), and **Reconnect all** re-runs the pass;
+  - admin-only, and honest: a host without `mount.cifs`/`mount.nfs` answers
+    `503` naming the tool and the panel says so instead of offering a button.
+  `GET/POST /api/remote-mounts`, `PUT/DELETE /api/remote-mounts/{name}`,
+  `POST …/mount|unmount`, `POST /api/remote-mounts/reconcile`; UI panel in the
+  Explorer sidebar. Tests: 10 unit in `src/remote_mounts.rs` + 2 in
+  `src/snapshots.rs`, 7 integration, Explorer E2E §19 (written, not run).
+
+- **Btrfs file versions in the Explorer timeline (2026-11-09, P1).** Rewind
+  listed ZFS snapshots only; it now reads the pool's
+  `.snapshots/<share>/<name>/…` tree when the path's share lives on Btrfs, so
+  a Btrfs pool gets the same per-file history. The Btrfs lookup only runs when
+  ZFS found nothing, and the share/pool resolution respects segment boundaries
+  (`/srv/photos` never matches `/srv/photos2`). Tests: 2 unit (written, not
+  run).
+
 - **Media integration: share binding and hardware transcoding (2026-11-09, P1).**
   The catalog's media apps (Jellyfin, Immich, Navidrome) can now use your files
   and your graphics card instead of an empty sandbox folder:

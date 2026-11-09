@@ -2233,3 +2233,90 @@ test.describe('18 — Transfers', () => {
     }
   });
 });
+
+// ===========================================================================
+// 19 — Network locations (CIFS/NFS remote mounts)
+//
+// The panel is admin-only and the server refuses `mount` without cifs-utils /
+// nfs-common, so the suite never creates a location and never mounts: it
+// opens the dialog, proves the refusal is shown verbatim, and closes it. A
+// host without either helper shows the reason instead of an Add button, and
+// the tests skip cleanly.
+// ===========================================================================
+
+test.describe('19 — Network locations (CIFS/NFS)', () => {
+  test('19.1 — the panel exposes an Add dialog with the required fields', async ({ page }) => {
+    await gotoExplorer(page, adminTokens);
+    const panel = win(page).locator('[data-testid="remote-mount-panel"]');
+    await expect(panel).toBeVisible({ timeout: 10_000 });
+    const add = panel.locator('[data-testid="remote-mount-add"]');
+    if ((await add.count()) === 0) {
+      // No mount.cifs / mount.nfs on this host: the panel must say so and
+      // withhold the action rather than offer a button that always fails.
+      await expect(panel.locator('[data-testid="remote-mount-unavailable"]')).toBeVisible();
+      test.skip(true, 'no mount.cifs / mount.nfs on this host');
+    }
+    await add.click();
+    const modal = page.locator('[data-slot="dialog-content"]');
+    await expect(modal).toBeVisible({ timeout: 10_000 });
+    // Name, protocol and the other NAS are the three things a home user has
+    // to answer; the rest is optional.
+    await expect(modal.locator('[data-testid="remote-mount-name"]')).toBeVisible();
+    await expect(modal.locator('[data-testid="remote-mount-kind"]')).toBeVisible();
+    await expect(modal.locator('[data-testid="remote-mount-server"]')).toBeVisible();
+    await expect(modal.locator('[data-testid="remote-mount-source"]')).toBeVisible();
+    // Safe, reversible defaults: read-only, reconnect at boot, connect now.
+    await expect(modal.locator('[data-testid="remote-mount-readonly"]')).toBeChecked();
+    await expect(modal.locator('[data-testid="remote-mount-enabled"]')).toBeChecked();
+    await page.keyboard.press('Escape');
+    await expect(modal).toBeHidden();
+    // Opening and closing the dialog saves nothing: the panel is still there.
+    await expect(panel).toBeVisible();
+  });
+
+  test('19.2 — an unsafe name is refused with the rule, not a bare error', async ({ page }) => {
+    await gotoExplorer(page, adminTokens);
+    const panel = win(page).locator('[data-testid="remote-mount-panel"]');
+    await expect(panel).toBeVisible({ timeout: 10_000 });
+    const add = panel.locator('[data-testid="remote-mount-add"]');
+    if ((await add.count()) === 0) test.skip(true, 'no mount.cifs / mount.nfs on this host');
+    await add.click();
+    const modal = page.locator('[data-slot="dialog-content"]');
+    await expect(modal).toBeVisible({ timeout: 10_000 });
+
+    // The name becomes a directory, so the server refuses anything that is
+    // not a lowercase slug — and the dialog shows its own sentence.
+    await modal.locator('[data-testid="remote-mount-name"]').fill('Not A Slug');
+    await modal.locator('[data-testid="remote-mount-server"]').fill('nas.example.com');
+    await modal.locator('[data-testid="remote-mount-source"]').fill('photos');
+    await modal.locator('[data-testid="remote-mount-save"]').click();
+    const error = modal.locator('[data-testid="remote-mount-dialog-error"]');
+    await expect(error).toBeVisible({ timeout: 10_000 });
+    await expect(error).toContainText(/lowercase/i);
+
+    // Still open, so the value can be corrected instead of retyped.
+    await expect(modal).toBeVisible();
+    await page.keyboard.press('Escape');
+    await expect(modal).toBeHidden();
+  });
+
+  test('19.3 — the mount table never leaks a password', async ({ page }) => {
+    await gotoExplorer(page, adminTokens);
+    const list = await page.evaluate(
+      async ({ token, csrf }) => {
+        const r = await fetch('/api/remote-mounts', {
+          headers: { 'x-session-token': token, 'x-csrf-token': csrf },
+        });
+        return r.json();
+      },
+      { token: adminTokens.token, csrf: adminTokens.csrf },
+    );
+    expect(list.success).toBe(true);
+    // The API exposes `has_credentials`, never the secret itself.
+    for (const mount of list.data.mounts ?? []) {
+      expect(mount.password ?? null).toBeNull();
+      expect(typeof mount.has_credentials).toBe('boolean');
+      expect(String(mount.target)).toContain('/mnt/homevault-remote/');
+    }
+  });
+});

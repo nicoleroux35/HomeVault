@@ -2052,6 +2052,101 @@ impl Default for SnapshotService {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Per-file versions for the Explorer's "Rewind" drawer
+// ---------------------------------------------------------------------------
+
+/// The deepest root in `roots` that contains `target`, with segment
+/// boundaries respected (`/srv/photos` must not match `/srv/photos2`).
+pub fn deepest_containing_root(target: &str, roots: &[String]) -> Option<String> {
+    let target = target.trim_end_matches('/');
+    roots
+        .iter()
+        .map(|root| root.trim_end_matches('/'))
+        .filter(|root| {
+            !root.is_empty()
+                && (target == *root
+                    || target
+                        .strip_prefix(root)
+                        .is_some_and(|rest| rest.starts_with('/')))
+        })
+        .max_by_key(|root| root.len())
+        .map(str::to_string)
+}
+
+/// The read-only path of `target` inside the snapshot whose copy of the share
+/// starts at `snapshot_browse`.
+///
+/// `snapshot_browse` already points at the snapshot's copy of the **share**
+/// (`…/.snapshots/<slug>/<name>`), so only the part of `target` below the
+/// share has to be appended. `None` when `target` is not inside the share —
+/// a caller can never build a version path out of a sibling folder.
+pub fn version_path_in_snapshot(
+    share_path: &str,
+    snapshot_browse: &str,
+    target: &str,
+) -> Option<String> {
+    let share = share_path.trim_end_matches('/');
+    let target = target.trim_end_matches('/');
+    let relative = if target == share {
+        ""
+    } else {
+        let rest = target.strip_prefix(share)?;
+        if !rest.starts_with('/') {
+            return None;
+        }
+        rest.trim_start_matches('/')
+    };
+    let base = snapshot_browse.trim_end_matches('/');
+    if base.is_empty() {
+        return None;
+    }
+    Some(if relative.is_empty() {
+        base.to_string()
+    } else {
+        format!("{base}/{relative}")
+    })
+}
+
+/// Btrfs snapshot versions of `target`, each pointing at `target` itself.
+///
+/// `None` means "this path is not on a Btrfs pool / has no snapshot backend",
+/// which is how the Explorer knows to keep whatever the ZFS listing produced
+/// instead of showing a misleading empty list. An error is only returned for a
+/// host that genuinely failed (pool scan, `btrfs subvolume list`).
+pub fn btrfs_versions_for_path(target: &str) -> Option<Result<Vec<ShareSnapshot>, SnapError>> {
+    let shares = crate::shares::SharesService::get_shares().ok()?;
+    let paths: Vec<String> = shares.iter().map(|share| share.path.clone()).collect();
+    let share_path = deepest_containing_root(target, &paths)?;
+
+    let pools = crate::pools::PoolService::scan_pools().ok()?;
+    let mounts: Vec<String> = pools.iter().filter_map(|p| p.mount_point.clone()).collect();
+    let mount = deepest_containing_root(&share_path, &mounts)?;
+    let pool = pools.iter().find(|p| {
+        p.mount_point
+            .as_deref()
+            .map(|mp| mp.trim_end_matches('/') == mount)
+            .unwrap_or(false)
+    })?;
+    if pool.pool_type != crate::pools::PoolType::Btrfs {
+        return None;
+    }
+
+    Some(
+        SnapshotService::list_share_snapshots(&pool.name, &share_path).map(|snapshots| {
+            snapshots
+                .into_iter()
+                .filter_map(|mut snapshot| {
+                    let browse =
+                        version_path_in_snapshot(&share_path, &snapshot.browse_path, target)?;
+                    snapshot.browse_path = browse;
+                    Some(snapshot)
+                })
+                .collect()
+        }),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2363,5 +2458,62 @@ other /other zfs rw,relatime 0 0
         assert!(SNAPSHOT_QUERY_TIMEOUT >= std::time::Duration::from_secs(5));
         assert!(SNAPSHOT_WRITE_TIMEOUT >= SNAPSHOT_QUERY_TIMEOUT);
         assert!(SNAPSHOT_WRITE_TIMEOUT <= std::time::Duration::from_secs(60 * 60));
+    }
+
+    // -- per-file versions (Btrfs, Explorer Rewind) --------------------------
+
+    #[test]
+    fn test_deepest_containing_root_respects_segment_boundaries() {
+        let roots = vec![
+            "/srv".to_string(),
+            "/srv/photos".to_string(),
+            "/srv/photos2".to_string(),
+        ];
+        assert_eq!(
+            deepest_containing_root("/srv/photos/2024/a.jpg", &roots).as_deref(),
+            Some("/srv/photos")
+        );
+        // `/srv/photos2` must not be treated as inside `/srv/photos`.
+        assert_eq!(
+            deepest_containing_root("/srv/photos2/a.jpg", &roots).as_deref(),
+            Some("/srv/photos2")
+        );
+        assert_eq!(
+            deepest_containing_root("/srv/photos", &roots).as_deref(),
+            Some("/srv/photos")
+        );
+        assert_eq!(deepest_containing_root("/etc/passwd", &roots), None);
+        assert_eq!(
+            deepest_containing_root("/srv/photos/", &roots).as_deref(),
+            Some("/srv/photos")
+        );
+    }
+
+    #[test]
+    fn test_version_path_appends_only_the_part_below_the_share() {
+        let snapshot = "/mnt/data/.snapshots/photos/hv-auto-2026";
+        assert_eq!(
+            version_path_in_snapshot("/mnt/data/photos", snapshot, "/mnt/data/photos/2024/a.jpg")
+                .as_deref(),
+            Some("/mnt/data/.snapshots/photos/hv-auto-2026/2024/a.jpg")
+        );
+        // The share root itself.
+        assert_eq!(
+            version_path_in_snapshot("/mnt/data/photos", snapshot, "/mnt/data/photos").as_deref(),
+            Some(snapshot)
+        );
+        // Outside the share, or a sibling whose name merely starts the same.
+        assert_eq!(
+            version_path_in_snapshot("/mnt/data/photos", snapshot, "/mnt/data/other/a.jpg"),
+            None
+        );
+        assert_eq!(
+            version_path_in_snapshot("/mnt/data/photos", snapshot, "/mnt/data/photos2/a.jpg"),
+            None
+        );
+        assert_eq!(
+            version_path_in_snapshot("/mnt/data/photos", "", "/mnt/data/photos/a.jpg"),
+            None
+        );
     }
 }

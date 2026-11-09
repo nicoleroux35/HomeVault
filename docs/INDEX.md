@@ -53,6 +53,7 @@ methods, and notable invariants.
 | Disk Encryption (LUKS2) | [guides/encryption.md](./guides/encryption.md) |
 | RAID — **creation-only** wizard (physical disks → one tracked async job → one virtual disk; spares, degraded slots) | [guides/raid.md](./guides/raid.md) |
 | File Explorer (incl. private file tags, reflink/instant copy, trash retention, transfer tray/progress detail/history, resumable-upload durability, on-demand SHA-256/SHA-512/BLAKE3 checksums) | [guides/explorer.md](./guides/explorer.md) |
+| Network locations — CIFS/NFS remote mounts browsable in the Explorer | [guides/remote-mounts.md](./guides/remote-mounts.md) |
 | File tags (private per-user labels, tag-filtered search) | [guides/file-tags.md](./guides/file-tags.md) |
 | SNMP agent (the appliance's own `snmpd`: v2c community or v3 authPriv, loopback/LAN scope) | [guides/snmp-agent.md](./guides/snmp-agent.md) |
 | Shares (SMB/NFS/FTP/WebDAV + ACLs) | [guides/shares.md](./guides/shares.md) |
