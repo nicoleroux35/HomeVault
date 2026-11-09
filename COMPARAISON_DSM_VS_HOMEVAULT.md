@@ -1363,3 +1363,75 @@ depuis ses « Related », `docs/guides/rag.md` et `src/rag_indexers.rs` gagnent 
 `FeatureDoc` `failure-injection` (la règle « un guide = un FeatureDoc » reste
 vérifiée par le test existant), et `TESTING.md` enregistre les trois nouveaux
 unitaires sans les déclarer exécutés.
+
+---
+
+## 18. Ancrages de confiance et AppArmor — 2026‑11‑09 (FIAB‑11/FIAB‑12)
+
+### 18.1 Clés : installation, rotation, révocation
+
+La chaîne de signature existait, mais la clé publique de **release** n’était
+jamais installée : chaque mise à jour devait porter `HV_RELEASE_PUBKEY` dans son
+environnement, et la rotation n’était pas écrite. L’installeur copie désormais
+les deux ancrages au chemin par défaut quand ils sont fournis en fichier local —
+`release-key.pem` et `catalog-key.ed25519` — via un seul helper
+`install_trust_anchor` (fichier ou matériau inline, refus d’une source vide,
+avertissement sans échec de l’installation).
+
+`docs/guides/security.md` documente la **rotation publish‑then‑replace** (garder
+l’ancienne clé installée jusqu’à ce que la nouvelle release soit publiée) et la
+**révocation** hors ligne : il n’y a pas de liste de révocation en ligne, la
+confiance est le fichier de clé installé ; supprimer la clé seule rouvre le mode
+historique « manifeste non signé accepté », ce que l’UI affiche.
+
+Décision conservée (P1‑27) : le pinning de **toutes** les images reste opt‑in
+(`HOMEVAULT_REQUIRE_PINNED_IMAGES=1`), et `HV_REQUIRE_SIGNED_STORES=1` reste le
+seul mode qui refuse une boutique **sans** clé.
+
+### 18.2 AppArmor : ne pas casser une fonction livrée
+
+L’isolation est opt‑in et en `complain`. Le risque d’un profil fautif n’est pas
+d’être inefficace mais de **remplacer** un profil qui fonctionnait : l’installeur
+compile d’abord le profil rendu avec `apparmor_parser -Q` (si le parseur expose
+`--skip-kernel-load`) et ne recharge qu’ensuite. Un profil qui ne compile pas
+laisse la confinement précédente en place, avec un avertissement.
+
+Le profil reste volontairement large (`capability,`, `network,`, `mount`,
+`/dev`, `/sys`, `/usr` en lecture) parce que HomeVault pilote `mdadm`, `zfs`,
+`btrfs`, Docker, Incus, Samba, NFS, iSCSI, WireGuard, SMART et son propre
+updater depuis le même processus. `docs/guides/security.md` liste chaque
+directive **volontairement absente** avec sa raison, la checklist terrain
+(SMB, NFS, iSCSI, WireGuard, montages, SMART, mise à jour signée) et le score
+`systemd-analyze security` à comparer avant/après.
+
+Le compte système par sous‑système reste un **candidat**, pas une décision : il
+réduirait `capability,` et `mount,`, mais doit d’abord préserver `sudo` pour
+chaque action existante — la checklist ci‑dessus sert d’acceptation.
+
+### 18.3 Tests
+
+`installer/tests/unit-hardening.test.sh` gagne sept assertions sur
+`install_trust_anchor` (copie d’un fichier, écriture inline, refus d’une source
+vide sans fichier créé). Le reste de la validation AppArmor/enforce reste
+**terrain** : elle exige un hôte réel, et c’est dit comme tel.
+
+---
+
+## 19. RTO/RPO par scénario — 2026‑11‑09 (FIAB‑05, partiel)
+
+Le drill P2‑9 prouve que la **base** et l’**archive de configuration** sont
+restaurables ; il ne prouve pas qu’une machine redémarre. FIAB‑05 ajoute la
+grille qui manquait au runbook : cinq scénarios (disque système mort avec pool
+sain, pool perdu restauré par réplication, pool perdu restauré par restic,
+rançongiciel, erreur humaine), chacun avec une cible **RTO** et **RPO**, et une
+colonne « mesuré » qui ne se remplit que par un run daté sur VM.
+
+La règle est explicite dans `docs/guides/disaster-recovery.md` : une case vide
+veut dire « non testé », jamais « on suppose que c’est bon ». Une passe note le
+temps d’installation, de restauration de la configuration, de restauration des
+données, de vérification et le total, plus chaque écart au runbook — ce sont les
+écarts qui rendent la reconstruction suivante plus rapide.
+
+Reste la passe terrain sur VM jetable (installer, restaurer, réattacher,
+vérifier partages et comptes) : elle demande un hôte de test et n’a pas été
+exécutée ici.

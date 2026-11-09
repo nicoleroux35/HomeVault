@@ -35,6 +35,21 @@ final green run:
   `sqlite::memory:`), quota message follows the delegated-manager wording, and
   the share-link owner gets a folder grant.
 
+## 2026-11-09 — trust anchors, AppArmor preflight, key rotation (written, not run)
+
+> **Not executed for this pass**, per instruction. Static checks: `bash -n` on
+> `installer/install.sh` and `installer/tests/unit-hardening.test.sh`; no
+> installer suite was run.
+
+| Suite | Delta | Coverage |
+|---|---|---|
+| Installer `unit-hardening` | +7 assertions | `install_trust_anchor` copies a local key file, writes inline hex/base64 material, and refuses an empty source without creating anything |
+| AppArmor | behaviour | the installer compiles the profile with `apparmor_parser -Q` before replacing the loaded one when the parser supports `--skip-kernel-load`; a broken profile leaves the previous confinement in place |
+| Release trust anchor | behaviour | `HV_RELEASE_PUBKEY` given as a local PEM is installed at `/usr/local/lib/homevault/release-key.pem`; the catalog key now uses the same helper |
+
+Expected installer total after a run: `unit-hardening` **64/64**. Unit and
+integration totals are unchanged (2 950 / 4 582).
+
 ## 2026-11-09 — failure-injection rehearsals (written, not run)
 
 > **Not executed for this pass**, per instruction. Static checks: `cargo fmt

@@ -288,9 +288,94 @@ through `sudo`, so enforcement is a field decision, not an installer default.
 After reviewing `dmesg | grep -i apparmor` and `aa-logprof`, re-run with
 `HV_APPARMOR=1 HV_APPARMOR_ENFORCE=1`.
 
+The installer compiles the rendered profile with `apparmor_parser -Q` before it
+replaces the loaded one (when the parser exposes `--skip-kernel-load`), so a
+typo in the profile cannot remove a working confinement. On an older parser the
+reload itself is the only check.
+
 If AppArmor is not enabled on the kernel (or `apparmor_parser` is missing), the
 installer **warns and ignores the flag** — it never reports a confinement it did
 not apply.
+
+#### What the profile deliberately does not restrict
+
+The profile is a **safety net against a compromised web process**, not a tight
+sandbox: the appliance is an all-in-one NAS that drives `mdadm`, `zfs`,
+`btrfs`, `docker`, `incus`, Samba, NFS, iSCSI, WireGuard, `smartctl` and its own
+updater from the same process. A stricter profile would break a shipped
+feature without a field test on the exact host. The deliberate absences:
+
+| Not restricted | Why |
+|---|---|
+| `capability,` (all capabilities) | array/pool creation, mounts, `modprobe`, `sysctl`, service control and SMART all need different capabilities; splitting them is the per-subsystem-account work below |
+| `network,` and `unix,` | Docker/Incus bridges, iSCSI, NFS, WireGuard and the internal sockets |
+| `mount,` / `umount,` / `pivot_root,` | importing a pool, mounting a USB device or an ISO, and Incus container setup |
+| `/dev/** rw`, `/sys/** rw`, `/proc/** r` | SMART, hwmon, `mdadm`/`zfs` ioctls, kernel knobs |
+| `/usr/** r`, `/bin/** r`, `/sbin/** r`, `/lib/** r` | the host tools are executed through `sudo`; the profile must let them run |
+| `/etc/systemd/system/** rw` | the appliance writes its own units (update engine, keepalive, scheduled tasks) |
+| `/mnt/**`, `/media/**`, `/srv/** rwkl` | user data, wherever the administrator mounts it |
+
+#### Field validation checklist (enforce)
+
+Run on a disposable machine, in this order, before enabling enforce:
+
+1. `systemd-analyze security homevault` — record the score before/after.
+2. With the profile in **complain**, exercise each privileged path:
+   - SMB: create a share, write a file from a client, restart `smbd`;
+   - NFS: create an export and mount it from a client;
+   - iSCSI: create a target (`modprobe` path), attach an initiator;
+   - WireGuard: enable a tunnel (`sysctl` + `wg`);
+   - Storage: mount/unmount a USB disk, run a SMART sample, import a pool;
+   - Update: run the signed update engine once.
+3. `dmesg | grep -i apparmor` and `aa-logprof` — accept the expected denials,
+   fix the profile for the rest.
+4. Re-run with `HV_APPARMOR_ENFORCE=1`, repeat step 2, and confirm no
+   `DENIED` line names a shipped feature.
+5. Record the tested host, date, kernel and profile hash in the release notes.
+
+A per-subsystem service account (one account per privileged area) is a
+**candidate**, not a decision: it would shrink `capability,` and `mount,`, but
+it must keep `sudo` working for every existing action, so it is only worth
+doing with the checklist above as the acceptance test.
+
+### Signing keys: publication, rotation and revocation (FIAB-12)
+
+Two independent Ed25519/RSA chains exist, and they are rotated separately:
+
+| Chain | Public key | Private key | Verifies |
+|---|---|---|---|
+| Release manifest | `/usr/local/lib/homevault/release-key.pem` (`HV_RELEASE_PUBKEY`) | `HV_SIGNING_KEY` on the release machine, offline | `installer/install.sh --verify-manifest`, the update engine |
+| Community catalog | `/usr/local/lib/homevault/catalog-key.ed25519` (`HV_CATALOG_PUBKEY`) | `catalog-signing-key.pem`, offline | every `homevault-store.toml` and `homevault-app.toml` |
+
+The installer copies either key to its default path when it is given as a local
+file, so later verification does not depend on the environment carrying it
+(`install_trust_anchor`).
+
+**Rotation.** A key change is a *publish-then-replace* operation:
+
+1. Generate the new key pair on the offline machine; never commit the private
+   key.
+2. Sign the new release manifest with the new private key **and** keep the old
+   public key installed until the new release is published.
+3. Publish the new release (signed with the new key) together with the new
+   public key in the release assets.
+4. Installations pick the new key up on the next install/update (the installer
+   copies it) or by setting `HV_RELEASE_PUBKEY` / `HV_CATALOG_PUBKEY` for one
+   run.
+5. Only then remove the old public key.
+
+**Revocation.** There is no online revocation list: trust is the installed key
+file. A compromised key is revoked by (1) generating a new pair, (2) shipping a
+release signed with it, and (3) replacing the installed public key. Until the
+key file is replaced, a manifest signed with the old key still verifies — that
+is the deliberate offline behaviour. Never rotate by deleting the key file
+alone: with no key configured, an unsigned manifest is accepted again (and the
+UI says so).
+
+**Hard mode.** `HV_REQUIRE_SIGNED_STORES=1` makes a *missing* catalog key itself
+refuse every store. `HOMEVAULT_REQUIRE_PINNED_IMAGES=1` is a separate,
+deliberately opt-in switch for digest pinning — the product does not require
+every image to be pinned (P1-27 decision).
 
 ### Tests
 
@@ -298,8 +383,10 @@ not apply.
 `HV_LIB_ONLY=1` and asserts: the root unit has the hardening block and
 `NoNewPrivileges`; the unprivileged unit does not; none of the
 feature-breaking directives appear; the AppArmor profile attaches to the
-binary, defaults to complain, and switches to enforce. It is run by hand, not
-by the installer.
+binary, defaults to complain, and switches to enforce; and
+`install_trust_anchor` copies a local key, writes inline material, and refuses
+an empty source without creating a file. It is run by hand, not by the
+installer.
 
 ## Backend
 

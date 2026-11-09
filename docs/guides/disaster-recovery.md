@@ -172,6 +172,25 @@ Write down what you verified and when. `restic check` passing, the drill saying
 *Ready to restore*, and a hash matching are the facts that turn "I think we have
 backups" into "we have backups".
 
+## RTO/RPO targets (FIAB-05)
+
+RTO is how long a rebuild takes; RPO is how much data may be lost. The targets
+below are the promise; the "measured" column is filled only by a dated run on a
+disposable VM (never estimated). Until a row is measured, treat it as untested.
+
+| Scenario | RTO target | RPO target | Measured (date, duration) |
+|---|---|---|---|
+| System disk failed, data pool healthy | < 1 h | 0 (pool untouched) | — |
+| Pool lost, restored from replication | < 4 h | last replication interval | — |
+| Pool lost, restored from restic | < 8 h | last backup interval | — |
+| Ransomware / mass deletion (snapshots + immutable copies) | < 4 h | last snapshot interval | — |
+| Human error (wrong file overwritten) | < 15 min | 0 (snapshot) | — |
+
+What a run measures: install time, configuration-restore time, data-restore
+time, verification time, and the wall-clock total. Record the appliance
+version, the source of each copy, and every deviation from this runbook — the
+deviations are the part that makes the next rebuild faster.
+
 ## What this runbook deliberately does not promise
 
 - **Snapshots do not survive a dead pool.** They live on it. Only replication

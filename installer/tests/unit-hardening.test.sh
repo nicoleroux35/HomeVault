@@ -108,6 +108,36 @@ ENFORCE_PROFILE=$(HV_APPARMOR_ENFORCE=1 render_apparmor_profile)
 has "apparmor: enforce switch" "$ENFORCE_PROFILE" "flags=(enforce)"
 lacks "apparmor: enforce is not complain" "$ENFORCE_PROFILE" "flags=(complain)"
 
+# --- Trust anchors (FIAB-12) ----------------------------------------------
+ANCHOR_DIR=$(mktemp -d)
+printf 'release-pem-bytes\n' > "$ANCHOR_DIR/release.pem"
+if install_trust_anchor "$ANCHOR_DIR/release.pem" "$ANCHOR_DIR/out/release-key.pem"; then
+    ok "trust anchor: local file installed"
+else
+    bad "trust anchor: local file installed"
+fi
+if [[ -f "$ANCHOR_DIR/out/release-key.pem" ]]; then
+    ok "trust anchor: destination exists"
+else
+    bad "trust anchor: destination exists"
+fi
+has "trust anchor: bytes copied" "$(cat "$ANCHOR_DIR/out/release-key.pem" 2>/dev/null)" "release-pem-bytes"
+if install_trust_anchor "a1b2c3" "$ANCHOR_DIR/out/catalog-key.ed25519"; then
+    ok "trust anchor: inline material written"
+else
+    bad "trust anchor: inline material written"
+fi
+has "trust anchor: inline value" "$(cat "$ANCHOR_DIR/out/catalog-key.ed25519" 2>/dev/null)" "a1b2c3"
+if install_trust_anchor "" "$ANCHOR_DIR/out/never"; then
+    bad "trust anchor: empty source refused"
+else
+    ok "trust anchor: empty source refused"
+fi
+[[ ! -e "$ANCHOR_DIR/out/never" ]] \
+    && ok "trust anchor: refused source writes nothing" \
+    || bad "trust anchor: refused source writes nothing"
+rm -rf "$ANCHOR_DIR"
+
 # --- Kernel stability + monitoring choice (P1-28) -------------------------
 SYSCTL=$(render_sysctl)
 has "sysctl: panic reboots" "$SYSCTL" "kernel.panic = 10"

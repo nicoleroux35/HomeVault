@@ -456,6 +456,23 @@ else:
 PY
 }
 
+# Install a public trust anchor where the installer/binary looks for it by
+# default. `source` is a local file or inline material (hex/base64/one-line
+# PEM body); never the private key. Returns non-zero so the caller can warn
+# without failing the whole install.
+install_trust_anchor() {
+    local source="$1" dest="$2"
+    [[ -n "$source" && -n "$dest" ]] || return 1
+    mkdir -p "$(dirname "$dest")" || return 1
+    if [[ -f "$source" ]]; then
+        install -m 0644 "$source" "$dest" 2>/dev/null || return 1
+    else
+        printf '%s\n' "$source" > "$dest" 2>/dev/null || return 1
+        chmod 0644 "$dest" 2>/dev/null || return 1
+    fi
+    return 0
+}
+
 # Verifies a detached signature over the exact manifest bytes. Tries Ed25519
 # without a pre-hash first (OpenSSL 3), then RSA/ECDSA with SHA-256 (works on
 # OpenSSL 1.1.1 too). Returns 0 only for a valid signature.
@@ -2757,17 +2774,25 @@ unset _hv_mon _hv_req _hv_var _hv_avail _hv_enabled
 # it. No key = the historical unsigned behaviour (stores are listed as
 # "Unsigned"); HV_REQUIRE_SIGNED_STORES=1 makes the key mandatory at runtime.
 if [[ -n "${HV_CATALOG_PUBKEY:-}" ]]; then
-    mkdir -p /usr/local/lib/homevault
-    if [[ -f "$HV_CATALOG_PUBKEY" ]]; then
-        install -m 0644 -o root -g root "$HV_CATALOG_PUBKEY" \
-            /usr/local/lib/homevault/catalog-key.ed25519 2>/dev/null \
-            && ok "Catalog public key installed at /usr/local/lib/homevault/catalog-key.ed25519" \
-            || warn "Could not install the catalog public key — community stores stay unsigned"
+    if install_trust_anchor "$HV_CATALOG_PUBKEY" \
+            /usr/local/lib/homevault/catalog-key.ed25519; then
+        ok "Catalog public key installed at /usr/local/lib/homevault/catalog-key.ed25519"
     else
-        printf '%s\n' "$HV_CATALOG_PUBKEY" > /usr/local/lib/homevault/catalog-key.ed25519 \
-            && chmod 0644 /usr/local/lib/homevault/catalog-key.ed25519 \
-            && ok "Catalog public key written to /usr/local/lib/homevault/catalog-key.ed25519" \
-            || warn "Could not write the catalog public key — community stores stay unsigned"
+        warn "Could not install the catalog public key — community stores stay unsigned"
+    fi
+fi
+
+# Release trust anchor (P2-8, FIAB-12). When the operator ships the release
+# public key as a local PEM, install it at the path `--verify-manifest` and the
+# signed update engine read by default, so later updates verify without the
+# environment carrying it. Absence keeps the historical "signature said so"
+# behaviour: an unsigned manifest is still accepted, but it is reported.
+if [[ -n "${HV_RELEASE_PUBKEY:-}" && -f "${HV_RELEASE_PUBKEY}" ]]; then
+    if install_trust_anchor "$HV_RELEASE_PUBKEY" \
+            /usr/local/lib/homevault/release-key.pem; then
+        ok "Release public key installed at /usr/local/lib/homevault/release-key.pem"
+    else
+        warn "Could not install the release public key — updates still verify with HV_RELEASE_PUBKEY"
     fi
 fi
 
@@ -2782,7 +2807,13 @@ if [[ "${HV_APPARMOR:-0}" == "1" ]]; then
     if [[ "$APPARMOR_ENABLED" == "Y" ]] && command -v apparmor_parser >/dev/null 2>&1; then
         mkdir -p /etc/apparmor.d
         render_apparmor_profile > /etc/apparmor.d/homevault
-        if apparmor_parser -r /etc/apparmor.d/homevault 2>/dev/null; then
+        # Compile-only first: a profile that does not parse must never replace
+        # the last working one. `-Q` exists on AppArmor 2.13+; on an older
+        # parser the plain reload below is the only check available.
+        if apparmor_parser --help 2>&1 | grep -q -- '--skip-kernel-load' \
+            && ! apparmor_parser -Q /etc/apparmor.d/homevault 2>/dev/null; then
+            warn "AppArmor profile does not compile; the previous profile stays loaded"
+        elif apparmor_parser -r /etc/apparmor.d/homevault 2>/dev/null; then
             APPARMOR_MODE="complain"
             if [[ "${HV_APPARMOR_ENFORCE:-0}" == "1" ]]; then APPARMOR_MODE="enforce"; fi
             ok "AppArmor profile loaded in $APPARMOR_MODE mode (/etc/apparmor.d/homevault)"
