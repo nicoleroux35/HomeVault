@@ -809,6 +809,12 @@ impl SetupService {
         let hdparm = Self::resolve_bin("hdparm", "/usr/sbin/hdparm");
         let dmidecode = Self::resolve_bin("dmidecode", "/usr/sbin/dmidecode");
         let iso_root = format!("{}/iso", crate::config::paths::base_dir().display());
+        // Virtual-machine export/import (`src/vm_export.rs`): `incus export`
+        // writes an archive, `incus import` reads one back. Both are confined
+        // to the export folder below — the target/source argument of the
+        // grant, not the whole `incus` binary.
+        let incus = Self::resolve_bin("incus", "/usr/bin/incus");
+        let vm_export_root = format!("{}/vm/exports", crate::config::paths::base_dir().display());
         // Per-user home-directory quotas (`src/quota.rs`, ROADMAP 3.1-3.3).
         // Every quota call runs as `sudo -n` so it keeps working under the
         // unprivileged `homevault` service account; before this grant the
@@ -1184,6 +1190,13 @@ homevault ALL=(root) NOPASSWD: {mount} -t zfs * /tmp/restic-snap-*, {mount} --bi
 # create with `--find`.
 homevault ALL=(root) NOPASSWD: {losetup} --find --show --read-only *, {losetup} -d /dev/loop*, {mount} -o loop\,ro\,nosuid\,nodev * {iso_root}/*, {umount} {iso_root}/*
 
+# Machine export/import (`src/vm_export.rs`). `incus export` takes an
+# instance, an optional snapshot and a target file; `incus import` takes a
+# source file and an optional name. Both grants pin the archive path to the
+# export folder HomeVault owns, so even a compromised argv can only read or
+# write an archive there — never an arbitrary file as root.
+homevault ALL=(root) NOPASSWD: {incus} export * {vm_export_root}/*, {incus} export --compressed * {vm_export_root}/*, {incus} import {vm_export_root}/*, {incus} import {vm_export_root}/* *
+
 # Traffic shaping (`src/traffic_control.rs`): `tc` is dedicated to qdiscs and
 # classes, and every grant names the object family the module builds.
 homevault ALL=(root) NOPASSWD: {tc} qdisc replace dev * root handle * htb default *, {tc} qdisc del dev * root, {tc} class replace dev * parent * classid * htb rate * ceil *, {tc} filter replace dev * protocol ip parent * prio * u32 match ip sport * * flowid *
@@ -1345,6 +1358,8 @@ homevault ALL=(root) NOPASSWD: {power_grants}
             hdparm = hdparm,
             dmidecode = dmidecode,
             iso_root = iso_root,
+            incus = incus,
+            vm_export_root = vm_export_root,
             homes_base = crate::config::paths::HOMES_BASE_DIR,
             apps_root = crate::config::paths::apps_dir().display(),
             setquota = setquota,
@@ -3049,6 +3064,30 @@ mod tests {
                 .iter()
                 .any(|g| g.contains("--output-fields=__REALTIME_TIMESTAMP")),
             "the journalctl grant must pin the output fields"
+        );
+    }
+
+    #[test]
+    fn test_vm_export_grants_are_confined_to_the_export_folder() {
+        // `incus export|import` moves a whole machine: an unscoped grant would
+        // let a compromised argv write (or read) any file as root. Both the
+        // plain and the `--compressed` shape must pin the archive path.
+        let sudoers = SetupService::sudoers_body_for_tests();
+        for want in [
+            "incus export * /srv/homevault/vm/exports/*",
+            "incus export --compressed * /srv/homevault/vm/exports/*",
+            "incus import /srv/homevault/vm/exports/*",
+            "incus import /srv/homevault/vm/exports/* *",
+        ] {
+            assert!(
+                sudoers.contains(want),
+                "the sudoers file is missing the scoped grant `{want}`"
+            );
+        }
+        // The bare binary is never granted.
+        assert!(
+            !sudoers.contains("NOPASSWD: /usr/bin/incus\n"),
+            "incus must stay per-subcommand and path-confined"
         );
     }
 

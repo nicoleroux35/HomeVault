@@ -661,6 +661,11 @@ The screen refreshes on tab switch, on window focus and every 45 s
 - Lifecycle: start, stop, restart, deletion (with operation wait)
 - Clone: duplicate a machine (optionally from a snapshot) with a new name; the clone stays stopped
 - Snapshots: creation, list, restore, deletion
+- **Export / import**: the toolbar's *Export / import* dialog exports the
+  selected machine (current state or a snapshot, optional compression) into one
+  archive, lists the archives with their size, date and absolute path, imports
+  one as a new machine (optional name) and deletes one; without Incus the
+  actions are disabled with the reason and the archive list stays readable
 - Shell console (xterm) relayed over WebSocket
 - Graphical screen (noVNC) with a single-use 20 s ticket
 - VirtIO driver download (fedorapeople.org)

@@ -83,7 +83,7 @@ cas de désaccord avec le backlog, `HOMEVAULT_TASKLIST_A_FAIRE.md` §1bis gagne.
 | **VPN** | VPN Server + VPN Client | ✅ / ⭐ | WireGuard serveur + client, **QR code et configuration 1‑clic**, **endpoint résolu manuel → DDNS → IP publique avec avertissement LAN/CGNAT** (P1‑33). Serveur OpenVPN/L2TP volontairement absents |
 | **Traffic control** | Control Panel > Trafic | 🟡 | Classification par app/protocole, DSCP, shaping entrant (aujourd'hui egress seulement) |
 | **Docker** | Container Manager | ⭐ / ✅ | Mises à jour planifiées/auto, graphiques ressources, compose (fait), registries privés (fait), exec/logs (fait) |
-| **Virtual Machines** | Virtual Machine Manager | 🟡 | Export/import OVA, migration à chaud, HA, switches virtuels, passthrough USB/PCI. Clone, snapshots, VNC, cloud‑init : faits |
+| **Virtual Machines** | Virtual Machine Manager | ✅ / 🟡 | **Export/import d'archive (OVA) livré** (P2‑18) ; restent migration à chaud, HA, switches virtuels, passthrough USB/PCI. Clone, snapshots, VNC, cloud‑init : faits |
 | **Scheduled Tasks** | Task Scheduler | 🟡 | Seulement **4 types** (`command`, `snapshot`, `smart_test`, `power`). Ajouter backup, scrub, purge corbeille, Docker, notification, rsync, historique |
 | **Settings** | Control Panel | 🟡 | **MAJ signée + atomique + rollback absente** (seul un « update check » existe), portail de connexion personnalisé, options régionales, périphériques externes, LED/bip/LCM |
 | **Users** | Control Panel > Utilisateur & Groupe | ✅ | Groupes imbriqués, historique de mots de passe, verrouillage d'inactivité. Expiration, quotas, grants, managers délégués, sync Samba : faits |
@@ -197,7 +197,7 @@ reconstruction complète sur VM.
 | **P1 ✅** | Téléchargeur : NZB, RSS, planification, limites, extraction | **RSS + planification + limites/tâche + extraction auto** : **livrés** (P1‑36) ; **NZB/eMule rejetés** | Niche, credentials, exposition légale | M | nouveau |
 | **P2 ✅** | Cache SSD L2ARC/SLOG | **Opt‑in ZFS**, jamais par défaut (exige un SSD) : **livré** (P2‑16) | Gain réel seulement sur matériel adapté | M | nouveau |
 | **P2 ✅** | iSCSI snapshots/clones de LUN, thin LUN | **P2 home‑lab** : **livré** (P2‑17) — LUN fin ZFS + snapshots/clones | Usage domestique marginal | M | nouveau |
-| **P2** | VM export/import OVA | **P2** en s'appuyant sur `incus export` natif | Portabilité/backup, pas un sous‑système | M | nouveau |
+| **P2 ✅** | VM export/import OVA | **P2** en s'appuyant sur `incus export` natif : **livré** (P2‑18) | Portabilité/backup, pas un sous‑système | M | nouveau |
 | **P2** | Syncthing navigateur de versions | **P2** intégration UI seule (Syncthing gère déjà les versions) | Faible effort, pas de nouveau moteur | S/M | nouveau |
 | **P2** | Calendrier/Contacts manquants | **App catalogue** (Radicale/Baïkal), pas natif | Cohérent avec le backlog §6 | S | nouveau |
 
@@ -298,6 +298,23 @@ reconstruction complète sur VM.
 - Tests **écrits, non exécutés** : 6 unitaires, 4 d'intégration (**aucune
   commande `zfs` exécutée**), E2E iSCSI §7. Docs : `docs/guides/iscsi.md`,
   `SCREENS.md`, FeatureDoc `iscsi`.
+
+**P2‑18 — VM : export/import d'archive (livré).**
+
+- `src/vm_export.rs` : nom d'archive **dérivé** (nom de machine validé +
+  horodatage) et re‑validé à chaque usage, argv
+  `incus export [--compressed] … <cible>` / `incus import <source> [<nom>]`,
+  listing borné.
+- Endpoints admin : `POST /api/vm/{name}/export`, `GET /api/vm/exports`,
+  `POST /api/vm/import`, `GET /api/vm/exports/{file}` (flux),
+  `DELETE /api/vm/exports/{file}` ; jobs suivis `vm_export`/`vm_import`.
+- Les grants sudoers **épinglent le chemin** de l'archive au dossier
+  `<DATA>/vm/exports` : même un argv compromis ne peut lire/écrire ailleurs.
+- UI : dialogue **Exporter / importer** ; sans Incus, les actions sont
+  désactivées avec la raison et la liste reste lisible.
+- Tests **écrits, non exécutés** : 6 unitaires, 3 d'intégration (**aucune
+  commande `incus` exécutée**), E2E VM §11. Docs : `docs/guides/vm.md`,
+  `SCREENS.md`, FeatureDoc `virtual-machines`.
 
 ### 3.3 Geler ou rejeter — parité sans valeur pour la cible
 
@@ -430,6 +447,10 @@ PHP 8.1/Redis 4.0.
   `src/handlers/iscsi.rs` (`kind: zvol`, `/snapshots`, `/clone`), panneau
   snapshots dans `frontend/src/routes/Iscsi.svelte`, grants `zfs create|clone`
   (`src/setup.rs`) — P2‑17
+- **Export/import VM** : `src/vm_export.rs` (nom/argv/listing),
+  `src/handlers/vm.rs` (`/exports`, `/{name}/export`, `/import`), dialogue dans
+  `frontend/src/routes/VirtualMachines.svelte`, grants `incus export|import`
+  épinglés au dossier d'export (`src/setup.rs`) — P2‑18
 - **13 ordonnanceurs déjà existants** (`src/web/mod.rs:2809-2850`) : une
   « tâche planifiée backup/scrub/corbeille » doit les exposer, pas les dupliquer
 - Serveur OpenVPN absent, client seul : `src/handlers/vpn.rs:953-1002` ;
@@ -734,6 +755,7 @@ Journal — l'API les porte déjà.
 **Reste sur P2‑9** : le test de reconstruction complète sur une VM jetable
 (boot, installation, restauration DB + configuration + données, vérification)
 et, si la cible le justifie, une image système équivalente à `md0`. **Tous les
-P1 de §3.2 sont livrés** (média, Explorer, téléchargeur) et **deux P2** le sont
-aussi (cache SSD ZFS L2ARC/SLOG, LUN fins iSCSI) ; restent OVA, versions
-Syncthing et calendrier en app catalogue, puis les finitions P1‑18/P2‑7/P2‑8.
+P1 de §3.2 sont livrés** (média, Explorer, téléchargeur) et **trois P2** le sont
+aussi (cache SSD ZFS L2ARC/SLOG, LUN fins iSCSI, export/import VM) ; restent les
+versions Syncthing et le calendrier en app catalogue, puis les finitions
+P1‑18/P2‑7/P2‑8.

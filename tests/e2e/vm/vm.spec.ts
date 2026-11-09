@@ -816,3 +816,63 @@ test.describe('15 — Long Incus operations', () => {
     }
   });
 });
+
+// ===========================================================================
+// 11 — Export / import (machine archives)
+//
+// Runs on any host: the modal must open even when Incus is absent (the archive
+// list is still readable), and the actions that need `incus` are disabled with
+// the reason instead of failing. Nothing is exported or imported here.
+// ===========================================================================
+test.describe('11 — Export / import', () => {
+  test('11.1 — the archives dialog opens and reports its state honestly', async ({ page }) => {
+    await gotoVm(page, adminTokens);
+    const open = win(page).locator('[data-testid="vm-exports-open"]');
+    await expect(open).toBeEnabled({ timeout: 10_000 });
+    await open.click();
+
+    const modal = page.locator('[data-testid="vm-export-modal"]');
+    await expect(modal).toBeVisible({ timeout: 10_000 });
+
+    // Exactly one of "select a machine" or the export form is shown, and the
+    // archive list is either the empty hint or real rows.
+    const pick = modal.locator('[data-testid="vm-export-pick"]');
+    const snapshot = modal.locator('[data-testid="vm-export-snapshot"]');
+    expect((await pick.count()) + (await snapshot.count())).toBeGreaterThan(0);
+
+    const empty = modal.locator('[data-testid="vm-export-empty"]');
+    const list = modal.locator('[data-testid="vm-export-list"]');
+    expect((await empty.count()) + (await list.count())).toBeGreaterThan(0);
+
+    // Without Incus, the actions are refused in place with the reason.
+    if ((await modal.locator('[data-testid="vm-export-unavailable"]').count()) > 0) {
+      const run = modal.locator('[data-testid="vm-export-run"]');
+      if ((await run.count()) > 0) await expect(run).toBeDisabled();
+    }
+
+    await modal.getByRole('button', { name: /Close|Fermer|Cerrar|Schließen/i }).click();
+    await expect(modal).toBeHidden();
+  });
+
+  test('11.2 — the export API is admin-only and lists an array', async ({ request }) => {
+    const ok = await request.get('/api/vm/exports', { headers: adminHeaders });
+    expect(ok.status()).toBe(200);
+    const body = await ok.json();
+    expect(body.success).toBe(true);
+    expect(Array.isArray(body.data)).toBe(true);
+    // Every row is a file name, never a path the client supplied.
+    for (const entry of body.data) {
+      expect(String(entry.file)).not.toContain('/');
+    }
+
+    const anonymous = await request.get('/api/vm/exports');
+    expect(anonymous.status()).toBe(401);
+
+    // A traversal is refused even with a valid session.
+    const traversal = await request.post('/api/vm/import', {
+      headers: adminHeaders,
+      data: { file: '../etc/passwd.tar.gz' },
+    });
+    expect(traversal.status()).toBe(400);
+  });
+});

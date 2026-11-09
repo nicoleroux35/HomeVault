@@ -3142,3 +3142,294 @@ mod tests {
         );
     }
 }
+
+// ---------------------------------------------------------------------------
+// Export / import (portability, P2 2026-11-09)
+//
+// `incus export` writes one archive per machine (config + root filesystem);
+// `incus import` turns it back into a machine, here or on another HomeVault.
+// The archive lives in `<DATA_DIRECTORY>/vm/exports`, one folder HomeVault
+// owns, so a request names a *file* and never a path.
+// ---------------------------------------------------------------------------
+
+/// `GET /api/vm/exports` — the archives HomeVault has produced.
+pub async fn handle_vm_exports(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Response {
+    if let Err(e) = require_admin(&state, &headers).await {
+        return e;
+    }
+    let entries = blocking_io(|| {
+        let dir = crate::vm_export::ensure_dir()?;
+        let list = crate::vm_export::read_entries(&dir);
+        // The absolute path is reported so the UI can show where the archive
+        // lives (the admin copies it with the Explorer or a share); the
+        // archive itself is still only readable through the admin download
+        // endpoint or by that path.
+        Ok(list
+            .into_iter()
+            .map(|entry| {
+                let path = dir.join(&entry.file).to_string_lossy().into_owned();
+                serde_json::json!({
+                    "file": entry.file,
+                    "size_bytes": entry.size_bytes,
+                    "created_at": entry.created_at,
+                    "path": path,
+                })
+            })
+            .collect::<Vec<_>>())
+    })
+    .await;
+    match entries {
+        Ok(list) => ResponseHelper::json_success(list),
+        Err(e) => ResponseHelper::json_error(e),
+    }
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ExportVmRequest {
+    /// Export one snapshot instead of the current state.
+    #[serde(default)]
+    pub snapshot: Option<String>,
+    /// Compress the archive (default: yes).
+    #[serde(default = "default_true")]
+    pub compressed: bool,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+/// `POST /api/vm/{name}/export` — write a portable archive.
+pub async fn handle_vm_export(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(name): Path<String>,
+    Json(req): Json<ExportVmRequest>,
+) -> Response {
+    let admin = match require_admin(&state, &headers).await {
+        Ok(u) => u,
+        Err(e) => return e,
+    };
+    // The request is validated **before** asking whether the host can do it:
+    // a malformed snapshot name is a 400 whatever is installed.
+    let snapshot = req
+        .snapshot
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string);
+    if let Some(snapshot) = &snapshot {
+        if !valid_snapshot_name(snapshot) {
+            return ResponseHelper::json_error(
+                "The snapshot name may only contain letters, digits, dots, dashes and underscores."
+                    .to_string(),
+            );
+        }
+    }
+    if !crate::vm_export::cli_available() {
+        return ResponseHelper::json_unavailable(
+            "incus is not installed on this server, so machines cannot be exported",
+        );
+    }
+
+    // The machine must exist before an archive is attempted: `incus export` on
+    // a typo would otherwise report the CLI's own wording.
+    match IncusService::get_instance(&name).await {
+        Ok(_) => {}
+        Err(e) => return incus_err(e),
+    }
+
+    let job_id = PROGRESS_MANAGER.create_job(
+        JobType::Custom("vm_export".to_string()),
+        &format!("Exporting {name}"),
+    );
+    let export_name = name.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        crate::vm_export::export(&export_name, snapshot.as_deref(), req.compressed)
+    })
+    .await;
+
+    match result {
+        Ok(Ok(entry)) => {
+            PROGRESS_MANAGER.complete_job(&job_id, &format!("{name} exported"));
+            crate::events::log_event(format!(
+                "Admin '{admin}' exported VM '{name}' to '{}' ({} bytes)",
+                entry.file, entry.size_bytes
+            ));
+            ResponseHelper::json_success(entry)
+        }
+        Ok(Err(e)) => {
+            PROGRESS_MANAGER.fail_job(&job_id, &e);
+            ResponseHelper::json_error(format!("The export failed: {e}"))
+        }
+        Err(e) => {
+            PROGRESS_MANAGER.fail_job(&job_id, &e.to_string());
+            ResponseHelper::json_internal_error(format!("Export task failed: {e}"))
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ImportVmRequest {
+    /// Archive file name inside the export folder.
+    pub file: String,
+    /// Name for the imported machine; Incus reuses the archived name when it
+    /// is omitted (and refuses a collision).
+    #[serde(default)]
+    pub name: Option<String>,
+}
+
+/// `POST /api/vm/import` — turn an archive back into a machine.
+pub async fn handle_vm_import(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(req): Json<ImportVmRequest>,
+) -> Response {
+    let admin = match require_admin(&state, &headers).await {
+        Ok(u) => u,
+        Err(e) => return e,
+    };
+    let file = match crate::vm_export::validate_archive_name(&req.file) {
+        Ok(file) => file,
+        Err(e) => return ResponseHelper::json_error(e),
+    };
+    if !crate::vm_export::cli_available() {
+        return ResponseHelper::json_unavailable(
+            "incus is not installed on this server, so machines cannot be imported",
+        );
+    }
+    let target = req
+        .name
+        .as_deref()
+        .map(|n| n.trim().to_lowercase())
+        .filter(|n| !n.is_empty());
+    if let Some(name) = &target {
+        if !valid_instance_name(name) {
+            return ResponseHelper::json_error(
+                "The new name must be 1–63 characters: lowercase letters, digits and dashes, starting and ending with a letter or digit.".to_string(),
+            );
+        }
+        match IncusService::get_instance(name).await {
+            Ok(_) => {
+                return ResponseHelper::json_error(format!(
+                    "A machine called \"{name}\" already exists."
+                ))
+            }
+            Err(IncusError::InstanceNotFound(_)) => {}
+            Err(e) => return incus_err(e),
+        }
+    }
+
+    let job_id = PROGRESS_MANAGER.create_job(
+        JobType::Custom("vm_import".to_string()),
+        &format!("Importing {file}"),
+    );
+    let import_file = file.clone();
+    let import_name = target.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        crate::vm_export::import(&import_file, import_name.as_deref())
+    })
+    .await;
+
+    match result {
+        Ok(Ok(path)) => {
+            PROGRESS_MANAGER.complete_job(&job_id, "Machine imported");
+            crate::events::log_event(format!(
+                "Admin '{admin}' imported VM archive '{}'{}",
+                file,
+                target
+                    .as_ref()
+                    .map(|n| format!(" as '{n}'"))
+                    .unwrap_or_default()
+            ));
+            ResponseHelper::json_success(serde_json::json!({
+                "file": file,
+                "name": target,
+                "source": path,
+            }))
+        }
+        Ok(Err(e)) => {
+            PROGRESS_MANAGER.fail_job(&job_id, &e);
+            ResponseHelper::json_error(format!("The import failed: {e}"))
+        }
+        Err(e) => {
+            PROGRESS_MANAGER.fail_job(&job_id, &e.to_string());
+            ResponseHelper::json_internal_error(format!("Import task failed: {e}"))
+        }
+    }
+}
+
+/// `DELETE /api/vm/exports/{file}` — remove one archive.
+pub async fn handle_vm_export_delete(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(file): Path<String>,
+) -> Response {
+    let admin = match require_admin(&state, &headers).await {
+        Ok(u) => u,
+        Err(e) => return e,
+    };
+    let to_delete = file.clone();
+    match blocking_io(move || crate::vm_export::delete(&to_delete)).await {
+        Ok(()) => {
+            crate::events::log_event(format!("Admin '{admin}' deleted the VM archive '{file}'"));
+            ResponseHelper::json_success(serde_json::json!({ "deleted": file }))
+        }
+        Err(e) => ResponseHelper::json_error(e),
+    }
+}
+
+/// `GET /api/vm/exports/{file}` — download one archive.
+///
+/// Admin-only, and streamed: a machine archive is gigabytes, so it is never
+/// buffered. The name is re-validated on the way in, so a traversal cannot
+/// reach a file outside the export folder.
+pub async fn handle_vm_export_download(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(file): Path<String>,
+) -> Response {
+    if let Err(e) = require_admin(&state, &headers).await {
+        return e;
+    }
+    let path = match blocking_io(move || {
+        let dir = crate::vm_export::ensure_dir()?;
+        crate::vm_export::archive_path(&dir, &file)
+    })
+    .await
+    {
+        Ok(path) => path,
+        Err(e) => return ResponseHelper::json_error(e),
+    };
+    let handle = match tokio::fs::File::open(&path).await {
+        Ok(file) => file,
+        Err(_) => return ResponseHelper::json_error("That archive no longer exists".to_string()),
+    };
+    let metadata = match handle.metadata().await {
+        Ok(metadata) => metadata,
+        Err(e) => {
+            return ResponseHelper::json_internal_error(format!("Cannot read the archive: {e}"))
+        }
+    };
+    let filename = path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "machine.tar".to_string());
+    let content_type = if filename.to_ascii_lowercase().ends_with(".gz") {
+        "application/gzip"
+    } else {
+        "application/x-tar"
+    };
+    let body = axum::body::Body::from_stream(tokio_util::io::ReaderStream::new(handle));
+    Response::builder()
+        .header("content-type", content_type)
+        .header("content-length", metadata.len().to_string())
+        .header(
+            "content-disposition",
+            format!("attachment; filename=\"{filename}\""),
+        )
+        .header("cache-control", "no-store")
+        .body(body)
+        .unwrap_or_else(|_| {
+            ResponseHelper::json_internal_error("Cannot stream the archive".to_string())
+        })
+}

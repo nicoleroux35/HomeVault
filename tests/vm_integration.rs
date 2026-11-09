@@ -70,10 +70,12 @@ use homevault::handlers::{
     auth::handle_login,
     vm::{
         handle_console_ticket, handle_screen_ticket, handle_vm_available, handle_vm_clone,
-        handle_vm_config, handle_vm_create, handle_vm_delete, handle_vm_get, handle_vm_iso_delete,
-        handle_vm_iso_download, handle_vm_isos, handle_vm_list, handle_vm_os_options,
-        handle_vm_restart, handle_vm_snapshot_create, handle_vm_snapshot_delete,
-        handle_vm_snapshot_restore, handle_vm_snapshots, handle_vm_start, handle_vm_stop,
+        handle_vm_config, handle_vm_create, handle_vm_delete, handle_vm_export,
+        handle_vm_export_delete, handle_vm_export_download, handle_vm_exports, handle_vm_get,
+        handle_vm_import, handle_vm_iso_delete, handle_vm_iso_download, handle_vm_isos,
+        handle_vm_list, handle_vm_os_options, handle_vm_restart, handle_vm_snapshot_create,
+        handle_vm_snapshot_delete, handle_vm_snapshot_restore, handle_vm_snapshots,
+        handle_vm_start, handle_vm_stop,
     },
     AppState,
 };
@@ -133,6 +135,13 @@ fn vm_router(state: Arc<AppState>) -> Router {
         .route("/api/vm/{name}/clone", post(handle_vm_clone))
         .route("/api/vm/console/ticket", post(handle_console_ticket))
         .route("/api/vm/{name}/screen/ticket", post(handle_screen_ticket))
+        .route("/api/vm/exports", get(handle_vm_exports))
+        .route("/api/vm/import", post(handle_vm_import))
+        .route(
+            "/api/vm/exports/{file}",
+            get(handle_vm_export_download).delete(handle_vm_export_delete),
+        )
+        .route("/api/vm/{name}/export", post(handle_vm_export))
         .route("/api/vm/isos", get(handle_vm_isos))
         // Mirrors `src/web/mod.rs`: the download verb is a POST on its own path.
         .route("/api/vm/isos/download", post(handle_vm_iso_download))
@@ -987,4 +996,110 @@ async fn iso_download_is_admin_only() {
     )
     .await;
     assert_eq!(status, StatusCode::FORBIDDEN);
+}
+
+// ---------------------------------------------------------------------------
+// Export / import (P2)
+//
+// No `incus` command is ever run here: the archive name is validated before
+// the capability probe, the listing only reads the export folder, and the
+// export/import paths stop at validation or at the missing CLI.
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_exports_are_admin_only_and_start_empty() {
+    let (state, _tmp, _g) = setup_state().await;
+    create_test_user(&state, "admin", "pw012345", 2).await;
+    create_test_user(&state, "member", "pw012345", 1).await;
+    let mut r = vm_router(state);
+    let admin = login(&mut r, "admin", "pw012345").await;
+    let member = login(&mut r, "member", "pw012345").await;
+
+    let (status, _) = send(&mut r, Method::GET, "/api/vm/exports", None, None).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+
+    let (status, body) = send(&mut r, Method::GET, "/api/vm/exports", Some(&member), None).await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+
+    let (status, body) = send(&mut r, Method::GET, "/api/vm/exports", Some(&admin), None).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["data"], serde_json::json!([]), "{body}");
+}
+
+#[tokio::test]
+async fn test_import_and_delete_validate_the_archive_name_first() {
+    let (state, _tmp, _g) = setup_state().await;
+    create_test_user(&state, "admin", "pw012345", 2).await;
+    let mut r = vm_router(state);
+    let admin = login(&mut r, "admin", "pw012345").await;
+
+    // A path is not an archive name: refused before the CLI probe.
+    for bad in [
+        "../etc/passwd.tar.gz",
+        "/etc/shadow.tar",
+        "a/b.tar",
+        ".hidden.tar",
+        "x.zip",
+    ] {
+        let (status, body) = send(
+            &mut r,
+            Method::POST,
+            "/api/vm/import",
+            Some(&admin),
+            Some(serde_json::json!({ "file": bad })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{bad:?}: {body}");
+        assert!(body["message"].as_str().is_some_and(|m| !m.is_empty()));
+    }
+
+    // Deleting is the same gate.
+    let (status, body) = send(
+        &mut r,
+        Method::DELETE,
+        "/api/vm/exports/..%2Fetc%2Fpasswd.tar.gz",
+        Some(&admin),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+}
+
+#[tokio::test]
+async fn test_export_rejects_a_bad_snapshot_before_touching_the_host() {
+    let (state, _tmp, _g) = setup_state().await;
+    create_test_user(&state, "admin", "pw012345", 2).await;
+    let mut r = vm_router(state);
+    let admin = login(&mut r, "admin", "pw012345").await;
+
+    let (status, body) = send(
+        &mut r,
+        Method::POST,
+        "/api/vm/web/export",
+        Some(&admin),
+        Some(serde_json::json!({ "snapshot": "../bad name" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+
+    // A valid request on a host without `incus` names the missing tool
+    // instead of failing later on an empty archive.
+    let (status, body) = send(
+        &mut r,
+        Method::POST,
+        "/api/vm/web/export",
+        Some(&admin),
+        Some(serde_json::json!({})),
+    )
+    .await;
+    if status == StatusCode::SERVICE_UNAVAILABLE {
+        assert!(body["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("incus"));
+    } else {
+        // A host with Incus answers about the machine (which does not exist
+        // here) — never a 200 from a test.
+        assert_ne!(status, StatusCode::OK, "{body}");
+    }
 }

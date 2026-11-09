@@ -131,6 +131,7 @@ justifie.
 | **P1-36** | Téléchargeur : RSS, planification, limites/tâche, extraction auto — livré 2026‑11‑09 | P1 | M | Dernier écart avec Download Station |
 | **P2-16** | Cache SSD ZFS L2ARC/SLOG — livré 2026‑11‑09 | P2 | M | Accélération opt‑in sur SSD |
 | **P2-17** | iSCSI : LUN fins ZFS + snapshots/clones — livré 2026‑11‑09 | P2 | M | Export bloc avec snapshots |
+| **P2-18** | VM : export/import d'archive (OVA) — livré 2026‑11‑09 | P2 | M | Portabilité des machines |
 | **P2-1** | SMB AD/Kerberos complet (winbind, realm, idmap, keytab) — **gelé au partiel** (config ADS + join/leave ; DC réel seulement si cible entreprise) | P2 | L | Entreprise Windows |
 | **P2-2** | NFSv4 + Kerberos (`sec=krb5`) — **gelé au partiel** (flavor + validation keytab ; KDC réel seulement si cible entreprise) | P2 | L | Entreprise Unix |
 | **P2-3** | Thin provisioning — **gelé au partiel** (zvols ZFS thin/thick ; overcommit/LVM rejetés) | P2 | L | Sur‑allocation |
@@ -2108,6 +2109,32 @@ fin** au lieu d'un fichier de taille fixe.
 Tests : 6 unitaires, 4 d'intégration (**aucune commande `zfs` exécutée**), E2E
 iSCSI §7 — écrits, **non exécutés**. Docs : `docs/guides/iscsi.md`,
 `SCREENS.md`, FeatureDoc `iscsi`.
+
+### [x] P2-18 — VM : export/import d'archive (portabilité) · M
+
+**Livré 2026‑11‑09.** L'« export OVA » de DSM, sur la primitive native d'Incus :
+une machine entière (configuration + disque) devient **un seul fichier**
+qu'`incus import` restaure ici ou sur un autre HomeVault.
+
+- `src/vm_export.rs` : nom d'archive **dérivé** (nom de machine déjà validé +
+  horodatage), validation stricte (pas de `/`, pas de `..`, `.tar`/`.tar.gz`),
+  argv `incus export [--compressed] <machine> [<snapshot>] <cible>` et
+  `incus import <source> [<nom>]`, listing trié.
+- Endpoints admin : `POST /api/vm/{name}/export`, `GET /api/vm/exports`,
+  `POST /api/vm/import`, `GET /api/vm/exports/{file}` (téléchargement en flux),
+  `DELETE /api/vm/exports/{file}` ; les opérations longues sont des jobs suivis
+  (`vm_export`/`vm_import`).
+- Sudoers : les grants **épinglent le chemin de l'archive** (dernier argument
+  d'`export`, premier d'`import`) au dossier `<DATA>/vm/exports` — même un argv
+  compromis ne peut lire/écrire ailleurs.
+- UI : dialogue **Exporter / importer** (exporter la machine sélectionnée ou un
+  snapshot, lister les archives avec leur chemin, importer avec un nom
+  facultatif, supprimer) ; sans Incus, les actions sont désactivées avec la
+  raison et la liste reste consultable.
+
+Tests : 6 unitaires, 3 d'intégration (**aucune commande `incus` exécutée**), E2E
+VM §11 — écrits, **non exécutés**. Docs : `docs/guides/vm.md`, `SCREENS.md`,
+FeatureDoc `virtual-machines`.
 
 ---
 

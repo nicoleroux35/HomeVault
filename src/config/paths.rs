@@ -153,6 +153,13 @@ pub fn vm_iso_dir() -> PathBuf {
     base_dir().join("vm").join("isos")
 }
 
+/// Directory holding the Virtual Machines app's export archives
+/// (`incus export` output). Kept apart from the ISOs so the two lists never
+/// mix, and readable only by HomeVault (an archive contains a machine's disk).
+pub fn vm_export_dir() -> PathBuf {
+    base_dir().join("vm").join("exports")
+}
+
 /// Absolute path of the Syncthing configuration file.
 pub fn syncthing_config_path() -> PathBuf {
     syncthing_dir().join("config.xml")

@@ -1,5 +1,22 @@
 # HomeVault — Test tracking
 
+## P2 VM export / import (portable archive) — 2026-11-09 (not run)
+
+> **Instruction followed: no test command was executed for this change.**
+> Static checks passed: `cargo check --lib`, `cargo check --tests`,
+> `cd frontend && npm run check` and `npm run build`.
+> **No `incus` command is executed by these tests**: the archive name is
+> validated before the capability probe, the listing only reads the export
+> folder, and the export/import paths stop at validation or at the missing CLI.
+
+| Coverage | Added / changed |
+|---|---|
+| Unit (`src/vm_export.rs`) | **+5** — archive-name derivation (sanitised, bounded, compressed or not); name validation (traversal, absolute, hidden, wrong extension refused); path confinement; exact `incus export`/`import` argv for both shapes; a listing that ignores foreign files |
+| Unit (`src/setup.rs`) | **+1** — the four scoped `incus` grants (export plain/compressed, import with/without a name) and no bare binary |
+| Integration (`tests/vm_integration.rs`) | **+3** — the listing is admin-only and starts empty; import/delete validate the archive name first; export refuses a bad snapshot before touching the host (and names the missing CLI otherwise) |
+| E2E (`tests/e2e/vm/vm.spec.ts`) | **+2** — §11.1 the dialog opens and reports its state honestly (works without Incus); §11.2 the API is admin-only, returns an array of file names and refuses a traversal |
+| Docs | `docs/guides/vm.md`, `SCREENS.md`, `CHANGELOG.md`, RAG `virtual-machines`, `HOMEVAULT_TASKLIST_A_FAIRE.md` (P2‑18), `COMPARAISON_DSM_VS_HOMEVAULT.md` |
+
 ## P2 iSCSI thin LUNs on ZFS (snapshots + clones) — 2026-11-09 (not run)
 
 > **Instruction followed: no test command was executed for this change.**

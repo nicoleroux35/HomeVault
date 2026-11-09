@@ -2500,6 +2500,23 @@ pub fn create_app(state: AppStateArc) -> Router {
             delete(crate::handlers::vm::handle_vm_iso_delete),
         )
         .route(
+            "/api/vm/exports",
+            get(crate::handlers::vm::handle_vm_exports),
+        )
+        .route(
+            "/api/vm/import",
+            post(crate::handlers::vm::handle_vm_import),
+        )
+        .route(
+            "/api/vm/exports/{file}",
+            get(crate::handlers::vm::handle_vm_export_download)
+                .delete(crate::handlers::vm::handle_vm_export_delete),
+        )
+        .route(
+            "/api/vm/{name}/export",
+            post(crate::handlers::vm::handle_vm_export),
+        )
+        .route(
             "/api/vm/{name}/screen/ticket",
             post(crate::handlers::vm::handle_screen_ticket),
         )

@@ -8,6 +8,25 @@ follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **Virtual-machine export / import, one portable archive (2026-11-09, P2).**
+  DSM's OVA export, built on the native Incus primitive: a whole machine
+  (configuration + disk) becomes one file that `incus import` restores here or
+  on another HomeVault.
+  - `POST /api/vm/{name}/export` (`{snapshot?, compressed?}`), `GET
+    /api/vm/exports`, `POST /api/vm/import`, `GET /api/vm/exports/{file}`
+    (streamed download) and `DELETE /api/vm/exports/{file}` — admin-only, the
+    long operations tracked as `vm_export` / `vm_import` jobs;
+  - archives live in `<DATA_DIRECTORY>/vm/exports`; the name is derived
+    server-side from an already-validated machine name plus a timestamp and
+    re-validated on every later use (no `/`, no `..`, `.tar`/`.tar.gz` only);
+  - the sudoers grants pin the archive path to that folder for both commands,
+    so a compromised argv cannot make `incus` read or write anywhere else;
+  - the UI adds an *Export / import* dialog (export the selected machine, list
+    the archives with their path, import with an optional new name, delete);
+    without Incus the actions are disabled with the reason.
+  Tests: 5 unit, 3 integration (no `incus` command is executed), VM E2E §11
+  (written, not run).
+
 - **iSCSI thin LUNs on ZFS, with snapshots and clones (2026-11-09, P2).** A
   shared disk can now be a **thin ZFS volume** instead of a sized file: created
   by HomeVault under `<pool>/homevault-iscsi/`, allocated on write, and

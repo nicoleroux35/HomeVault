@@ -487,6 +487,7 @@ RAID levels: RAID0 (stripe), RAID1 (mirror), RAID5 (parity), RAID6 (double parit
 - A built-in shell console (xterm) into any running machine — no VNC client needed
 - A graphical screen for ISO installations (noVNC), which can be popped out into its own browser tab
 - System containers are supported alongside full virtual machines
+- Export a machine (or one of its snapshots) into a single archive file, and import such an archive back as a new machine — here or on another HomeVault. The archives are listed with their size and path, can be deleted, and live in the appliance's own export folder; the import is the same file the export produced, so nothing is converted.
 - Admin-only access control (every operation requires the admin role)"#.to_string(),
         },
         FeatureDoc {

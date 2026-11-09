@@ -233,6 +233,42 @@ The budget is enforced **while writing** too, so a chunked response (no
 partial file is removed and the job fails. The link-import path
 (`validate_local_iso`) compares against the same `MIN_ISO_BYTES`.
 
+## Export / import — one portable archive (P2, 2026-11-09)
+
+A machine can leave the appliance as **one file**. DSM calls it OVA export;
+HomeVault uses the native Incus primitive instead of a second imaging
+subsystem, and both ends are the same command:
+
+```
+sudo incus export [--compressed] <machine> [<snapshot>] <DATA_DIRECTORY>/vm/exports/<machine>[-<snapshot>]-<stamp>.tar[.gz]
+sudo incus import <DATA_DIRECTORY>/vm/exports/<archive> [<new name>]
+```
+
+| Endpoint | Guard | Notes |
+|---|---|---|
+| `GET /api/vm/exports` | admin | archives with `file`, `size_bytes`, `created_at` and the absolute `path` |
+| `POST /api/vm/{name}/export` | admin | `{snapshot?, compressed?}` — a tracked `vm_export` job |
+| `POST /api/vm/import` | admin | `{file, name?}` — a tracked `vm_import` job |
+| `GET /api/vm/exports/{file}` | admin | streams the archive (`application/gzip` / `application/x-tar`, `no-store`) |
+| `DELETE /api/vm/exports/{file}` | admin | removes the file |
+
+**Why the CLI and not an API call**: `incus export` writes exactly what
+`incus import` reads, including the instance's config and its whole rootfs, and
+it is the operation a person can run by hand if the web UI is unavailable. The
+trade-off is a new privileged surface, so it is pinned: the sudoers grants name
+the archive folder as the **last** argument of `export` and the **first** of
+`import`, which means even a compromised argv can only read or write an archive
+inside `<DATA_DIRECTORY>/vm/exports`. The archive name itself is derived
+server-side from an already-validated machine name plus a timestamp, then
+re-validated on the way into `import`/`delete` (no `/`, no `..`, no leading dot,
+`.tar`/`.tar.gz` only).
+
+The archive contains a machine's disk: it is `0600`-equivalent by being inside
+the appliance's data directory and is only served through the admin download
+endpoint. The UI lists the absolute path so an administrator can copy it with
+the Explorer or a share instead — a multi-GB archive is not streamed through
+the browser by default.
+
 ## Graphical screen (VNC)
 
 ISO-install VMs get a full framebuffer, driven by **noVNC** (`@novnc/novnc`):
@@ -356,6 +392,9 @@ protocol as the Terminal app).
   capped by the same budget (so a chunked response and a lying server are both
   stopped), and `validate_local_iso` compares against `MIN_ISO_BYTES` — never a
   literal (ROADMAP 32.2).
+- **An archive name is a file, never a path.** `export` derives it, `import`
+  and `delete` re-validate it, and the sudoers grants pin it to the export
+  folder — a request cannot make `incus` read or write anywhere else.
 - `build_cloud_init` must keep hashing the password — never emit
   `plain_text_passwd`. The unit test asserts the plaintext is absent.
 - `os` and `password` are `#[serde(default)]` (optional for ISO mode) — the

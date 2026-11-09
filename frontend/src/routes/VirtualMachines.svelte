@@ -31,6 +31,7 @@
     IconChevronRight, IconCopy, IconCheck, IconAlertTriangle, IconLoader2,
     IconCpu, IconDatabase, IconDeviceSdCard, IconWorld, IconArrowBackUp,
     IconSettings, IconEye, IconEyeOff, IconChevronDown, IconDeviceDesktop, IconPackages,
+    IconArchive, IconDownload,
   } from '@tabler/icons-svelte';
   import { t, translate } from '$lib/stores/i18n';
   import { onAppVisible } from '$lib/utils/autoRevalidate';
@@ -66,6 +67,13 @@
     memory_used_mb: number | null;
     disk_used_gb: number | null;
     snapshots: Snapshot[];
+  }
+  interface VmExportEntry {
+    file: string;
+    size_bytes: number;
+    created_at: string | null;
+    /** Absolute path on the appliance, shown so the admin can copy it. */
+    path?: string;
   }
   interface OsOption {
     id: string; label: string; kinds: string[]; alias: string;
@@ -104,6 +112,17 @@
   let detailVm = $state<string | null>(null);
   let detail = $state<VmDetail | null>(null);
   let detailLoading = $state(false);
+
+  // Export / import (a machine archive is one portable file)
+  let exportsOpen = $state(false);
+  let exports = $state<VmExportEntry[]>([]);
+  let exportsLoading = $state(false);
+  let exportError = $state('');
+  let exportNotice = $state('');
+  let exportBusy = $state(false);
+  let exportSnapshot = $state('');
+  let exportCompressed = $state(true);
+  let importName = $state('');
 
   // Wizard
   let wizardOpen = $state(false);
@@ -422,6 +441,74 @@
     if (r.success) { setBanner('ok', translate('vm.iso_download_started', { name: 'virtio-win.iso' })); pollIsos(); }
     else setBanner('error', r.message || translate('vm.iso_download_failed'));
   }
+  // ── Export / import ──────────────────────────────────────────────────────
+  async function openExports() {
+    exportsOpen = true;
+    exportSnapshot = '';
+    exportError = '';
+    exportNotice = '';
+    await loadExports();
+  }
+
+  async function loadExports() {
+    exportsLoading = true;
+    const r = await call<VmExportEntry[]>('GET', '/vm/exports');
+    exportsLoading = false;
+    if (r.success && r.data) exports = r.data;
+    else exportError = r.message || translate('vm.export_load_failed');
+  }
+
+  async function doExport() {
+    if (!detail) return;
+    exportBusy = true;
+    exportError = '';
+    exportNotice = '';
+    const r = await call<VmExportEntry>('POST', `/vm/${encodeURIComponent(detail.name)}/export`, {
+      snapshot: exportSnapshot || undefined,
+      compressed: exportCompressed,
+    });
+    exportBusy = false;
+    if (r.success) {
+      exportNotice = translate('vm.export_done');
+      await loadExports();
+    } else {
+      exportError = r.message || translate('vm.export_failed');
+    }
+  }
+
+  async function doImport(file: VmExportEntry) {
+    exportBusy = true;
+    exportError = '';
+    exportNotice = '';
+    const name = importName.trim().toLowerCase();
+    const r = await call('POST', '/vm/import', {
+      file: file.file,
+      name: name || undefined,
+    });
+    exportBusy = false;
+    if (r.success) {
+      exportNotice = translate('vm.import_done', { name: name || file.file });
+      importName = '';
+      await load();
+      await loadExports();
+    } else {
+      exportError = r.message || translate('vm.import_failed');
+    }
+  }
+
+  async function deleteExport(file: VmExportEntry) {
+    exportBusy = true;
+    exportError = '';
+    const r = await call('DELETE', `/vm/exports/${encodeURIComponent(file.file)}`);
+    exportBusy = false;
+    if (r.success) {
+      exportNotice = translate('vm.export_deleted', { name: file.file });
+      await loadExports();
+    } else {
+      exportError = r.message || translate('vm.export_failed');
+    }
+  }
+
   async function deleteIso(name: string) {
     const r = await call('DELETE', `/vm/isos/${encodeURIComponent(name)}`);
     if (r.success) {
@@ -559,6 +646,10 @@
   <!-- Page-level primary action: a WindowToolbar row under the header, never
        inside it (the header bar is icon + title + window controls only). -->
   {#snippet toolbarRight()}
+    <Button variant="secondary" data-testid="vm-exports-open" onclick={openExports} disabled={!ready}>
+      <IconArchive size={16} stroke={2} />
+      <span>{$t('vm.exports')}</span>
+    </Button>
     <Button variant="primary" data-testid="vm-new" onclick={openWizard} disabled={incusOk === false || !ready}>
       <IconPlus size={16} stroke={2} />
       <span>{$t('vm.new')}</span>
@@ -1007,3 +1098,94 @@
 {#if screenVm}
   <VmScreen vmName={screenVm} onClose={() => screenVm = null} />
 {/if}
+
+<!-- Export / import a machine (one portable archive).
+     The archive lives in the appliance's own export folder; the row shows the
+     absolute path so an admin can copy it with the Explorer or a share. -->
+<Modal
+  open={exportsOpen}
+  title={$t('vm.exports_title')}
+  size="md"
+  onclose={() => (exportsOpen = false)}
+>
+  {#snippet children()}
+    <div class="flex flex-col gap-3" data-testid="vm-export-modal">
+      <p class="m-0 text-c-label text-[var(--hv-shell-text-2)]">{$t('vm.exports_hint')}</p>
+
+      {#if incusOk === false}
+        <p class="m-0 px-3 py-2 rounded-lg bg-[var(--hv-shell-warning-bg,#fff8e1)] text-[var(--hv-warning)] text-c-xs font-semibold" data-testid="vm-export-unavailable">
+          {$t('vm.unavailable_desc')}
+        </p>
+      {/if}
+
+      {#if exportError}
+        <Alert variant="error" dismissible ondismiss={() => (exportError = '')}>{exportError}</Alert>
+      {/if}
+      {#if exportNotice}
+        <p role="status" data-testid="vm-export-notice" class="m-0 px-3 py-2 rounded-lg bg-[var(--hv-success-bg)] text-[var(--hv-success)] text-xs font-semibold">{exportNotice}</p>
+      {/if}
+
+      {#if detail}
+        <div class="flex flex-col gap-2 px-3 py-3 rounded-xl bg-[var(--hv-shell-border-soft)] border border-[var(--hv-shell-border)]">
+          <span class="text-c-label font-semibold text-[var(--hv-shell-text-strong)]">{$t('vm.export_selected', { name: detail.name })}</span>
+          <div class="flex flex-wrap items-end gap-2">
+            <label class="flex flex-col gap-1 flex-1 min-w-[150px]">
+              <span class="text-c-xs text-[var(--hv-shell-text-2)]">{$t('vm.export_snapshot')}</span>
+              <select class="w-full h-11 px-3 border border-[var(--hv-shell-border-strong)] rounded-lg bg-[var(--hv-shell-border-soft)] text-sm" bind:value={exportSnapshot} data-testid="vm-export-snapshot">
+                <option value="">{$t('vm.export_current')}</option>
+                {#each detail.snapshots as snap (snap.name)}<option value={snap.name}>{snap.name}</option>{/each}
+              </select>
+            </label>
+            <label class="flex items-center gap-2 text-c-sm text-[var(--hv-shell-text)] pb-2">
+              <input type="checkbox" class="accent-[var(--hv-primary)]" bind:checked={exportCompressed} data-testid="vm-export-compress" />
+              {$t('vm.export_compress')}
+            </label>
+            <Button variant="primary" onclick={doExport} disabled={exportBusy || incusOk === false} data-testid="vm-export-run">
+              <IconArchive size={15} stroke={2} /> {$t('vm.export_run')}
+            </Button>
+          </div>
+        </div>
+      {:else}
+        <p class="m-0 text-c-label text-[var(--hv-shell-text-2)]" data-testid="vm-export-pick">{$t('vm.export_pick')}</p>
+      {/if}
+
+      <div class="flex flex-col gap-1">
+        <span class="text-c-label font-semibold text-[var(--hv-shell-text-strong)]">{$t('vm.export_archives')}</span>
+        {#if exportsLoading}
+          <span class="text-c-xs text-[var(--hv-shell-text-2)]" role="status">{$t('common.loading')}</span>
+        {:else if exports.length === 0}
+          <span class="text-c-xs text-[var(--hv-shell-text-2)]" data-testid="vm-export-empty">{$t('vm.export_none')}</span>
+        {:else}
+          <div class="flex flex-col gap-1.5" data-testid="vm-export-list">
+            {#each exports as entry (entry.file)}
+              <div class="flex items-start justify-between gap-2 flex-wrap px-3 py-2 rounded-lg bg-[var(--hv-shell-card)] border border-[var(--hv-shell-border)]">
+                <div class="flex flex-col gap-0.5 min-w-0">
+                  <span class="text-c-sm font-semibold text-[var(--hv-shell-text-strong)] break-all">{entry.file}</span>
+                  <span class="text-c-xs text-[var(--hv-shell-text-2)]">{fmtBytes(entry.size_bytes)}{entry.created_at ? ` · ${entry.created_at}` : ''}</span>
+                  {#if entry.path}<span class="text-c-xs text-[var(--hv-shell-text-3)] font-[family-name:var(--hv-font-mono)] break-all">{entry.path}</span>{/if}
+                </div>
+                <div class="flex items-center gap-1 flex-none">
+                  <Button variant="secondary" size="sm" onclick={() => doImport(entry)} disabled={exportBusy || incusOk === false} data-testid="vm-import-run">
+                    <IconDownload size={14} stroke={2} /> {$t('vm.import_run')}
+                  </Button>
+                  <button type="button" class="hv-ic is-danger" aria-label={$t('vm.export_delete_named', { name: entry.file })} onclick={() => deleteExport(entry)} disabled={exportBusy} data-testid="vm-export-delete">
+                    <IconTrash size={14} />
+                  </button>
+                </div>
+              </div>
+            {/each}
+          </div>
+          <label class="flex flex-col gap-1 mt-1">
+            <span class="text-c-xs text-[var(--hv-shell-text-2)]">{$t('vm.import_name')}</span>
+            <input class="w-full h-11 px-3 border border-[var(--hv-shell-border-strong)] rounded-lg bg-[var(--hv-shell-border-soft)] text-sm" bind:value={importName} placeholder={$t('vm.import_name_placeholder')} data-testid="vm-import-name" />
+          </label>
+        {/if}
+      </div>
+    </div>
+  {/snippet}
+  {#snippet footer()}
+    <div class="flex justify-end">
+      <Button variant="primary" onclick={() => (exportsOpen = false)}>{$t('common.close')}</Button>
+    </div>
+  {/snippet}
+</Modal>
