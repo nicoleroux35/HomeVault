@@ -1,0 +1,316 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- HomeVault Desktop Widgets — complete set (all 11 monitor widgets).
+     Vector reference of every draggable floating monitor widget.
+     Widget header = white bar (44px) + 28px colored icon tile + slate-700 title.
+     Canvas: 1400 x 960. Colors from tokens.css. -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1400 960" width="1400" height="960" font-family="Inter, system-ui, sans-serif">
+
+  <defs>
+    <filter id="w-card-shadow" x="-5%" y="-5%" width="110%" height="115%">
+      <feDropShadow dx="0" dy="2" stdDeviation="4" flood-color="#1F2733" flood-opacity="0.08"/>
+    </filter>
+  </defs>
+
+  <rect width="1400" height="960" fill="#f4f6fb"/>
+
+  <!-- Helper: widget header is drawn inline per widget. Icon tile 28px circle. -->
+
+  <!-- ============================================================
+       COLUMN 1: Resource (x=40), RAID (x=40, below)
+       ============================================================ -->
+
+  <!-- Resource Monitor -->
+  <g id="w-resource" filter="url(#w-card-shadow)" transform="translate(40,40)">
+    <rect width="280" height="232" rx="18" fill="#FFFFFF" stroke="#DCE1E7"/>
+    <!-- header bar (white) -->
+    <rect width="280" height="44" rx="18" fill="#FFFFFF"/>
+    <rect y="26" width="280" height="18" fill="#FFFFFF"/>
+    <line x1="0" y1="44" x2="280" y2="44" stroke="#E2E8F0" stroke-width="1"/>
+    <circle cx="22" cy="22" r="14" fill="#1E62AE"/>
+    <g transform="translate(14,14)" stroke="#FFFFFF" stroke-width="1.8" fill="none" stroke-linecap="round" stroke-linejoin="round"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></g>
+    <text x="44" y="27" font-size="14" font-weight="600" fill="#314158">Resources</text>
+    <!-- gauges -->
+    <g transform="translate(16,52)">
+      <circle cx="30" cy="30" r="26" fill="none" stroke="#DCE1E7" stroke-width="5"/>
+      <circle cx="30" cy="30" r="26" fill="none" stroke="#1E62AE" stroke-width="5" stroke-dasharray="163.4" stroke-dashoffset="52.3" transform="rotate(-90 30 30)"/>
+      <text x="30" y="35" text-anchor="middle" font-size="12" font-weight="600" fill="#1F2733">68%</text>
+      <text x="30" y="70" text-anchor="middle" font-size="9" font-weight="600" fill="#A8B1BC" letter-spacing="1">CPU</text>
+    </g>
+    <g transform="translate(86,52)">
+      <circle cx="30" cy="30" r="26" fill="none" stroke="#DCE1E7" stroke-width="5"/>
+      <circle cx="30" cy="30" r="26" fill="none" stroke="#7c8cf0" stroke-width="5" stroke-dasharray="163.4" stroke-dashoffset="65.4" transform="rotate(-90 30 30)"/>
+      <text x="30" y="35" text-anchor="middle" font-size="12" font-weight="600" fill="#1F2733">60%</text>
+      <text x="30" y="70" text-anchor="middle" font-size="9" font-weight="600" fill="#A8B1BC" letter-spacing="1">RAM</text>
+    </g>
+    <g transform="translate(156,52)">
+      <circle cx="30" cy="30" r="26" fill="none" stroke="#DCE1E7" stroke-width="5"/>
+      <circle cx="30" cy="30" r="26" fill="none" stroke="#B45309" stroke-width="5" stroke-dasharray="163.4" stroke-dashoffset="98" transform="rotate(-90 30 30)"/>
+      <text x="30" y="35" text-anchor="middle" font-size="12" font-weight="600" fill="#1F2733">40°</text>
+      <text x="30" y="70" text-anchor="middle" font-size="9" font-weight="600" fill="#A8B1BC" letter-spacing="1">TEMP</text>
+    </g>
+    <rect x="16" y="136" width="120" height="36" rx="8" fill="#F7F8FA"/>
+    <text x="28" y="150" font-size="9" font-weight="600" fill="#A8B1BC" letter-spacing="1">UPLOAD</text>
+    <text x="28" y="164" font-size="12" font-weight="600" fill="#1F2733">12.40 Mbps</text>
+    <rect x="144" y="136" width="120" height="36" rx="8" fill="#F7F8FA"/>
+    <text x="156" y="150" font-size="9" font-weight="600" fill="#A8B1BC" letter-spacing="1">DOWNLOAD</text>
+    <text x="156" y="164" font-size="12" font-weight="600" fill="#1F2733">87.20 Mbps</text>
+    <rect x="16" y="180" width="248" height="32" rx="8" fill="#DCE9F7" stroke="#BAD2EF"/>
+    <text x="32" y="201" font-size="11" fill="#18508D">System up to date</text>
+  </g>
+
+  <!-- RAID Monitor -->
+  <g id="w-raid" filter="url(#w-card-shadow)" transform="translate(40,292)">
+    <rect width="320" height="250" rx="18" fill="#FFFFFF" stroke="#DCE1E7"/>
+    <rect width="320" height="44" rx="18" fill="#FFFFFF"/>
+    <rect y="26" width="320" height="18" fill="#FFFFFF"/>
+    <line x1="0" y1="44" x2="320" y2="44" stroke="#E2E8F0" stroke-width="1"/>
+    <circle cx="22" cy="22" r="14" fill="#6366f1"/>
+    <g transform="translate(14,14)" stroke="#FFFFFF" stroke-width="1.8" fill="none" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M3 15h18"/></g>
+    <text x="44" y="27" font-size="14" font-weight="600" fill="#314158">RAID Arrays</text>
+    <rect x="16" y="56" width="288" height="76" rx="12" fill="#F7F8FA" stroke="#DCE1E7"/>
+    <text x="32" y="76" font-size="13" font-weight="600" fill="#1F2733">md0</text>
+    <rect x="140" y="64" width="52" height="18" rx="6" fill="#DCE9F7"/>
+    <text x="166" y="77" text-anchor="middle" font-size="10" font-weight="600" fill="#18508D">RAID 5</text>
+    <circle cx="36" cy="90" r="3" fill="#1E7E34"/>
+    <text x="46" y="94" font-size="11" fill="#166428">Healthy</text>
+    <text x="292" y="94" text-anchor="end" font-size="12" font-weight="600" fill="#1F2733">4.0 TB</text>
+    <text x="32" y="112" font-size="10" fill="#A8B1BC">2.4 TB used</text>
+    <text x="304" y="112" text-anchor="end" font-size="10" fill="#1E7E34" font-weight="600">1.6 TB free</text>
+    <rect x="32" y="120" width="272" height="6" rx="3" fill="#DCE1E7"/>
+    <rect x="32" y="120" width="163" height="6" rx="3" fill="#1E62AE"/>
+    <rect x="16" y="140" width="288" height="44" rx="12" fill="#6366f1"/>
+    <text x="32" y="158" font-size="10" fill="rgba(255,255,255,0.9)">Total storage</text>
+    <text x="32" y="176" font-size="16" font-weight="700" fill="#FFFFFF">2.4 TB</text>
+    <text x="304" y="176" text-anchor="end" font-size="11" fill="rgba(255,255,255,0.9)">of 4.0 TB</text>
+    <rect x="16" y="192" width="288" height="36" rx="8" fill="#F7F8FA" stroke="#DCE1E7"/>
+    <text x="32" y="215" font-size="11" fill="#454F5B">No issues detected</text>
+  </g>
+
+  <!-- ============================================================
+       COLUMN 2: Security (x=380), Weather (x=380, below)
+       ============================================================ -->
+
+  <!-- Security Monitor -->
+  <g id="w-security" filter="url(#w-card-shadow)" transform="translate(380,40)">
+    <rect width="300" height="230" rx="18" fill="#FFFFFF" stroke="#DCE1E7"/>
+    <rect width="300" height="44" rx="18" fill="#FFFFFF"/>
+    <rect y="26" width="300" height="18" fill="#FFFFFF"/>
+    <line x1="0" y1="44" x2="300" y2="44" stroke="#E2E8F0" stroke-width="1"/>
+    <circle cx="22" cy="22" r="14" fill="#C22B21"/>
+    <g transform="translate(14,14)" stroke="#FFFFFF" stroke-width="1.8" fill="none" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2L3 7v6c0 5 4 9 9 10 5-1 9-5 9-10V7l-9-5z"/></g>
+    <text x="44" y="27" font-size="14" font-weight="600" fill="#314158">Security Monitor</text>
+    <rect x="16" y="56" width="268" height="52" rx="8" fill="#F7F8FA" stroke="#DCE1E7"/>
+    <text x="28" y="74" font-size="12" font-weight="600" fill="#1F2733">Antivirus</text>
+    <circle cx="260" cy="70" r="4" fill="#1E7E34"/>
+    <text x="28" y="92" font-size="10" fill="#A8B1BC">No threats found</text>
+    <text x="28" y="104" font-size="10" fill="#A8B1BC">Last scan: Nov 09, 14:00</text>
+    <rect x="16" y="114" width="268" height="44" rx="8" fill="#F7F8FA" stroke="#DCE1E7"/>
+    <text x="28" y="132" font-size="12" font-weight="600" fill="#1F2733">Firewall</text>
+    <circle cx="260" cy="128" r="4" fill="#1E7E34"/>
+    <text x="28" y="150" font-size="10" fill="#A8B1BC">Active · 12 rules</text>
+    <rect x="16" y="164" width="268" height="52" rx="8" fill="#F7F8FA" stroke="#DCE1E7"/>
+    <text x="28" y="182" font-size="12" font-weight="600" fill="#1F2733">Anti-Ransomware</text>
+    <circle cx="260" cy="178" r="4" fill="#1E7E34"/>
+    <text x="28" y="200" font-size="10" fill="#A8B1BC">No events · 3 protected paths</text>
+  </g>
+
+  <!-- Weather Monitor -->
+  <g id="w-weather" filter="url(#w-card-shadow)" transform="translate(380,290)">
+    <rect width="280" height="232" rx="18" fill="#FFFFFF" stroke="#DCE1E7"/>
+    <rect width="280" height="44" rx="18" fill="#FFFFFF"/>
+    <rect y="26" width="280" height="18" fill="#FFFFFF"/>
+    <line x1="0" y1="44" x2="280" y2="44" stroke="#E2E8F0" stroke-width="1"/>
+    <circle cx="22" cy="22" r="14" fill="#0284c7"/>
+    <g transform="translate(14,14)" stroke="#FFFFFF" stroke-width="1.8" fill="none" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41"/></g>
+    <text x="44" y="27" font-size="14" font-weight="600" fill="#314158">Weather</text>
+    <g transform="translate(20,56)">
+      <g stroke="#1E62AE" stroke-width="1.75" fill="none" stroke-linecap="round" stroke-linejoin="round">
+        <circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41"/>
+      </g>
+      <text x="36" y="8" font-size="11" fill="#A8B1BC">Paris, France</text>
+      <text x="240" y="20" text-anchor="end" font-size="28" font-weight="600" fill="#1F2733">22°C</text>
+      <text x="36" y="28" font-size="12" fill="#1F2733">Clear sky</text>
+      <text x="36" y="56" font-size="10" fill="#A8B1BC">Humidity: 45%   Wind: 12 km/h</text>
+      <text x="36" y="72" font-size="10" fill="#A8B1BC">Feels like: 21°C   Pressure: 1013 hPa</text>
+    </g>
+  </g>
+
+  <!-- ============================================================
+       COLUMN 3: Docker (x=680), Calendar (x=680, below)
+       ============================================================ -->
+
+  <!-- Docker Monitor -->
+  <g id="w-docker" filter="url(#w-card-shadow)" transform="translate(680,40)">
+    <rect width="300" height="230" rx="18" fill="#FFFFFF" stroke="#DCE1E7"/>
+    <rect width="300" height="44" rx="18" fill="#FFFFFF"/>
+    <rect y="26" width="300" height="18" fill="#FFFFFF"/>
+    <line x1="0" y1="44" x2="300" y2="44" stroke="#E2E8F0" stroke-width="1"/>
+    <circle cx="22" cy="22" r="14" fill="#2496ed"/>
+    <g transform="translate(14,14)" stroke="#FFFFFF" stroke-width="1.8" fill="none" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="6" width="18" height="14" rx="2"/><path d="M3 10h18"/></g>
+    <text x="44" y="27" font-size="14" font-weight="600" fill="#314158">Docker Monitor</text>
+    <g transform="translate(16,56)">
+      <rect width="268" height="36" rx="8" fill="#F7F8FA" stroke="#DCE1E7"/>
+      <circle cx="12" cy="18" r="4" fill="#1E7E34"/>
+      <text x="24" y="23" font-size="12" font-weight="500" fill="#1F2733">nginx</text>
+    </g>
+    <g transform="translate(16,98)">
+      <rect width="268" height="36" rx="8" fill="#F7F8FA" stroke="#DCE1E7"/>
+      <circle cx="12" cy="18" r="4" fill="#1E7E34"/>
+      <text x="24" y="23" font-size="12" font-weight="500" fill="#1F2733">postgres</text>
+    </g>
+    <g transform="translate(16,140)">
+      <rect width="268" height="36" rx="8" fill="#F7F8FA" stroke="#DCE1E7"/>
+      <circle cx="12" cy="18" r="4" fill="#B45309"/>
+      <text x="24" y="23" font-size="12" font-weight="500" fill="#1F2733">redis</text>
+    </g>
+    <text x="16" y="200" font-size="10" fill="#A8B1BC">3 containers · 2 running</text>
+  </g>
+
+  <!-- Calendar Monitor -->
+  <g id="w-calendar" filter="url(#w-card-shadow)" transform="translate(680,290)">
+    <rect width="300" height="320" rx="18" fill="#FFFFFF" stroke="#DCE1E7"/>
+    <rect width="300" height="44" rx="18" fill="#FFFFFF"/>
+    <rect y="26" width="300" height="18" fill="#FFFFFF"/>
+    <line x1="0" y1="44" x2="300" y2="44" stroke="#E2E8F0" stroke-width="1"/>
+    <circle cx="22" cy="22" r="14" fill="#d97706"/>
+    <g transform="translate(14,14)" stroke="#FFFFFF" stroke-width="1.8" fill="none" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18" rx="2"/><path d="M16 2v4M8 2v4M3 10h18"/></g>
+    <text x="44" y="27" font-size="14" font-weight="600" fill="#314158">Calendar</text>
+    <g transform="translate(16,56)" font-size="10" font-weight="600" fill="#454F5B" text-anchor="middle">
+      <text x="20" y="12">S</text><text x="58" y="12">M</text><text x="96" y="12">T</text><text x="134" y="12">W</text><text x="172" y="12">T</text><text x="210" y="12">F</text><text x="248" y="12">S</text>
+    </g>
+    <g transform="translate(16,74)">
+      <text x="20" y="18" text-anchor="middle" font-size="11" fill="#A8B1BC">27</text>
+      <text x="58" y="18" text-anchor="middle" font-size="11" fill="#A8B1BC">28</text>
+      <text x="96" y="18" text-anchor="middle" font-size="11" fill="#A8B1BC">29</text>
+      <text x="134" y="18" text-anchor="middle" font-size="11" fill="#A8B1BC">30</text>
+      <text x="172" y="18" text-anchor="middle" font-size="11" fill="#A8B1BC">31</text>
+      <text x="210" y="18" text-anchor="middle" font-size="11" fill="#1F2733">1</text>
+      <text x="248" y="18" text-anchor="middle" font-size="11" fill="#1F2733">2</text>
+      <text x="20" y="46" text-anchor="middle" font-size="11" fill="#1F2733">3</text>
+      <text x="58" y="46" text-anchor="middle" font-size="11" fill="#1F2733">4</text>
+      <text x="96" y="46" text-anchor="middle" font-size="11" fill="#1F2733">5</text>
+      <text x="134" y="46" text-anchor="middle" font-size="11" fill="#1F2733">6</text>
+      <text x="172" y="46" text-anchor="middle" font-size="11" fill="#1F2733">7</text>
+      <text x="210" y="46" text-anchor="middle" font-size="11" fill="#1F2733">8</text>
+      <rect x="236" y="30" width="24" height="24" rx="6" fill="#d97706"/>
+      <text x="248" y="46" text-anchor="middle" font-size="11" font-weight="700" fill="#FFFFFF">9</text>
+      <text x="20" y="74" text-anchor="middle" font-size="11" fill="#1F2733">10</text>
+      <text x="58" y="74" text-anchor="middle" font-size="11" fill="#1F2733">11</text>
+      <text x="96" y="74" text-anchor="middle" font-size="11" fill="#1F2733">12</text>
+      <text x="134" y="74" text-anchor="middle" font-size="11" fill="#1F2733">13</text>
+      <text x="172" y="74" text-anchor="middle" font-size="11" fill="#1F2733">14</text>
+      <text x="210" y="74" text-anchor="middle" font-size="11" fill="#1F2733">15</text>
+      <text x="248" y="74" text-anchor="middle" font-size="11" fill="#1F2733">16</text>
+    </g>
+    <rect x="16" y="270" width="268" height="1" fill="#DCE1E7"/>
+    <g transform="translate(16,278)">
+      <text x="18" y="23" text-anchor="middle" font-size="14" fill="#454F5B">«</text>
+      <text x="54" y="23" text-anchor="middle" font-size="14" fill="#454F5B">‹</text>
+      <text x="134" y="23" text-anchor="middle" font-size="11" font-weight="600" fill="#1F2733">November 2026</text>
+      <text x="214" y="23" text-anchor="middle" font-size="14" fill="#454F5B">›</text>
+      <text x="250" y="23" text-anchor="middle" font-size="14" fill="#454F5B">»</text>
+    </g>
+  </g>
+
+  <!-- ============================================================
+       COLUMN 4: VPN, Downloader, Syncthing, Sessions, Health
+       ============================================================ -->
+
+  <!-- VPN Monitor -->
+  <g id="w-vpn" filter="url(#w-card-shadow)" transform="translate(1000,40)">
+    <rect width="280" height="150" rx="18" fill="#FFFFFF" stroke="#DCE1E7"/>
+    <rect width="280" height="44" rx="18" fill="#FFFFFF"/>
+    <rect y="26" width="280" height="18" fill="#FFFFFF"/>
+    <line x1="0" y1="44" x2="280" y2="44" stroke="#E2E8F0" stroke-width="1"/>
+    <circle cx="22" cy="22" r="14" fill="#059669"/>
+    <g transform="translate(14,14)" stroke="#FFFFFF" stroke-width="1.8" fill="none" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></g>
+    <text x="44" y="27" font-size="14" font-weight="600" fill="#314158">VPN Monitor</text>
+    <rect x="16" y="56" width="248" height="36" rx="8" fill="#F7F8FA" stroke="#DCE1E7"/>
+    <text x="28" y="79" font-size="12" font-weight="600" fill="#1F2733">WireGuard</text>
+    <text x="248" y="79" text-anchor="end" font-size="11" fill="#1E7E34" font-weight="600">2 active</text>
+    <rect x="16" y="98" width="248" height="36" rx="8" fill="#F7F8FA" stroke="#DCE1E7"/>
+    <text x="28" y="121" font-size="12" font-weight="600" fill="#1F2733">OpenVPN</text>
+    <text x="248" y="121" text-anchor="end" font-size="11" fill="#A8B1BC">Not installed</text>
+  </g>
+
+  <!-- Downloader Monitor -->
+  <g id="w-downloader" filter="url(#w-card-shadow)" transform="translate(1000,210)">
+    <rect width="280" height="190" rx="18" fill="#FFFFFF" stroke="#DCE1E7"/>
+    <rect width="280" height="44" rx="18" fill="#FFFFFF"/>
+    <rect y="26" width="280" height="18" fill="#FFFFFF"/>
+    <line x1="0" y1="44" x2="280" y2="44" stroke="#E2E8F0" stroke-width="1"/>
+    <circle cx="22" cy="22" r="14" fill="#22c55e"/>
+    <g transform="translate(14,14)" stroke="#FFFFFF" stroke-width="1.8" fill="none" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7,10 12,15 17,10"/><line x1="12" y1="15" x2="12" y2="3"/></g>
+    <text x="44" y="27" font-size="14" font-weight="600" fill="#314158">Downloader</text>
+    <text x="16" y="66" font-size="13" font-weight="600" fill="#1F2733">3 active downloads</text>
+    <rect x="16" y="78" width="120" height="44" rx="8" fill="#F7F8FA" stroke="#DCE1E7"/>
+    <text x="28" y="94" font-size="9" font-weight="600" fill="#A8B1BC" letter-spacing="1">DOWNLOAD</text>
+    <text x="28" y="112" font-size="12" font-weight="600" fill="#1F2733">2.4 MB/s</text>
+    <rect x="144" y="78" width="120" height="44" rx="8" fill="#F7F8FA" stroke="#DCE1E7"/>
+    <text x="156" y="94" font-size="9" font-weight="600" fill="#A8B1BC" letter-spacing="1">UPLOAD</text>
+    <text x="156" y="112" font-size="12" font-weight="600" fill="#1F2733">0.3 MB/s</text>
+    <rect x="16" y="130" width="248" height="40" rx="8" fill="#F7F8FA" stroke="#DCE1E7"/>
+    <text x="28" y="148" font-size="11" fill="#454F5B">ubuntu-24.04.iso</text>
+    <rect x="28" y="156" width="224" height="4" rx="2" fill="#DCE1E7"/>
+    <rect x="28" y="156" width="134" height="4" rx="2" fill="#22c55e"/>
+  </g>
+
+  <!-- Syncthing Monitor -->
+  <g id="w-syncthing" filter="url(#w-card-shadow)" transform="translate(1000,420)">
+    <rect width="280" height="150" rx="18" fill="#FFFFFF" stroke="#DCE1E7"/>
+    <rect width="280" height="44" rx="18" fill="#FFFFFF"/>
+    <rect y="26" width="280" height="18" fill="#FFFFFF"/>
+    <line x1="0" y1="44" x2="280" y2="44" stroke="#E2E8F0" stroke-width="1"/>
+    <circle cx="22" cy="22" r="14" fill="#0ea5e9"/>
+    <g transform="translate(14,14)" stroke="#FFFFFF" stroke-width="1.8" fill="none" stroke-linecap="round" stroke-linejoin="round"><path d="M21 2v6h-6"/><path d="M3 12a9 9 0 0 1 15-6.7L21 8"/><path d="M3 22v-6h6"/><path d="M21 12a9 9 0 0 1-15 6.7L3 16"/></g>
+    <text x="44" y="27" font-size="14" font-weight="600" fill="#314158">Syncthing</text>
+    <circle cx="32" cy="76" r="6" fill="#B45309"/>
+    <text x="46" y="80" font-size="12" font-weight="600" fill="#8E4106">Syncing</text>
+    <text x="16" y="104" font-size="11" fill="#454F5B">4 folders · 127 files pending</text>
+    <text x="16" y="124" font-size="10" fill="#A8B1BC">Last sync: 2 min ago</text>
+  </g>
+
+  <!-- Sessions Monitor -->
+  <g id="w-sessions" filter="url(#w-card-shadow)" transform="translate(1000,590)">
+    <rect width="280" height="150" rx="18" fill="#FFFFFF" stroke="#DCE1E7"/>
+    <rect width="280" height="44" rx="18" fill="#FFFFFF"/>
+    <rect y="26" width="280" height="18" fill="#FFFFFF"/>
+    <line x1="0" y1="44" x2="280" y2="44" stroke="#E2E8F0" stroke-width="1"/>
+    <circle cx="22" cy="22" r="14" fill="#7c3aed"/>
+    <g transform="translate(14,14)" stroke="#FFFFFF" stroke-width="1.8" fill="none" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></g>
+    <text x="44" y="27" font-size="14" font-weight="600" fill="#314158">Active Sessions</text>
+    <text x="140" y="100" text-anchor="middle" font-size="40" font-weight="600" fill="#1F2733">7</text>
+    <text x="140" y="124" text-anchor="middle" font-size="11" fill="#A8B1BC">connected users</text>
+  </g>
+
+  <!-- Health Monitor -->
+  <g id="w-health" filter="url(#w-card-shadow)" transform="translate(1000,760)">
+    <rect width="280" height="190" rx="18" fill="#FFFFFF" stroke="#DCE1E7"/>
+    <rect width="280" height="44" rx="18" fill="#FFFFFF"/>
+    <rect y="26" width="280" height="18" fill="#FFFFFF"/>
+    <line x1="0" y1="44" x2="280" y2="44" stroke="#E2E8F0" stroke-width="1"/>
+    <circle cx="22" cy="22" r="14" fill="#e11d48"/>
+    <g transform="translate(14,14)" stroke="#FFFFFF" stroke-width="1.8" fill="none" stroke-linecap="round" stroke-linejoin="round"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></g>
+    <text x="44" y="27" font-size="14" font-weight="600" fill="#314158">System Health</text>
+    <g transform="translate(16,56)">
+      <circle cx="12" cy="12" r="6" fill="#1E7E34"/>
+      <text x="26" y="16" font-size="12" font-weight="600" fill="#166428">Healthy</text>
+    </g>
+    <g transform="translate(16,100)">
+      <rect width="80" height="56" rx="8" fill="#E3F4E8" stroke="#1E7E34"/>
+      <text x="40" y="26" text-anchor="middle" font-size="20" font-weight="600" fill="#1E7E34">12</text>
+      <text x="40" y="44" text-anchor="middle" font-size="9" fill="#166428">Healthy</text>
+    </g>
+    <g transform="translate(102,100)">
+      <rect width="80" height="56" rx="8" fill="#FBEEDD" stroke="#B45309"/>
+      <text x="40" y="26" text-anchor="middle" font-size="20" font-weight="600" fill="#B45309">2</text>
+      <text x="40" y="44" text-anchor="middle" font-size="9" fill="#8E4106">Warning</text>
+    </g>
+    <g transform="translate(188,100)">
+      <rect width="76" height="56" rx="8" fill="#F9E3E1" stroke="#C22B21"/>
+      <text x="38" y="26" text-anchor="middle" font-size="20" font-weight="600" fill="#C22B21">0</text>
+      <text x="38" y="44" text-anchor="middle" font-size="9" fill="#8A1A13">Critical</text>
+    </g>
+  </g>
+
+</svg>

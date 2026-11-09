@@ -36,7 +36,9 @@
 
 use crate::handlers::AppState;
 use crate::power::{host_power_action, PowerAction};
+use crate::restic::ResticService;
 use crate::snapshots::SnapshotService;
+use crate::storage::restic_repo::ResticRepository;
 use crate::storage::scheduled_task_repo::{ScheduledTask, ScheduledTaskRepository};
 use chrono::{DateTime, Utc};
 use chrono_tz::{Tz, TZ_VARIANTS};
@@ -63,6 +65,10 @@ pub enum TaskAction {
     Snapshot { pool: String, recursive: bool },
     /// Start a S.M.A.R.T. self-test on a disk (`short`|`long`|`conveyance`|`offline`).
     SmartTest { device: String, test_type: String },
+    /// Start a data-consistency check (scrub) on a pool.
+    Scrub { pool: String, pool_type: String },
+    /// Check a restic repository, reading a bounded share of its packs.
+    ResticCheck { repo_id: String, subset: String },
     /// Reboot / shutdown / suspend the host.
     Power { action: PowerAction },
     /// Trigger an existing HomeVault subsystem instead of duplicating its
@@ -100,6 +106,8 @@ impl TaskAction {
             TaskAction::Command { .. } => "command",
             TaskAction::Snapshot { .. } => "snapshot",
             TaskAction::SmartTest { .. } => "smart_test",
+            TaskAction::Scrub { .. } => "scrub",
+            TaskAction::ResticCheck { .. } => "restic_check",
             TaskAction::Power { .. } => "power",
             TaskAction::Service { .. } => "service",
         }
@@ -178,6 +186,41 @@ impl TaskAction {
                     test_type: raw.test_type,
                 }
             }
+            "scrub" => {
+                let raw: RawScrubPayload = serde_json::from_str(payload_json)
+                    .map_err(|e| format!("Invalid scrub payload: {e}"))?;
+                if !is_valid_pool_name(&raw.pool) {
+                    return Err(format!("Invalid pool name '{}'", raw.pool));
+                }
+                if !crate::scrub::supports(&raw.pool_type) {
+                    return Err(format!(
+                        "Unknown scrub pool type '{}' (use zfs, btrfs or mdadm)",
+                        raw.pool_type
+                    ));
+                }
+                TaskAction::Scrub {
+                    pool: raw.pool,
+                    pool_type: raw.pool_type.to_ascii_lowercase(),
+                }
+            }
+            "restic_check" => {
+                let raw: RawResticCheckPayload = serde_json::from_str(payload_json)
+                    .map_err(|e| format!("Invalid restic_check payload: {e}"))?;
+                let repo_id = raw.repo_id.trim();
+                if repo_id.is_empty()
+                    || repo_id.len() > 64
+                    || !repo_id
+                        .chars()
+                        .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+                {
+                    return Err("repo_id must be a repository id (letters, digits, - or _)".into());
+                }
+                let subset = validate_read_data_subset(&raw.subset)?;
+                TaskAction::ResticCheck {
+                    repo_id: repo_id.to_string(),
+                    subset,
+                }
+            }
             "power" => {
                 let raw: RawPowerPayload = serde_json::from_str(payload_json)
                     .map_err(|e| format!("Invalid power payload: {e}"))?;
@@ -254,6 +297,19 @@ struct RawSmartTestPayload {
 }
 
 #[derive(Deserialize)]
+struct RawScrubPayload {
+    pool: String,
+    pool_type: String,
+}
+
+#[derive(Deserialize)]
+struct RawResticCheckPayload {
+    repo_id: String,
+    #[serde(default)]
+    subset: String,
+}
+
+#[derive(Deserialize)]
 struct RawPowerPayload {
     action: String,
 }
@@ -263,6 +319,38 @@ struct RawServicePayload {
     service: String,
     #[serde(default)]
     message: Option<String>,
+}
+
+/// `restic check --read-data-subset` accepts a percentage (`10%`), a fraction
+/// (`1/4`) or a size (`1G`). Keep it to those three shapes; anything else is a
+/// typo that would make restic read the whole repository or fail at run time.
+pub fn validate_read_data_subset(value: &str) -> Result<String, String> {
+    let value = value.trim();
+    if value.is_empty() {
+        return Ok("10%".to_string());
+    }
+    let percent = value.strip_suffix('%').and_then(|n| n.parse::<u32>().ok());
+    if let Some(percent) = percent {
+        if (1..=100).contains(&percent) {
+            return Ok(value.to_string());
+        }
+    }
+    if let Some((num, den)) = value.split_once('/') {
+        if let (Ok(num), Ok(den)) = (num.parse::<u32>(), den.parse::<u32>()) {
+            if num > 0 && den > 0 && num <= den {
+                return Ok(value.to_string());
+            }
+        }
+    }
+    let size = value
+        .strip_suffix(|c: char| matches!(c, 'K' | 'M' | 'G' | 'T'))
+        .and_then(|n| n.parse::<u64>().ok());
+    if size.is_some_and(|n| n > 0) {
+        return Ok(value.to_string());
+    }
+    Err(format!(
+        "read-data-subset '{value}' is not a percentage (10%), a fraction (1/4) or a size (1G)"
+    ))
 }
 
 /// Pool/dataset names end up spliced into `zfs`/`btrfs` argv — restrict to
@@ -588,7 +676,7 @@ async fn finish_run(state: &Arc<AppState>, task: &ScheduledTask, run_id: &str) {
         Ok(()) => match TaskAction::from_parts(&task.task_type, &task.payload) {
             // Re-validate at run time: a row written directly into the DB by
             // some other path still goes through the same validators.
-            Ok(action) => perform(&action, state).await.map(|out| preface + &out),
+            Ok(action) => perform(state, &action).await.map(|out| preface + &out),
             Err(e) => Err(e),
         },
     };
@@ -601,11 +689,52 @@ async fn finish_run(state: &Arc<AppState>, task: &ScheduledTask, run_id: &str) {
         }
         Err(e) => {
             tracing::warn!("Scheduled task '{}' failed: {}", task.name, e);
+            if let Some((title, message)) =
+                restic_failure_notification(&task.task_type, &task.name, &e)
+            {
+                crate::notification_engine::notify(
+                    state,
+                    "backup.jobs",
+                    &title,
+                    &message,
+                    "error",
+                    "backup",
+                    "scheduled_restic_check",
+                )
+                .await;
+            }
             let _ = repo
                 .mark_finished(&task.id, run_id, false, Some(&e), None)
                 .await;
         }
     }
+}
+
+/// How long to wait before retrying a failed `restic check`. Attempt 0 is the
+/// first retry (after the initial failure), so 5 s then 30 s; a third failure
+/// is final.
+pub fn restic_retry_delay(attempt: u32) -> Duration {
+    match attempt {
+        0 => Duration::from_secs(5),
+        1 => Duration::from_secs(30),
+        _ => Duration::from_secs(120),
+    }
+}
+
+/// A failed scheduled `restic check` must be visible like a failed backup
+/// job, not only in the task history. Returns the notification title/message,
+/// or `None` for every other task type.
+pub fn restic_failure_notification(
+    task_type: &str,
+    task_name: &str,
+    error: &str,
+) -> Option<(String, String)> {
+    (task_type == "restic_check").then(|| {
+        (
+            "Scheduled restic check failed".to_string(),
+            format!("Task '{task_name}' could not verify its repository: {error}"),
+        )
+    })
 }
 
 /// Perform the optional "wake first" pre-step, appending what happened to
@@ -651,7 +780,7 @@ async fn wake_first(
 }
 
 /// Dispatches one validated action. Pure I/O — no schedule logic here.
-async fn perform(action: &TaskAction, state: &Arc<AppState>) -> Result<String, String> {
+async fn perform(state: &Arc<AppState>, action: &TaskAction) -> Result<String, String> {
     match action {
         TaskAction::Command { command, args } => {
             let mut cmd = tokio::process::Command::new(command);
@@ -740,6 +869,62 @@ async fn perform(action: &TaskAction, state: &Arc<AppState>) -> Result<String, S
             })
             .await
             .map_err(|e| format!("SMART task panicked: {e}"))?
+        }
+        TaskAction::Scrub { pool, pool_type } => {
+            let pool = pool.clone();
+            let kind = crate::scrub::ScrubKind::parse(pool_type)
+                .ok_or_else(|| format!("Unknown scrub pool type '{pool_type}'"))?;
+            crate::scrub::run(&pool, kind).await
+        }
+        TaskAction::ResticCheck { repo_id, subset } => {
+            let repo = ResticRepository::new(state.db.pool())
+                .get_by_id(repo_id)
+                .await
+                .map_err(|e| format!("Could not load repository '{repo_id}': {e}"))?
+                .ok_or_else(|| format!("Repository '{repo_id}' no longer exists"))?;
+            let subset = subset.clone();
+            let display_subset = subset.clone();
+            let mut last_error = None;
+            for attempt in 0..3u32 {
+                if attempt > 0 {
+                    tokio::time::sleep(restic_retry_delay(attempt - 1)).await;
+                }
+                let repo = repo.clone();
+                let subset = subset.clone();
+                let result = tokio::task::spawn_blocking(move || {
+                    ResticService::check_repo_with_subset(&repo, &subset, None)
+                })
+                .await
+                .map_err(|e| format!("Restic check task panicked: {e}"))?;
+
+                match result {
+                    Ok(check) if check.healthy => {
+                        let suffix = if attempt > 0 {
+                            format!(" after {} attempts", attempt + 1)
+                        } else {
+                            String::new()
+                        };
+                        return Ok(format!(
+                            "Restic check passed ({display_subset} of packs read){suffix}"
+                        ));
+                    }
+                    // Repository issues are not transient: retrying would
+                    // read the same broken packs again.
+                    Ok(check) => {
+                        return Err(format!(
+                            "Restic check found issues: {}",
+                            check.errors.join("; ")
+                        ))
+                    }
+                    Err(e) => last_error = Some(e),
+                }
+            }
+            Err(format!(
+                "Restic check failed after 3 attempts: {}",
+                last_error
+                    .map(|e| e.to_string())
+                    .unwrap_or_else(|| "unknown error".to_string())
+            ))
         }
         TaskAction::Power { action } => {
             let action = *action;
@@ -876,6 +1061,72 @@ mod tests {
     }
 
     #[test]
+    fn scrub_payload_validates_pool_and_kind() {
+        let action =
+            TaskAction::from_parts("scrub", r#"{"pool":"tank/data","pool_type":"zfs"}"#).unwrap();
+        assert_eq!(action.type_name(), "scrub");
+        match action {
+            TaskAction::Scrub { pool, pool_type } => {
+                assert_eq!(pool, "tank/data");
+                assert_eq!(pool_type, "zfs");
+            }
+            other => panic!("wrong variant: {other:?}"),
+        }
+
+        assert!(
+            TaskAction::from_parts("scrub", r#"{"pool":"a b","pool_type":"zfs"}"#).is_err(),
+            "spaces would split argv"
+        );
+        assert!(
+            TaskAction::from_parts("scrub", r#"{"pool":"md0","pool_type":"ext4"}"#).is_err(),
+            "only the three storage technologies are scrubbable"
+        );
+    }
+
+    #[test]
+    fn restic_retries_back_off_and_failures_are_notified() {
+        assert_eq!(restic_retry_delay(0), Duration::from_secs(5));
+        assert_eq!(restic_retry_delay(1), Duration::from_secs(30));
+        assert_eq!(restic_retry_delay(9), Duration::from_secs(120));
+
+        let (title, message) =
+            restic_failure_notification("restic_check", "Nightly check", "boom").unwrap();
+        assert!(title.contains("restic check"));
+        assert!(message.contains("Nightly check"));
+        assert!(message.contains("boom"));
+        assert!(restic_failure_notification("scrub", "Nightly check", "boom").is_none());
+    }
+
+    #[test]
+    fn restic_check_payload_validates_repo_and_subset() {
+        let action =
+            TaskAction::from_parts("restic_check", r#"{"repo_id":"abc-123","subset":"10%"}"#)
+                .unwrap();
+        assert_eq!(action.type_name(), "restic_check");
+        match action {
+            TaskAction::ResticCheck { repo_id, subset } => {
+                assert_eq!(repo_id, "abc-123");
+                assert_eq!(subset, "10%");
+            }
+            other => panic!("wrong variant: {other:?}"),
+        }
+
+        // Empty subset defaults to 10%.
+        let action = TaskAction::from_parts("restic_check", r#"{"repo_id":"abc-123"}"#).unwrap();
+        assert!(matches!(action, TaskAction::ResticCheck { subset, .. } if subset == "10%"));
+
+        assert!(TaskAction::from_parts("restic_check", r#"{"repo_id":"../etc"}"#).is_err());
+        assert!(
+            TaskAction::from_parts("restic_check", r#"{"repo_id":"abc","subset":"--force"}"#)
+                .is_err()
+        );
+        assert_eq!(validate_read_data_subset("1/4").unwrap(), "1/4");
+        assert_eq!(validate_read_data_subset("1G").unwrap(), "1G");
+        assert!(validate_read_data_subset("0%").is_err());
+        assert!(validate_read_data_subset("2/1").is_err());
+    }
+
+    #[test]
     fn snapshot_payload_validates_pool_names() {
         let action =
             TaskAction::from_parts("snapshot", r#"{"pool":"tank/data","recursive":true}"#).unwrap();
@@ -912,6 +1163,31 @@ mod tests {
                 }
                 other => panic!("unexpected action: {other:?}"),
             }
+        }
+    }
+
+    #[test]
+    fn all_seven_task_types_coexist_after_the_integrity_merge() {
+        // The reliability lot (scrub/restic_check) and the service type
+        // (P1-31) arrived on separate branches; the SQLite CHECK in migration
+        // 093 and this parser must accept the union. A merge that kept only
+        // one side would fail here.
+        let cases = [
+            ("command", r#"{"command":"/bin/true","args":[]}"#),
+            (
+                "snapshot",
+                r#"{"pool":"tank/data","recursive":false}"#,
+            ),
+            ("smart_test", r#"{"device":"sda","test_type":"short"}"#),
+            ("scrub", r#"{"pool":"tank/data","pool_type":"zfs"}"#),
+            ("restic_check", r#"{"repo_id":"abc-123"}"#),
+            ("power", r#"{"action":"reboot"}"#),
+            ("service", r#"{"service":"docker_update"}"#),
+        ];
+        for (task_type, payload) in cases {
+            let action = TaskAction::from_parts(task_type, payload)
+                .unwrap_or_else(|e| panic!("{task_type}: {e}"));
+            assert_eq!(action.type_name(), task_type);
         }
     }
 

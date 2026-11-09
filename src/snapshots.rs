@@ -1839,15 +1839,20 @@ fn write_btrfs_fstab(
     crate::pools::PoolService::remove_pool_fstab_entry(&snapshots_marker);
     let (live, snapshots) = match layout {
         BtrfsLayout::Legacy => (
-            format!("UUID={uuid} {mount_point} btrfs defaults,nofail 0 2"),
+            format!(
+                "UUID={uuid} {mount_point} btrfs defaults,nofail,{} 0 2",
+                crate::btrfs_maintenance::FSTAB_SYSTEMD_OPTIONS
+            ),
             None,
         ),
         BtrfsLayout::At => (
             format!(
-                "UUID={uuid} {mount_point} btrfs defaults,nofail,subvol={BTRFS_LIVE_SUBVOL} 0 2"
+                "UUID={uuid} {mount_point} btrfs defaults,nofail,subvol={BTRFS_LIVE_SUBVOL},{} 0 2",
+                crate::btrfs_maintenance::FSTAB_SYSTEMD_OPTIONS
             ),
             Some(format!(
-                "UUID={uuid} {mount_point}/.snapshots btrfs defaults,nofail,subvol={BTRFS_SNAPSHOT_SUBVOL} 0 2"
+                "UUID={uuid} {mount_point}/.snapshots btrfs defaults,nofail,subvol={BTRFS_SNAPSHOT_SUBVOL},{} 0 2",
+                crate::btrfs_maintenance::FSTAB_SYSTEMD_OPTIONS
             )),
         ),
     };

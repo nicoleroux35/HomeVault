@@ -28,7 +28,9 @@
 use crate::handlers::AppState;
 use crate::restic_scheduler::compute_next_run;
 use crate::shares::{ShareType, SharesService};
+use crate::snapshot_quiescence::{QuiesceHook, QuiescePlan};
 use crate::snapshots::{PoolBackend, ShareBackend, SnapshotBackend};
+use crate::storage::quiescence_hook_repo::QuiescenceHookRepository;
 use crate::storage::snapshot_schedule_repo::{SnapshotSchedule, SnapshotScheduleRepository};
 use chrono::{DateTime, Utc};
 use std::collections::HashSet;
@@ -369,6 +371,25 @@ fn is_new_failure(previous_status: Option<&str>) -> bool {
     previous_status != Some("failed")
 }
 
+/// Suffix appended to a run summary: what the snapshot actually promises,
+/// plus any post-hook failure (the snapshot exists, but the app may not have
+/// been released cleanly).
+pub fn consistency_note(plan: &QuiescePlan, post_errors: &[String]) -> String {
+    let mut note = match plan.consistency {
+        crate::snapshot_quiescence::Consistency::ApplicationConsistent => {
+            " (application-consistent)".to_string()
+        }
+        crate::snapshot_quiescence::Consistency::CrashConsistent => match &plan.reason {
+            Some(reason) => format!(" (crash-consistent: {reason})"),
+            None => " (crash-consistent)".to_string(),
+        },
+    };
+    if !post_errors.is_empty() {
+        note.push_str(&format!("; post-hook: {}", post_errors.join("; ")));
+    }
+    note
+}
+
 /// Human target for notifications and log lines: `share 'photos' on 'tank'`
 /// or simply `'tank'` for a pool-wide schedule.
 fn schedule_target_label(schedule: &SnapshotSchedule) -> String {
@@ -469,15 +490,54 @@ async fn run_schedule_inner(
     let now = Utc::now();
     let name = format!("{}-{}", schedule.prefix, now.format(SNAPSHOT_TIME_FORMAT));
 
+    // Quiescence (P2-13): load the enabled hooks once, run their pre commands
+    // before the snapshot, then release them in reverse order even when the
+    // snapshot itself fails. A hook failure downgrades the promise; it never
+    // hides the snapshot.
+    let hook_rows = QuiescenceHookRepository::new(state.db.pool())
+        .list_enabled()
+        .await
+        .unwrap_or_default();
+    let hooks: Vec<QuiesceHook> = hook_rows
+        .into_iter()
+        .filter_map(|row| {
+            let pre = row.pre();
+            let post = row.post();
+            crate::snapshot_quiescence::validate_hook(&row.name, &pre, &post)
+                .ok()
+                .map(|_| QuiesceHook {
+                    name: row.name,
+                    pre,
+                    post,
+                })
+        })
+        .collect();
+    let plan = crate::snapshot_quiescence::plan(true, hooks, &[]);
+    let (attempted, pre_error) = crate::snapshot_quiescence::run_pre_hooks(&plan.hooks).await;
+    let plan = match pre_error {
+        Some(error) => crate::snapshot_quiescence::after_hook_failure(&plan, &error),
+        None => plan,
+    };
+
     let create_backend = backend.clone();
     let create_name = name.clone();
     let recursive = schedule.recursive;
     let created =
-        tokio::task::spawn_blocking(move || create_backend.create(&create_name, recursive))
-            .await
-            .map_err(|e| RunScheduleError::Failed(format!("Snapshot task panicked: {e}")))?;
+        tokio::task::spawn_blocking(move || create_backend.create(&create_name, recursive)).await;
+    let post_errors = crate::snapshot_quiescence::run_post_hooks(&attempted).await;
+    let created = match created {
+        Ok(created) => created,
+        Err(e) => {
+            let message = format!(
+                "Snapshot task panicked: {e}{}",
+                consistency_note(&plan, &post_errors)
+            );
+            record_failure(state, schedule, &message).await;
+            return Err(RunScheduleError::Failed(message));
+        }
+    };
     if let Err(e) = created {
-        let message = e.to_string();
+        let message = format!("{e}{}", consistency_note(&plan, &post_errors));
         record_failure(state, schedule, &message).await;
         return Err(RunScheduleError::Failed(message));
     }
@@ -512,11 +572,12 @@ async fn run_schedule_inner(
 
     match pruned {
         Ok((deleted, skipped_locked)) => {
+            let note = consistency_note(&plan, &post_errors);
             let summary = if skipped_locked == 0 {
-                format!("Created {name}, pruned {} snapshot(s)", deleted.len())
+                format!("Created {name}, pruned {} snapshot(s){note}", deleted.len())
             } else {
                 format!(
-                    "Created {name}, pruned {} snapshot(s), kept {skipped_locked} locked snapshot(s)",
+                    "Created {name}, pruned {} snapshot(s), kept {skipped_locked} locked snapshot(s){note}",
                     deleted.len()
                 )
             };
@@ -528,7 +589,10 @@ async fn run_schedule_inner(
             // The snapshot was taken but retention did not run: the pool
             // keeps filling up, so this is a failed run, not a green one
             // (it used to be recorded as `success` in both arms).
-            let message = format!("Created {name}; prune failed: {e}");
+            let message = format!(
+                "Created {name}; prune failed: {e}{}",
+                consistency_note(&plan, &post_errors)
+            );
             record_failure(state, schedule, &message).await;
             Err(RunScheduleError::Failed(message))
         }
@@ -590,6 +654,20 @@ mod tests {
     #[allow(dead_code)]
     fn names_len(v: Vec<String>) -> usize {
         v.len()
+    }
+
+    #[test]
+    fn consistency_note_is_honest_about_the_promise() {
+        let crash = crate::snapshot_quiescence::plan(false, Vec::new(), &[]);
+        assert!(consistency_note(&crash, &[]).contains("crash-consistent"));
+        let hook = crate::snapshot_quiescence::QuiesceHook {
+            name: "pg".to_string(),
+            pre: vec!["/bin/true".to_string()],
+            post: vec!["/bin/true".to_string()],
+        };
+        let app = crate::snapshot_quiescence::plan(true, vec![hook], &[]);
+        assert!(consistency_note(&app, &[]).contains("application-consistent"));
+        assert!(consistency_note(&app, &["pg: failed".to_string()]).contains("post-hook"));
     }
 
     #[test]

@@ -31,6 +31,31 @@
 
 **Still to run before calling these "delivered"** (`COMPARAISON_DSM_VS_HOMEVAULT.md` §6.4): `cargo test` (unit + the 109 integration suites), `cargo fmt --check`, `npm run check && npm run build`, the targeted E2E specs, and the two installer suites.
 
+## 2026-11-09 — integrity lot merged into main (written, not run)
+
+> **No test was executed for the merge.** Static checks only:
+> `cargo check --lib`, `cargo check --tests`, `bash -n installer/install.sh`,
+> `npm run check` (0 errors / 0 warnings).
+>
+> The reliability lot `d46a2a5` (P0-5→P0-12, P2-10→P2-14) is now in `main`.
+> It had never met the 26 newer commits, so the merge resolved both code and
+> data-shape conflicts; the full suite must confirm the result on a host.
+
+| Area | Merge decision / coverage |
+|---|---|
+| Scheduler | union of the 7 task types (`command`, `snapshot`, `smart_test`, `scrub`, `restic_check`, `power`, `service`); new unit test `all_seven_task_types_coexist_after_the_integrity_merge` |
+| Migrations | colliding 082–085 from the lot renumbered **089–092**; **093** rebuilds the `scheduled_tasks` CHECK with all 7 types and copies the run history |
+| SMB config | `realm: String` (P2-1 shape), reliability fields (durable handles, encrypt, signing, strict sync, AIO, oplocks) kept; i18n duplicate keys collapsed |
+| iSCSI | `ValidatedBackstore` struct kept; zvol creation/clone carry write policy/FUA/UNMAP; UI keeps zvol + snapshots + I/O policy |
+| Btrfs | `pools.rs` uses `btrfs_maintenance::fstab_options`, no duplicated `compress=zstd` strings |
+| Installer | `render_service_unit` (P2-7) kept, lot's static heredoc discarded |
+| Shares UI | ADS/join block + WS-Discovery + reliability toggles in one card |
+| Tests realigned | `nfs_export_line` now takes the client-rules slice; `SmbConfig` test literals carry the union of fields |
+
+**Still to run:** `cargo fmt --check`, `cargo test` (unit + 109 integration
+suites), the E2E specs for Shares/iSCSI/Tasks/Storage/Health, the two
+installer suites, and `npm run build`.
+
 ## P1-28 — kernel stability + explicit monitoring choice — 2026-11-09 (not run)
 
 > **No Rust or E2E test was executed for this change.** Static checks passed:
@@ -6928,3 +6953,658 @@ New coverage added in this pass:
 | Recursive ACL walk | `src/acl.rs`: walk visits every directory/file, bounded by `MAX_RECURSIVE_ENTRIES` |
 | API contract | `tests/shares_integration.rs`: logical definitions, previous-versions read, NFS security flavor, domain join refused before ADS config, unknown logical share, matrix |
 | E2E contract | `tests/e2e/shares/shares.spec.ts`: protocol checkbox group replaces the old select; SMB security select includes `ads` |
+---
+
+## 2026-11-05 — integrity lot 1 (P0-5, P0-9, P0-11)
+
+Closes tasklist **P0-5**, **P0-9** and **P0-11**.
+
+**Behaviour.**
+
+- **P0-5 — USB Copy.** `verify_copy` now reads every copied file and compares
+  a SHA-256 of source and destination, collects every mismatch, and fails the
+  copy with the list. A single-file source is copied under its own name and
+  counted as one file. The old "same size = verified" path is gone.
+- **P0-9 — configuration writes.** `AtomicWriter` no longer removes the target
+  before `rename`: it writes a unique temporary file in the same directory,
+  fsyncs it, renames it over the target, fsyncs the parent directory, and
+  preserves the existing mode. `write_config_file` keeps a `.bak`;
+  `append_config_file` becomes a locked read-modify-write. `apply_smb_config`
+  validates the candidate with `testparm -s` before replacing `smb.conf`, and
+  `self_heal_smb_config` restores an empty/invalid file from `.bak` or the
+  defaults at service start. Sudoers grants cover the `.bak` paths.
+- **P0-11 — SMB.** `SmbConfig` gains `durable_handles`, `smb_encrypt`
+  (`off|desired|required`), `server_signing` (`off|desired|mandatory`),
+  `strict_sync`, `aio_read_size`, `aio_write_size`, `use_sendfile`, `oplocks`,
+  `kernel_oplocks` and `level2_oplocks`, all rendered exhaustively, validated,
+  normalized and exposed in the advanced SMB form (i18n ×4).
+
+**Tests.**
+
+- Unit (`src/storage/atomic.rs`, 6): replacement without a temporary, missing
+  file creation, mode preservation, binary round-trip, read/missing, unique
+  temporary names.
+- Unit (`src/shares.rs`, +6): atomic replace + `.bak`, append preservation,
+  self-heal from `.bak`, valid file untouched, new-field rendering/contract,
+  deserialization defaults, invalid value normalization.
+- Unit (`src/usb_copy.rs`, +6): identical tree, same-size different bytes,
+  size mismatch, missing file, single-file source, single-file count.
+- Integration (`tests/usb_copy_integration.rs`, +1): a corrupted destination
+  is refused with a checksum error. `tests/shares_integration.rs` still
+  compiles against the new `SmbConfig`.
+- Docs: `docs/guides/shares.md`, `docs/guides/usb-copy.md`, `SCREENS.md`.
+
+**Not run in this session** (explicit instruction): no `cargo test`, no
+Playwright run. `cargo check --lib`, `cargo test --lib --no-run`,
+`cargo test --test usb_copy_integration --no-run` and
+`cargo test --test shares_integration --no-run` compile clean (pre-existing
+warnings only). `npm run check` could not run in this worktree
+(`svelte-check` not installed). Run before release:
+`cargo test --lib storage::atomic shares::tests usb_copy`,
+`cargo test --test usb_copy_integration`,
+`cargo test --test shares_integration`, then `npm --prefix frontend ci &&
+npm --prefix frontend run check` and the Shares/USB Copy E2E.
+
+---
+
+## 2026-11-05 — integrity lot 2 (P0-7, P0-6 partial)
+
+Closes tasklist **P0-7** and the scheduled/automatic half of **P0-6**.
+
+**Behaviour.**
+
+- **P0-7 — boot recovery.** `src/storage/recovery.rs` runs before the share
+  services: `mdadm --assemble --scan`, `btrfs device scan`, then every
+  HomeVault-marked `/etc/fstab` entry that is not in `/proc/mounts` is retried
+  with its exact fstab options. A failed Btrfs mount goes through
+  `btrfs rescue super-recover -y` then a read-only mount; ext4 goes through
+  `dumpe2fs -h` (not-clean detection), `e2fsck -p` (preen, never `-y`), the
+  normal mount, `ro,noload`, then `ro`. The report is written to
+  `data/state/storage-recovery.json` and logged.
+- **Clean-shutdown marker.** `shutdown_signal` now handles **SIGTERM** as well
+  as Ctrl+C and writes `data/state/clean-shutdown` after the existing cleanup.
+  The next boot treats a missing marker (after the first boot) as an unclean
+  shutdown and schedules `scrub_after_unclean_shutdown`: two-minute delay,
+  then one scrub per mounted, non-degraded pool, sequential through
+  `src/scrub.rs`.
+- **P0-6 — scheduled scrub.** The generic task engine gains
+  `TaskAction::Scrub { pool, pool_type }` (`zfs|btrfs|mdadm`). It calls
+  `src/scrub.rs`, which owns the single-flight lock, the 30 s start deadline
+  and the mdadm device derivation (`md0` → `/dev/md/md0`). The Tasks screen
+  offers the new type with pool + storage-type fields (i18n ×4). True
+  resume-after-reboot of a partially completed scrub is **not** implemented;
+  the schedule re-runs it, and ZFS resumes on its own.
+
+**Tests.**
+
+- Unit (`src/storage/recovery.rs`, 7): fstab marker parsing, marker with no
+  entry, `/proc/mounts` matching + `\040` unescape, ext4 clean/not-clean,
+  fallback ladder, first/clean/unclean boot markers, marker reset.
+- Unit (`src/scrub.rs`, 3): kind parsing, mdadm device derivation, stable
+  wire names.
+- Unit (`src/scheduled_tasks_scheduler.rs`, +1): scrub payload validation
+  (valid zfs, spaces refused, ext4 refused).
+- Integration (`tests/scheduled_tasks_integration.rs`, +2): a scrub task is
+  created for ZFS and refused for ext4.
+- Docs: `docs/guides/storage.md` → "Boot recovery",
+  `docs/guides/scheduled-tasks.md` → `scrub`, `SCREENS.md`.
+
+**Not run in this session** (explicit instruction): no `cargo test`, no
+Playwright run. `cargo check --lib`, `cargo test --lib --no-run` and
+`cargo test --test scheduled_tasks_integration --no-run` compile clean
+(pre-existing warnings only). `npm run check` could not run in this worktree.
+Run before release: `cargo test --lib storage::recovery scrub
+scheduled_tasks_scheduler`, `cargo test --test scheduled_tasks_integration`,
+then the Tasks E2E.
+
+---
+
+## 2026-11-05 — integrity lot 3 (P0-8)
+
+Closes tasklist **P0-8** (core).
+
+**Behaviour.** Migration `089_disk_health.sql` adds `disk_health_samples`
+(one row per watched SMART attribute per run) and `disk_health_findings`
+(deduplicated by `serial:attr:condition`). `src/disk_health.rs` samples
+5/9/177/187/188/190/194/197/198/199/231, applies the thresholds (5 +5,
+187/197/198 on increase, wear ≤10 %, temperature ≥55 °C, `-H` FAILED), and
+adds system findings from `journalctl` (24 h), `btrfs device stats`,
+`zpool status -x` and `mdadm --detail` mismatch. A finding is notified once
+through `health.disk_smart`; the repository's `is_active` check prevents a
+daily repeat. `src/disk_health_scheduler.rs` samples at most once per 20 h.
+Endpoints: `GET /api/health/disk-health` (session),
+`GET /api/health/disk-health/samples` (session),
+`POST /api/health/disk-health/sample` (admin). The Health screen gains a
+**Disk health history** card with the findings and **Sample now**.
+
+**Tests.**
+
+- Unit (`src/disk_health.rs`, 8): SMART row parsing (two-token names,
+  multi-token RAW_VALUE), PASSED/FAILED, reallocated +5, pending-sector
+  first/increase, wear/temperature, journal I/O filtering, btrfs counters,
+  zpool health + mdadm mismatch.
+- Unit (`src/disk_health_scheduler.rs`, 2): missing/malformed timestamp is
+  due; 19 h is reused and 21 h is due.
+- Integration (`tests/health_integration.rs`, +3): findings require a session
+  and start empty; samples validate `serial` and return an empty history;
+  sample-now is refused to a member and reaches the sampler for an admin.
+- Docs: `docs/guides/health.md` → "Disk health history".
+
+**Not run in this session** (explicit instruction): no `cargo test`, no
+Playwright run. `cargo check --lib`, `cargo test --lib --no-run` and
+`cargo test --test health_integration --no-run` compile clean (pre-existing
+warnings only). `npm run check` could not run in this worktree. Run before
+release: `cargo test --lib disk_health`, `cargo test --test
+health_integration`, then the Health E2E.
+
+---
+
+## 2026-11-05 — integrity lot 4 (P0-10)
+
+Closes tasklist **P0-10** via the generic scheduled-task engine.
+
+**Behaviour.** `ResticService::check_repo_with_subset` runs `restic check
+--read-data-subset=<subset>`. `TaskAction::ResticCheck { repo_id, subset }`
+validates the id and the subset (`10%`, `1/4`, `1G`; empty = `10%`), loads the
+repository by id, and runs the check on the blocking pool. The task history
+(status/output/date) is the last-check record; the Tasks screen gains the
+**Restic repository check** type with repository-id and subset fields
+(i18n ×4). A `--force`-style subset is refused at creation and again at run
+time.
+
+**Tests.**
+
+- Unit (`src/scheduled_tasks_scheduler.rs`, +1): valid repo/subset, empty
+  subset defaults to `10%`, `../etc` repo refused, `--force` refused,
+  `10%`/`1/4`/`1G` accepted, `0%` and `2/1` refused.
+- Integration (`tests/scheduled_tasks_integration.rs`, +2): a `restic_check`
+  task is created; an option-injection subset is refused.
+- Docs: `docs/guides/scheduled-tasks.md` → `restic_check`, `SCREENS.md`.
+
+**Not run in this session** (explicit instruction): no `cargo test`, no
+Playwright run. `cargo check --lib`, `cargo test --lib --no-run` and
+`cargo test --test scheduled_tasks_integration --no-run` compile clean
+(pre-existing warnings only). `npm run check` could not run in this worktree.
+Run before release: `cargo test --lib scheduled_tasks_scheduler`,
+`cargo test --test scheduled_tasks_integration`, then the Tasks E2E.
+
+---
+
+## 2026-11-05 — integrity lot 5 (P0-12, complete)
+
+Closes tasklist **P0-12** (write semantics + full-volume protection).
+
+**Behaviour.** Migration `090_iscsi_write_semantics.sql` adds
+`write_policy` (`buffered|direct`), `emulate_fua` and `unmap` to
+`iscsi_backstores`. `src/iscsi.rs` emits three `targetcli … set attribute`
+commands after the backstore is created (`emulate_write_cache`,
+`emulate_fua_write`, `emulate_tpu`); a failure stops the apply. The handler
+validates the policy, the repository persists it, and the iSCSI form exposes
+**I/O policy**, **Honour FUA** and **Advertise UNMAP** (i18n ×4).
+`docs/guides/iscsi.md` and `SCREENS.md` document the buffered/direct trade-off.
+
+**Full-volume guard.** `src/iscsi.rs` exposes `free_bytes_at` and
+`should_protect_from_full_volume` (fileio only, writable only, free space
+under `VOLUME_FULL_RESERVE_BYTES`). `src/iscsi_guard.rs` runs a pass at
+startup (3 min delay) then every 5 min: it reads each backstore, and when one
+is nearly full — or its free space cannot be measured — it sets
+`readonly = true` through `IscsiRepository::set_backstore_readonly` and raises
+a notification. Marking read-only is reversible; a corrupt backing file is
+not. `run_apply` is now `pub(crate)` so the guard can rebuild the target.
+
+**Tests.**
+
+- Unit (`src/iscsi.rs`, +2): buffered → `emulate_write_cache=1`/FUA/UNMAP on,
+  direct → all three `=0`; `valid_write_policy` accepts only the two values.
+- Unit (`src/iscsi.rs`, +2): a nearly-full or unreadable volume protects only
+  writable fileio stores; a block or already-read-only store is skipped;
+  `free_bytes_at` reads a real filesystem and rejects a bad path.
+- Unit (`src/iscsi_guard.rs`, 2): low/unreadable volume → protect; block or
+  already read-only → skip.
+- Integration (`tests/iscsi_integration.rs`, +2): a direct/FUA-off/UNMAP-off
+  backstore round-trips through the API; `write_policy=writeback` is refused.
+- Docs: `docs/guides/iscsi.md`, `SCREENS.md`.
+
+**Not run in this session** (explicit instruction): no `cargo test`, no
+Playwright run. `cargo check --lib`, `cargo test --lib --no-run` and
+`cargo test --test iscsi_integration --no-run` compile clean (pre-existing
+warnings only). `npm run check` could not run in this worktree. Run before
+release: `cargo test --lib iscsi`, `cargo test --test iscsi_integration`,
+then the iSCSI E2E and a real configfs apply.
+
+---
+
+## 2026-11-05 — integrity lot 6 (P0-6 complete, P1-21…P1-28, P2-10…P2-15)
+
+Closes the exact-resume half of **P0-6** and the P1/P2 reliability lot. Three
+items ship as reviewed infrastructure only and are called out below.
+
+**P0-6 — exact scrub resume.** `src/scrub.rs` writes
+`state/scrub-in-progress` (`pool=…`, `kind=…`) only after the start command
+succeeded. `resume_decision` classifies the live status: a scrub still
+`in progress`/`running` is left alone, `finished`/`repaired`/`no errors`
+clears the marker, and `idle`/an unknown output means the recorded scrub was
+interrupted → `resume_interrupted` starts it again from the beginning.
+`src/storage/recovery.rs` calls it at boot **before** the post-unclean-shutdown
+global scrub. ZFS may resume its own scan; Btrfs/mdadm restart.
+- Unit (`src/scrub.rs`, +2): marker round-trip/unknown-field tolerance, and
+  finished/running never restarted.
+
+**P1-21 — RAID stability.** `src/raid_stability.rs`: `SpeedProfile`
+(low/balanced/fast) with ordered limits, `parse_monitor_event` for the
+`md/array <event> <device>` line, `pick_spare`, `degraded_transitions`, and a
+poll loop (2 min delay, 5 min interval) spawned by the web process. Nothing
+calls `apply_speed_profile` yet, and adding a picked spare is not automatic.
+- Unit (4): closed speed set/limits, event parsing, spare exclusion,
+  clean→degraded-only notification.
+
+**P1-23 — foreign mdadm import.** `list_importable_mdadm_pools` parses
+`mdadm --examine --scan`, `assembled_md_names` drops already-assembled arrays,
+and import runs `mdadm --assemble --scan` then verifies with `--detail`.
+- Unit in `src/pools.rs` covers the scan parser and the assembled-name filter;
+  the import test was adapted to the new helper.
+
+**P1-22 / P2-11 — Btrfs maintenance.** `src/btrfs_maintenance.rs` supplies
+the live options (`compress=zstd:3,space_cache=v2,noatime`), usage parsing,
+`balance_needed` (>4 % chunk use **and** <5 GiB unallocated), balance/trim/
+stats argv, `validate_compression_level` (`zstd:1..15`), and
+`defrag_command` refusing `/.snapshots`. `src/pools.rs` applies the options
+for new pools and boot-recovery mounts. No balance/trim/defrag scheduler is
+wired; the commands are available to the admin/task engine.
+- Unit (5): options with/without subvolume, size/percentage parsing,
+  conditional balance, argv shape, compression + snapshot defrag refusal.
+
+**P1-24 — transfer digests.** Explorer downloads hash files ≤64 MiB
+automatically and larger files only with `?digest=true`; the SHA-256 is sent
+in `Repr-Digest`/`Content-Digest`. Chunk uploads validate `X-Chunk-Sha256`
+before commit and roll back a mismatching chunk with `422`.
+- Unit (`src/handlers/explorer.rs`): the chunk cap, over-cap rollback, and a
+  corrupt chunk rejected before commit. Integration
+  (`tests/explorer_integration.rs`): a download carries the real digest
+  header.
+
+**P1-25 — final sync verification.** rclone runs `--checksum`,
+`--retries 3`, `--low-level-retries 10`, `--timeout 5m`, `--contimeout 1m`
+and, after success, `rclone check --one-way --checksum`; a difference fails
+the run. The cache mover runs `rsync -a --checksum --dry-run
+--itemize-changes` after a copy (skipped with `--remove-source-files`).
+- `rclone_check_args` is a pure argv builder; it is covered by compilation
+  only (no unit test asserts its shape yet). The cache path compiles against
+  the new verification block.
+
+**P1-26 — Btrfs over SSH + destination proof.** `validate_job` no longer
+refuses Btrfs over SSH; the receive/list/delete commands use the shared
+`ssh_prefix`. A failed transfer is retried three times (2/4/8 s). After
+success `destination_verify_command` reads the ZFS `checksum` property or runs
+`btrfs subvolume show` (locally or over SSH); failure fails the run.
+- Unit (`src/replication.rs`): all four pipeline shapes (local/SSH ×
+  ZFS/Btrfs) and the SSH destination list/delete argv.
+- Integration (`tests/replication_integration.rs`): the old "Btrfs over SSH
+  is refused" assertion was removed; the remaining contract still compiles.
+
+**P1-27 — supply chain.** `src/supply_chain.rs` provides strict SHA-256
+syntax, `pinned_digest`/`is_pinned`, `verify_ed25519`/`verify_artifact`.
+`DockerService::pull_image` calls `validate_image_reference` before `docker
+pull`.
+- Unit (2): digest syntax/pinning, malformed `@sha256:` refusal.
+- **Reserve:** catalog manifests are not required to be digest-pinned or
+  signed, and no Ed25519 key is configured in this build.
+
+**P1-28 — system stability.** `installer/install.sh` writes
+`LimitNOFILE=65536`, `TimeoutStopSec=30`, start limits and `OOMPolicy=stop`,
+plus `/etc/sysctl.d/99-homevault.conf` (`kernel.panic=10`,
+`panic_on_oops=1`, dirty ratios 5/10). `src/system_stability.rs` holds the
+same values and the pure `parse_write_cache`, `write_cache_warning` and
+`duplicate_monitor_warning` helpers.
+- Unit (4): unit/sysctl policy, hdparm both ways, unprotected cache warning,
+  duplicate-monitor warning.
+- **Reserve:** the two advisory warnings are not surfaced in the UI yet.
+
+**P2-10 — SMART prediction.** `src/disk_prediction.rs` fits least squares on
+attributes 5/187/188/194/197/198 (≥5 samples), reports slope/r²/days-to-
+threshold with a residual interval, and `GET
+/api/health/disk-health/prediction?serial=…` exposes it.
+- Unit (5): no trend below 5 points, stable attribute, rising estimate, noisy
+  fit rejected, samples→days conversion.
+
+**P2-12 — weekly health report.** `src/health_report.rs` renders findings,
+last sample, pool free space, pending scrub and last restic check, sends at
+most weekly through `health.storage`, and maps every missing value to
+`unknown`.
+- Unit (3): unknown never `OK`, measured rendering, seven-day due rule.
+- **Reserve:** the restic-check slot is always `unknown` (run history not
+  queried yet).
+
+**P2-13 / P2-15 — policy modules only.** `src/snapshot_quiescence.rs`
+(crash vs application consistency, hook plan, downgrade on failure) and
+`src/replication_witness.rs` (lease, promotion, split-brain) are unit-tested
+but **not wired** to the snapshot scheduler or a witness transport.
+- Unit (5 + 3) respectively.
+
+**P2-14 — SQLite durability.** `HOMEVAULT_SQLITE_FULL_SYNC=1|true|yes|full`
+switches `PRAGMA synchronous` to `FULL`; the default stays `NORMAL`.
+- Unit (`src/storage/database.rs`): the accepted spellings are the only ones
+  that select `FULL`.
+
+**Not run in this session** (explicit instruction): no `cargo test`, no
+Playwright run. Verified: `cargo check --lib`, `cargo test --lib --no-run`,
+and `cargo test --test <suite> --no-run` for `replication_integration`,
+`iscsi_integration`, `storage_integration`, `raid_integration`,
+`rclone_integration`, `health_integration`, `cache_integration`,
+`explorer_integration`, `setup_integration` and
+`scheduled_tasks_integration` — all compile with pre-existing warnings only.
+`npm run check` could not run in this worktree (`svelte-check` absent).
+Run before release: the unit filters above, the ten integration suites, then
+the Tasks/Health/Storage/Replication/iSCSI/Cloud Sync E2E and a real-host pass
+for the sysctl/unit and mdadm paths.
+
+---
+
+## 2026-11-05 — integrity lot 7 (reserves: P0-7/8/10, P1-21/22/25/27/28, P2-12)
+
+Closes the follow-ups recorded in lot 6 where the work was small enough to
+land without a design change.
+
+**P0-7 — fstab timeouts.** New `FSTAB_SYSTEMD_OPTIONS`
+(`x-systemd.device-timeout=30s,x-systemd.mount-timeout=30s`) is written by the
+Btrfs, RAID and Btrfs-layout fstab writers. `manual_mount_options` strips
+`x-systemd.*` before the boot-recovery retry replays the entry with `mount(8)`
+— those options are systemd-only, and passing them to `mount` would fail for
+the wrong reason.
+- Unit (`src/btrfs_maintenance.rs`): fstab options keep the mount options and
+  add both timeouts.
+- Unit (`src/storage/recovery.rs`): the stripper keeps real options and falls
+  back to `defaults`.
+
+**P0-8 — temperature streak.** A single hot sample no longer alerts.
+`analyze_temperature` requires the current sample plus the two stored ones to
+all be ≥ 55 °C; `recent_raws` loads them. Airflow (190) and temperature (194)
+keep distinct fingerprints.
+- Unit (`src/disk_health.rs`): one/two hot samples are ignored, three alert,
+  a cool point breaks the streak, 190 vs 194 fingerprints.
+
+**P0-10 — restic retry + notification.** A failed `restic check` is retried
+three times with 5 s/30 s backoff; repository findings are not retried. A
+failed run also raises `backup.jobs` with the task name and error.
+- Unit (`src/scheduled_tasks_scheduler.rs`): backoff values and the
+  restic-only notification predicate.
+
+**P1-21 — spare suggestion.** The degradation notification now names a free,
+non-failed candidate (`spare_suggestion`) or says explicitly that no spare is
+available. `mdadm --add` remains a human action.
+- Unit (`src/raid_stability.rs`): candidate sentence and no-spare sentence.
+
+**P1-22 — Btrfs maintenance loop.** A 24 h loop (1 h startup delay) checks
+`btrfs filesystem usage` and runs the conservative balance only when
+`balance_needed`, plus a weekly `fstrim` tracked in `state/btrfs-last-trim`.
+Read-only mounts and `.snapshots` are skipped; `HOMEVAULT_BTRFS_MAINTENANCE=0`
+disables both.
+- Unit (`src/btrfs_maintenance.rs`): opt-out parsing, weekly due rule,
+  mount filtering.
+
+**P1-25 — transfer history.** Every rclone sync (button and scheduled job)
+writes a `transfer_history` row (`operation=copy`, `method=rclone-check`) with
+`verified=true` only after a successful non-dry-run check; failures carry the
+message.
+- Unit (`src/handlers/rclone.rs`): `sync_verified` and `rclone_check_args`.
+
+**P1-27 — pinned images.** `HOMEVAULT_REQUIRE_PINNED_IMAGES=1` makes a catalog
+install refuse any rendered compose image that is not `@sha256:…`, listing the
+offenders before `docker compose` runs. Off by default.
+- Unit (`src/supply_chain.rs`): compose parsing, strict-mode refusal, digest
+  acceptance.
+
+**P1-28 — duplicate monitors.** The installer warns when `smartd` or
+`mdmonitor` is enabled beside HomeVault's own samplers. The UI surface for the
+write-cache/UPS advisory is still open.
+
+**P2-12 — restic check in the weekly report.** The report reads the newest
+`restic_check` task run (`status (finished_at)`) instead of always rendering
+`unknown`; `HOMEVAULT_WEEKLY_HEALTH_REPORT=0` disables the report.
+- Unit (`src/health_report.rs`): environment opt-out.
+
+**Not run in this session** (explicit instruction): no `cargo test`, no
+Playwright run. `cargo fmt`, `cargo check --lib` and
+`cargo test --lib --no-run` compile clean (pre-existing warnings only). Run
+before release: `cargo test --lib` for the filters above, the ten integration
+suites from lot 6, and the Storage/Health/Tasks/Cloud Sync E2E.
+
+---
+
+## 2026-11-05 — integrity lot 8 (P2-10, P2-11)
+
+**P2-10 — prediction UI.** `GET /api/health/disk-health/predictions` returns
+`[{ serial, trends[] }]` for every sampled disk (`list_serials`), without
+inventing a trend below 5 samples. The Health screen gains a **Failure
+prediction** card showing attribute, estimated days and `r²`; it stays hidden
+until at least one trend exists.
+- Integration (`tests/health_integration.rs`): the new route requires a
+  session, starts empty and the per-serial route still validates `serial`.
+- i18n ×4 for the card and the six attribute names.
+
+**P2-11 — per-share compression policies.** Migration
+`091_btrfs_compression.sql` adds `btrfs_compression_policies` (path, level,
+defrag, last_applied_at). `src/storage/btrfs_policy_repo.rs` owns CRUD;
+`src/btrfs_maintenance.rs` validates paths (`absolute`, no `..`, never
+`.snapshots`), builds the defrag/`chattr` argv, and applies a policy now or
+when the daily loop finds it due (monthly). Endpoints:
+`GET/PUT/DELETE /api/storage/btrfs/policies` and
+`POST /api/storage/btrfs/policies/apply`.
+- Unit (`src/btrfs_maintenance.rs`): path validation, `zstd:3`/`none` argv,
+  `+c`/`-c`, monthly due rule.
+- Integration (`tests/storage_integration.rs`): auth, invalid level refusal,
+  round-trip and delete of a policy against a real temporary directory.
+- UI: Storage → **Compression** tab (list, path/level/defrag form, Apply now,
+  Delete); i18n ×4.
+- Docs: `docs/guides/storage.md`, `docs/API.md`, `SCREENS.md`.
+
+**Not run in this session** (explicit instruction): no `cargo test`, no
+Playwright run. `cargo fmt --check`, `cargo check --lib`,
+`cargo test --lib --no-run`, `cargo test --test storage_integration --no-run`
+and `cargo test --test health_integration --no-run` compile clean. Run before
+release: `cargo test --lib btrfs_maintenance disk_prediction`,
+`cargo test --test storage_integration health_integration`, then the
+Health/Storage E2E.
+
+---
+
+## 2026-11-05 — integrity lot 9 (P2-13)
+
+**Behaviour.** Migration `092_snapshot_quiescence.sql` adds
+`snapshot_quiescence_hooks` (name, `pre_json`, `post_json`, enabled).
+`src/storage/quiescence_hook_repo.rs` owns CRUD. The snapshot scheduler loads
+the enabled hooks before every scheduled snapshot, runs their `pre` argv in
+name order inside `snapshot_quiescence::run_pre_hooks`, creates the snapshot,
+then runs the attempted hooks' `post` argv in reverse order. A failed
+pre-hook downgrades the run to `crash-consistent: <reason>` without aborting
+it; a failed post-hook is appended to the summary. Every command is an argv
+(no shell), absolute, ≤32 arguments, 60 s deadline.
+
+**Endpoints/UI.** `GET/POST /api/storage/snapshot-hooks`,
+`PUT/DELETE /api/storage/snapshot-hooks/{id}`; Storage → Snapshots gains an
+**Application quiescence hooks** card (add, enable/disable, delete), i18n ×4.
+
+**Tests.**
+- Unit (`src/snapshot_quiescence.rs`): absolute argv, required pre, 32-arg
+  cap, name validation.
+- Unit (`src/snapshot_scheduler.rs`): `consistency_note` says
+  crash/application-consistent and reports post-hook failures.
+- Integration (`tests/storage_integration.rs`): auth, relative executable
+  refused, create/list/update/delete round-trip.
+
+**Not run in this session** (explicit instruction): no `cargo test`, no
+Playwright run. `cargo fmt --check`, `cargo check --lib`,
+`cargo test --lib --no-run` and `cargo test --test storage_integration
+--no-run` compile clean. Run before release: `cargo test --lib
+snapshot_quiescence snapshot_scheduler`,
+`cargo test --test storage_integration`, then the Storage snapshots E2E.
+
+---
+
+## 2026-11-05 — integrity lot 10 (P2-15)
+
+**Behaviour.** `src/replication_witness.rs` gains an HTTP `WitnessClient`
+speaking `GET/POST/DELETE /lease` with an optional bearer token and a 10 s
+deadline, plus `witness_config_from_env` (`HOMEVAULT_WITNESS_URL`,
+`HOMEVAULT_WITNESS_NODE`, `HOMEVAULT_WITNESS_TOKEN`, `HOMEVAULT_WITNESS_TTL`).
+Every replication run acquires/renews the lease before touching a snapshot
+when a witness is configured; a `409`/wrong-holder answer fails the run with a
+named reason. Without configuration nothing changes. `GET/POST
+/api/replication/witness` expose the current lease and an explicit acquire
+(admin).
+
+**Tests.**
+- Unit (`src/replication_witness.rs`): all-or-nothing configuration, URL
+  scheme refusal, required node, default/explicit TTL, lease URL; existing
+  `may_promote`/`take_lease`/`split_brain` tests.
+- Integration (`tests/replication_integration.rs`): witness status requires a
+  session, reports `configured:false`, acquire is admin-only and names the
+  missing configuration.
+
+**Reserve.** The witness server is an external service; the promotion and
+split-brain recovery runbook is not automated, and the lease is renewed only
+at run start (its TTL gates the start, not a multi-hour transfer).
+
+**Not run in this session** (explicit instruction): no `cargo test`, no
+Playwright run. `cargo fmt --check`, `cargo check --lib`,
+`cargo test --lib --no-run`, `cargo test --test replication_integration
+--no-run` and `cargo test --test storage_integration --no-run` compile clean.
+Run before release: `cargo test --lib replication_witness
+snapshot_quiescence snapshot_scheduler`,
+`cargo test --test replication_integration storage_integration`, then a
+two-node + witness integration test on real hosts.
+
+---
+
+## 2026-11-05 — integrity lot 11 (P2-1, partial)
+
+**Behaviour.** `SmbConfig` gains `realm` and `idmap_range`. `security_mode =
+ads` (and `domain`) is accepted only with a DNS realm and a `low-high` idmap
+range; `server` stays refused. The rendered `[global]` block adds `realm`,
+`idmap config * : backend = tdb`, the idmap range,
+`winbind use default domain = yes`, `vfs objects = acl_xattr`,
+`map acl inherit = yes` and `store dos attributes = yes`. A stored ADS config
+without a realm is normalized back to `user`.
+
+`POST /api/shares/smb/domain/join` and `/leave` run `net ads join|leave -U
+<account>` with the password written on **stdin**, never in argv; a host
+without winbind gets a named refusal. The SMB advanced form offers ADS and
+shows the realm/idmap fields.
+
+**Tests.**
+- Unit (`src/shares.rs`): ADS requires realm, realm/idmap validation, ads
+  directives rendered, `domain_join_argv`/`domain_leave_argv` contain no
+  password, legacy normalisation.
+- Integration (`tests/shares_integration.rs`): join/leave refuse an
+  unauthenticated caller and a member; the admin path is not run because it
+  would execute `net ads` against the host.
+
+**Reserve.** The join path is not exercised against a real domain controller;
+PAM/local login integration, SID resolution tests and Windows ACL round-trips
+still need a test DC. The task stays partial.
+
+**Not run in this session** (explicit instruction): no `cargo test`, no
+Playwright run. `cargo fmt --check`, `cargo check --lib`,
+`cargo test --lib --no-run` and `cargo test --test shares_integration
+--no-run` compile clean. Run before release: `cargo test --lib shares`,
+`cargo test --test shares_integration`, then a lab with Samba + winbind + a
+test AD domain.
+
+---
+
+## 2026-11-05 — integrity lot 12 (P2-2, partial)
+
+**Behaviour.** `NfsConfig` gains `security_flavor` (`sys|krb5|krb5i|krb5p`).
+A non-`sys` flavor is rendered as `sec=…` on every export and is refused
+unless `version` is explicitly `4`, `4.1` or `4.2` (auto cannot guarantee v4).
+`save_nfs_config` also refuses Kerberos when `/etc/krb5.keytab` and
+`rpc.svcgssd`/`gssproxy` are absent. The NFS advanced form exposes the flavor,
+and the hint names the keytab/gssproxy requirement.
+
+**Tests.**
+- Unit (`src/shares.rs`): Kerberos requires v4, invalid flavor refused,
+  `sec=krb5p` rendered, `sys` omits `sec=`, missing keytab path is not
+  considered available.
+
+**Reserve.** Not validated against a real KDC: idmapd configuration, keytab
+creation/rotation and client-side `sec=krb5*` mounts still need a lab. The
+task stays partial.
+
+**Not run in this session** (explicit instruction): no `cargo test`, no
+Playwright run. `cargo fmt --check`, `cargo check --lib`,
+`cargo test --lib --no-run` and `cargo test --test shares_integration
+--no-run` compile clean. Run before release: `cargo test --lib shares`,
+`cargo test --test shares_integration`, then an NFSv4 + KDC lab.
+
+---
+
+## 2026-11-05 — integrity lot 13 (P2-3, partial)
+
+**Behaviour.** `src/zfs_volumes.rs` creates/list/destroys ZFS zvols. A **thin**
+volume adds `-s` and `refreservation=none`; a **thick** one keeps ZFS's default
+reservation. Listing parses `zfs list -H -p -t volume` and flags `saturated` at
+≥90 % of the nominal size. Names are dataset paths with safe components, and
+sizes are 1 MiB–1 PiB; both are validated before any command runs. Endpoints:
+`GET/POST /api/storage/zfs/volumes`, `DELETE /api/storage/zfs/volumes/{*name}`.
+
+**Tests.**
+- Unit (`src/zfs_volumes.rs`): name/size validation, thin vs thick argv,
+  parsing and saturation thresholds.
+- Integration (`tests/storage_integration.rs`): auth and validation refusals
+  happen before `zfs` is invoked.
+
+**Reserve.** ZFS only: LVM thin pools, a dedicated UI and zvol snapshots are
+still open. The task stays partial.
+
+**Not run in this session** (explicit instruction): no `cargo test`, no
+Playwright run. `cargo fmt --check`, `cargo check --lib`,
+`cargo test --lib --no-run` and `cargo test --test storage_integration
+--no-run` compile clean. Run before release: `cargo test --lib zfs_volumes`,
+`cargo test --test storage_integration`, then a real ZFS host.
+
+---
+
+## 2026-11-05 — integrity lot 14 (P2-4, design only)
+
+**Behaviour.** `src/dedup.rs` adds the planning half of deduplication:
+strategy selection (`btrfs` → `duperemove`, `zfs` → pool property), path
+validation (absolute, no `..`, never `.snapshots`, ≤16 paths), and a
+`duperemove` argv builder with an optional persistent hashfile. It **does not
+execute** any pass: P2-4 requires the benchmark in
+`docs/analysis/dedup-design.md` first.
+
+**Tests.**
+- Unit (`src/dedup.rs`): strategy mapping, path rules, path-count cap,
+  hashfile validation, argv shape.
+
+**Reserve.** No execution endpoint, no scheduler and no UI. ZFS dedup remains
+an operator decision (permanent RAM cost). The task stays partial until the
+benchmark is recorded and the pass is enabled.
+
+**Not run in this session** (explicit instruction): no `cargo test`, no
+Playwright run. `cargo fmt --check`, `cargo check --lib` and
+`cargo test --lib --no-run` compile clean. Run before release:
+`cargo test --lib dedup`, then the benchmark on a real dataset.
+
+---
+
+## 2026-11-05 — integrity lot 15 (P0-7 complete)
+
+**Behaviour.** The boot-recovery pass now raises a `health.storage`
+notification when it leaves any entry failed or read-only (previously it only
+logged a warning). `storage::recovery::recover_one` is public so the acceptance
+test drives the exact production ladder without editing `/etc/fstab`.
+
+**Hardware test.** `tests/recovery_hardware_integration.rs` is opt-in:
+`sudo HV_RECOVERY_HW=1 cargo test --test recovery_hardware_integration`.
+It creates a 512 MiB loop-backed Btrfs filesystem, zeroes the primary
+superblock at 64 KiB, calls `recover_one`, asserts the status is
+`mounted-ro`, and verifies the live mount carries `ro`. A skip always prints
+the missing prerequisite; loop device and mount point are cleaned up by Drop.
+
+**Not run in this session** (explicit instruction): no `cargo test`, no
+Playwright run. `cargo fmt --check`, `cargo check --lib`,
+`cargo test --lib --no-run` and `cargo test --test
+recovery_hardware_integration --no-run` compile clean. Run before release:
+`cargo test --lib storage::recovery`, then the opt-in hardware suite on a
+disposable root host.

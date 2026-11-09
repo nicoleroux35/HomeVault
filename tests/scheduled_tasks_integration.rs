@@ -508,6 +508,68 @@ async fn validation_rejects_bad_cron_payload_and_type() {
         body["message"].as_str().unwrap().contains("does not exist"),
         "{body}"
     );
+
+    // A scrub task is accepted for the three storage technologies…
+    let scrub = json!({
+        "name": "Weekly scrub", "task_type": "scrub", "cron": "0 3 * * 0",
+        "payload": {"pool": "tank/data", "pool_type": "zfs"}
+    });
+    let (status, body) = send(
+        &mut router,
+        Method::POST,
+        "/api/scheduled-tasks",
+        Some(&admin),
+        Some(scrub),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "scrub create failed: {body}");
+    assert_eq!(body["data"]["task_type"], "scrub");
+
+    // …and refused for a filesystem that has no consistency check.
+    let bad = json!({
+        "name": "Bad scrub", "task_type": "scrub", "cron": "0 3 * * 0",
+        "payload": {"pool": "tank", "pool_type": "ext4"}
+    });
+    let (status, _) = send(
+        &mut router,
+        Method::POST,
+        "/api/scheduled-tasks",
+        Some(&admin),
+        Some(bad),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+
+    // A restic check task is accepted with a valid subset…
+    let restic = json!({
+        "name": "Weekly restic check", "task_type": "restic_check", "cron": "0 4 * * 0",
+        "payload": {"repo_id": "repo-1", "subset": "10%"}
+    });
+    let (status, body) = send(
+        &mut router,
+        Method::POST,
+        "/api/scheduled-tasks",
+        Some(&admin),
+        Some(restic),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "restic task create failed: {body}");
+    assert_eq!(body["data"]["task_type"], "restic_check");
+
+    // …and refused when the subset is an option-injection attempt.
+    let bad = json!({
+        "name": "Bad restic check", "task_type": "restic_check", "cron": "0 4 * * 0",
+        "payload": {"repo_id": "repo-1", "subset": "--force"}
+    });
+    let (status, _) = send(
+        &mut router,
+        Method::POST,
+        "/api/scheduled-tasks",
+        Some(&admin),
+        Some(bad),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
 }
 
 #[tokio::test]

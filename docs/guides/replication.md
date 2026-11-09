@@ -49,7 +49,7 @@ destination.
 |-------|-------|-------|
 | Name | 1–64 chars, no control characters | Unique, case-insensitive |
 | Backend | `zfs` / `btrfs` | Resolved per job, not per host |
-| Destination | `local` / `ssh` | Btrfs **over SSH is refused**: `btrfs receive` on a remote path is not supported yet |
+| Destination | `local` / `ssh` | Btrfs over SSH is supported: the send runs locally and `ssh … sudo btrfs receive` runs remotely |
 | Datasets | dataset paths, never `@snapshot` | The job creates its own snapshots |
 | Interval | `0` (manual only) or 5–43200 minutes | 0 is "run when I say so" |
 | Keep last | 1–365 | Destination-only retention |
@@ -106,6 +106,58 @@ filesystem snapshots, the other receives `restic` repositories.
   line, an incomplete job refused client-side, the fields a SSH job sends, the
   dry-run modal, run-now's confirmation, and the delete warning. All mutations
   are mocked — no `zfs`/`btrfs` command is ever executed.
+
+## Btrfs over SSH and destination proof (P1-26, 2026-11-05)
+
+- **Btrfs over SSH is supported.** The send runs locally and the receive runs
+  as `ssh -p … -o BatchMode=yes … sudo btrfs receive <dataset>`; listing and
+  deleting destination subvolumes use the same SSH prefix. The old
+  `validate_job` refusal is gone, and `ssh_prefix` refuses an incomplete SSH
+  target instead of building a half command.
+- **Retries.** A transfer that fails is retried three times with exponential
+  backoff (2 s, 4 s, 8 s). A dropped link is the common failure; a fresh
+  attempt is safe because the destination snapshot is created once.
+- **Destination proof.** After the last stage, the scheduler runs
+  `destination_verify_command`: for ZFS it reads the destination dataset's
+  `checksum` property (locally or over SSH), for Btrfs it runs
+  `btrfs subvolume show` on the destination. A destination that cannot be
+  read back fails the run — the copy is not recorded as a success. This proves
+  the destination exists and is readable; it is **not** a byte-for-byte
+  comparison of the snapshot (the send stream itself is the integrity
+  guarantee, and ZFS/Btrfs checksums cover the blocks).
+
+## Witness leases (P2-15, 2026-11-05)
+
+`src/replication_witness.rs` implements a lightweight third vote between two
+data sites:
+
+- `may_promote` — a node may act as primary only while it holds an unexpired
+  lease.
+- `take_lease` — an unexpired lease held by another node is refused until it
+  expires; the holder renews with a higher epoch.
+- `split_brain` — two live leases from different holders are reported as a
+  split brain.
+
+The HTTP client (`WitnessClient`) speaks a small lease contract with an
+external witness service:
+
+| Method | Path | Body | Result |
+|---|---|---|---|
+| GET | `/lease` | — | current lease, or `404` |
+| POST | `/lease` | `{ node, ttl_seconds }` | granted lease, or `409` when another node holds it |
+| DELETE | `/lease` | `{ node }` | release |
+
+Configuration is read at each run from `HOMEVAULT_WITNESS_URL`,
+`HOMEVAULT_WITNESS_NODE`, optional `HOMEVAULT_WITNESS_TOKEN` and
+`HOMEVAULT_WITNESS_TTL` (10–86 400 s, default 60). When a witness is
+configured, **every replication run acquires/renews the lease first** and is
+refused if another node holds it; without a witness the historical behaviour
+is unchanged. `GET /api/replication/witness` reports the configuration and
+current lease, `POST /api/replication/witness` acquires/renews it (admin).
+
+**Reserve:** the witness service itself is external, and the promotion/
+split-brain recovery runbook is not automated. The lease is not renewed during
+a multi-hour transfer; its TTL only gates the *start* of a run.
 
 ## Related
 

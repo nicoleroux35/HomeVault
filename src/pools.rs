@@ -149,7 +149,99 @@ impl PoolService {
         let mut pools = Vec::new();
         pools.extend(Self::list_importable_zfs_pools());
         pools.extend(Self::list_importable_btrfs_pools());
+        pools.extend(Self::list_importable_mdadm_pools());
         Ok(pools)
+    }
+
+    /// Foreign mdadm arrays. `mdadm --examine --scan` prints one `ARRAY` line
+    /// per member device; the UUID identifies the array, so duplicates are
+    /// folded. Arrays whose `/sys/block/mdX` already exists are assembled and
+    /// are **not** importable.
+    fn list_importable_mdadm_pools() -> Vec<ImportablePool> {
+        let output = match run_timed(
+            Command::new("sudo")
+                .arg("mdadm")
+                .args(["--examine", "--scan"]),
+            POOL_QUERY_TIMEOUT,
+        ) {
+            Ok(o) if o.status.success() => o,
+            _ => return Vec::new(),
+        };
+        let assembled = Self::assembled_md_names();
+        Self::parse_mdadm_examine_scan(&String::from_utf8_lossy(&output.stdout), &assembled)
+    }
+
+    /// `/sys/block/md*` basenames (e.g. `md0`) that the kernel already knows.
+    fn assembled_md_names() -> std::collections::HashSet<String> {
+        let mut set = std::collections::HashSet::new();
+        let Ok(entries) = std::fs::read_dir("/sys/block") else {
+            return set;
+        };
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if name.starts_with("md") {
+                set.insert(name);
+            }
+        }
+        set
+    }
+
+    /// Parse `mdadm --examine --scan` into foreign arrays. The array name is
+    /// the `/dev/md/...` path; `devices=` is used when mdadm prints it.
+    pub fn parse_mdadm_examine_scan(
+        output: &str,
+        assembled: &std::collections::HashSet<String>,
+    ) -> Vec<ImportablePool> {
+        let mut pools: Vec<ImportablePool> = Vec::new();
+        for line in output.lines() {
+            let Some(rest) = line.trim().strip_prefix("ARRAY ") else {
+                continue;
+            };
+            let mut fields = rest.split_whitespace();
+            let Some(device) = fields.next() else {
+                continue;
+            };
+            let mut uuid = None;
+            let mut devices: Vec<String> = Vec::new();
+            for field in fields {
+                if let Some(value) = field.strip_prefix("UUID=") {
+                    uuid = Some(value.to_string());
+                } else if let Some(value) = field.strip_prefix("devices=") {
+                    devices = value
+                        .split(',')
+                        .filter(|d| !d.trim().is_empty())
+                        .map(|d| d.trim().to_string())
+                        .collect();
+                }
+            }
+            // An array is importable only when the kernel has no md device
+            // for it. `mdadm` names them `/dev/md/<name>` or `/dev/md<X>`.
+            let basename = device.rsplit('/').next().unwrap_or(device);
+            if assembled.contains(basename) || assembled.contains(device) {
+                continue;
+            }
+            let key = uuid.clone().unwrap_or_else(|| device.to_string());
+            if let Some(existing) = pools
+                .iter_mut()
+                .find(|p| p.id.as_deref() == Some(key.as_str()) || p.name == device)
+            {
+                for member in devices {
+                    if !existing.devices.contains(&member) {
+                        existing.devices.push(member);
+                    }
+                }
+                continue;
+            }
+            pools.push(ImportablePool {
+                name: device.to_string(),
+                pool_type: PoolType::Mdadm,
+                id: Some(key),
+                devices,
+                state: "inactive".to_string(),
+                status: Some("Foreign mdadm array".to_string()),
+            });
+        }
+        pools
     }
 
     fn list_importable_zfs_pools() -> Vec<ImportablePool> {
@@ -362,6 +454,34 @@ impl PoolService {
         pool_type: PoolType,
         new_name: Option<&str>,
     ) -> Result<(), PoolError> {
+        // A foreign mdadm array has no "pool name" to validate: its identity
+        // is `/dev/md/<name>` (or `/dev/mdNN`). `--assemble --scan` reads the
+        // superblocks and brings every foreign array online; we then verify
+        // that the one the admin picked actually appeared.
+        if pool_type == PoolType::Mdadm {
+            let output = run_timed(
+                Command::new("sudo")
+                    .arg("mdadm")
+                    .args(["--assemble", "--scan"]),
+                POOL_WRITE_TIMEOUT,
+            )?;
+            if !output.status.success() {
+                return Err(PoolError::CommandFailed(
+                    String::from_utf8_lossy(&output.stderr).trim().to_string(),
+                ));
+            }
+            let detail = run_timed(
+                Command::new("sudo").arg("mdadm").args(["--detail", name]),
+                POOL_QUERY_TIMEOUT,
+            )?;
+            if !detail.status.success() {
+                return Err(PoolError::PoolNotFound(format!(
+                    "{name} did not assemble — check that every member is attached"
+                )));
+            }
+            return Ok(());
+        }
+
         Self::validate_pool_name(name)?;
         if let Some(rename) = new_name {
             Self::validate_pool_name(rename)?;
@@ -433,8 +553,10 @@ impl PoolService {
                     if !uuid.is_empty() {
                         let marker = format!("# homevault-pool:{}", name);
                         let line = format!(
-                            "UUID={} {} btrfs defaults,nofail,compress=zstd:3 0 2",
-                            uuid, mount_point
+                            "UUID={} {} btrfs {} 0 2",
+                            uuid,
+                            mount_point,
+                            crate::btrfs_maintenance::fstab_options(None)
                         );
                         let _ = Self::append_pool_fstab_entry(&marker, &line);
                     }
@@ -1653,7 +1775,7 @@ impl PoolService {
         let live_mount = run_timed(
             Command::new("sudo").arg("mount").args([
                 "-o",
-                "subvol=@,compress=zstd:3",
+                &format!("subvol=@,{}", crate::btrfs_maintenance::BTRFS_LIVE_OPTIONS),
                 &devices[0],
                 mount_point,
             ]),
@@ -1680,7 +1802,10 @@ impl PoolService {
         let snapshots_mount = run_timed(
             Command::new("sudo").arg("mount").args([
                 "-o",
-                "subvol=@snapshots,compress=zstd:3",
+                &format!(
+                    "subvol=@snapshots,{}",
+                    crate::btrfs_maintenance::BTRFS_LIVE_OPTIONS
+                ),
                 &devices[0],
                 &format!("{mount_point}/.snapshots"),
             ]),
@@ -1706,12 +1831,16 @@ impl PoolService {
                 .to_string();
             if !uuid.is_empty() {
                 let fstab_line = format!(
-                    "UUID={} {} btrfs defaults,nofail,subvol=@,compress=zstd:3 0 2",
-                    uuid, mount_point
+                    "UUID={} {} btrfs {} 0 2",
+                    uuid,
+                    mount_point,
+                    crate::btrfs_maintenance::fstab_options(Some("@"))
                 );
                 let snapshots_line = format!(
-                    "UUID={} {}/.snapshots btrfs defaults,nofail,subvol=@snapshots,compress=zstd:3 0 2",
-                    uuid, mount_point
+                    "UUID={} {}/.snapshots btrfs {} 0 2",
+                    uuid,
+                    mount_point,
+                    crate::btrfs_maintenance::fstab_options(Some("@snapshots"))
                 );
                 let _ = Self::append_pool_fstab_entry(&marker, &fstab_line);
                 let _ = Self::append_pool_fstab_entry(&snapshots_marker, &snapshots_line);
@@ -2138,10 +2267,24 @@ mod tests {
     }
 
     #[test]
-    fn test_import_pool_rejects_mdadm() {
-        // Storage must never import a RAID array — that's the RAID app's job.
-        let err = PoolService::import_pool("md0", PoolType::Mdadm, None).unwrap_err();
-        assert!(err.to_string().contains("RAID"));
+    fn test_foreign_mdadm_arrays_are_importable() {
+        let out = "\
+ARRAY /dev/md/host:0 metadata=1.2 UUID=1111 name=host:0
+ARRAY /dev/md/host:0 metadata=1.2 UUID=1111 devices=/dev/sda1,/dev/sdb1
+ARRAY /dev/md/host:1 metadata=1.2 UUID=2222 name=host:1
+";
+        let assembled = std::collections::HashSet::new();
+        let pools = PoolService::parse_mdadm_examine_scan(out, &assembled);
+        assert_eq!(pools.len(), 2);
+        assert_eq!(pools[0].name, "/dev/md/host:0");
+        assert_eq!(pools[0].pool_type, PoolType::Mdadm);
+        assert_eq!(pools[0].devices, vec!["/dev/sda1", "/dev/sdb1"]);
+
+        // An array the kernel already assembled is not "foreign".
+        let mut assembled = std::collections::HashSet::new();
+        assembled.insert("host:1".to_string());
+        let pools = PoolService::parse_mdadm_examine_scan(out, &assembled);
+        assert_eq!(pools.len(), 1);
     }
 
     #[test]

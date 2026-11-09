@@ -22,6 +22,7 @@
 //! Network share service (CRUD + per-protocol config generation and
 //! service control).
 
+use crate::storage::atomic::AtomicWriter;
 use crate::utils::process::{run_timed, run_timed_with_stdin};
 use serde::{Deserialize, Serialize};
 use serde_json::Error as JsonError;
@@ -29,9 +30,20 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
-use std::time::Duration;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use thiserror::Error;
 use tracing::warn;
+
+/// Serializes read-modify-write cycles on the system configuration files
+/// (`smb.conf`, `/etc/exports`). Appending a share used to be a bare
+/// `tee -a`; replacing the whole file now needs the same mutual exclusion or
+/// two concurrent saves could lose one another's section.
+static CONFIG_WRITE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// Names the throwaway file `testparm` validates, so two saves racing on the
+/// same box never read each other's candidate.
+static VALIDATION_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 // ---------------------------------------------------------------------------
 // Deadlines (ROADMAP X.2)
@@ -77,6 +89,8 @@ pub enum ShareError {
     ConfigNotFound(String),
     #[error("{0}")]
     InvalidField(String),
+    #[error("{0}")]
+    Unavailable(String),
 }
 
 /// A file share definition, applicable across SMB, NFS, FTP, and WebDAV.
@@ -196,6 +210,12 @@ impl std::fmt::Display for ShareType {
 pub struct SmbConfig {
     pub workgroup: String,
     pub security_mode: String,
+    /// AD/Kerberos realm (`EXAMPLE.LAN`) used by `security = ads`.
+    #[serde(default)]
+    pub realm: String,
+    /// `idmap config * : range` for winbind.
+    #[serde(default = "default_idmap_range")]
+    pub idmap_range: String,
     pub protocol_version: String,
     pub allow_guest: bool,
     pub create_mask: String,
@@ -206,13 +226,6 @@ pub struct SmbConfig {
     /// is harmless to leave it off on a single-link appliance.
     #[serde(default)]
     pub multichannel: bool,
-    /// AD/LDAP Kerberos realm, e.g. `EXAMPLE.LAN`. Required for
-    /// `security = ads`; `user`/`share` ignore it.
-    #[serde(default)]
-    pub realm: String,
-    /// Winbind idmap range (`idmap config * : range`), e.g. `10000-999999`.
-    #[serde(default = "default_idmap_range")]
-    pub idmap_range: String,
     /// Advertise this appliance to Windows Explorer through WS-Discovery
     /// (`wsdd2`). Not a Samba directive: it is applied by
     /// `crate::ws_discovery`, so `smb_global_params` deliberately ignores it.
@@ -220,6 +233,44 @@ pub struct SmbConfig {
     /// `wsdd2` is not installed (the status card says so).
     #[serde(default = "default_ws_discovery")]
     pub ws_discovery: bool,
+    /// SMB2 durable handles: a client that loses its TCP connection can
+    /// reconnect and keep its open files. Off by default because enabling it
+    /// disables cross-protocol file locking (AFP/SMB arbitration).
+    #[serde(default)]
+    pub durable_handles: bool,
+    /// `server smb encrypt = off | desired | required` (SMB3 transport
+    /// encryption). `desired` protects clients that support it without
+    /// excluding older ones; `required` excludes clients that do not.
+    #[serde(default = "default_smb_encrypt")]
+    pub smb_encrypt: String,
+    /// `server signing = off | desired | mandatory`. Signing protects packet
+    /// integrity; `mandatory` is the only value the Security Advisor accepts.
+    #[serde(default = "default_server_signing")]
+    pub server_signing: String,
+    /// `strict sync = yes`: flush every SMB write to disk before acknowledging
+    /// it. Safer for databases, slower for bulk copies.
+    #[serde(default)]
+    pub strict_sync: bool,
+    /// `aio read size` in bytes (`0` = leave Samba's default). `1` makes every
+    /// read asynchronous, which is what DSM's "Enable asynchronous read" does.
+    #[serde(default)]
+    pub aio_read_size: u32,
+    /// `aio write size` in bytes (`0` = leave Samba's default).
+    #[serde(default)]
+    pub aio_write_size: u32,
+    /// `use sendfile = yes` (Samba's default). Disabling it can help on
+    /// filesystems where `sendfile` is slower than a buffered copy.
+    #[serde(default = "default_true")]
+    pub use_sendfile: bool,
+    /// `oplocks = yes` (Samba's default): client-side caching.
+    #[serde(default = "default_true")]
+    pub oplocks: bool,
+    /// `kernel oplocks = yes` (Samba's default): kernel-assisted leases.
+    #[serde(default = "default_true")]
+    pub kernel_oplocks: bool,
+    /// `level2 oplocks = yes` (Samba's default): read-only shared caching.
+    #[serde(default = "default_true")]
+    pub level2_oplocks: bool,
 }
 
 fn default_idmap_range() -> String {
@@ -230,20 +281,42 @@ fn default_ws_discovery() -> bool {
     true
 }
 
+fn default_smb_encrypt() -> String {
+    "off".to_string()
+}
+
+fn default_server_signing() -> String {
+    "off".to_string()
+}
+
+fn default_true() -> bool {
+    true
+}
+
 impl Default for SmbConfig {
     fn default() -> Self {
         Self {
             workgroup: "WORKGROUP".to_string(),
             security_mode: "user".to_string(),
+            realm: String::new(),
+            idmap_range: default_idmap_range(),
             protocol_version: "SMB3".to_string(),
             allow_guest: false,
             create_mask: "0755".to_string(),
             directory_mask: "0755".to_string(),
             additional_params: Vec::new(),
             multichannel: false,
-            realm: String::new(),
-            idmap_range: default_idmap_range(),
             ws_discovery: true,
+            durable_handles: false,
+            smb_encrypt: default_smb_encrypt(),
+            server_signing: default_server_signing(),
+            strict_sync: false,
+            aio_read_size: 0,
+            aio_write_size: 0,
+            use_sendfile: true,
+            oplocks: true,
+            kernel_oplocks: true,
+            level2_oplocks: true,
         }
     }
 }
@@ -446,40 +519,52 @@ pub(crate) fn write_file_as_root(path: &str, content: &str) -> std::io::Result<(
 /// Write a configuration file that this process may already be allowed to
 /// write.
 ///
-/// Production goes through `sudo tee` (see [`write_file_as_root`]), because
-/// `/etc/samba/smb.conf` is root-owned. A test (or a future root-run mode)
-/// points the same code at a path it owns; trying the direct write first
-/// keeps that seam honest without weakening the privileged path — a denial
-/// falls back to `sudo tee`, which is exactly what the appliance needs.
+/// Production writes atomically (temporary file in the same directory,
+/// `fsync`, `rename`, parent `fsync`). When the file is root-owned and the
+/// process is not root, the write falls back to the existing `sudo tee` grant
+/// — the same privileged path as before, but only as a fallback.
 fn write_config_file(path: &str, content: &str) -> std::io::Result<()> {
-    match std::fs::write(path, content) {
-        Ok(()) => Ok(()),
-        Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
-            write_file_as_root(path, content)
+    let _guard = CONFIG_WRITE_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    write_config_file_unlocked(path, content)
+}
+
+/// The body of [`write_config_file`], with the lock already held. Kept
+/// separate so [`append_config_file`] can do its read-modify-write under the
+/// same guard without deadlocking on a non-reentrant mutex.
+fn write_config_file_unlocked(path: &str, content: &str) -> std::io::Result<()> {
+    // Keep the last good version next to the file. Best effort: a read-only
+    // parent or a test path must not turn a successful write into a failure.
+    if let Ok(previous) = fs::read_to_string(path) {
+        if !previous.is_empty() {
+            let backup = format!("{path}.bak");
+            if AtomicWriter::write(&backup, &previous).is_err() {
+                let _ = write_file_as_root(&backup, &previous);
+            }
         }
-        Err(e) => Err(e),
+    }
+
+    match AtomicWriter::write(path, content) {
+        Ok(()) => Ok(()),
+        Err(e) if e.is_permission_denied() => write_file_as_root(path, content),
+        Err(e) => Err(std::io::Error::other(e.to_string())),
     }
 }
 
 /// Append to a configuration file this process may already be allowed to
-/// write — the append counterpart of [`write_config_file`], with the same
-/// `sudo tee -a` fallback.
+/// write — the append counterpart of [`write_config_file`].
+///
+/// Appending in place cannot be atomic: a crash between two `write` calls
+/// leaves a truncated line. The file is therefore read, extended, and
+/// replaced atomically as a whole, under the same lock as a full rewrite.
 fn append_config_file(path: &str, content: &str) -> std::io::Result<()> {
-    use std::io::Write;
-    match std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(path)
-    {
-        Ok(mut file) => {
-            file.write_all(content.as_bytes())?;
-            file.flush()
-        }
-        Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
-            append_file_as_root(path, content)
-        }
-        Err(e) => Err(e),
-    }
+    let _guard = CONFIG_WRITE_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let mut current = fs::read_to_string(path).unwrap_or_default();
+    current.push_str(content);
+    write_config_file_unlocked(path, &current)
 }
 
 /// Ask `smbd` to re-read its configuration.
@@ -690,46 +775,63 @@ fn check_config_value(
 /// `additional_params` are real global directives: each one must be
 /// `key = value` with a key from [`SMB_EXTRA_KEYS`], so a request can never
 /// inject a section header or an `include` into the root-owned file.
+/// Validate an AD realm: a DNS name, upper/lower case accepted, no spaces or
+/// config-file delimiters.
+pub(crate) fn validate_realm(realm: &str) -> Result<(), String> {
+    if realm.len() > 255
+        || realm.is_empty()
+        || !realm.contains('.')
+        || realm
+            .chars()
+            .any(|c| !(c.is_ascii_alphanumeric() || c == '.' || c == '-'))
+    {
+        return Err("realm must be a DNS name such as 'EXAMPLE.LAN'".to_string());
+    }
+    if realm.starts_with('.') || realm.ends_with('.') || realm.contains("..") {
+        return Err("realm must be a DNS name such as 'EXAMPLE.LAN'".to_string());
+    }
+    Ok(())
+}
+
+/// `idmap config * : range` is two positive integers, low < high.
+pub(crate) fn validate_idmap_range(range: &str) -> Result<(), String> {
+    let (low, high) = range
+        .split_once('-')
+        .ok_or_else(|| "idmap_range must look like '10000-99999'".to_string())?;
+    let low: u32 = low
+        .trim()
+        .parse()
+        .map_err(|_| "idmap_range must look like '10000-99999'".to_string())?;
+    let high: u32 = high
+        .trim()
+        .parse()
+        .map_err(|_| "idmap_range must look like '10000-99999'".to_string())?;
+    if low >= high {
+        return Err("idmap_range must have a lower bound below its upper bound".to_string());
+    }
+    Ok(())
+}
+
 pub(crate) fn validate_smb_config(config: &SmbConfig) -> Result<(), String> {
     check_config_value("workgroup", &config.workgroup, 15, true)?;
     let security = config.security_mode.to_lowercase();
     match security.as_str() {
         "user" | "share" => {}
-        // ADS is accepted only when the realm/idmap it needs are present; a
-        // bare `security = ads` still breaks SMB, so the missing half is a
-        // 400 instead of a silently-broken daemon.
+        // ADS/domain use winbind + Kerberos; the realm and idmap range must be
+        // explicit. `server` (trusted-domain member) still needs a domain
+        // controller account and is not offered.
         "ads" | "domain" => {
             let realm = config.realm.trim();
-            if realm.is_empty()
-                || !realm.contains('.')
-                || realm.len() > 255
-                || realm.chars().any(|c| {
-                    c.is_whitespace() || c.is_control() || matches!(c, '[' | ']' | ';' | '/')
-                })
-            {
-                return Err(
-                    "security_mode ads requires a DNS realm such as EXAMPLE.LAN".to_string(),
-                );
+            if realm.is_empty() {
+                return Err(format!("realm is required when security_mode is '{security}'"));
             }
-            let range = config.idmap_range.trim();
-            let (low, high) = range
-                .split_once('-')
-                .ok_or_else(|| "idmap_range must be 'low-high' (e.g. 10000-999999)".to_string())?;
-            let low: u32 = low
-                .trim()
-                .parse()
-                .map_err(|_| "idmap_range low bound is not a number".to_string())?;
-            let high: u32 = high
-                .trim()
-                .parse()
-                .map_err(|_| "idmap_range high bound is not a number".to_string())?;
-            if low == 0 || high <= low {
-                return Err("idmap_range must have 0 < low < high".to_string());
-            }
+            validate_realm(realm)?;
+            validate_idmap_range(&config.idmap_range)?;
         }
         "server" => {
             return Err(
-                "security_mode 'server' is not implemented; use user, share or ads".to_string(),
+                "security_mode 'server' is not implemented; use 'ads' for an Active Directory member or 'user' for local accounts"
+                    .to_string(),
             )
         }
         other => {
@@ -748,6 +850,33 @@ pub(crate) fn validate_smb_config(config: &SmbConfig) -> Result<(), String> {
             return Err(format!(
                 "protocol_version '{other}' is not valid (use SMB2 or SMB3)"
             ))
+        }
+    }
+    match config.smb_encrypt.trim() {
+        "off" | "desired" | "required" => {}
+        other => {
+            return Err(format!(
+                "smb_encrypt '{other}' is not valid (use off, desired or required)"
+            ))
+        }
+    }
+    match config.server_signing.trim() {
+        "off" | "desired" | "mandatory" => {}
+        other => {
+            return Err(format!(
+                "server_signing '{other}' is not valid (use off, desired or mandatory)"
+            ))
+        }
+    }
+    const MAX_AIO_BYTES: u32 = 16 * 1024 * 1024;
+    for (name, value) in [
+        ("aio_read_size", config.aio_read_size),
+        ("aio_write_size", config.aio_write_size),
+    ] {
+        if value > MAX_AIO_BYTES {
+            return Err(format!(
+                "{name} must be 0 (auto) or at most {MAX_AIO_BYTES} bytes"
+            ));
         }
     }
     for (name, mask) in [
@@ -786,6 +915,11 @@ const SMB_EXTRA_KEYS: &[&str] = &[
     "aio read size",
     "aio write size",
     "use sendfile",
+    "durable handles",
+    "strict sync",
+    "oplocks",
+    "kernel oplocks",
+    "level2 oplocks",
     "server multi channel support",
 ];
 
@@ -823,18 +957,29 @@ fn smb_global_params(config: &SmbConfig) -> Vec<String> {
     let SmbConfig {
         workgroup,
         security_mode,
+        realm,
+        idmap_range,
         protocol_version,
         allow_guest,
         create_mask,
         directory_mask,
         additional_params,
         multichannel,
-        realm,
-        idmap_range,
         // Deliberately not a `smb.conf` key: it is applied by `ws_discovery`.
         ws_discovery: _,
+        durable_handles,
+        smb_encrypt,
+        server_signing,
+        strict_sync,
+        aio_read_size,
+        aio_write_size,
+        use_sendfile,
+        oplocks,
+        kernel_oplocks,
+        level2_oplocks,
     } = config;
 
+    let yes_no = |value: bool| if value { "yes" } else { "no" };
     let mut params = vec![
         format!("  workgroup = {workgroup}"),
         format!("  security = {security_mode}"),
@@ -845,20 +990,33 @@ fn smb_global_params(config: &SmbConfig) -> Vec<String> {
         params.push(format!("  idmap config * : range = {}", idmap_range.trim()));
         params.push("  winbind use default domain = yes".to_string());
         params.push("  winbind offline logon = yes".to_string());
+        // Windows ACLs, stored in the filesystem's extended attributes.
+        params.push("  vfs objects = acl_xattr".to_string());
         params.push("  map acl inherit = yes".to_string());
         params.push("  store dos attributes = yes".to_string());
     }
     params.extend([
         format!("  server min protocol = {protocol_version}"),
         "  server max protocol = SMB3".to_string(),
-        format!(
-            "  server multi channel support = {}",
-            if *multichannel { "yes" } else { "no" }
-        ),
-        format!("  guest ok = {}", if *allow_guest { "yes" } else { "no" }),
+        format!("  server multi channel support = {}", yes_no(*multichannel)),
+        format!("  server smb encrypt = {smb_encrypt}"),
+        format!("  server signing = {server_signing}"),
+        format!("  durable handles = {}", yes_no(*durable_handles)),
+        format!("  strict sync = {}", yes_no(*strict_sync)),
+        format!("  use sendfile = {}", yes_no(*use_sendfile)),
+        format!("  oplocks = {}", yes_no(*oplocks)),
+        format!("  kernel oplocks = {}", yes_no(*kernel_oplocks)),
+        format!("  level2 oplocks = {}", yes_no(*level2_oplocks)),
+        format!("  guest ok = {}", yes_no(*allow_guest)),
         format!("  create mask = {create_mask}"),
         format!("  directory mask = {directory_mask}"),
     ]);
+    if *aio_read_size > 0 {
+        params.push(format!("  aio read size = {aio_read_size}"));
+    }
+    if *aio_write_size > 0 {
+        params.push(format!("  aio write size = {aio_write_size}"));
+    }
     let managed_keys: Vec<String> = params
         .iter()
         .filter_map(|param| {
@@ -886,15 +1044,18 @@ fn smb_global_params(config: &SmbConfig) -> Vec<String> {
 /// render as an empty select (the option no longer exists) and fail on save.
 fn normalize_smb_config(config: &mut SmbConfig) {
     let security = config.security_mode.to_lowercase();
-    let ads_ready = matches!(security.as_str(), "ads" | "domain")
-        && !config.realm.trim().is_empty()
-        && config.realm.contains('.');
-    if !matches!(security.as_str(), "user" | "share") && !ads_ready {
+    let has_realm = !config.realm.trim().is_empty();
+    if !matches!(security.as_str(), "user" | "share" | "ads" | "domain")
+        || (matches!(security.as_str(), "ads" | "domain") && !has_realm)
+    {
         warn!(
-            "stored SMB security_mode '{}' has no usable realm; falling back to 'user'",
+            "stored SMB security_mode '{}' is not usable; falling back to 'user'",
             config.security_mode
         );
         config.security_mode = "user".to_string();
+    }
+    if validate_idmap_range(&config.idmap_range).is_err() {
+        config.idmap_range = default_idmap_range();
     }
     if !matches!(config.protocol_version.trim(), "SMB2" | "SMB3") {
         warn!(
@@ -902,6 +1063,38 @@ fn normalize_smb_config(config: &mut SmbConfig) {
             config.protocol_version
         );
         config.protocol_version = "SMB3".to_string();
+    }
+    if !matches!(config.smb_encrypt.trim(), "off" | "desired" | "required") {
+        warn!(
+            "stored SMB smb_encrypt '{}' is not valid; falling back to 'off'",
+            config.smb_encrypt
+        );
+        config.smb_encrypt = default_smb_encrypt();
+    }
+    if !matches!(
+        config.server_signing.trim(),
+        "off" | "desired" | "mandatory"
+    ) {
+        warn!(
+            "stored SMB server_signing '{}' is not valid; falling back to 'off'",
+            config.server_signing
+        );
+        config.server_signing = default_server_signing();
+    }
+    const MAX_AIO_BYTES: u32 = 16 * 1024 * 1024;
+    if config.aio_read_size > MAX_AIO_BYTES {
+        warn!(
+            "stored aio_read_size {} is out of range; falling back to 0",
+            config.aio_read_size
+        );
+        config.aio_read_size = 0;
+    }
+    if config.aio_write_size > MAX_AIO_BYTES {
+        warn!(
+            "stored aio_write_size {} is out of range; falling back to 0",
+            config.aio_write_size
+        );
+        config.aio_write_size = 0;
     }
 }
 
@@ -1894,6 +2087,113 @@ pub fn leave_smb_domain() -> Result<(), ShareError> {
 }
 
 /// Service for managing SMB, NFS, FTP, and WebDAV shares.
+/// Binaries a working winbind/AD stack needs.
+pub const WINBIND_BINARIES: &[&str] = &["/usr/sbin/winbindd", "/usr/bin/wbinfo"];
+
+/// Whether the host has the winbind binaries. Split from the live check so a
+/// test can pass a controlled list instead of touching the host.
+pub fn winbind_available_at(paths: &[&str]) -> bool {
+    paths.iter().any(|path| std::path::Path::new(path).exists())
+}
+
+pub fn winbind_available() -> bool {
+    winbind_available_at(WINBIND_BINARIES)
+}
+
+fn validate_domain_username(username: &str) -> Result<(), String> {
+    let username = username.trim();
+    if username.is_empty()
+        || username.len() > 256
+        || username
+            .chars()
+            .any(|c| c.is_control() || c == '\n' || c == '\r')
+    {
+        return Err("a domain account name is required".to_string());
+    }
+    Ok(())
+}
+
+/// `net ads join` argv. The password is **not** an argument: it is written to
+/// stdin so it never appears in `ps` or the audit log.
+pub fn domain_join_argv(username: &str) -> Result<Vec<String>, String> {
+    validate_domain_username(username)?;
+    Ok(vec![
+        "sudo".to_string(),
+        "net".to_string(),
+        "ads".to_string(),
+        "join".to_string(),
+        "-U".to_string(),
+        username.trim().to_string(),
+    ])
+}
+
+pub fn domain_leave_argv(username: &str) -> Result<Vec<String>, String> {
+    validate_domain_username(username)?;
+    Ok(vec![
+        "sudo".to_string(),
+        "net".to_string(),
+        "ads".to_string(),
+        "leave".to_string(),
+        "-U".to_string(),
+        username.trim().to_string(),
+    ])
+}
+
+/// Join an AD domain. Requires winbind to be installed; a missing stack is a
+/// named refusal, not a half-configured `security = ads`.
+pub fn join_domain(username: &str, password: &str) -> Result<String, ShareError> {
+    if !winbind_available() {
+        return Err(ShareError::Unavailable(
+            "winbind is not installed: install winbind/libnss-winbind before joining a domain"
+                .to_string(),
+        ));
+    }
+    let argv = domain_join_argv(username).map_err(ShareError::InvalidField)?;
+    run_net_ads(&argv, password)
+}
+
+pub fn leave_domain(username: &str, password: &str) -> Result<String, ShareError> {
+    let argv = domain_leave_argv(username).map_err(ShareError::InvalidField)?;
+    run_net_ads(&argv, password)
+}
+
+fn run_net_ads(argv: &[String], password: &str) -> Result<String, ShareError> {
+    let mut cmd = Command::new(&argv[0]);
+    cmd.args(&argv[1..]);
+    let output = run_timed_with_stdin(
+        &mut cmd,
+        SHARES_SERVICE_TIMEOUT,
+        format!("{password}\n").as_bytes(),
+    )
+    .map_err(ShareError::CommandFailed)?;
+    if output.status.success() {
+        let text = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        Ok(if text.is_empty() {
+            "domain operation succeeded".to_string()
+        } else {
+            text
+        })
+    } else {
+        Err(ShareError::CommandFailed(format!(
+            "{} failed: {}",
+            argv.join(" "),
+            String::from_utf8_lossy(&output.stderr).trim()
+        )))
+    }
+}
+
+/// Files/services a Kerberos NFS export needs. Split for a controlled test.
+pub const NFS_KERBEROS_PATHS: &[&str] = &["/etc/krb5.keytab", "/usr/sbin/rpc.svcgssd"];
+
+pub fn nfs_kerberos_available_at(paths: &[&str]) -> bool {
+    paths.iter().all(|path| std::path::Path::new(path).exists())
+}
+
+pub fn nfs_kerberos_available() -> bool {
+    nfs_kerberos_available_at(NFS_KERBEROS_PATHS)
+        || std::path::Path::new("/usr/sbin/gssproxy").exists()
+}
+
 pub struct SharesService;
 
 impl SharesService {
@@ -2289,10 +2589,9 @@ impl SharesService {
         let smb_conf = smb_conf.as_str();
         let new_params = smb_global_params(config);
 
-        if !std::path::Path::new(smb_conf).exists() {
+        let content = if !std::path::Path::new(smb_conf).exists() {
             warn!("Samba config file not found: {}", smb_conf);
-            let content = format!("[global]\n{}\n", new_params.join("\n"));
-            write_config_file(smb_conf, &content)?;
+            format!("[global]\n{}\n", new_params.join("\n"))
         } else {
             let mut lines: Vec<String> = fs::read_to_string(smb_conf)?
                 .lines()
@@ -2341,8 +2640,13 @@ impl SharesService {
             for (offset, param) in new_params.iter().enumerate() {
                 lines.insert(insert_after + offset, param.clone());
             }
-            write_config_file(smb_conf, &lines.join("\n"))?;
-        }
+            lines.join("\n")
+        };
+
+        // Validate the candidate *before* replacing the file: a `testparm`
+        // rejection must leave the working configuration untouched.
+        Self::validate_smb_content(&content).map_err(ShareError::InvalidField)?;
+        write_config_file(smb_conf, &content)?;
 
         let mut cmd = Command::new("sudo");
         cmd.arg("systemctl");
@@ -2351,6 +2655,105 @@ impl SharesService {
             warn!("Failed to reload smbd after applying SMB config: {}", e);
         }
         Ok(())
+    }
+
+    /// Validate a candidate `smb.conf` with Samba's own parser.
+    ///
+    /// `testparm -s <file>` reads exactly the syntax `smbd` will read. A
+    /// missing `testparm` (Samba not installed) is not a reason to refuse a
+    /// save: the caller only runs this when SMB is being configured, and the
+    /// service will report the real error at start. Any *rejection* is
+    /// authoritative and aborts the write.
+    fn validate_smb_content(content: &str) -> Result<(), String> {
+        let seq = VALIDATION_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let candidate = std::env::temp_dir().join(format!(
+            ".homevault-smb-{}-{nanos}-{seq}.conf",
+            std::process::id()
+        ));
+        fs::write(&candidate, content)
+            .map_err(|e| format!("could not stage smb.conf for validation: {e}"))?;
+
+        let mut cmd = Command::new("testparm");
+        cmd.args(["-s", &candidate.to_string_lossy()]);
+        let result = run_command(&mut cmd, SHARES_WRITE_TIMEOUT);
+        let _ = fs::remove_file(&candidate);
+
+        match result {
+            Ok(output) if output.status.success() => Ok(()),
+            Ok(output) => {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                let stdout = String::from_utf8_lossy(&output.stdout);
+                let detail = if stderr.trim().is_empty() {
+                    stdout.trim()
+                } else {
+                    stderr.trim()
+                };
+                Err(format!("testparm rejected smb.conf: {detail}"))
+            }
+            Err(e)
+                if e.to_ascii_lowercase().contains("no such file")
+                    || e.to_ascii_lowercase().contains("not found") =>
+            {
+                warn!("testparm is not installed; SMB config validation skipped");
+                Ok(())
+            }
+            Err(e) => Err(format!("could not run testparm: {e}")),
+        }
+    }
+
+    /// Repair an empty or invalid `smb.conf` at startup.
+    ///
+    /// The service must not stay down because a previous write was truncated
+    /// (power loss, full disk). A `.bak` written by [`write_config_file`] is
+    /// preferred; otherwise the HomeVault defaults are rebuilt. A valid file
+    /// is never touched, so hand-edited configurations survive.
+    pub fn self_heal_smb_config() -> Result<bool, ShareError> {
+        let path = smb_conf_path();
+        let file = std::path::Path::new(&path);
+        if !file.exists() {
+            return Ok(false);
+        }
+
+        let content = fs::read_to_string(file)?;
+        if !content.trim().is_empty() && Self::validate_smb_content(&content).is_ok() {
+            return Ok(false);
+        }
+
+        let reason = if content.trim().is_empty() {
+            "the file is empty"
+        } else {
+            "testparm rejected the file"
+        };
+        Self::restore_smb_config(&path, reason)
+    }
+
+    fn restore_smb_config(path: &str, reason: &str) -> Result<bool, ShareError> {
+        let backup = format!("{path}.bak");
+        if let Ok(previous) = fs::read_to_string(&backup) {
+            if !previous.trim().is_empty() && Self::validate_smb_content(&previous).is_ok() {
+                write_config_file(path, &previous)?;
+                warn!("Restored {} from {} ({})", path, backup, reason);
+                return Ok(true);
+            }
+        }
+
+        let defaults = format!(
+            "[global]\n{}\n",
+            smb_global_params(&SmbConfig::default()).join("\n")
+        );
+        if Self::validate_smb_content(&defaults).is_ok() {
+            write_config_file(path, &defaults)?;
+            warn!("Restored {} from defaults ({})", path, reason);
+            return Ok(true);
+        }
+
+        Err(ShareError::InvalidField(format!(
+            "{path} is invalid ({reason}) and no valid backup or default could be written"
+        )))
     }
 
     /// Return the NFS service config, or a default if no config file exists.
@@ -2434,6 +2837,12 @@ impl SharesService {
     /// whatever the user chose.
     pub fn save_nfs_config(config: &NfsConfig) -> Result<(), ShareError> {
         validate_nfs_config(config).map_err(ShareError::InvalidField)?;
+        if config.security_flavor.trim() != "sys" && !nfs_kerberos_available() {
+            return Err(ShareError::Unavailable(
+                "NFS Kerberos needs /etc/krb5.keytab and rpc.svcgssd (or gssproxy): configure the KDC and keytab before selecting krb5/krb5i/krb5p"
+                    .to_string(),
+            ));
+        }
         let path = get_nfs_config_path();
         if let Some(parent) = path.parent() {
             mkdir_as_root(parent)?;
@@ -2493,6 +2902,14 @@ impl SharesService {
             ShareType::Webdav => "homevault-webdav",
             ShareType::Sftp => "homevault-sftp",
         };
+        // A truncated or hand-broken smb.conf must not keep the service down
+        // forever: restore the last good version (or the HomeVault default)
+        // before asking systemd to start smbd.
+        if share_type == ShareType::Smb {
+            if let Err(e) = Self::self_heal_smb_config() {
+                warn!("SMB self-heal before start failed: {}", e);
+            }
+        }
         let mut cmd = Command::new("sudo");
         cmd.arg("systemctl");
         cmd.args(["start", service_name]);
@@ -3626,6 +4043,9 @@ mod tests {
 
     use super::*;
 
+    /// Serializes the tests that point `HV_SMB_CONF` at a temporary file.
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     #[test]
     fn test_sharetype_parse_canonical_names() {
         assert_eq!(ShareType::parse("smb"), Some(ShareType::Smb));
@@ -4231,6 +4651,29 @@ mod tests {
     }
 
     #[test]
+    fn test_nfs_kerberos_security_is_explicit_and_requires_v4() {
+        let mut config = NfsConfig {
+            version: "4.2".to_string(),
+            security_flavor: "krb5p".to_string(),
+            ..NfsConfig::default()
+        };
+        assert!(validate_nfs_config(&config).is_ok());
+        let line = nfs_export_line("/mnt/pool/media", &[], &config, &[]);
+        assert!(line.contains("vers=4.2"));
+        assert!(line.contains("sec=krb5p"));
+
+        config.version = "auto".to_string();
+        assert!(validate_nfs_config(&config).is_err());
+        config.version = "4.2".to_string();
+        config.security_flavor = "none".to_string();
+        assert!(validate_nfs_config(&config).is_err());
+        config.security_flavor = "sys".to_string();
+        let line = nfs_export_line("/mnt/pool/media", &[], &config, &[]);
+        assert!(!line.contains("sec="));
+        assert!(!nfs_kerberos_available_at(&["/nonexistent/keytab"]));
+    }
+
+    #[test]
     fn test_nfs_version_auto_omits_vers() {
         let config = NfsConfig {
             version: "auto".to_string(),
@@ -4319,6 +4762,10 @@ mod tests {
         assert!(validate_smb_config(&with(|c| c.create_mask = "9999".to_string())).is_err());
         assert!(validate_smb_config(&with(|c| c.directory_mask = "0o755".to_string())).is_err());
         assert!(validate_smb_config(&with(|c| c.workgroup = "GRP]".to_string())).is_err());
+        assert!(validate_smb_config(&with(|c| c.smb_encrypt = "sometimes".to_string())).is_err());
+        assert!(validate_smb_config(&with(|c| c.server_signing = "maybe".to_string())).is_err());
+        assert!(validate_smb_config(&with(|c| c.aio_read_size = 16 * 1024 * 1024 + 1)).is_err());
+        assert!(validate_smb_config(&with(|c| c.aio_write_size = 16 * 1024 * 1024 + 1)).is_err());
         assert!(validate_smb_config(&with(|c| {
             c.additional_params = vec!["\n[evil]".to_string()]
         }))
@@ -4334,10 +4781,22 @@ mod tests {
             let mut config = SmbConfig::default();
             config.security_mode = mode.to_string();
             let error = validate_smb_config(&config).expect_err("a realm is required");
-            assert!(error.contains("requires a DNS realm"), "{error}");
+            assert!(error.contains("realm is required"), "{error}");
 
             config.realm = "EXAMPLE.LAN".to_string();
             assert!(validate_smb_config(&config).is_ok(), "{mode} with a realm");
+            let rendered = smb_global_params(&config).join("\n");
+            assert!(rendered.contains(&format!("security = {mode}")), "{rendered}");
+            assert!(rendered.contains("realm = EXAMPLE.LAN"), "{rendered}");
+            assert!(
+                rendered.contains(&format!("idmap config * : range = {}", config.idmap_range)),
+                "{rendered}"
+            );
+            assert!(rendered.contains("vfs objects = acl_xattr"), "{rendered}");
+            assert!(
+                rendered.contains("winbind use default domain = yes"),
+                "{rendered}"
+            );
 
             for bad in ["EXAMPLE", "EX AMPLE.LAN", "EXAMPLE/LAN", "[EXAMPLE.LAN]"] {
                 config.realm = bad.to_string();
@@ -4375,6 +4834,21 @@ mod tests {
     }
 
     #[test]
+    fn test_domain_join_argv_never_contains_the_password() {
+        let argv = domain_join_argv("Administrator").unwrap();
+        assert_eq!(
+            argv,
+            vec!["sudo", "net", "ads", "join", "-U", "Administrator"]
+        );
+        assert!(!argv.iter().any(|arg| arg.contains("secret")));
+        assert!(domain_join_argv("bad\nname").is_err());
+        assert!(domain_leave_argv("Administrator")
+            .unwrap()
+            .contains(&"leave".to_string()));
+        assert!(!winbind_available_at(&["/nonexistent/winbindd"]));
+    }
+
+    #[test]
     fn test_smb_extra_params_are_allowlisted() {
         assert!(smb_extra_param("deadtime = 30").is_ok());
         assert!(smb_extra_param("server multi channel support = yes").is_ok());
@@ -4402,6 +4876,16 @@ mod tests {
             realm: String::new(),
             idmap_range: "10000-999999".to_string(),
             ws_discovery: true,
+            durable_handles: true,
+            smb_encrypt: "required".to_string(),
+            server_signing: "mandatory".to_string(),
+            strict_sync: true,
+            aio_read_size: 1,
+            aio_write_size: 1,
+            use_sendfile: false,
+            oplocks: false,
+            kernel_oplocks: false,
+            level2_oplocks: false,
         };
         let rendered = smb_global_params(&config).join("\n");
         for expected in [
@@ -4410,6 +4894,16 @@ mod tests {
             "server min protocol = SMB2",
             "server max protocol = SMB3",
             "server multi channel support = yes",
+            "server smb encrypt = required",
+            "server signing = mandatory",
+            "durable handles = yes",
+            "strict sync = yes",
+            "use sendfile = no",
+            "oplocks = no",
+            "kernel oplocks = no",
+            "level2 oplocks = no",
+            "aio read size = 1",
+            "aio write size = 1",
             "guest ok = yes",
             "create mask = 0770",
             "directory mask = 0700",
@@ -4420,9 +4914,9 @@ mod tests {
                 "missing '{expected}' in:\n{rendered}"
             );
         }
-        // 8 managed parameters + 1 allowed extra (the duplicate multichannel
-        // passed as an extra loses against the dedicated toggle).
-        assert_eq!(rendered.lines().count(), 9);
+        // 16 managed parameters + 2 AIO + 1 allowed extra (the duplicate
+        // multichannel passed as an extra loses against the dedicated toggle).
+        assert_eq!(rendered.lines().count(), 19);
         assert!(!rendered.contains("server multi channel support = no"));
     }
 
@@ -4441,6 +4935,19 @@ mod tests {
         }"#;
         let config: SmbConfig = serde_json::from_str(json).expect("old config must still load");
         assert!(!config.multichannel);
+        // The reliability fields did not exist in that file; their defaults
+        // must be Samba-compatible (off for encryption/signing/strict sync,
+        // on for the performance switches).
+        assert!(!config.durable_handles);
+        assert_eq!(config.smb_encrypt, "off");
+        assert_eq!(config.server_signing, "off");
+        assert!(!config.strict_sync);
+        assert_eq!(config.aio_read_size, 0);
+        assert_eq!(config.aio_write_size, 0);
+        assert!(config.use_sendfile);
+        assert!(config.oplocks);
+        assert!(config.kernel_oplocks);
+        assert!(config.level2_oplocks);
     }
 
     #[test]
@@ -4466,11 +4973,19 @@ mod tests {
         let mut config = SmbConfig {
             security_mode: "ads".to_string(),
             protocol_version: "NT1".to_string(),
+            smb_encrypt: "sometimes".to_string(),
+            server_signing: "maybe".to_string(),
+            aio_read_size: 32 * 1024 * 1024,
+            aio_write_size: 32 * 1024 * 1024,
             ..SmbConfig::default()
         };
         normalize_smb_config(&mut config);
         assert_eq!(config.security_mode, "user");
         assert_eq!(config.protocol_version, "SMB3");
+        assert_eq!(config.smb_encrypt, "off");
+        assert_eq!(config.server_signing, "off");
+        assert_eq!(config.aio_read_size, 0);
+        assert_eq!(config.aio_write_size, 0);
 
         let mut valid = SmbConfig::default();
         normalize_smb_config(&mut valid);
@@ -4697,6 +5212,36 @@ mod tests {
     }
 
     #[test]
+    fn test_write_config_file_replaces_atomically_and_keeps_a_backup() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("smb.conf");
+        let text = path.to_string_lossy().to_string();
+
+        write_config_file(&text, "[global]\n   workgroup = ONE\n").unwrap();
+        write_config_file(&text, "[global]\n   workgroup = TWO\n").unwrap();
+
+        assert_eq!(
+            fs::read_to_string(&path).unwrap(),
+            "[global]\n   workgroup = TWO\n"
+        );
+        assert_eq!(
+            fs::read_to_string(format!("{text}.bak")).unwrap(),
+            "[global]\n   workgroup = ONE\n"
+        );
+
+        let leftovers: Vec<String> = fs::read_dir(dir.path())
+            .unwrap()
+            .filter_map(|entry| entry.ok())
+            .map(|entry| entry.file_name().to_string_lossy().to_string())
+            .filter(|name| name != "smb.conf" && name != "smb.conf.bak")
+            .collect();
+        assert!(
+            leftovers.is_empty(),
+            "temporary files left behind: {leftovers:?}"
+        );
+    }
+
+    #[test]
     fn test_smb_share_access_renders_valid_users_read_only_and_guest() {
         let access = SmbShareAccess {
             valid_users: vec!["alice".to_string(), "@homevault_admin".to_string()],
@@ -4825,5 +5370,65 @@ mod tests {
         assert!(validate_nfs_config(&config).is_ok());
         let line = nfs_export_line("/srv/media", &[], &config, &[]);
         assert!(line.contains("sec=krb5"), "{line}");
+    }
+
+    #[test]
+    fn test_append_config_file_preserves_existing_lines() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("exports");
+        let text = path.to_string_lossy().to_string();
+
+        write_config_file(&text, "/srv/data *(rw,sync)\n").unwrap();
+        append_config_file(&text, "/srv/photos *(ro,sync)\n").unwrap();
+
+        assert_eq!(
+            fs::read_to_string(&path).unwrap(),
+            "/srv/data *(rw,sync)\n/srv/photos *(ro,sync)\n"
+        );
+    }
+
+    #[test]
+    fn test_self_heal_restores_an_empty_smb_conf_from_its_backup() {
+        let _guard = ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("smb.conf");
+        let text = path.to_string_lossy().to_string();
+        std::env::set_var(SMB_CONF_ENV, &path);
+
+        fs::write(&path, "").unwrap();
+        fs::write(
+            format!("{text}.bak"),
+            "[global]\n   workgroup = RESTORED\n   security = user\n",
+        )
+        .unwrap();
+
+        let healed = SharesService::self_heal_smb_config().unwrap();
+        std::env::remove_var(SMB_CONF_ENV);
+
+        assert!(healed);
+        let restored = fs::read_to_string(&path).unwrap();
+        assert!(restored.contains("workgroup = RESTORED"), "{restored}");
+    }
+
+    #[test]
+    fn test_self_heal_leaves_a_valid_smb_conf_untouched() {
+        let _guard = ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("smb.conf");
+        std::env::set_var(SMB_CONF_ENV, &path);
+        let original = "[global]\n   workgroup = KEEP\n   security = user\n";
+        fs::write(&path, original).unwrap();
+
+        let healed = SharesService::self_heal_smb_config().unwrap();
+        std::env::remove_var(SMB_CONF_ENV);
+
+        assert!(!healed);
+        assert_eq!(fs::read_to_string(&path).unwrap(), original);
     }
 }

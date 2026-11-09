@@ -46,6 +46,40 @@
   // error state with a retry — never as the silent "no checks" branch.
   let errorMessage = '';
 
+  interface DiskFinding {
+    id: number;
+    fingerprint: string;
+    serial: string;
+    model: string;
+    kind: string;
+    severity: string;
+    message: string;
+    first_seen: string;
+    last_seen: string;
+  }
+
+  let diskFindings: DiskFinding[] = [];
+  let diskHealthLoading = false;
+  let diskHealthError = '';
+  let diskSampling = false;
+
+  interface PredictionTrend {
+    attr_id: number;
+    slope_per_day: number;
+    r_squared: number;
+    days_remaining: number | null;
+    days_low: number | null;
+    days_high: number | null;
+  }
+
+  interface DiskPrediction {
+    serial: string;
+    trends: PredictionTrend[];
+  }
+
+  let diskPredictions: DiskPrediction[] = [];
+  let predictionError = '';
+
   // The 9 checks health.rs always runs, in a fixed, sensible display order —
   // `checks` from the API is already in this order, but this also gives each
   // one a translated display name (the raw `name` is a snake_case identifier
@@ -67,12 +101,65 @@
     return key ? translate(key) : name;
   }
 
+  const PREDICTION_ATTR_KEYS: Record<number, string> = {
+    5: 'health.disk_health_attr_5',
+    187: 'health.disk_health_attr_187',
+    188: 'health.disk_health_attr_188',
+    194: 'health.disk_health_attr_194',
+    197: 'health.disk_health_attr_197',
+    198: 'health.disk_health_attr_198',
+  };
+
+  function predictionAttrLabel(attrId: number): string {
+    const key = PREDICTION_ATTR_KEYS[attrId];
+    return key ? translate(key) : `SMART ${attrId}`;
+  }
+
+  function hasPredictions(): boolean {
+    return diskPredictions.some((disk) => disk.trends.length > 0);
+  }
+
   onMount(() => {
     loadHealth();
+    loadDiskHealth();
+    loadPredictions();
     // No manual refresh button — revalidate on focus + a slow poll (the
     // checks reflect live system state).
-    return onAppVisible(loadHealth, { pollMs: 45_000 });
+    return onAppVisible(() => { void loadHealth(); void loadDiskHealth(); void loadPredictions(); }, { pollMs: 45_000 });
   });
+
+  async function loadPredictions() {
+    const response = await api.diskHealthPredictions();
+    if (response.success && response.data) {
+      diskPredictions = response.data as DiskPrediction[];
+      predictionError = '';
+    } else {
+      predictionError = response.error || translate('health.disk_health_error');
+    }
+  }
+
+  async function loadDiskHealth() {
+    diskHealthLoading = true;
+    const response = await api.diskHealthFindings();
+    if (response.success && response.data) {
+      diskFindings = response.data as DiskFinding[];
+      diskHealthError = '';
+    } else {
+      diskHealthError = response.error || translate('health.disk_health_error');
+    }
+    diskHealthLoading = false;
+  }
+
+  async function sampleDiskHealth() {
+    diskSampling = true;
+    const response = await api.diskHealthSample();
+    diskSampling = false;
+    if (response.success) {
+      await loadDiskHealth();
+    } else {
+      diskHealthError = response.error || translate('health.disk_health_error');
+    }
+  }
 
   async function loadHealth() {
     loading = true;
@@ -211,6 +298,86 @@
           <div data-testid="health-card-details" class="text-c-base text-muted-foreground">{check.message}</div>
         </article>
       {/each}
+    </div>
+
+    <div
+      data-testid="health-disk-health"
+      class="mt-5 rounded-xl bg-card border border-border shadow-[var(--hv-shell-shadow-card)] p-5"
+    >
+      <div class="flex items-center justify-between gap-3 flex-wrap mb-3">
+        <div>
+          <h2 class="m-0 text-c-md font-semibold text-foreground">{$t('health.disk_health_title')}</h2>
+          <p class="m-0 mt-1 text-c-base text-muted-foreground">{$t('health.disk_health_desc')}</p>
+        </div>
+        {#if $isAdmin}
+          <Button
+            variant="secondary"
+            size="sm"
+            data-testid="health-disk-sample"
+            onclick={sampleDiskHealth}
+            disabled={diskSampling}
+          >
+            {diskSampling ? $t('health.disk_health_sampling') : $t('health.disk_health_sample')}
+          </Button>
+        {/if}
+      </div>
+      {#if diskHealthLoading}
+        <span class="text-c-base text-muted-foreground">{$t('health.loading')}</span>
+      {:else if diskHealthError}
+        <span data-testid="health-disk-error" class="text-c-base" style="color: var(--hv-error)">{diskHealthError}</span>
+      {:else if diskFindings.length === 0}
+        <span data-testid="health-disk-empty" class="text-c-base text-muted-foreground">{$t('health.disk_health_empty')}</span>
+      {:else}
+        <ul class="m-0 p-0 list-none flex flex-col gap-2" data-testid="health-disk-findings">
+          {#each diskFindings as finding (finding.fingerprint)}
+            <li class="flex items-start gap-2 text-c-base">
+              <span
+                class="mt-1 h-2 w-2 rounded-full flex-none"
+                style="background: {finding.severity === 'critical' || finding.severity === 'error' ? 'var(--hv-error)' : 'var(--hv-warning)'}"
+              ></span>
+              <span class="text-foreground">{finding.message}</span>
+            </li>
+          {/each}
+        </ul>
+      {/if}
+    </div>
+
+    <div
+      data-testid="health-prediction"
+      class="mt-5 rounded-xl bg-card border border-border shadow-[var(--hv-shell-shadow-card)] p-5"
+    >
+      <div class="mb-3">
+        <h2 class="m-0 text-c-md font-semibold text-foreground">{$t('health.disk_health_prediction_title')}</h2>
+        <p class="m-0 mt-1 text-c-base text-muted-foreground">{$t('health.disk_health_prediction_desc')}</p>
+      </div>
+      {#if predictionError}
+        <span class="text-c-base" style="color: var(--hv-error)">{predictionError}</span>
+      {:else if !hasPredictions()}
+        <span class="text-c-base text-muted-foreground">{$t('health.disk_health_prediction_empty')}</span>
+      {:else}
+        <div class="flex flex-col gap-3">
+          {#each diskPredictions as disk (disk.serial)}
+            {#if disk.trends.length > 0}
+              <div>
+                <div class="text-c-base font-semibold text-foreground">{disk.serial}</div>
+                <ul class="m-0 mt-1 p-0 list-none flex flex-col gap-1">
+                  {#each disk.trends as trend (trend.attr_id)}
+                    <li class="text-c-base text-muted-foreground">
+                      <span class="text-foreground">{predictionAttrLabel(trend.attr_id)}</span>
+                      {#if trend.days_remaining !== null}
+                        — {Math.max(0, Math.round(trend.days_remaining))} {$t('health.disk_health_prediction_days')}
+                        (r² {trend.r_squared.toFixed(2)})
+                      {:else}
+                        — {$t('health.disk_health_prediction_stable')}
+                      {/if}
+                    </li>
+                  {/each}
+                </ul>
+              </div>
+            {/if}
+          {/each}
+        </div>
+      {/if}
     </div>
   {/if}
 </PageLayout>

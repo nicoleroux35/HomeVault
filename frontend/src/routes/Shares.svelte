@@ -118,16 +118,26 @@
   interface SmbConfig {
     workgroup: string;
     security_mode: string;
+    realm: string;
+    idmap_range: string;
     protocol_version: string;
     allow_guest: boolean;
     create_mask: string;
     directory_mask: string;
     additional_params: string[];
     multichannel: boolean;
-    realm?: string;
-    idmap_range?: string;
     /** P1 — advertise the appliance to Windows Explorer via WS-Discovery. */
     ws_discovery: boolean;
+    durable_handles: boolean;
+    smb_encrypt: string;
+    server_signing: string;
+    strict_sync: boolean;
+    aio_read_size: number;
+    aio_write_size: number;
+    use_sendfile: boolean;
+    oplocks: boolean;
+    kernel_oplocks: boolean;
+    level2_oplocks: boolean;
   }
 
   interface NfsConfig {
@@ -135,7 +145,7 @@
     default_access: string;
     version: string;
     root_squash: string;
-    security_flavor?: string;
+    security_flavor: string;
     custom_options: string[];
   }
 
@@ -244,7 +254,7 @@
    * must degrade to one field showing a default, never blank the whole tab
    * (`allow_guest: undefined` used to break the guest switch's binding).
    */
-  const SMB_CONFIG_DEFAULTS: SmbConfig = { workgroup: 'WORKGROUP', security_mode: 'user', protocol_version: 'SMB3', allow_guest: false, create_mask: '0755', directory_mask: '0755', additional_params: [], multichannel: false, realm: '', idmap_range: '10000-999999', ws_discovery: true };
+  const SMB_CONFIG_DEFAULTS: SmbConfig = { workgroup: 'WORKGROUP', security_mode: 'user', realm: '', idmap_range: '10000-999999', protocol_version: 'SMB3', allow_guest: false, create_mask: '0755', directory_mask: '0755', additional_params: [], multichannel: false, ws_discovery: true, durable_handles: false, smb_encrypt: 'off', server_signing: 'off', strict_sync: false, aio_read_size: 0, aio_write_size: 0, use_sendfile: true, oplocks: true, kernel_oplocks: true, level2_oplocks: true };
 
   let smbConfig: SmbConfig = $state({ ...SMB_CONFIG_DEFAULTS });
   let wsDiscoveryStatus = $state<{ available: boolean; enabled: boolean; running: boolean; detail: string } | null>(null);
@@ -1224,10 +1234,11 @@
           <label class={field}><span class={fieldLabel}>{$t('shares.workgroup')}</span><input class={inp} bind:value={smbConfig.workgroup} /></label>
           {@render toggleField($t('shares.guest'), smbConfig.allow_guest, (v) => (smbConfig.allow_guest = v))}
           {#if smbMode === 'advanced'}
-            <label class={field}><span class={fieldLabel}>{$t('shares.security_mode')}</span><select class={inp} bind:value={smbConfig.security_mode}><option value="user">{$t('shares.opt_user')}</option><option value="share">{$t('shares.opt_share')}</option><option value="ads">AD / Kerberos</option></select></label>
+            <label class={field}><span class={fieldLabel}>{$t('shares.security_mode')}</span><select class={inp} bind:value={smbConfig.security_mode}><option value="user">{$t('shares.opt_user')}</option><option value="share">{$t('shares.opt_share')}</option><option value="ads">{$t('shares.opt_ads')}</option></select></label>
             {#if smbConfig.security_mode === 'ads'}
-              <label class={field}><span class={fieldLabel}>{$t('shares.realm')}</span><input class={inp} bind:value={smbConfig.realm} placeholder="EXAMPLE.LAN" /></label>
-              <label class={field}><span class={fieldLabel}>{$t('shares.idmap_range')}</span><input class={inp} bind:value={smbConfig.idmap_range} placeholder="10000-999999" /></label>
+              <label class={field}><span class={fieldLabel}>{$t('shares.realm')}</span><input class={inp} bind:value={smbConfig.realm} placeholder="EXAMPLE.LAN" data-testid="smb-realm" /></label>
+              <label class={field}><span class={fieldLabel}>{$t('shares.idmap_range')}</span><input class={inp} bind:value={smbConfig.idmap_range} placeholder="10000-999999" data-testid="smb-idmap-range" /></label>
+              <p class="m-0 text-c-small text-[var(--hv-shell-text-muted)]">{$t('shares.ads_hint')}</p>
               <div class="flex flex-col gap-2 p-3 rounded-xl bg-[var(--hv-shell-border-soft)] border border-[var(--hv-shell-border)]">
                 <label class={field}><span class={fieldLabel}>{$t('shares.domain_user')}</span><input class={inp} bind:value={domainUser} autocomplete="username" /></label>
                 <label class={field}><span class={fieldLabel}>{$t('shares.domain_password')}</span><input class={inp} type="password" bind:value={domainPassword} autocomplete="current-password" /></label>
@@ -1249,6 +1260,23 @@
             {#if wsDiscoveryStatus && wsDiscoveryStatus.available && !wsDiscoveryStatus.running}
               <p class="m-0 text-c-small text-[var(--hv-shell-text-muted)]" data-testid="ws-discovery-detail">{wsDiscoveryStatus.detail}</p>
             {/if}
+            {@render toggleField($t('shares.durable_handles'), smbConfig.durable_handles, (v) => (smbConfig.durable_handles = v))}
+            <p class="m-0 text-c-small text-[var(--hv-shell-text-muted)]">{$t('shares.durable_handles_hint')}</p>
+            <label class={field}><span class={fieldLabel}>{$t('shares.smb_encrypt')}</span><select class={inp} bind:value={smbConfig.smb_encrypt}><option value="off">{$t('shares.encrypt_off')}</option><option value="desired">{$t('shares.encrypt_desired')}</option><option value="required">{$t('shares.encrypt_required')}</option></select></label>
+            <p class="m-0 text-c-small text-[var(--hv-shell-text-muted)]">{$t('shares.smb_encrypt_hint')}</p>
+            <label class={field}><span class={fieldLabel}>{$t('shares.server_signing')}</span><select class={inp} bind:value={smbConfig.server_signing}><option value="off">{$t('shares.signing_off')}</option><option value="desired">{$t('shares.signing_desired')}</option><option value="mandatory">{$t('shares.signing_mandatory')}</option></select></label>
+            <p class="m-0 text-c-small text-[var(--hv-shell-text-muted)]">{$t('shares.server_signing_hint')}</p>
+            {@render toggleField($t('shares.strict_sync'), smbConfig.strict_sync, (v) => (smbConfig.strict_sync = v))}
+            <p class="m-0 text-c-small text-[var(--hv-shell-text-muted)]">{$t('shares.strict_sync_hint')}</p>
+            <label class={field}><span class={fieldLabel}>{$t('shares.aio_read_size')}</span><input class={inp} type="number" min="0" max="16777216" bind:value={smbConfig.aio_read_size} /></label>
+            <label class={field}><span class={fieldLabel}>{$t('shares.aio_write_size')}</span><input class={inp} type="number" min="0" max="16777216" bind:value={smbConfig.aio_write_size} /></label>
+            <p class="m-0 text-c-small text-[var(--hv-shell-text-muted)]">{$t('shares.aio_hint')}</p>
+            {@render toggleField($t('shares.use_sendfile'), smbConfig.use_sendfile, (v) => (smbConfig.use_sendfile = v))}
+            <p class="m-0 text-c-small text-[var(--hv-shell-text-muted)]">{$t('shares.use_sendfile_hint')}</p>
+            {@render toggleField($t('shares.oplocks'), smbConfig.oplocks, (v) => (smbConfig.oplocks = v))}
+            {@render toggleField($t('shares.kernel_oplocks'), smbConfig.kernel_oplocks, (v) => (smbConfig.kernel_oplocks = v))}
+            {@render toggleField($t('shares.level2_oplocks'), smbConfig.level2_oplocks, (v) => (smbConfig.level2_oplocks = v))}
+            <p class="m-0 text-c-small text-[var(--hv-shell-text-muted)]">{$t('shares.oplocks_hint')}</p>
             <p class="m-0 text-c-small text-[var(--hv-shell-text-muted)]">{$t('shares.smb_domain_note')}</p>
             <label class={field}><span class={fieldLabel}>{$t('shares.create_mask')}</span><input class={inp} bind:value={smbConfig.create_mask} /></label>
             <label class={field}><span class={fieldLabel}>{$t('shares.directory_mask')}</span><input class={inp} bind:value={smbConfig.directory_mask} /></label>
@@ -1369,7 +1397,9 @@
           <label class={field}><span class={fieldLabel}>{$t('shares.networks')}</span><textarea class={cn(inp, 'h-auto min-h-[76px] py-3 font-[family-name:var(--hv-font-mono)] text-c-base leading-relaxed resize-y')} bind:value={nfsNetworks} rows="3"></textarea></label>
           <label class={field}><span class={fieldLabel}>{$t('shares.access')}</span><select class={inp} bind:value={nfsConfig.default_access}><option value="rw">{$t('shares.read_write')}</option><option value="ro">{$t('shares.read_only_opt')}</option></select></label>
           {#if nfsMode === 'advanced'}
-            <label class={field}><span class={fieldLabel}>{$t('shares.version')}</span><select class={inp} bind:value={nfsConfig.version}><option value="auto">{$t('shares.nfs_version_auto')}</option><option value="3">NFS v3</option><option value="4">NFS v4</option><option value="4.2">NFS v4.2</option></select></label>
+            <label class={field}><span class={fieldLabel}>{$t('shares.version')}</span><select class={inp} bind:value={nfsConfig.version}><option value="auto">{$t('shares.nfs_version_auto')}</option><option value="3">NFS v3</option><option value="4">NFS v4</option><option value="4.1">NFS v4.1</option><option value="4.2">NFS v4.2</option></select></label>
+            <label class={field}><span class={fieldLabel}>{$t('shares.nfs_security')}</span><select class={inp} bind:value={nfsConfig.security_flavor}><option value="sys">{$t('shares.nfs_sec_sys')}</option><option value="krb5">krb5</option><option value="krb5i">krb5i</option><option value="krb5p">krb5p</option></select></label>
+            <p class="m-0 text-c-small text-[var(--hv-shell-text-muted)]">{$t('shares.nfs_kerberos_hint')}</p>
             <label class={field}><span class={fieldLabel}>{$t('shares.root_squash')}</span><select class={inp} bind:value={nfsConfig.root_squash}><option value="root_squash">{$t('shares.root_squash')}</option><option value="no_root_squash">{$t('shares.no_root_squash')}</option><option value="all_squash">{$t('shares.all_squash')}</option></select></label>
             <label class={field}><span class={fieldLabel}>{$t('shares.nfs_security')}</span><select class={inp} bind:value={nfsConfig.security_flavor}><option value="sys">AUTH_SYS</option><option value="krb5">Kerberos (krb5)</option><option value="krb5i">Kerberos integrity (krb5i)</option><option value="krb5p">Kerberos privacy (krb5p)</option></select></label>
           {/if}

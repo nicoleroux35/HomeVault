@@ -20,12 +20,14 @@
 //! - All operations are journaled
 
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, AtomicU64};
+use std::sync::Arc;
 use std::time::SystemTime;
 use tokio::process::Command;
 use tokio::time::Duration;
 
+use crate::checksum::{hash_file_async, ChecksumAlgorithm};
 use crate::utils::process::run_timed_async;
 
 const LSBLK_TIMEOUT: Duration = Duration::from_secs(10);
@@ -402,16 +404,32 @@ impl UsbCopyService {
             .await
             .map_err(|e| format!("failed to create destination: {}", e))?;
 
+        // A profile may point at a file (`/DCIM/photo.jpg`) as well as a
+        // directory. Keep the source's own name in that case, and verify the
+        // exact pair the copy wrote — not a directory against a file.
+        let source_meta = tokio::fs::metadata(&source)
+            .await
+            .map_err(|e| format!("failed to stat source: {}", e))?;
+        let (source_root, destination_root) = if source_meta.is_file() {
+            let name = source
+                .file_name()
+                .ok_or_else(|| "source file has no name".to_string())?;
+            (source.clone(), destination.join(name))
+        } else {
+            (source.clone(), destination.clone())
+        };
+
         // Count files first for progress
-        let total_files = Self::count_files(&source).await?;
+        let total_files = Self::count_files(&source_root).await?;
 
         // Copy files with progress
         let (files_copied, bytes_copied) =
-            Self::copy_recursive(&source, &destination, total_files).await?;
+            Self::copy_recursive(&source_root, &destination_root, total_files).await?;
 
-        // Verify if requested
+        // Verify if requested. A mismatch is a failed copy: the caller must
+        // never see `Success` for bytes that were not read back and compared.
         if profile.verify_checksums {
-            Self::verify_copy(&source, &destination).await?;
+            Self::verify_copy(&source_root, &destination_root).await?;
         }
 
         // Eject if requested
@@ -428,6 +446,13 @@ impl UsbCopyService {
     /// Count files in a directory recursively (see `parse_lsblk_json` for why
     /// this is `pub`).
     pub async fn count_files(path: &Path) -> Result<u64, String> {
+        let meta = tokio::fs::metadata(path)
+            .await
+            .map_err(|e| format!("failed to stat {}: {}", path.display(), e))?;
+        if meta.is_file() {
+            return Ok(1);
+        }
+
         let mut count = 0u64;
         let mut stack = vec![path.to_path_buf()];
 
@@ -507,44 +532,116 @@ impl UsbCopyService {
         Ok((files_copied, bytes_copied))
     }
 
-    /// Verify copied files match source
-    async fn verify_copy(source: &Path, dest: &Path) -> Result<(), String> {
-        // Simple existence check - full checksum would be expensive
+    /// Verify copied files match source, byte for byte.
+    ///
+    /// `verify_checksums` used to mean "same size and the destination exists",
+    /// which declares a same-sized corrupt file verified. This walks the source
+    /// tree in lockstep with the destination and compares a SHA-256 of every
+    /// file; every mismatch is collected so the error names all the damaged
+    /// files, not just the first one.
+    pub async fn verify_copy(source: &Path, dest: &Path) -> Result<(), String> {
+        let mut mismatches: Vec<String> = Vec::new();
+        let mut checked: u64 = 0;
         let mut stack = vec![(source.to_path_buf(), dest.to_path_buf())];
 
         while let Some((src, dst)) = stack.pop() {
             let src_meta = tokio::fs::metadata(&src)
                 .await
-                .map_err(|e| format!("source missing after copy: {}", e))?;
+                .map_err(|e| format!("source missing while verifying {}: {}", src.display(), e))?;
 
-            let dst_meta = tokio::fs::metadata(&dst)
-                .await
-                .map_err(|e| format!("destination missing after copy: {}", e))?;
+            let dst_meta = match tokio::fs::metadata(&dst).await {
+                Ok(meta) => meta,
+                Err(e) => {
+                    mismatches.push(format!("{}: destination missing ({e})", src.display()));
+                    continue;
+                }
+            };
 
             if src_meta.is_file() {
-                // Check size matches
+                if !dst_meta.is_file() {
+                    mismatches.push(format!("{}: destination is not a file", src.display()));
+                    continue;
+                }
                 if src_meta.len() != dst_meta.len() {
-                    return Err(format!("size mismatch: {:?}", src));
+                    mismatches.push(format!(
+                        "{}: size {} != {}",
+                        src.display(),
+                        src_meta.len(),
+                        dst_meta.len()
+                    ));
+                    continue;
+                }
+
+                match tokio::join!(sha256_path(&src), sha256_path(&dst)) {
+                    (Ok(expected), Ok(actual)) if expected.eq_ignore_ascii_case(&actual) => {
+                        checked += 1;
+                    }
+                    (Ok(expected), Ok(actual)) => mismatches.push(format!(
+                        "{}: checksum {} != {}",
+                        src.display(),
+                        expected,
+                        actual
+                    )),
+                    (Err(e), _) | (_, Err(e)) => {
+                        mismatches.push(format!("{}: {e}", src.display()));
+                    }
                 }
             } else if src_meta.is_dir() {
+                if !dst_meta.is_dir() {
+                    mismatches.push(format!("{}: destination is not a directory", src.display()));
+                    continue;
+                }
                 let mut entries = tokio::fs::read_dir(&src)
                     .await
-                    .map_err(|e| format!("failed to read directory: {}", e))?;
-
+                    .map_err(|e| format!("failed to read {}: {}", src.display(), e))?;
                 while let Some(entry) = entries
                     .next_entry()
                     .await
-                    .map_err(|e| format!("failed to read entry: {}", e))?
+                    .map_err(|e| format!("failed to read {}: {}", src.display(), e))?
                 {
-                    let src_path = entry.path();
-                    let dst_path = dst.join(entry.file_name());
-                    stack.push((src_path, dst_path));
+                    stack.push((entry.path(), dst.join(entry.file_name())));
                 }
             }
         }
 
-        Ok(())
+        if mismatches.is_empty() {
+            return Ok(());
+        }
+
+        let shown = mismatches
+            .iter()
+            .take(10)
+            .cloned()
+            .collect::<Vec<_>>()
+            .join("; ");
+        let more = mismatches.len().saturating_sub(10);
+        Err(format!(
+            "checksum verification failed for {} file(s) ({} verified): {}{}",
+            mismatches.len(),
+            checked,
+            shown,
+            if more > 0 {
+                format!("; and {more} more")
+            } else {
+                String::new()
+            }
+        ))
     }
+}
+
+/// SHA-256 of one file, on the blocking pool (the Explorer's hasher).
+async fn sha256_path(path: &Path) -> Result<String, String> {
+    let progress = Arc::new(AtomicU64::new(0));
+    let cancel = Arc::new(AtomicBool::new(false));
+    hash_file_async(
+        path.to_path_buf(),
+        ChecksumAlgorithm::Sha256,
+        progress,
+        cancel,
+    )
+    .await
+    .map(|outcome| outcome.checksum)
+    .map_err(|e| format!("could not hash {}: {}", path.display(), e))
 }
 
 #[cfg(test)]
@@ -714,5 +811,89 @@ mod tests {
 
         let devices = UsbCopyService::parse_lsblk_json(json).unwrap();
         assert_eq!(devices.len(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_verify_copy_accepts_an_identical_tree() {
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("src");
+        let dst = dir.path().join("dst");
+        std::fs::create_dir_all(src.join("nested")).unwrap();
+        std::fs::create_dir_all(dst.join("nested")).unwrap();
+        std::fs::write(src.join("a.txt"), b"alpha").unwrap();
+        std::fs::write(dst.join("a.txt"), b"alpha").unwrap();
+        std::fs::write(src.join("nested/b.bin"), [0u8, 1, 2, 255]).unwrap();
+        std::fs::write(dst.join("nested/b.bin"), [0u8, 1, 2, 255]).unwrap();
+
+        UsbCopyService::verify_copy(&src, &dst)
+            .await
+            .expect("identical trees must verify");
+    }
+
+    #[tokio::test]
+    async fn test_verify_copy_rejects_same_size_different_content() {
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("src.bin");
+        let dst = dir.path().join("dst.bin");
+        std::fs::write(&src, b"aaaa").unwrap();
+        std::fs::write(&dst, b"bbbb").unwrap();
+
+        let error = UsbCopyService::verify_copy(&src, &dst)
+            .await
+            .expect_err("same size is not the same content");
+        assert!(error.contains("checksum"), "{error}");
+    }
+
+    #[tokio::test]
+    async fn test_verify_copy_rejects_a_size_mismatch() {
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("src.bin");
+        let dst = dir.path().join("dst.bin");
+        std::fs::write(&src, b"12345678").unwrap();
+        std::fs::write(&dst, b"1234").unwrap();
+
+        let error = UsbCopyService::verify_copy(&src, &dst)
+            .await
+            .expect_err("a truncated copy must fail");
+        assert!(error.contains("size"), "{error}");
+    }
+
+    #[tokio::test]
+    async fn test_verify_copy_rejects_a_missing_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("src");
+        let dst = dir.path().join("dst");
+        std::fs::create_dir_all(&src).unwrap();
+        std::fs::create_dir_all(&dst).unwrap();
+        std::fs::write(src.join("present.txt"), b"x").unwrap();
+        std::fs::write(src.join("missing.txt"), b"y").unwrap();
+        std::fs::write(dst.join("present.txt"), b"x").unwrap();
+
+        let error = UsbCopyService::verify_copy(&src, &dst)
+            .await
+            .expect_err("a missing destination file must fail");
+        assert!(error.contains("destination missing"), "{error}");
+    }
+
+    #[tokio::test]
+    async fn test_verify_copy_handles_a_single_file_source() {
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("photo.jpg");
+        let dst = dir.path().join("photo.jpg");
+        std::fs::write(&src, b"jpeg-bytes").unwrap();
+        std::fs::write(&dst, b"jpeg-bytes").unwrap();
+
+        UsbCopyService::verify_copy(&src, &dst)
+            .await
+            .expect("a single file must verify");
+    }
+
+    #[tokio::test]
+    async fn test_count_files_counts_a_single_file_as_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("one.bin");
+        std::fs::write(&file, b"x").unwrap();
+
+        assert_eq!(UsbCopyService::count_files(&file).await.unwrap(), 1);
     }
 }

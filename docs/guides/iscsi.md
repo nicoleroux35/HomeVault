@@ -109,6 +109,9 @@ and only after the feature is on:
 
 ```
 sudo targetcli /backstores/fileio create <name> <path> <size_bytes> [ro=1]
+sudo targetcli /backstores/<kind>/<name> set attribute emulate_write_cache=<0|1>
+sudo targetcli /backstores/<kind>/<name> set attribute emulate_fua_write=<0|1>
+sudo targetcli /backstores/<kind>/<name> set attribute emulate_tpu=<0|1>
 sudo targetcli /iscsi create <iqn>
 sudo targetcli /iscsi/<iqn>/tpg1/portals create <address> <port>
 sudo targetcli /iscsi/<iqn>/tpg1/luns create /backstores/<kind>/<name> <lun>
@@ -119,6 +122,12 @@ sudo targetcli /iscsi/<iqn>/tpg1 set attribute authentication=1
 sudo targetcli /iscsi/<iqn>/tpg1 enable
 ```
 
+- **Write semantics are explicit per disk.** `write_policy=buffered` sets
+  `emulate_write_cache=1`; `direct` sets it to `0` (write-through). The
+  `emulate_fua` and `unmap` toggles set `emulate_fua_write` and `emulate_tpu`.
+  The attributes are applied after the backstore exists and before any target
+  is rebuilt; a failure stops the apply and is reported like a failed create.
+  These columns survive an apply/restart (migration `090`).
 - **Apply rebuilds from the metadata, and only names what HomeVault owns.**
   Modules are loaded first, then every target and disk the database lists is
   forgotten (`targetcli /iscsi delete <iqn>`, `/backstores/<kind> delete
@@ -216,6 +225,24 @@ so it can be inspected with `targetcli ls` and `iscsiadm -m session -P 3`.
 A skipped run prints the reason (`set HV_ISCSI_HW=1 …`, `the LIO stack is not
 usable here: …`, `must run as root`), so the log always says whether the hardware
 path was exercised.
+
+## Full-volume guard (P0-12, 2026-11-05)
+
+A fileio backstore lives on a filesystem HomeVault also uses; a client that
+fills it can starve the host. `src/iscsi_guard.rs` runs a pass at startup
+(3 min delay) then every 5 min:
+
+- for each **writable fileio** backstore, it measures free space with
+  `free_bytes_at` on the containing filesystem;
+- below `VOLUME_FULL_RESERVE_BYTES` — or when the free space cannot be read —
+  `IscsiRepository::set_backstore_readonly` sets `readonly = true` and a
+  notification is raised;
+- a block backstore or an already read-only store is skipped.
+
+The protection is **reversible** (the admin can clear the read-only flag)
+because refusing writes is recoverable while a corrupt backing file is not.
+It is a guard, not a quota: size the fileio disk below the filesystem's free
+space.
 
 ## Related
 

@@ -149,6 +149,12 @@ pub struct IscsiBackstore {
     pub path: String,
     pub size_bytes: i64,
     pub readonly: bool,
+    /// `buffered` (advertise a write cache) or `direct` (write-through).
+    pub write_policy: String,
+    /// Honour the SCSI FUA bit (`emulate_fua_write`).
+    pub emulate_fua: bool,
+    /// Advertise thin-provisioning / UNMAP (`emulate_tpu`).
+    pub unmap: bool,
     pub created_at: String,
     pub updated_at: String,
     /// How many LUNs point at this backstore. Computed by every repository
@@ -565,6 +571,99 @@ pub fn backstore_create_command(backstore: &IscsiBackstore) -> IscsiCommand {
     }
 }
 
+/// `targetcli` attribute commands that make the backstore's write semantics
+/// explicit after creation:
+/// * `emulate_write_cache` — `1` advertises a cache (`buffered`), `0` is
+///   write-through (`direct`);
+/// * `emulate_fua_write` — honour the SCSI FUA bit;
+/// * `emulate_tpu` — advertise thin provisioning / UNMAP.
+pub fn backstore_attribute_commands(backstore: &IscsiBackstore) -> Vec<IscsiCommand> {
+    let group = format!(
+        "/backstores/{}/{}",
+        backstore.kind().as_str(),
+        backstore.name
+    );
+    let write_cache = if backstore.write_policy.eq_ignore_ascii_case("direct") {
+        "0"
+    } else {
+        "1"
+    };
+    vec![
+        IscsiCommand::new(&[
+            "targetcli",
+            &group,
+            "set",
+            "attribute",
+            &format!("emulate_write_cache={write_cache}"),
+        ])
+        .with_sudo(),
+        IscsiCommand::new(&[
+            "targetcli",
+            &group,
+            "set",
+            "attribute",
+            &format!(
+                "emulate_fua_write={}",
+                if backstore.emulate_fua { "1" } else { "0" }
+            ),
+        ])
+        .with_sudo(),
+        IscsiCommand::new(&[
+            "targetcli",
+            &group,
+            "set",
+            "attribute",
+            &format!("emulate_tpu={}", if backstore.unmap { "1" } else { "0" }),
+        ])
+        .with_sudo(),
+    ]
+}
+
+/// `buffered` | `direct` — the only two write policies the UI offers.
+pub fn valid_write_policy(value: &str) -> bool {
+    matches!(
+        value.trim().to_ascii_lowercase().as_str(),
+        "buffered" | "direct"
+    )
+}
+
+/// Free space a fileio backstore must leave on its filesystem before HomeVault
+/// turns the LUN read-only. One GiB is enough for the filesystem's own
+/// metadata, a log entry and the operator's reaction time; a host filesystem
+/// that fills up from under a LUN corrupts whatever the initiator writes.
+pub const VOLUME_FULL_RESERVE_BYTES: u64 = 1024 * 1024 * 1024;
+
+/// Free bytes available to an unprivileged writer on `path`'s filesystem, from
+/// `statvfs`. `None` when the path cannot be interrogated (an unmounted pool,
+/// a permission error), in which case the caller must **not** assume there is
+/// space.
+pub fn free_bytes_at(path: &str) -> Option<u64> {
+    use std::ffi::CString;
+    use std::os::unix::ffi::OsStrExt as _;
+
+    let c_path = CString::new(std::ffi::OsStr::new(path).as_bytes()).ok()?;
+    // SAFETY: `statvfs` only writes into the struct we own and reads the
+    // NUL-terminated path; both pointers are valid for the call.
+    let mut stats: libc::statvfs = unsafe { std::mem::zeroed() };
+    let rc = unsafe { libc::statvfs(c_path.as_ptr(), &mut stats) };
+    if rc != 0 {
+        return None;
+    }
+    // `f_bavail` is the space available to an unprivileged process — exactly
+    // what a fileio backstore grows into. Saturate rather than overflow on a
+    // filesystem with a huge block count.
+    Some((stats.f_bavail as u64).saturating_mul(stats.f_frsize as u64))
+}
+
+/// Whether this backstore should be forced read-only because its backing
+/// filesystem is nearly full. Block backstores have no filesystem of ours to
+/// fill, and an already read-only store needs no action.
+pub fn should_protect_from_full_volume(backstore: &IscsiBackstore, free_bytes: u64) -> bool {
+    backstore.kind() == BackstoreKind::Fileio
+        && !backstore.readonly
+        && free_bytes < VOLUME_FULL_RESERVE_BYTES
+}
+
 /// Forget one backstore object. The backing file is **not** deleted — that is
 /// a separate, explicitly confirmed action ([`delete_backing_file`]).
 pub fn backstore_delete_command(backstore: &IscsiBackstore) -> IscsiCommand {
@@ -859,6 +958,20 @@ pub fn apply_sync(
                 failed: Some(e),
             };
         }
+        // The write cache/FUA/UNMAP attributes are set after the object exists;
+        // a failure here is just as fatal as a failed create.
+        for command in backstore_attribute_commands(backstore) {
+            executed.push(command.describe());
+            if let Err(e) = run(&command, TARGETCLI_TIMEOUT) {
+                return IscsiApplyReport {
+                    applied: false,
+                    reason: Some("The backstore write policy could not be applied".to_string()),
+                    reason_code: None,
+                    commands: executed,
+                    failed: Some(e),
+                };
+            }
+        }
     }
     for target in &enabled_targets {
         for command in target_apply_commands(target, backstores, chap_secrets) {
@@ -951,6 +1064,9 @@ mod tests {
             path: format!("/var/lib/homevault/iscsi/{name}.img"),
             size_bytes: 1024 * 1024,
             readonly: false,
+            write_policy: "buffered".to_string(),
+            emulate_fua: true,
+            unmap: true,
             created_at: "2026-11-01T00:00:00Z".to_string(),
             updated_at: "2026-11-01T00:00:00Z".to_string(),
             lun_count: 0,
@@ -1114,6 +1230,71 @@ mod tests {
         let line = backstore_create_command(&block).describe();
         assert!(line.contains("/backstores/block create raw dev=/dev/sdb1"));
         assert!(line.contains("readonly=1"));
+    }
+
+    #[test]
+    fn test_backstore_write_policy_commands_are_explicit() {
+        let mut store = backstore(1, "data");
+        store.write_policy = "buffered".to_string();
+        store.emulate_fua = true;
+        store.unmap = true;
+        let rendered = backstore_attribute_commands(&store)
+            .iter()
+            .map(|c| c.describe())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(rendered.contains("emulate_write_cache=1"), "{rendered}");
+        assert!(rendered.contains("emulate_fua_write=1"), "{rendered}");
+        assert!(rendered.contains("emulate_tpu=1"), "{rendered}");
+
+        store.write_policy = "direct".to_string();
+        store.emulate_fua = false;
+        store.unmap = false;
+        let rendered = backstore_attribute_commands(&store)
+            .iter()
+            .map(|c| c.describe())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(rendered.contains("emulate_write_cache=0"), "{rendered}");
+        assert!(rendered.contains("emulate_fua_write=0"), "{rendered}");
+        assert!(rendered.contains("emulate_tpu=0"), "{rendered}");
+    }
+
+    #[test]
+    fn test_write_policy_is_a_closed_set() {
+        assert!(valid_write_policy("buffered"));
+        assert!(valid_write_policy("DIRECT"));
+        assert!(!valid_write_policy("writeback"));
+        assert!(!valid_write_policy(""));
+    }
+
+    #[test]
+    fn test_a_nearly_full_volume_protects_only_writable_fileio_stores() {
+        let store = backstore(1, "data");
+        assert!(should_protect_from_full_volume(
+            &store,
+            VOLUME_FULL_RESERVE_BYTES - 1
+        ));
+        assert!(!should_protect_from_full_volume(
+            &store,
+            VOLUME_FULL_RESERVE_BYTES
+        ));
+
+        let mut block = backstore(2, "raw");
+        block.kind = "block".to_string();
+        assert!(!should_protect_from_full_volume(&block, 0));
+
+        let mut already = backstore(3, "readonly");
+        already.readonly = true;
+        assert!(!should_protect_from_full_volume(&already, 0));
+    }
+
+    #[test]
+    fn test_free_bytes_reads_a_real_filesystem_and_rejects_a_bad_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let free = free_bytes_at(dir.path().to_str().unwrap()).expect("statvfs");
+        assert!(free > 0);
+        assert!(free_bytes_at("/this/path/does/not/exist").is_none());
     }
 
     #[test]

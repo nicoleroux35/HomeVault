@@ -195,6 +195,20 @@ fn paths_for(
 
 async fn run_job_inner(job: &ReplicationJob) -> Result<RunOutcome, String> {
     replication::validate_job(job)?;
+
+    // Third-site witness (P2-15): when configured, a run only proceeds while
+    // this node holds the lease. Without a witness configured the historical
+    // behaviour is unchanged.
+    if let Some(config) =
+        crate::replication_witness::witness_config_from_env(|key| std::env::var(key).ok())?
+    {
+        let client = crate::replication_witness::WitnessClient::new(config)?;
+        client
+            .acquire()
+            .await
+            .map_err(|e| format!("witness refused the replication run: {e}"))?;
+    }
+
     let backend = job
         .backend_kind()
         .ok_or_else(|| "unknown backend".to_string())?;
@@ -289,13 +303,56 @@ async fn run_job_inner(job: &ReplicationJob) -> Result<RunOutcome, String> {
         use_pv,
     )?;
     let stages = plan.stages.clone();
-    let sent = tokio::task::spawn_blocking(move || {
-        replication::run_pipeline(&stages, replication::REPLICATION_TIMEOUT)
-    })
-    .await
-    .map_err(|e| format!("transfer task panicked: {e}"))?;
-    if let Err(e) = sent {
-        return Err(format!("the transfer failed: {e}"));
+    // A dropped SSH link is the common failure; retry with backoff before
+    // declaring the run failed. `zfs send -s`/`btrfs receive` keep the stream
+    // resumable, and a fresh attempt is safe because the destination snapshot
+    // is only created once.
+    let mut last_error = None;
+    for attempt in 0..3u64 {
+        if attempt > 0 {
+            tokio::time::sleep(std::time::Duration::from_secs(2u64.pow(attempt as u32))).await;
+        }
+        let stages = stages.clone();
+        let sent = tokio::task::spawn_blocking(move || {
+            replication::run_pipeline(&stages, replication::REPLICATION_TIMEOUT)
+        })
+        .await
+        .map_err(|e| format!("transfer task panicked: {e}"))?;
+        match sent {
+            Ok(()) => {
+                last_error = None;
+                break;
+            }
+            Err(e) => {
+                last_error = Some(e);
+                crate::events::log_event_warn(format!(
+                    "Replication '{}' attempt {} failed: {}",
+                    job.name,
+                    attempt + 1,
+                    last_error.as_deref().unwrap_or("")
+                ));
+            }
+        }
+    }
+    if let Some(e) = last_error {
+        return Err(format!("the transfer failed after 3 attempts: {e}"));
+    }
+
+    // 3b. Prove the destination: a readable checksum property (ZFS) or a
+    // present subvolume (Btrfs). A transfer that cannot be read back is not a
+    // backup yet.
+    if let Some(verify) = replication::destination_verify_command(job) {
+        let verified = tokio::task::spawn_blocking(move || {
+            replication::run_stage(&verify, replication::REPLICATION_QUERY_TIMEOUT)
+        })
+        .await
+        .map_err(|e| format!("destination verification panicked: {e}"))??;
+        if !verified.status.success() {
+            return Err(format!(
+                "the transfer finished but the destination could not be verified: {}",
+                String::from_utf8_lossy(&verified.stderr).trim()
+            ));
+        }
     }
 
     // 4. Destination-only retention.

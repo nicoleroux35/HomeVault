@@ -118,6 +118,22 @@ impl Database {
         })
     }
 
+    /// Which `PRAGMA synchronous` the metadata database uses. Default `NORMAL` is
+    /// the historical speed/crash-safety trade-off; `FULL` (env
+    /// `HOMEVAULT_SQLITE_FULL_SYNC=1`) makes every commit durable at the cost of
+    /// one fsync per write transaction.
+    pub fn sqlite_synchronous_pragma() -> &'static str {
+        Self::synchronous_for(std::env::var("HOMEVAULT_SQLITE_FULL_SYNC").ok().as_deref())
+    }
+
+    /// Pure form of the switch, so the accepted spellings have a test.
+    pub fn synchronous_for(value: Option<&str>) -> &'static str {
+        match value.map(str::trim) {
+            Some("1") | Some("true") | Some("yes") | Some("full") => "FULL",
+            _ => "NORMAL",
+        }
+    }
+
     /// Tune SQLite pragmas for better performance and safety.
     /// Applies the engine pragmas once, at startup.
     ///
@@ -133,10 +149,16 @@ impl Database {
             .execute(pool)
             .await?;
 
-        // Normal sync: balances crash safety with write speed.
-        sqlx::query("PRAGMA synchronous = NORMAL")
-            .execute(pool)
-            .await?;
+        // `NORMAL` protects against corruption but can lose the very last
+        // transaction on a power cut. `HOMEVAULT_SQLITE_FULL_SYNC=1` selects
+        // `FULL`, which fsyncs the WAL on every commit — slower, but a
+        // committed row is durable (tasklist P2-14).
+        let synchronous = if Self::sqlite_synchronous_pragma() == "FULL" {
+            "PRAGMA synchronous = FULL"
+        } else {
+            "PRAGMA synchronous = NORMAL"
+        };
+        sqlx::query(synchronous).execute(pool).await?;
 
         // 32 MB page cache (~8000 pages of 4 KB).
         sqlx::query("PRAGMA cache_size = -32000")
@@ -858,6 +880,15 @@ impl Database {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_synchronous_mode_is_opt_in_full() {
+        assert_eq!(Database::synchronous_for(None), "NORMAL");
+        assert_eq!(Database::synchronous_for(Some("0")), "NORMAL");
+        assert_eq!(Database::synchronous_for(Some("full")), "FULL");
+        assert_eq!(Database::synchronous_for(Some(" true ")), "FULL");
+        assert_eq!(Database::synchronous_for(Some("yes")), "FULL");
+    }
 
     /// A `CREATE TRIGGER … BEGIN … ; … END;` body is one statement: the
     /// semicolons inside it must not be mistaken for migration separators

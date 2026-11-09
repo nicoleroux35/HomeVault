@@ -1685,6 +1685,26 @@ impl ResticService {
         Ok(Self::parse_check_output(exit_ok, "", &stderr))
     }
 
+    /// `restic check --read-data-subset=<subset>`, for a scheduled check that
+    /// reads a bounded share of the packs instead of every byte.
+    pub fn check_repo_with_subset(
+        repo: &ResticRepo,
+        subset: &str,
+        job_id: Option<&str>,
+    ) -> Result<ResticCheckResult, ResticError> {
+        let mut cmd = Self::restic_cmd()?;
+        Self::set_env(&mut cmd, repo);
+        cmd.arg("check");
+        cmd.arg(format!("--read-data-subset={subset}"));
+
+        let tracked = Tracked::spawn(cmd, job_id)?;
+        let (exit_ok, stderr, cancelled) = tracked.wait()?;
+        if cancelled {
+            return Err(ResticError::Cancelled);
+        }
+        Ok(Self::parse_check_output(exit_ok, "", &stderr))
+    }
+
     /// Turn a `restic check` exit status + output into a verdict.
     ///
     /// The old implementation collected every line containing the substring

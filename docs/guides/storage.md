@@ -139,6 +139,38 @@ still binding:
   same `zpool create` invocation style already proven by the RAID Manager's
   ZFS pool path in `disk.rs`.
 
+## Boot recovery (2026-11-05)
+
+`src/storage/recovery.rs` runs once at startup, before the share services:
+
+1. `sudo mdadm --assemble --scan` and `sudo btrfs device scan` reassemble the
+   members the kernel/fstab knows about.
+2. Every HomeVault-managed `/etc/fstab` entry is parsed from its marker
+   (`# homevault-raid:`, `# homevault-pool:`, `# homevault-pool-snapshots:`,
+   `# homevault-encrypted:`). Entries already in `/proc/mounts` are left alone.
+3. An unmounted entry is retried with `sudo mount <mount-point>` (exact fstab
+   options). If that fails:
+   - Btrfs: `btrfs rescue super-recover -y <device>`, then a read-only mount.
+   - ext4: `dumpe2fs -h` detects a not-clean unmount, then `e2fsck -p` (preen,
+     never `-y`), then the normal mount, then `ro,noload`, then `ro`.
+   - anything else: a read-only mount.
+4. The outcome is written to `data/state/storage-recovery.json` and logged.
+   A read-only recovery is a warning, not a silent success.
+
+The same module owns the **clean-shutdown marker** (`data/state/clean-shutdown`).
+`shutdown_signal` now handles **SIGTERM** (what systemd sends) as well as
+SIGINT, and writes the marker after the terminal/downloader/rclone cleanup. On
+the next boot, a missing marker after a completed first boot means the previous
+shutdown was unclean: `scrub_after_unclean_shutdown` waits two minutes, then
+scrubs each mounted, non-degraded pool once, one at a time, through the same
+`src/scrub.rs` lock as a scheduled scrub task.
+
+A recovery that leaves an entry failed or read-only now raises a
+`health.storage` notification, not just a log line. The opt-in hardware
+acceptance (`tests/recovery_hardware_integration.rs`, `HV_RECOVERY_HW=1`)
+zeroes a loop-backed Btrfs primary superblock and proves `recover_one` lands on
+a `ro` mount.
+
 ## Deadlines on every host tool (2026-10-24, ROADMAP X.2)
 
 `PoolService` (`src/pools.rs`), `SnapshotService` (`src/snapshots.rs`) and the
@@ -348,6 +380,73 @@ legacy `DELETE` remains for API clients and has no re-auth.
   [Disk Encryption](./encryption.md).
 - **Editable since 2026-09-12** — the frozen-area registry is gone; the
   invariants above stay binding.
+
+## Btrfs live options and maintenance (P1-22 / P2-11, 2026-11-05)
+
+`src/btrfs_maintenance.rs` holds the Btrfs policy; `src/pools.rs` applies it.
+
+- **Live mount options** — HomeVault writes
+  `defaults,nofail,compress=zstd:3,space_cache=v2,noatime` (plus
+  `subvol=@`/`@snapshots` where the layout needs it). `zstd:3` is the upstream
+  default level and cheap enough for a NAS; `space_cache=v2` is the modern
+  free-space tree (an old kernel keeps v1); `noatime` removes a write per read.
+  These are the options used for a new pool and for the boot-recovery mount
+  retry, not a rewrite of `/etc/fstab` for an already-mounted volume.
+- **Balance** — `parse_usage` reads `btrfs filesystem usage` (device
+  unallocated bytes, metadata DUP %, data single %). `balance_needed` asks for
+  a balance only when unallocated space is under 5 GiB **and** a chunk type is
+  over 4 % used; `balance_command` is the conservative `-dusage=50` form and
+  `balance_dry_run_command` is the UI preview. A built-in loop checks every
+  24 h (first pass after 1 h) and only runs the balance when `balance_needed`
+  is true.
+- **TRIM** — `trim_command` is `sudo fstrim --verbose <mount>`. The same loop
+  runs it **weekly** (tracked in `state/btrfs-last-trim`) on every writable,
+  non-snapshot Btrfs mount. Set `HOMEVAULT_BTRFS_MAINTENANCE=0` to disable
+  both balance and TRIM.
+- **fstab timeouts** — the pool/RAID fstab entries carry
+  `x-systemd.device-timeout=30s,x-systemd.mount-timeout=30s`; the boot-recovery
+  path strips these systemd-only options before replaying the entry with
+  `mount(8)`.
+- **Compression level** — `validate_compression_level` accepts
+  `zstd:1`…`zstd:15` (or `none`) and normalises to `zstd:<n>`; anything else
+  is refused before a mount option is written.
+- **Defragmentation** — `defrag_command` refuses any path under
+  `/.snapshots/` (or the `/.snapshots` directory itself) before running:
+  rewriting extents inside a snapshot destroys the `reflink` sharing that
+  makes snapshots cheap.
+
+### Per-share compression policies (P2-11)
+
+`btrfs_compression_policies` stores one policy per absolute directory
+(`path`, `level`, `defrag`, `last_applied_at`). A policy is applied by
+`apply_compression_policy`:
+
+1. `btrfs filesystem defragment -r -c<level> <path>` when `defrag` is on;
+2. `chattr +c <path>` (or `-c` for `none`) so **new** files inherit the
+   setting.
+
+The daily maintenance loop applies due policies once a month. `level` accepts
+`zstd:1`…`zstd:15` or `none`; a path containing `..` or pointing inside
+`.snapshots` is refused, and the path must be an existing directory. Endpoints
+are under `/api/storage/btrfs/policies` (see [API](../API.md)).
+
+
+### ZFS thin/thick volumes (P2-3, partial)
+
+`src/zfs_volumes.rs` manages zvols directly:
+
+- `create_args` builds `zfs create -s -V <size> -o compression=lz4 -o
+  refreservation=none <dataset>` for a **thin** volume, and the same without
+  `-s`/`refreservation=none` for a **thick** one.
+- `list_volumes` parses `zfs list -H -p -t volume` and marks a volume
+  `saturated` when `used ≥ 90 %` of its nominal size.
+- Names are dataset paths (letters/digits/`_`/`-`, no `@`, no `..`); size is
+  1 MiB–1 PiB.
+- Endpoints live under `/api/storage/zfs/volumes` (see [API](../API.md)).
+
+**Reserve:** only ZFS zvols are covered. LVM thin pools, a dedicated UI and
+snapshot management are still open; the existing virtual-disk screen does not
+create volumes.
 
 ## Related
 

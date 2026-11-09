@@ -105,7 +105,7 @@ visible from 901px, icon only below that — the touch target stays
 | 22 | Settings | System | Server configuration |
 | 23 | My account | System | Personal profile and security |
 | 24 | Virtual Machines | System | VMs and containers via Incus — guided wizard, shell console, graphical screen, snapshots, clone |
-| 25 | Scheduled Tasks | System | Generic cron engine — commands, pool snapshots, SMART self-tests, power actions, run history |
+| 25 | Scheduled Tasks | System | Generic cron engine — commands, pool snapshots, SMART self-tests, scrubs, power actions, run history |
 | 26 | Metrics | Monitoring | Historical performance charts (CPU, memory, load, network, temperature) over 1 h / 24 h / 7 d |
 | 27 | Backup destination | Storage | Receive restic backups from another machine (append-only tenants, quotas) |
 | 28 | Replication | Storage | Copy pool snapshots to another dataset, locally or over SSH |
@@ -237,7 +237,7 @@ and in the Groups screen.
 
 ## 9. Storage
 
-**7 tabs:**
+**8 tabs:**
 
 ### Physical disks
 - Detailed disk cards: name, size, vendor, model, serial number, type, SMART status, temperature
@@ -281,8 +281,18 @@ and in the Groups screen.
 - Share schedules snapshot the dataset/subvolume that contains the share, list
   only that backend's snapshots, and expose file-level restore (relative path
   + overwrite confirmation)
+- **Application quiescence hooks**: global pre/post argv pairs (no shell),
+  enable/disable/delete from the snapshots tab; a failing pre-hook records the
+  run as crash-consistent and says why
 - Run now, delete, and last-run status/error; lock/break-glass protection for
   pool snapshots
+
+### Compression (Btrfs)
+- Per-directory policies: absolute path, zstd level 1–15 or `none`, and
+  whether existing extents are defragmented
+- Save, **Apply now**, delete; the monthly maintenance pass applies a due
+  policy on its own
+- Paths under `.snapshots` and paths containing `..` are refused
 
 ---
 
@@ -311,7 +321,12 @@ and in the Groups screen.
   - Authentication, Storage, Memory, Disk space, Disk SMART, Network, Services, Temperatures
 - Each check: status icon, translated label, message, expandable details
 - Global status badge (healthy/warning/critical/unknown)
-- Refresh button
+- **Disk health history** card: active S.M.A.R.T./I/O/RAID/ZFS/Btrfs findings
+  (worst first), and an admin **Sample now** action; revalidated on focus
+- **Failure prediction** card: per-disk linear trends (reallocated, pending,
+  offline uncorrectable, command timeouts, temperature), estimated days to
+  the threshold and fit quality; hidden until at least one trend exists
+- Auto revalidation on app focus (no manual refresh button)
 
 ---
 
@@ -499,8 +514,8 @@ a failed mount detaches its loop device.
 
 ### Configuration tabs (7: the share list + 5 protocols + Rsync)
 - **Shares** — CRUD, service start/stop, status badges
-- **SMB** — workgroup, security mode (*User* or *Share* only; domain/ADS is refused until winbind exists), protocol minimum (SMB2/SMB3; NT1 refused), guest access, **SMB Multichannel** toggle (off by default), **Windows network discovery** (WS-Discovery via `wsdd2`, on by default, discovery only — the card says when `wsdd2` is not installed), advanced options, per-share recycle bin toggle (files deleted over the network are kept and shown in the Explorer's Trash), and per-share **Time Machine** (`vfs_fruit`, with an optional maximum size in GB; the share is advertised over Bonjour `_adisk._tcp` so macOS lists it without typing an address — AFP is not used)
-- **NFS** — networks (one client clause per line), default access, version (Auto or 3/4/4.2), root squash, custom options; the values are applied to `/etc/exports` on save, not merely persisted
+- **SMB** — workgroup, security mode (*User*, *Share* or *Active Directory/ADS* with realm + idmap range), protocol minimum (SMB2/SMB3; NT1 refused), guest access, **SMB Multichannel** toggle (off by default), **Windows network discovery** (WS-Discovery via `wsdd2`, on by default, discovery only — the card says when `wsdd2` is not installed), **durable handles**, **transport encryption** (`off`/`desired`/`required`), **server signing** (`off`/`desired`/`mandatory`), **strict sync**, **AIO read/write size**, `use sendfile`, three oplock levels, advanced options, per-share recycle bin toggle (files deleted over the network are kept and shown in the Explorer's Trash), and per-share **Time Machine** (`vfs_fruit`, with an optional maximum size in GB; the share is advertised over Bonjour `_adisk._tcp` so macOS lists it without typing an address — AFP is not used)
+- **NFS** — networks (one client clause per line), default access, version (Auto or 3/4/4.1/4.2), root squash, **Kerberos security** (`sys`/`krb5`/`krb5i`/`krb5p`), custom options; the values are applied to `/etc/exports` on save, not merely persisted
 - **FTP** — port, passive ports, max clients, TLS, anonymous, chroot, welcome message, and an optional account whitelist (`/etc/vsftpd.user_list`)
 - **WebDAV** — port, path prefix, SSL, auth, compression, locking, allowed methods
 - **SFTP** — port, list of beneficiaries (user + shares + key state), user addition, public key addition, jail rebuild
@@ -789,11 +804,13 @@ The screen refreshes on tab switch, on window focus and every 45 s
   and next run
 - Create/edit dialog: task type, cron expression (5 fields), payload fields
   per type
-- Five task types: `command` (single executable, no shell), `snapshot`
+- Seven task types: `command` (single executable, no shell), `snapshot`
   (pool snapshot, optional recursive), `smart_test` (S.M.A.R.T. self-test),
-  `power` (reboot / shutdown / suspend) and **`service`** (trigger an existing
-  subsystem: Docker update, trash purge, database snapshot, or a notification
-  with a message)
+  `scrub` (ZFS/Btrfs/mdadm consistency check), `restic_check`
+  (`restic check --read-data-subset`), `power` (reboot / shutdown / suspend)
+  and **`service`** (trigger an existing subsystem: Docker update, trash
+  purge, database snapshot, downloader RSS refresh, or a notification with a
+  message)
 - Run now, enable/disable, delete (history included) and per-task run history
   (50 newest runs, output tail)
 
@@ -843,7 +860,7 @@ a token or a password; mutations are admin-only.
 - Create/edit: name, storage type, source dataset, destination (another dataset here, or another machine over SSH with host/user/port), interval in minutes (0 = manual only), copies to keep, bandwidth in kB/s, enabled
 - **Preview** the exact command the next run will execute, without sending anything
 - Run now (asks first), delete (warns that copies already made stay on the destination)
-- Inline validation: datasets must be dataset paths, Btrfs over SSH is refused, a local destination cannot be the source
+- Inline validation: datasets must be dataset paths, a local destination cannot be the source, and a Btrfs-over-SSH job needs its host/user/port to be complete
 
 **Invariants:** a run creates its own `hv-repl-<id>-` snapshots and prunes
 **only** those on the destination; the source is never pruned and a hand-made
@@ -884,8 +901,9 @@ pretending to limit anything.
   initiator immediately; disks and exports are kept")
 - **Disks to share** — a file HomeVault creates and sizes, a whole block
   device, or a **thin ZFS volume** (offered only when `zfs` is installed and a
-  ZFS pool exists); read-only flag; per-disk "used by N LUN(s)" and a refusal to
-  delete a disk a LUN still serves
+  ZFS pool exists); read-only flag; **I/O policy** (buffered vs
+  direct/write-through), **FUA** and **UNMAP** toggles; per-disk "used by N
+  LUN(s)" and a refusal to delete a disk a LUN still serves
 - **Snapshots of a thin volume** — a per-disk panel (camera action) that lists
   the snapshots, takes one instantly, clones a snapshot into a new disk (named
   in the panel) and deletes one; the cloned disk then exports as its own LUN
@@ -905,7 +923,10 @@ secrets are sealed with the target IQN + initiator as associated data, never
 returned, and redacted from the rendered command list; the editors are hidden
 when the host lacks the LIO stack. A zvol disk's kind, name and path are not
 editable in place (only its read-only flag): snapshot/clone endpoints refuse a
-backstore that is not `/dev/zvol/<pool>/homevault-iscsi/<name>`.
+backstore that is not `/dev/zvol/<pool>/homevault-iscsi/<name>`. A backstore's
+write policy/FUA/UNMAP are applied as
+`emulate_write_cache`/`emulate_fua_write`/`emulate_tpu` after the object exists
+and before any target is rebuilt.
 
 ---
 

@@ -148,6 +148,14 @@ record how a roadmap item was derived, so the reasoning is not lost:
   against the actual tree: which "missing" features already shipped, which gaps
   are real, and the Phase A–E work order. Feeds
   [ROADMAP-DSM.md](../ROADMAP-DSM.md) → Phase 5.
+- [dsm7-reliability-integrity-review.md](./analysis/dsm7-reliability-integrity-review.md)
+  — reliability, stability and integrity review of a DSM 7.4.1 appliance,
+  including the compromises HomeVault must **not** copy (metadata checksums
+  off, periodic fsck off, MD5-only, unverified USB copy). Feeds P0-5…P0-12,
+  P1-21…P1-28 and P2-10…P2-15.
+- [dedup-design.md](./analysis/dedup-design.md)
+  — Btrfs `duperemove` vs ZFS `dedup=on`: cost, reversibility, benchmark gate
+  and the safety rules encoded in `src/dedup.rs` (P2-4, design only).
 
 ## Doc conventions
 

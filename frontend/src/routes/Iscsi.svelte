@@ -69,6 +69,9 @@
     path: string;
     size_bytes: number;
     readonly: boolean;
+    write_policy: string;
+    emulate_fua: boolean;
+    unmap: boolean;
     created_at: string;
     updated_at: string;
     lun_count: number;
@@ -147,6 +150,9 @@
     sparse: boolean;
     size_gib: number;
     readonly: boolean;
+    write_policy: 'buffered' | 'direct';
+    emulate_fua: boolean;
+    unmap: boolean;
   }
 
   interface ZvolSnapshot {
@@ -277,6 +283,9 @@
       sparse: true,
       size_gib: 10,
       readonly: false,
+      write_policy: 'buffered',
+      emulate_fua: true,
+      unmap: true,
     };
   }
 
@@ -370,6 +379,9 @@
       sparse: true,
       size_gib: Math.max(1, Math.round(store.size_bytes / 1024 ** 3)),
       readonly: store.readonly,
+      write_policy: store.write_policy === 'direct' ? 'direct' : 'buffered',
+      emulate_fua: store.emulate_fua !== false,
+      unmap: store.unmap !== false,
     };
     storeError = '';
     storeOpen = true;
@@ -482,6 +494,9 @@
           ? Math.round(storeDraft.size_gib * 1024 ** 3)
           : 0,
       readonly: storeDraft.readonly,
+      write_policy: storeDraft.write_policy,
+      emulate_fua: storeDraft.emulate_fua,
+      unmap: storeDraft.unmap,
     };
     try {
       const resp =
@@ -1058,6 +1073,25 @@
         description={$t('iscsi.zvol_thin_hint')}
       />
     {/if}
+    <label class="flex flex-col gap-1.5">
+      <span class={fieldLabel}>{$t('iscsi.write_policy')}</span>
+      <select class={inp} bind:value={storeDraft.write_policy} data-testid="iscsi-backstore-write-policy">
+        <option value="buffered">{$t('iscsi.write_buffered')}</option>
+        <option value="direct">{$t('iscsi.write_direct')}</option>
+      </select>
+      <span class={hint}>{$t('iscsi.write_policy_hint')}</span>
+    </label>
+
+    <Checkbox
+      bind:checked={storeDraft.emulate_fua}
+      label={$t('iscsi.emulate_fua')}
+      description={$t('iscsi.emulate_fua_hint')}
+    />
+    <Checkbox
+      bind:checked={storeDraft.unmap}
+      label={$t('iscsi.unmap')}
+      description={$t('iscsi.unmap_hint')}
+    />
 
     <Checkbox
       bind:checked={storeDraft.readonly}

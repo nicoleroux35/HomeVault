@@ -303,6 +303,15 @@ journaled with the admin's name.
   the create/designate/remove-cache-disk flows in the Pools tab were still not
   run against real pools/hardware.
 
+## Post-move verification (P1-25, 2026-11-05)
+
+The mover no longer trusts rsync's exit code alone. After a successful copy it
+runs a second pass with `-a --checksum --dry-run --itemize-changes`; any
+listed difference is logged with the first 20 lines. A failed verification is
+logged too, but does not delete the copied data — the cache remains the source
+of truth until an operator decides. `--remove-source-files` skips the check,
+because there is no source left to compare against.
+
 ## Related
 
 - [Storage](./storage.md), [Shares](./shares.md), [Snapshots](./snapshots.md)

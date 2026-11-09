@@ -85,6 +85,23 @@ pub struct BackstoreRequest {
     pub size_bytes: i64,
     #[serde(default)]
     pub readonly: bool,
+    /// `buffered` (advertise a write cache) | `direct` (write-through).
+    #[serde(default = "default_write_policy")]
+    pub write_policy: String,
+    /// Honour the SCSI FUA bit.
+    #[serde(default = "default_true")]
+    pub emulate_fua: bool,
+    /// Advertise thin provisioning / UNMAP.
+    #[serde(default = "default_true")]
+    pub unmap: bool,
+}
+
+fn default_write_policy() -> String {
+    "buffered".to_string()
+}
+
+fn default_true() -> bool {
+    true
 }
 
 #[derive(Debug, Deserialize)]
@@ -131,10 +148,6 @@ pub struct TargetRequest {
     pub luns: Vec<LunRequest>,
     #[serde(default)]
     pub acls: Vec<AclRequest>,
-}
-
-fn default_true() -> bool {
-    true
 }
 
 // ---------------------------------------------------------------------------
@@ -296,11 +309,23 @@ async fn current_payload(state: &Arc<AppState>) -> Result<serde_json::Value, Str
 // Validation helpers
 // ---------------------------------------------------------------------------
 
+/// The canonical stored form of a backstore body.
+struct ValidatedBackstore {
+    name: String,
+    kind: String,
+    path: String,
+    size_bytes: i64,
+    readonly: bool,
+    write_policy: String,
+    emulate_fua: bool,
+    unmap: bool,
+}
+
 /// Validate a backstore body and return the canonical stored form.
 async fn validated_backstore(
     body: &BackstoreRequest,
     roots: &[String],
-) -> Result<(String, String, String, i64, bool), String> {
+) -> Result<ValidatedBackstore, String> {
     let name = body.name.trim().to_string();
     if !iscsi::valid_backstore_name(&name) {
         return Err(format!(
@@ -312,6 +337,10 @@ async fn validated_backstore(
     let kind = body.kind.trim().to_ascii_lowercase();
     if kind != "fileio" && kind != "block" && kind != "zvol" {
         return Err("A backstore kind must be 'fileio', 'block' or 'zvol'".to_string());
+    }
+    let write_policy = body.write_policy.trim().to_ascii_lowercase();
+    if !iscsi::valid_write_policy(&write_policy) {
+        return Err("write_policy must be 'buffered' or 'direct'".to_string());
     }
 
     // A zvol: HomeVault creates the thin volume itself, so the path is derived
@@ -341,15 +370,17 @@ async fn validated_backstore(
         }
         let size = crate::zvol::validate_size(body.size_bytes as u64)?;
         let dataset = crate::zvol::dataset(&pool, &name)?;
-        return Ok((
+        return Ok(ValidatedBackstore {
             name,
             kind,
-            crate::zvol::device_path(&dataset),
-            size as i64,
-            body.readonly,
-        ));
+            path: crate::zvol::device_path(&dataset),
+            size_bytes: size as i64,
+            readonly: body.readonly,
+            write_policy,
+            emulate_fua: body.emulate_fua,
+            unmap: body.unmap,
+        });
     }
-
     let path = body.path.trim().to_string();
     iscsi::validate_backstore_path(&path)?;
 
@@ -363,7 +394,16 @@ async fn validated_backstore(
         if !metadata.file_type().is_block_device() {
             return Err(format!("{path} is not a block device"));
         }
-        return Ok((name, kind, path, 0, body.readonly));
+        return Ok(ValidatedBackstore {
+            name,
+            kind,
+            path,
+            size_bytes: 0,
+            readonly: body.readonly,
+            write_policy,
+            emulate_fua: body.emulate_fua,
+            unmap: body.unmap,
+        });
     }
 
     if !under_any_root(&path, roots) {
@@ -388,7 +428,16 @@ async fn validated_backstore(
             iscsi::MAX_BACKSTORE_SIZE / (1024 * 1024 * 1024 * 1024)
         ));
     }
-    Ok((name, kind, path, body.size_bytes, body.readonly))
+    Ok(ValidatedBackstore {
+        name,
+        kind,
+        path,
+        size_bytes: body.size_bytes,
+        readonly: body.readonly,
+        write_policy,
+        emulate_fua: body.emulate_fua,
+        unmap: body.unmap,
+    })
 }
 
 /// Validate a target body and turn it into the repository input, sealing any
@@ -588,10 +637,11 @@ pub async fn handle_iscsi_backstore_create(
         Err(resp) => return resp,
     };
     let roots = allowed_roots().await;
-    let (name, kind, path, size_bytes, readonly) = match validated_backstore(&body, &roots).await {
+    let store = match validated_backstore(&body, &roots).await {
         Ok(parts) => parts,
         Err(e) => return ResponseHelper::json_error(e),
     };
+    let (name, kind, path) = (store.name.clone(), store.kind.clone(), store.path.clone());
 
     let repo = IscsiRepository::new(state.db.pool());
     match repo.backstore_name_taken(&name, None).await {
@@ -617,7 +667,7 @@ pub async fn handle_iscsi_backstore_create(
     if kind == "zvol" {
         let pool = body.pool.as_deref().unwrap_or("").trim().to_string();
         let sparse = body.sparse.unwrap_or(true);
-        let size = size_bytes as u64;
+        let size = store.size_bytes.max(0) as u64;
         let volume = name.clone();
         match tokio::task::spawn_blocking(move || crate::zvol::create(&pool, &volume, size, sparse))
             .await
@@ -633,7 +683,16 @@ pub async fn handle_iscsi_backstore_create(
     }
 
     match repo
-        .create_backstore(&name, &kind, &path, size_bytes, readonly)
+        .create_backstore(
+            &name,
+            &kind,
+            &path,
+            store.size_bytes,
+            store.readonly,
+            &store.write_policy,
+            store.emulate_fua,
+            store.unmap,
+        )
         .await
     {
         Ok(store) => {
@@ -711,6 +770,9 @@ pub async fn handle_iscsi_backstore_update(
                 &existing.path,
                 existing.size_bytes,
                 body.readonly,
+                &existing.write_policy,
+                existing.emulate_fua,
+                existing.unmap,
             )
             .await
         {
@@ -737,10 +799,11 @@ pub async fn handle_iscsi_backstore_update(
     }
 
     let roots = allowed_roots().await;
-    let (name, kind, path, size_bytes, readonly) = match validated_backstore(&body, &roots).await {
+    let store = match validated_backstore(&body, &roots).await {
         Ok(parts) => parts,
         Err(e) => return ResponseHelper::json_error(e),
     };
+    let (name, kind, path) = (store.name.clone(), store.kind.clone(), store.path.clone());
     match repo.backstore_name_taken(&name, Some(id)).await {
         Ok(true) => {
             return ResponseHelper::json_error(format!("A backstore named '{name}' already exists"))
@@ -759,7 +822,17 @@ pub async fn handle_iscsi_backstore_update(
     }
 
     match repo
-        .update_backstore(id, &name, &kind, &path, size_bytes, readonly)
+        .update_backstore(
+            id,
+            &name,
+            &kind,
+            &path,
+            store.size_bytes,
+            store.readonly,
+            &store.write_policy,
+            store.emulate_fua,
+            store.unmap,
+        )
         .await
     {
         Ok(store) => {
@@ -1102,7 +1175,7 @@ pub async fn handle_iscsi_apply(
 }
 
 /// Read the metadata, open the CHAP secrets and apply on the blocking pool.
-async fn run_apply(pool: Arc<sqlx::SqlitePool>) -> IscsiApplyReport {
+pub(crate) async fn run_apply(pool: Arc<sqlx::SqlitePool>) -> IscsiApplyReport {
     let repo = IscsiRepository::new(pool);
     let settings = iscsi::load();
     let backstores = match repo.list_backstores().await {
@@ -1425,6 +1498,9 @@ pub async fn handle_iscsi_backstore_clone(
             &crate::zvol::device_path(&dataset),
             size_bytes,
             body.readonly,
+            &store.write_policy,
+            store.emulate_fua,
+            store.unmap,
         )
         .await
     {

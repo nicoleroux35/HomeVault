@@ -234,6 +234,12 @@ panne majeur.
 | **Gelé au stade partiel** | **P2-1** SMB AD, **P2-2** NFS Kerberos, **P2-3** thin provisioning, **P2-4** déduplication, **P2-15** witness | Utiles seulement en entreprise/multi-site ou après benchmark ; ne pas investir sans cible explicite. |
 | **Rejeté pour la cible** | **P2-5** KMIP, **P2-6** WORM, **P1-19** clamd temps réel, **P1-20** PPPoE, **P2-3** partie overcommit LVM/UI (le support zvol reste), **P2-4** exécution automatique (le design reste) | Complexité, coût permanent ou mode de panne (boot dépendant du réseau, saturation imprévisible, verrouillage admin) disproportionnés. |
 
+> **Lot intégrité (2026‑11‑09).** P0‑5→P0‑12 et P2‑10→P2‑14 sont désormais
+> dans `main` : le commit `d46a2a5` a été fusionné en conservant P2‑1, P2‑7,
+> P1‑27 et les écrans média/zvol. Les migrations 082–085 du lot sont
+> renumérotées **089–092**, et **093** reconstruit le CHECK des tâches pour
+> les 7 types. Les tests du lot restent à exécuter (FIAB‑01).
+
 **Décisions détaillées.**
 
 - **P2-5 KMIP : rejeté.** Ajoute un point de défaillance critique au boot

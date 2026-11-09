@@ -13,7 +13,7 @@
 
 | Champ | Valeur |
 |---|---|
-| Baseline HomeVault | `910a84f`, 09/11/2026 — plus les correctifs de vérification du 09/11/2026 (§8) |
+| Baseline HomeVault | `910a84f`, 09/11/2026 — plus les correctifs de vérification (§8) et le lot intégrité (§9) |
 | Firmware DSM analysé | 7.4.1‑90080 (DS925+), image `/media/nicolas/500GB/Projets/DSM7/DSM_DS925+_90080` |
 | Périmètre | 30 apps intégrées du launcher + 16 apps du catalogue Docker |
 | Méthode | Vérification du code (`src/`, `frontend/`, `catalog/`), des guides `docs/guides/` et du backlog `HOMEVAULT_TASKLIST_A_FAIRE.md` |
@@ -43,6 +43,7 @@ qu'elle listait sont **désormais livrés** et ne doivent plus être comptés :
 | OAuth2 e‑mail (Gmail / Microsoft 365) | ✅ **livré le 2026‑11‑09** (P1‑16 : flux code, refresh token scellé, msmtp `oauthbearer`/`xoauth2`, carte Settings — aucun mot de passe applicatif) |
 | Isolation d'exécution | 🟡 **installeur livré le 2026‑11‑08** (P2‑7 partiel : systemd durci + AppArmor opt‑in ; validation terrain/enforce restante) |
 | Restauration bare‑metal | 🟡 **drill non destructif livré le 2026‑11‑08** (P2‑9 partiel : snapshot DB + archive config + état backup vérifiés ; test de reconstruction VM restant) |
+| Scrub planifié, reprise après arrêt sale, récupération de montage/fsck, historique SMART/I‑O | ✅ **mergés dans `main` le 2026‑11‑09** (lot intégrité, §9 ; tests à exécuter) |
 
 **Ce que la revue du 2026‑11‑08 ajoute.** Le diagnostic de ce document reste
 juste : les vrais manques sont la **confiance** (mise à jour, isolation, audit,
@@ -984,3 +985,69 @@ dans `TESTING.md`.
   `last-result.json` (lisible) et `history.jsonl` (un objet JSON compact par
   ligne).
 - `TESTING.md` : section dédiée du 2026‑11‑09 (tests écrits, non exécutés).
+
+---
+
+## 9. Lot intégrité intégré — 2026‑11‑09
+
+> **Contexte.** Le lot fiabilité `d46a2a5` (P0‑5→P0‑12, P2‑10→P2‑14) vivait
+> sur une branche non mergée, basée 26 commits derrière `main`. Il est
+> désormais **fusionné dans `main`**, sans écraser les apports du comparatif
+> (média, audit, WS‑Discovery, OAuth2, mises à jour signées, etc.). Le
+> firmware DSM reste la référence de comportement ; les décisions §3.3 sont
+> inchangées.
+
+### 9.1 Ce que le merge apporte
+
+- **Reprise après incident** : `src/scrub.rs` (scrub planifié, reprise après
+  arrêt sale), `src/storage/recovery.rs` (assemblage mdadm, `btrfs rescue`,
+  `e2fsck`, montage `ro`), historique SMART/I/O (`src/disk_health.rs`,
+  `disk_health_scheduler.rs`), prédiction de panne et rapport hebdomadaire.
+- **Intégrité des écritures** : configuration atomique avec `.bak` et
+  self-heal (`src/storage/atomic.rs`), `testparm` avant remplacement,
+  `synchronous` SQLite explicite, snapshots applicatifs (quiescence).
+- **iSCSI** : politiques d’écriture, FUA/UNMAP, garde volume plein.
+- **Btrfs** : compression/`space_cache=v2`, balance et TRIM centralisés
+  (`src/btrfs_maintenance.rs`) — les options `fstab` ne sont plus dupliquées
+  dans `src/pools.rs`.
+- **RAID** : moniteur d’événements et suggestion de spare
+  (`src/raid_stability.rs`).
+- **Nouveaux écrans/onglets** : Health (SMART, I/O, prédiction), Storage
+  (compression Btrfs), iSCSI (I/O policy), Shares (acquittement, écritures
+  atomiques), Tasks (`scrub`, `restic_check`).
+
+### 9.2 Conflits sémantiques tranchés (le meilleur des deux)
+
+| Conflit | Décision |
+|---|---|
+| `SmbConfig.realm` : `String` (main) vs `Option<String>` (lot) | **`String`** avec `#[serde(default)]` : une seule forme, le code P2‑1 (validation, rendu, join) reste inchangé |
+| `SmbConfig` : champs de fiabilité (durable handles, chiffrement, signing, strict sync, AIO, oplocks) | **tous conservés**, rendus dans `smb.conf` et dans l’UI à côté de WS‑Discovery |
+| Tâches planifiées : `service` (main) vs `scrub`/`restic_check` (lot) | **union des 7 types** ; migration **093** reconstruit le CHECK SQLite et conserve l’historique |
+| Migrations 082–085 en collision (les deux branches) | migrations du lot **renumérotées 089–092** ; 086–088 (audit, service, quotas) inchangées ; 093 ajoutée |
+| `validated_backstore` : tuple (main) vs struct (lot) | **struct** `ValidatedBackstore` ; le chemin zvol renvoie désormais write policy/FUA/UNMAP |
+| `render_service_unit` (main) vs heredoc statique (lot) | **`render_service_unit`** conservé : le durcissement P2‑7 et le test qui le rend en direct restent la source de vérité |
+| `add_missing` / `create_backstore` : signatures | arguments de fiabilité (write policy/FUA/UNMAP) propagés aux deux appels |
+| i18n : clés `realm`/`idmap_range`/`nfs_security` dupliquées | une seule définition par langue, valeurs main conservées |
+| `supply_chain` (lot) vs validation P1‑27 (main) | **validation P1‑27** conservée dans `docker.rs`/`docker_catalog.rs` ; le module `supply_chain` reste disponible mais n’est plus le chemin d’installation |
+| UI Shares : ADS/join (main) vs toggles de fiabilité (lot) | **une seule carte** : ADS + realm/idmap + join/leave, puis WS‑Discovery, puis les toggles de fiabilité |
+| UI iSCSI : zvol + snapshots (main) vs I/O policy (lot) | **un seul éditeur** : kind zvol + sparse, write policy, FUA, UNMAP |
+
+### 9.3 Vérification
+
+- `cargo check --lib` et `cargo check --tests` : **verts** (compilation seule,
+  aucune suite exécutée).
+- `bash -n installer/install.sh` : vert.
+- `npm run check` : **0 erreur, 0 warning**.
+- `cargo test` (unitaire + 109 suites d’intégration), les E2E et
+  `cargo fmt --check` restent à lancer — même réserve que §8.4.
+- Test ajouté (écrit, non exécuté) :
+  `scheduled_tasks_scheduler::tests::all_seven_task_types_coexist_after_the_integrity_merge`.
+
+### 9.4 Reste après ce merge
+
+1. Exécuter la suite complète et corriger les échecs d’intégration éventuels
+   (les deux branches ne s’étaient jamais rencontrées).
+2. P2‑9 : reconstruction bare‑metal sur VM (FIAB‑05).
+3. FIAB‑02 (watchdog) et FIAB‑04 (DB/config hors disque système) — angles
+   morts de disponibilité identifiés par la revue fiabilité.
+4. Clé de production et AppArmor enforce (P2‑7/P2‑8).

@@ -102,7 +102,8 @@ handlers surface them as a `400` naming the offending field.
 | `options` (NFS, per share) | one token each: no whitespace/control/`( ) , # " '`, ≤ 16 entries | merged with the service defaults by class, then written as `path client(opt1,opt2)` |
 | NFS global `networks` | non-empty; `*` or a CIDR/IP/hostname; no whitespace/control/`( ) , # " ' [ ] ; \`, ≤ 64 chars | each entry becomes a client clause; a space or `)` forged another clause |
 | NFS global `default_access` / `root_squash` / `version` | `rw`\|`ro` · `root_squash`\|`no_root_squash`\|`all_squash` · `auto`\|`3`\|`4`\|`4.1`\|`4.2` | written as `ro`/`root_squash`/`vers=…`; an unknown value would be ignored by the kernel |
-| SMB global | `workgroup` one line ≤ 15, `security_mode` ∈ {user, share, ads} (`server` refused), `ads` requires a DNS `realm` + valid `idmap_range`, `protocol_version` ∈ {SMB2, SMB3} (**NT1 refused**), masks 3-4 octal digits, `additional_params` = allowlisted `key = value` | `[global]` directives are one line each; ADS now renders realm/idmap/winbind/ACL mapping, SMB1 is deprecated |
+| NFS global `security_flavor` | `sys`\|`krb5`\|`krb5i`\|`krb5p` | written as `sec=…`; Kerberos requires an explicit v4/4.1/4.2 and a configured keytab |
+| SMB global | `workgroup` one line ≤ 15, `security_mode` ∈ {user, share, ads} (`server` refused), `ads` requires a DNS `realm` + valid `idmap_range`, `protocol_version` ∈ {SMB2, SMB3} (**NT1 refused**), masks 3-4 octal digits, `additional_params` = allowlisted `key = value` | `[global]` directives are one line each; ADS renders realm/idmap/winbind/ACL mapping, SMB1 is deprecated |
 | FTP ports | `port`/passive bounds non-zero u16, `passive_ports` = `min` or `min-max` with min < max, `max_clients` ≥ 1 | parsed then formatted into `vsftpd.conf` |
 
 `PathGuard` still applies downstream (it guards the *filesystem* operations of
@@ -126,6 +127,17 @@ exactly one line:
   whose path basename matched, so two exports `/data/media` and `/backup/media`
   silently deleted each other. A name that matches several exports is now an
   explicit `400` listing the colliding paths instead of a wrong-line edit.
+
+### NFS Kerberos (P2-2, 2026-11-05)
+
+`security_flavor` selects `sec=sys` (default), `krb5`, `krb5i` or `krb5p`.
+Kerberos is written as a `sec=` option on every export and is refused unless
+the version is explicitly 4, 4.1 or 4.2 — `auto` cannot guarantee the kernel
+negotiates v4. Saving a Kerberos flavor also requires
+`/etc/krb5.keytab` and either `rpc.svcgssd` or `gssproxy`; a missing stack is
+an `Unavailable` refusal, not an export that silently mounts as AUTH_SYS.
+`idmapd`/`rpc.idmapd` must be configured by the operator for UID/GID mapping;
+HomeVault does not write `/etc/idmapd.conf`.
 
 ### Global SMB/NFS config is applied, not just persisted (2026-11-05)
 
@@ -154,21 +166,48 @@ behaviour); an explicit 3/4/4.2 is enforced. `validate_nfs_config` rejects an
 empty network list, an unknown version/squash value, and any network token
 that could open a second client clause.
 
-**SMB.** `security_mode=ads` is now a complete configuration, not a string
-that broke the daemon: `realm`, `idmap config *`, `winbind`, `map acl inherit`
-and `store dos attributes` are rendered, a DNS realm and a valid idmap range
-are required, and `POST /shares/smb/domain/join|leave` drives `net ads` with
-the password on stdin. `server` remains refused (it has no implementation).
+**SMB.** `security_mode` accepts **user**, **share** and **ads**. ADS is a
+real join path now: it requires a `realm` and an `idmap_range`, renders
+`security = ads`, `realm`, `idmap config * : backend = tdb`, the idmap range,
+`winbind use default domain = yes` and the Windows-ACL trio
+(`vfs objects = acl_xattr`, `map acl inherit = yes`,
+`store dos attributes = yes`). `server` (trusted-domain member) is still
+refused. A config with ADS but no realm, or with an invalid realm/idmap range,
+is refused before the file is written; a legacy config whose realm disappeared
+is normalized to `user` with a log warning.
+`POST /api/shares/smb/domain/join` runs `net ads join -U <account>` and
+`POST /api/shares/smb/domain/leave` runs `net ads leave`; the password is
+written on **stdin**, never in argv or the audit log, and a host without
+winbind gets a named refusal instead of a half-configured `security = ads`.
 `protocol_version` accepts **SMB2/SMB3** only (NT1 is gone), and `smb.conf`
-receives both `server min protocol` and `server max protocol = SMB3`.
+now receives both `server min protocol` and `server max protocol = SMB3`.
 `additional_params` are real `[global]` directives behind a short allowlist
 (`SMB_EXTRA_KEYS`), so `include`, section headers and unknown keys are refused.
 `multichannel` adds the `server multi channel support = yes|no` toggle (off by
-default; the UI explains that it needs a switch and two links). A config file
-written by an older build with `ads`/`domain`/`server` or `NT1` is normalized
-to `user`/`SMB3` when it is read (`normalize_smb_config`) unless the ADS realm
-is usable, with a warning in the log, so the form never renders an empty
-select.
+default; the UI explains that it needs a switch and two links). **Windows
+network discovery** (`ws_discovery`, on by default) is applied by
+`src/ws_discovery` — a sandboxed `wsdd2` unit, not a `smb.conf` directive; the
+card reports when the package is missing. The reliability
+switches are first-class too: **durable handles** (`durable handles`),
+**transport encryption** (`server smb encrypt = off|desired|required`),
+**server signing** (`server signing = off|desired|mandatory`), **strict sync**,
+**AIO read/write size**, `use sendfile`, and the three oplock levels. Enabling
+durable handles disables cross-protocol file locking, and `strict sync` trades
+throughput for durability; both hints are in the UI. A config file written by
+an older build with `server` or `NT1` is normalized to `user`/`SMB3` when it is
+read (`normalize_smb_config`), with a warning in the log, so the form never
+renders an empty select. Invalid `smb_encrypt`, `server_signing` or AIO sizes
+are normalized the same way.
+
+**Config writes are atomic and validated.** `write_config_file` now writes a
+temporary file in the same directory, `fsync`s it, renames it over the target
+(never `remove` then `rename`), and `fsync`s the parent directory. A `.bak` of
+the previous content is kept next to `smb.conf`/`/etc/exports`. A candidate
+`smb.conf` is checked with `testparm -s` **before** it replaces the working
+file, so a malformed save is refused instead of taking SMB down. At startup
+`SharesService::self_heal_smb_config` restores an empty/invalid `smb.conf`
+from its `.bak` (or the HomeVault defaults) when one exists, and leaves a valid
+file untouched.
 
 **FTP.** `allowed_users` was the same kind of ghost: persisted in `ftp.json`
 and never read. It is now written to `/etc/vsftpd.user_list` and wired through
@@ -183,7 +222,10 @@ without rendering it is a compile error**, and the tests
 `test_nfs_export_line_applies_networks_and_share_overrides` and
 `test_ftp_config_text_renders_every_field` pin the output.
 `test_smb_config_deserializes_without_multichannel` keeps old `smb.json` files
-loadable (`#[serde(default)]`).
+loadable (`#[serde(default)]`), and
+`test_write_config_file_replaces_atomically_and_keeps_a_backup` /
+`test_self_heal_restores_an_empty_smb_conf_from_its_backup` pin the durability
+contract.
 
 ### Windows network discovery (WS-Discovery, 2026-11-08)
 

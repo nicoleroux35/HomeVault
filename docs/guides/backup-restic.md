@@ -241,6 +241,13 @@ comes from `ResticService::parse_check_output`: the success sentinel is
 excluded, only `error:` / `fatal:` / `unable to` / `failed to` / `is damaged`
 lines count, and a non-zero exit with no recognizable marker still reports one.
 
+**Scheduled check.** Tasks → **Restic repository check** runs
+`restic check --read-data-subset=<subset>` on a cron (default `10%`, also
+`1/4` or `1G`). The task history is the last-check record; a failure is
+visible there and the task replans on the next tick. The manual
+`POST /restic/check` remains available for an immediate full or metadata
+check.
+
 ### Retention: count, age and size
 
 The scheduler applies the repository's policy (or the default `apply_to_all`

@@ -1079,6 +1079,26 @@ pub fn create_app(state: AppStateArc) -> Router {
         .route("/api/dashboard/health", get(handle_health_data))
         .route("/api/dashboard/server-details", get(handle_server_details))
         .route("/api/health", get(handle_health_endpoint))
+        .route(
+            "/api/health/disk-health",
+            get(crate::handlers::disk_health::handle_disk_findings),
+        )
+        .route(
+            "/api/health/disk-health/samples",
+            get(crate::handlers::disk_health::handle_disk_samples),
+        )
+        .route(
+            "/api/health/disk-health/sample",
+            post(crate::handlers::disk_health::handle_disk_sample),
+        )
+        .route(
+            "/api/health/disk-health/prediction",
+            get(crate::handlers::disk_health::handle_disk_prediction),
+        )
+        .route(
+            "/api/health/disk-health/predictions",
+            get(crate::handlers::disk_health::handle_disk_predictions),
+        )
         // Public liveness/readiness probes for external monitoring. Deliberately
         // unauthenticated and deliberately terse: no hostname, no disk names,
         // no version, no machine id. `/api/health` above stays authenticated
@@ -1427,6 +1447,27 @@ pub fn create_app(state: AppStateArc) -> Router {
             get(handle_importable_pools_list),
         )
         .route("/api/storage/import-pool", post(handle_import_pool))
+        // Per-share Btrfs compression policies (P2-11).
+        .route(
+            "/api/storage/btrfs/policies",
+            get(crate::handlers::btrfs_maintenance::handle_policies_list)
+                .put(crate::handlers::btrfs_maintenance::handle_policy_upsert)
+                .delete(crate::handlers::btrfs_maintenance::handle_policy_delete),
+        )
+        .route(
+            "/api/storage/btrfs/policies/apply",
+            post(crate::handlers::btrfs_maintenance::handle_policy_apply),
+        )
+        // Thin/thick ZFS zvols (P2-3).
+        .route(
+            "/api/storage/zfs/volumes",
+            get(crate::handlers::zfs_volumes::handle_volumes_list)
+                .post(crate::handlers::zfs_volumes::handle_volume_create),
+        )
+        .route(
+            "/api/storage/zfs/volumes/{*name}",
+            axum::routing::delete(crate::handlers::zfs_volumes::handle_volume_delete),
+        )
         // iSCSI targets (P3.3). The metadata is HomeVault's; only `apply`
         // (and turning the feature off) touches the host's `targetcli`.
         .route("/api/storage/iscsi", get(handle_iscsi_get))
@@ -1644,6 +1685,18 @@ pub fn create_app(state: AppStateArc) -> Router {
             "/api/snapshot-schedules/{id}/run",
             post(handle_snapshot_schedule_run_now),
         )
+        // Quiescence hooks (P2-13): pre/post argv around every scheduled
+        // snapshot. Admin mutations only; reads are available to a session.
+        .route(
+            "/api/storage/snapshot-hooks",
+            get(crate::handlers::snapshot_quiescence::handle_hooks_list)
+                .post(crate::handlers::snapshot_quiescence::handle_hook_create),
+        )
+        .route(
+            "/api/storage/snapshot-hooks/{id}",
+            axum::routing::put(crate::handlers::snapshot_quiescence::handle_hook_update)
+                .delete(crate::handlers::snapshot_quiescence::handle_hook_delete),
+        )
         // Backup destination (P2.3): receive restic backups, append-only, one
         // quota'd tenant per source (see docs/guides/backup-target.md).
         .route("/api/backup-target", get(handle_backup_target_state))
@@ -1684,6 +1737,11 @@ pub fn create_app(state: AppStateArc) -> Router {
         .route(
             "/api/replication/{id}/run",
             post(handle_replication_run_now),
+        )
+        .route(
+            "/api/replication/witness",
+            get(crate::handlers::replication_witness::handle_witness_status)
+                .post(crate::handlers::replication_witness::handle_witness_acquire),
         )
         // Immutable snapshots (P2.5): a lock enforced by `zfs hold` / a
         // read-only Btrfs subvolume, released early only with a typed phrase.
@@ -2019,6 +2077,8 @@ pub fn create_app(state: AppStateArc) -> Router {
             "/api/shares/ws-discovery",
             get(handle_ws_discovery_status),
         )
+        // Active Directory join/leave (P2-1). Credentials are posted, used on
+        // stdin by `net ads`, and never stored.
         .route("/api/shares/smb/domain/join", post(handle_smb_domain_join))
         .route(
             "/api/shares/smb/domain/leave",
@@ -3036,6 +3096,13 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         state.clone(),
     ));
     tokio::spawn(crate::snapshot_scheduler::run_scheduler_loop(state.clone()));
+    tokio::spawn(crate::disk_health_scheduler::run_scheduler_loop(
+        state.clone(),
+    ));
+    tokio::spawn(crate::iscsi_guard::run_scheduler_loop(state.clone()));
+    tokio::spawn(crate::raid_stability::run_monitor_loop(state.clone()));
+    tokio::spawn(crate::btrfs_maintenance::run_scheduler_loop(state.clone()));
+    tokio::spawn(crate::health_report::run_scheduler_loop(state.clone()));
     tokio::spawn(crate::snapshot_lock_scheduler::run_release_loop(
         state.clone(),
     ));
@@ -3115,6 +3182,46 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             }
         });
     }
+    // Boot recovery must run before the share services: a pool whose fstab
+    // entry did not mount is invisible to SMB/NFS until it is retried, and an
+    // ext4 volume left unclean needs its preen pass before any writer opens
+    // it. The whole pass is bounded; a wedged device must not hold startup.
+    let boot_state = crate::storage::recovery::begin_boot();
+    match tokio::time::timeout(
+        std::time::Duration::from_secs(120),
+        crate::storage::recovery::run(boot_state.unclean),
+    )
+    .await
+    {
+        Ok(report) => {
+            if !report.errors.is_empty() {
+                let message = report.errors.join("; ");
+                tracing::warn!(
+                    "Storage recovery: {} issue(s): {}",
+                    report.errors.len(),
+                    message
+                );
+                crate::notification_engine::notify(
+                    &state,
+                    "health.storage",
+                    "Storage recovery needed attention",
+                    &message,
+                    "warning",
+                    "storage",
+                    "storage_recovery",
+                )
+                .await;
+            }
+        }
+        Err(_) => tracing::warn!("Storage recovery did not finish within 120s; continuing startup"),
+    }
+    if boot_state.unclean {
+        crate::events::log_event_warn(
+            "Previous shutdown was not clean; a consistency check will run in the background",
+        );
+        tokio::spawn(crate::storage::recovery::scrub_after_unclean_shutdown());
+    }
+
     // Quota accounting is volatile kernel state: a reboot clears it while the
     // stored per-user limits stay in the database. `quotaon -aug` re-arms every
     // mount `/etc/fstab` declares with `usrquota`/`grpquota`, so a home limit
@@ -3321,7 +3428,7 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 let handle = axum_server::Handle::new();
                 let shutdown_handle = handle.clone();
                 tokio::spawn(async move {
-                    let _ = tokio::signal::ctrl_c().await;
+                    wait_for_shutdown_signal().await;
                     shutdown_handle.graceful_shutdown(Some(std::time::Duration::from_secs(10)));
                 });
                 // Keep the live handle so a renewed certificate can be pushed
@@ -3464,15 +3571,17 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     Ok(())
 }
 
-/// Waits for Ctrl+C (or the equivalent shutdown signal from systemd), then kills
+/// Waits for Ctrl+C **or SIGTERM** (the signal systemd sends), then kills
 /// every live terminal session, the aria2 daemon it started and every rclone
 /// mount this process owns, so none of them outlives the process that's
-/// supposed to own them (ROADMAP 17.3, 16.2).
+/// supposed to own them (ROADMAP 17.3, 16.2). Writing the clean-shutdown
+/// marker last is what tells the next boot it does not need an automatic
+/// consistency check.
 async fn shutdown_signal(
     pty_manager: Arc<crate::handlers::terminal_pty::PtyManager>,
     downloader: crate::handlers::downloader::Aria2State,
 ) {
-    let _ = tokio::signal::ctrl_c().await;
+    wait_for_shutdown_signal().await;
     tracing::info!(
         "Shutdown signal received, cleaning up terminal sessions, the downloader and rclone mounts..."
     );
@@ -3489,4 +3598,34 @@ async fn shutdown_signal(
     // the process is the state the old fire-and-forget `rclone --daemon`
     // guaranteed (ROADMAP 16.2).
     crate::handlers::rclone::shutdown_mounts().await;
+
+    if let Err(e) = crate::storage::recovery::mark_clean_shutdown() {
+        tracing::warn!("Could not write the clean-shutdown marker: {e}");
+    }
+}
+
+/// First SIGINT or SIGTERM wins. SIGTERM is the one systemd actually sends on
+/// `systemctl stop`; handling only Ctrl+C made every service stop look like a
+/// crash to the next boot.
+async fn wait_for_shutdown_signal() {
+    let mut sigterm = match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+    {
+        Ok(signal) => Some(signal),
+        Err(e) => {
+            tracing::warn!("Could not install the SIGTERM handler: {e}");
+            None
+        }
+    };
+
+    tokio::select! {
+        _ = tokio::signal::ctrl_c() => {}
+        _ = async {
+            match sigterm.as_mut() {
+                Some(signal) => {
+                    signal.recv().await;
+                }
+                None => std::future::pending::<()>().await,
+            }
+        } => {}
+    }
 }

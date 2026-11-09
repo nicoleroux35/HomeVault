@@ -316,6 +316,30 @@ problem) and the hold tag.
   the lapsed wording, the typed-confirmation gate, and that a cancelled
   release fires no request. Mutations are mocked — no hold is ever placed.
 
+## Application quiescence policy (P2-13, 2026-11-05)
+
+`src/snapshot_quiescence.rs` defines what a snapshot promises:
+
+- `Consistency::CrashConsistent` — the filesystem was snapped live; open
+  applications may need recovery.
+- `Consistency::ApplicationConsistent` — every configured pre-hook ran
+  successfully before the snapshot.
+
+`plan(requested, available_hooks, missing)` returns the hooks to run and the
+honest consistency label. `after_hook_failure` downgrades a plan whose
+pre-hook failed — a snapshot is never described as application-consistent
+when the hook did not succeed.
+
+Hooks are stored in `snapshot_quiescence_hooks` (migration 092) and managed
+from Storage → Snapshots or `/api/storage/snapshot-hooks`. Each hook is an
+argv pair (`pre`, `post`), never a shell command; the executable must be
+absolute, a command has at most 32 arguments, and every hook gets a 60 s
+deadline. Enabled hooks run in name order before the snapshot and in reverse
+order after it. A failed pre-hook does not abort the snapshot: the run is
+recorded as `crash-consistent` with the failure reason, and the post hooks of
+the attempted hooks still run. The run summary always states
+`application-consistent` or `crash-consistent: <reason>`.
+
 ## Related
 
 - [Storage](./storage.md), [Backup / Restic](./backup-restic.md),

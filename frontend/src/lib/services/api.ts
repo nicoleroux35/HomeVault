@@ -1382,6 +1382,69 @@ class ApiClient {
     return this.get('/health', { cache: false }); // Never cache health
   }
 
+  /** Active disk-health findings (`GET /api/health/disk-health`). */
+  async diskHealthFindings() {
+    return this.get('/health/disk-health', { cache: false });
+  }
+
+  /** Per-disk S.M.A.R.T. history (`GET /api/health/disk-health/samples`). */
+  async diskHealthSamples(serial: string, limit = 500) {
+    return this.get(
+      `/health/disk-health/samples?serial=${encodeURIComponent(serial)}&limit=${limit}`,
+      { cache: false },
+    );
+  }
+
+  /** Run one disk-health sample now (admin). */
+  async diskHealthSample() {
+    return this.post('/health/disk-health/sample', {});
+  }
+
+  /** Regression trends for every sampled disk (`GET /api/health/disk-health/predictions`). */
+  async diskHealthPredictions() {
+    return this.get('/health/disk-health/predictions', { cache: false });
+  }
+
+  /** Per-path Btrfs compression policies (`GET /api/storage/btrfs/policies`). */
+  async btrfsPolicies() {
+    return this.get('/storage/btrfs/policies', { cache: false });
+  }
+
+  /** Create or update one Btrfs compression policy (admin). */
+  async saveBtrfsPolicy(path: string, level: string, defrag: boolean) {
+    return this.put('/storage/btrfs/policies', { path, level, defrag });
+  }
+
+  /** Delete a Btrfs compression policy (admin). */
+  async deleteBtrfsPolicy(path: string) {
+    return this.delete(`/storage/btrfs/policies?path=${encodeURIComponent(path)}`);
+  }
+
+  /** Apply a Btrfs compression policy now (admin). */
+  async applyBtrfsPolicy(path: string) {
+    return this.post('/storage/btrfs/policies/apply', { path });
+  }
+
+  /** Snapshot quiescence hooks (`GET /api/storage/snapshot-hooks`). */
+  async snapshotHooks() {
+    return this.get('/storage/snapshot-hooks', { cache: false });
+  }
+
+  /** Create a snapshot quiescence hook (admin). */
+  async createSnapshotHook(name: string, pre: string[], post: string[]) {
+    return this.post('/storage/snapshot-hooks', { name, pre, post });
+  }
+
+  /** Update a snapshot quiescence hook (admin). */
+  async updateSnapshotHook(id: string, name: string, pre: string[], post: string[], enabled: boolean) {
+    return this.put(`/storage/snapshot-hooks/${id}`, { name, pre, post, enabled });
+  }
+
+  /** Delete a snapshot quiescence hook (admin). */
+  async deleteSnapshotHook(id: string) {
+    return this.delete(`/storage/snapshot-hooks/${id}`);
+  }
+
   // ==============================================
   // Settings (all categories)
   // ==============================================
@@ -4931,7 +4994,7 @@ export interface DirectoryListing {
 export interface ScheduledTask {
   id: string;
   name: string;
-  task_type: 'command' | 'snapshot' | 'smart_test' | 'power';
+  task_type: 'command' | 'snapshot' | 'smart_test' | 'scrub' | 'restic_check' | 'power';
   cron: string;
   payload: string;
   enabled: boolean;
