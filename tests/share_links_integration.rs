@@ -566,7 +566,11 @@ async fn test_targeted_signed_in_link_only_opens_for_named_accounts() {
         None,
     )
     .await;
-    assert_eq!(status, StatusCode::UNAUTHORIZED, "an unnamed account is refused");
+    assert_eq!(
+        status,
+        StatusCode::UNAUTHORIZED,
+        "an unnamed account is refused"
+    );
     assert_eq!(body["success"], json!(false), "{body}");
 
     // A target list on a public link is a 400, not a silently ignored field.
@@ -584,7 +588,8 @@ async fn test_targeted_signed_in_link_only_opens_for_named_accounts() {
 /// Revoking the owner's grant kills the links they already minted: a link is a
 /// standing grant, not a permanent capability.
 #[tokio::test]
-async fn test_revoking_the_owner_grant_kills_an_existing_link() {    let h = setup().await;
+async fn test_revoking_the_owner_grant_kills_an_existing_link() {
+    let h = setup().await;
     let mut router = router(h.state.clone());
     create_test_user(&h.state, "bob", "pass", 1).await;
     grant_folder(&h.state, "bob", &h.root.to_string_lossy(), "read").await;
@@ -626,7 +631,11 @@ async fn test_revoking_the_owner_grant_kills_an_existing_link() {    let h = set
         None,
     )
     .await;
-    assert_eq!(status, StatusCode::BAD_REQUEST, "a revoked grant kills the link");
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "a revoked grant kills the link"
+    );
     assert_eq!(body["success"], json!(false), "{body}");
 }
 

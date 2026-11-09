@@ -145,10 +145,7 @@ pub fn validate_interval(hours: u32) -> Result<u32, String> {
 
 /// Runs one update pass now and records the outcome. `actor` is `scheduler` or
 /// the admin's name; the shared updater uses it only for the audit sentence.
-pub async fn run_now(
-    state: &Arc<AppState>,
-    actor: &str,
-) -> Result<CatalogUpdateReport, String> {
+pub async fn run_now(state: &Arc<AppState>, actor: &str) -> Result<CatalogUpdateReport, String> {
     if !crate::docker::DockerService::is_available() {
         return Err("Docker is not available on this host".to_string());
     }
@@ -190,17 +187,13 @@ async fn run_due(state: &Arc<AppState>) -> Result<(), String> {
         .and_then(|value| DateTime::parse_from_rfc3339(value).ok())
         .map(|value| value.with_timezone(&Utc));
 
-    match plan_tick(
-        settings.enabled,
-        last_run,
-        now,
-        settings.interval_hours,
-    ) {
+    match plan_tick(settings.enabled, last_run, now, settings.interval_hours) {
         TickPlan::Disabled | TickPlan::NotDue => Ok(()),
         TickPlan::Baseline => {
             settings.last_run_at = Some(now.to_rfc3339());
-            settings.last_result =
-                Some("baseline set; the first scheduled update runs after one interval".to_string());
+            settings.last_result = Some(
+                "baseline set; the first scheduled update runs after one interval".to_string(),
+            );
             save_settings(&settings)
         }
         TickPlan::Due => match run_now(state, "scheduler").await {

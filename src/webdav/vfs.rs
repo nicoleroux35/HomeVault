@@ -62,7 +62,9 @@ pub struct WebdavCreds {
     pub is_admin: bool,
     /// Effective level per granted share (`deny` is stored, not dropped, so a
     /// deny row can never accidentally read as "no row = full access").
-    pub granted: Arc<std::collections::HashMap<String, crate::storage::resource_share_repo::ResourcePermission>>,
+    pub granted: Arc<
+        std::collections::HashMap<String, crate::storage::resource_share_repo::ResourcePermission>,
+    >,
 }
 
 impl WebdavCreds {
@@ -77,7 +79,10 @@ impl WebdavCreds {
         }
         self.granted
             .get(share)
-            .map(|level| *level != crate::storage::resource_share_repo::ResourcePermission::Deny && level.implies(need))
+            .map(|level| {
+                *level != crate::storage::resource_share_repo::ResourcePermission::Deny
+                    && level.implies(need)
+            })
             .unwrap_or(false)
     }
 }
@@ -399,7 +404,12 @@ mod tests {
         ));
     }
 
-    fn creds_levels(levels: &[(&str, crate::storage::resource_share_repo::ResourcePermission)]) -> WebdavCreds {
+    fn creds_levels(
+        levels: &[(
+            &str,
+            crate::storage::resource_share_repo::ResourcePermission,
+        )],
+    ) -> WebdavCreds {
         WebdavCreds {
             username: "alice".to_string(),
             is_admin: false,
@@ -418,7 +428,11 @@ mod tests {
         let (fs, _dir) = fs_with(&["photos"]);
         let path = DavPath::new("/photos/a.txt").unwrap();
         assert!(matches!(
-            fs.local_for(&path, &creds_levels(&[("photos", ResourcePermission::Deny)]), Need::Read),
+            fs.local_for(
+                &path,
+                &creds_levels(&[("photos", ResourcePermission::Deny)]),
+                Need::Read
+            ),
             Err(FsError::Forbidden)
         ));
         assert!(fs

@@ -34,8 +34,8 @@ use std::sync::{Arc, LazyLock};
 use std::time::{Duration, Instant};
 use tokio::io::AsyncWriteExt;
 
-use crate::handlers::AppState;
 use crate::handlers::share_links::{generate_share_token, token_is_well_formed};
+use crate::handlers::AppState;
 use crate::storage::{FileRequest, FileRequestRepository};
 use crate::utils::ResponseHelper;
 
@@ -203,17 +203,18 @@ pub async fn handle_file_request_create(
     headers: HeaderMap,
     axum::extract::Json(req): axum::extract::Json<FileRequestCreateRequest>,
 ) -> Response {
-    let session_token = match crate::handlers::admin_guard::require_session_token(&state, &headers).await {
-        Ok(token) => token,
-        Err(resp) => return resp,
-    };
+    let session_token =
+        match crate::handlers::admin_guard::require_session_token(&state, &headers).await {
+            Ok(token) => token,
+            Err(resp) => return resp,
+        };
     let session = match state.auth.get_session(&session_token).await {
         Ok(session) => session,
         Err(_) => return ResponseHelper::json_unauthorized("Session invalid".to_string()),
     };
 
-    let Some(path) = crate::handlers::explorer::validate_path_access(&state, &req.path, &session)
-        .await
+    let Some(path) =
+        crate::handlers::explorer::validate_path_access(&state, &req.path, &session).await
     else {
         return ResponseHelper::json_forbidden(
             "Access denied: path outside allowed directory".to_string(),
@@ -237,9 +238,7 @@ pub async fn handle_file_request_create(
         .map(|m| m.is_dir())
         .unwrap_or(false)
     {
-        return ResponseHelper::json_error(
-            "A file request must target a folder".to_string(),
-        );
+        return ResponseHelper::json_error("A file request must target a folder".to_string());
     }
     let path = tokio::fs::canonicalize(&path)
         .await
@@ -257,10 +256,7 @@ pub async fn handle_file_request_create(
     if !(0..=3650).contains(&expires_days) {
         return ResponseHelper::json_error("expires_days must be between 0 and 3650".to_string());
     }
-    if req
-        .max_uploads
-        .is_some_and(|n| !(1..=100_000).contains(&n))
-    {
+    if req.max_uploads.is_some_and(|n| !(1..=100_000).contains(&n)) {
         return ResponseHelper::json_error("max_uploads must be between 1 and 100000".to_string());
     }
     if req
@@ -279,9 +275,7 @@ pub async fn handle_file_request_create(
         .transpose()
     {
         Ok(hash) => hash,
-        Err(_) => {
-            return ResponseHelper::json_error("Could not protect this request".to_string())
-        }
+        Err(_) => return ResponseHelper::json_error("Could not protect this request".to_string()),
     };
 
     let repo = FileRequestRepository::new(state.db.pool());
@@ -320,9 +314,9 @@ pub async fn handle_file_requests_list(
     };
     let repo = FileRequestRepository::new(state.db.pool());
     match repo.list_by_user(&username).await {
-        Ok(requests) => ResponseHelper::json_success(
-            requests.into_iter().map(to_view).collect::<Vec<_>>(),
-        ),
+        Ok(requests) => {
+            ResponseHelper::json_success(requests.into_iter().map(to_view).collect::<Vec<_>>())
+        }
         Err(e) => ResponseHelper::json_error(format!("Failed to list file requests: {e}")),
     }
 }
@@ -411,22 +405,19 @@ pub async fn handle_file_request_upload(
     // The owner's grant is the authority behind this link: a revoked write
     // grant (or a blocked Explorer app) stops the public upload too.
     let owner_is_admin = state.auth.is_admin(&request.username).await;
-    let owner_allowed = crate::handlers::resource_shares::explorer_app_allowed(
-        &state,
-        &request.username,
-    )
-    .await
-        && crate::handlers::explorer::restricted_response(
-            &state,
-            &request.username,
-            owner_is_admin,
-            std::path::Path::new(&request.path),
-            false,
-            false,
-            true,
-        )
-        .await
-        .is_none();
+    let owner_allowed =
+        crate::handlers::resource_shares::explorer_app_allowed(&state, &request.username).await
+            && crate::handlers::explorer::restricted_response(
+                &state,
+                &request.username,
+                owner_is_admin,
+                std::path::Path::new(&request.path),
+                false,
+                false,
+                true,
+            )
+            .await
+            .is_none();
     if !owner_allowed {
         return unavailable_page();
     }

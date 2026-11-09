@@ -13,7 +13,7 @@
 | Frontend `npm run build` | **OK** (106 precompressed files) |
 | E2E (health, storage, backup, Firefox, workers=1) | **125 passed / 4 skipped / 0 failed** (`E2E_EXIT=0`) |
 | E2E (shares, tasks, iscsi — merge surfaces) | **91 passed / 1 skipped / 0 failed** (`E2E_EXIT=0`) |
-| `cargo fmt --check` | **fails: 134 pre-existing rustfmt diffs** (toolchain drift; not introduced by this pass) |
+| `cargo fmt --check` | **0 diff** (applied on 2026-11-09; 134 pre-existing diffs corrected) |
 
 The first executed run found real defects and stale tests, all fixed before the
 final green run:
@@ -64,7 +64,9 @@ final green run:
 | Installer (`installer/tests/update-engine.test.sh`) | +1 assertion | `history.jsonl` has exactly one line per result and that line parses with `json.loads` |
 | E2E (`tests/e2e/docker/docker.spec.ts`) | unchanged | 15.1/15.3b already cover installing a media app on a share with GPU opt-in; **not re-run** |
 
-**Still to run before calling these "delivered"** (`COMPARAISON_DSM_VS_HOMEVAULT.md` §6.4): `cargo test` (unit + the 109 integration suites), `cargo fmt --check`, `npm run check && npm run build`, the targeted E2E specs, and the two installer suites.
+**Verification done on 2026-11-09** (see the run section above): `cargo test`
+(unit + 109 integration suites), `cargo fmt --check`, `npm run check && npm
+run build`, and the targeted E2E specs all pass.
 
 ## 2026-11-09 — integrity lot merged into main (written, not run)
 
@@ -87,9 +89,8 @@ final green run:
 | Shares UI | ADS/join block + WS-Discovery + reliability toggles in one card |
 | Tests realigned | `nfs_export_line` now takes the client-rules slice; `SmbConfig` test literals carry the union of fields |
 
-**Still to run:** `cargo fmt --check`, `cargo test` (unit + 109 integration
-suites), the E2E specs for Shares/iSCSI/Tasks/Storage/Health, the two
-installer suites, and `npm run build`.
+**Verification done on 2026-11-09** (see the executed-run section at the top):
+`cargo test`, `cargo fmt --check`, npm check/build and the E2E specs pass.
 
 ## 2026-11-09 — systemd watchdog heartbeat (FIAB-02, written, not run)
 

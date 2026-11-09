@@ -250,10 +250,7 @@ async fn test_audit_filters_ordering_and_pagination() {
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["data"]["total"], json!(3));
     assert_eq!(body["data"]["entries"][0]["actor"], json!("bob"));
-    assert_eq!(
-        body["data"]["entries"][1]["action"],
-        json!("auth.login")
-    );
+    assert_eq!(body["data"]["entries"][1]["action"], json!("auth.login"));
     assert_eq!(
         body["data"]["entries"][2]["action"],
         json!("explorer.write")
@@ -320,10 +317,7 @@ async fn test_audit_filters_ordering_and_pagination() {
     .await;
     assert_eq!(body["data"]["total"], json!(3));
     assert_eq!(body["data"]["entries"].as_array().unwrap().len(), 1);
-    assert_eq!(
-        body["data"]["entries"][0]["action"],
-        json!("auth.login")
-    );
+    assert_eq!(body["data"]["entries"][0]["action"], json!("auth.login"));
 
     let (status, _) = send(
         &mut router,

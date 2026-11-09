@@ -51,9 +51,14 @@ pub struct WsDiscoveryStatus {
 /// stable and it is the Samba companion; the Python `wsdd` has a different
 /// command line, and guessing it would produce a daemon that does not start.
 pub fn binary_path() -> Option<&'static str> {
-    ["/usr/sbin/wsdd2", "/usr/bin/wsdd2", "/sbin/wsdd2", "/bin/wsdd2"]
-        .into_iter()
-        .find(|path| Path::new(path).is_file())
+    [
+        "/usr/sbin/wsdd2",
+        "/usr/bin/wsdd2",
+        "/sbin/wsdd2",
+        "/bin/wsdd2",
+    ]
+    .into_iter()
+    .find(|path| Path::new(path).is_file())
 }
 
 pub fn available() -> bool {

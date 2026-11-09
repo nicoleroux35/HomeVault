@@ -191,10 +191,7 @@ fn shares_router(state: Arc<AppState>) -> Router {
             "/api/shares/{name}/smb/previous-versions",
             put(handle_smb_previous_versions_set),
         )
-        .route(
-            "/api/shares/smb/domain/join",
-            post(handle_smb_domain_join),
-        )
+        .route("/api/shares/smb/domain/join", post(handle_smb_domain_join))
         .route(
             "/api/shares/smb/domain/leave",
             post(handle_smb_domain_leave),
@@ -1396,7 +1393,14 @@ async fn test_logical_share_views_and_previous_versions_are_admin_reads() {
     let mut r = shares_router(state);
     let token = login(&mut r, "admin1", "Passw0rd!123").await;
 
-    let (status, body) = send(&mut r, Method::GET, "/api/shares/definitions", Some(&token), None).await;
+    let (status, body) = send(
+        &mut r,
+        Method::GET,
+        "/api/shares/definitions",
+        Some(&token),
+        None,
+    )
+    .await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert!(body["data"].is_array(), "{body}");
 
@@ -1476,7 +1480,14 @@ async fn test_logical_permissions_and_matrix_are_clean_for_an_unknown_share() {
     assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
     assert_eq!(body["success"], json!(false), "{body}");
 
-    let (status, body) = send(&mut r, Method::GET, "/api/shares/permissions", Some(&token), None).await;
+    let (status, body) = send(
+        &mut r,
+        Method::GET,
+        "/api/shares/permissions",
+        Some(&token),
+        None,
+    )
+    .await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert!(body["data"].is_array(), "{body}");
 }

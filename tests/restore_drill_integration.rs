@@ -286,7 +286,10 @@ async fn test_restore_drill_is_ready_with_a_valid_snapshot_and_archive() {
     assert_eq!(body["data"]["report"]["database"]["ok"], json!(true));
     assert_eq!(body["data"]["report"]["database"]["verified"], json!(true));
     assert_eq!(body["data"]["report"]["config"]["ok"], json!(true));
-    assert_eq!(body["data"]["report"]["data_backup"]["verified"], json!(true));
+    assert_eq!(
+        body["data"]["report"]["data_backup"]["verified"],
+        json!(true)
+    );
 
     // The report is persisted and readable without re-running the drill.
     let (status, body) = send(

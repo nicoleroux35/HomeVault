@@ -221,7 +221,12 @@ async fn bindings_for(name: &str) -> Result<Vec<Share>, String> {
         .await
         .map_err(|e| format!("share list worker failed: {e}"))?
         .map_err(|e| e.to_string())
-        .map(|shares| shares.into_iter().filter(|share| share.name == wanted).collect())
+        .map(|shares| {
+            shares
+                .into_iter()
+                .filter(|share| share.name == wanted)
+                .collect()
+        })
 }
 
 /// Lists the union of grants across every protocol binding of a logical
@@ -274,7 +279,9 @@ pub async fn handle_share_permissions_all_list(
                     }
                 }
             }
-            Err(e) => return ResponseHelper::json_error(format!("Failed to list permissions: {e}")),
+            Err(e) => {
+                return ResponseHelper::json_error(format!("Failed to list permissions: {e}"))
+            }
         }
     }
     ResponseHelper::json_success(out)
@@ -533,10 +540,7 @@ pub async fn handle_share_permissions_report(
     }
     axum::response::Response::builder()
         .status(axum::http::StatusCode::OK)
-        .header(
-            axum::http::header::CONTENT_TYPE,
-            "text/csv; charset=utf-8",
-        )
+        .header(axum::http::header::CONTENT_TYPE, "text/csv; charset=utf-8")
         .header(
             axum::http::header::CONTENT_DISPOSITION,
             "attachment; filename=\"homevault-permissions.csv\"",

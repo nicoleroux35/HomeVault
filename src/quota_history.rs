@@ -24,8 +24,8 @@
 //! Transfer-quota usage history and threshold alerts.
 
 use crate::handlers::AppState;
-use crate::storage::NotificationRepository;
 use crate::storage::transfer_quota_repo::{TransferQuota, TransferQuotaRepository};
+use crate::storage::NotificationRepository;
 use chrono::Utc;
 use serde::Serialize;
 use sqlx::{Row, SqlitePool};

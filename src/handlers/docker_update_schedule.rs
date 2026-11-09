@@ -97,10 +97,7 @@ pub async fn handle_put_schedule(
 }
 
 /// `POST /api/docker/updates/run-now` — one pass, regardless of the schedule.
-pub async fn handle_run_now(
-    State(state): State<Arc<AppState>>,
-    headers: HeaderMap,
-) -> Response {
+pub async fn handle_run_now(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Response {
     let admin = match crate::handlers::admin_guard::require_admin(&state, &headers).await {
         Ok(admin) => admin,
         Err(response) => return response,

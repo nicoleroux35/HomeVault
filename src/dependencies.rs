@@ -1930,11 +1930,9 @@ render_service_unit "$2" "$3" "" "$4"
             .arg(run_home);
         // Bounded like every production subprocess (ROADMAP X.9): the source
         // guard scans the whole tree, tests included.
-        let output = crate::utils::process::run_timed(
-            &mut command,
-            std::time::Duration::from_secs(10),
-        )
-        .expect("bash must be available to render the installer unit");
+        let output =
+            crate::utils::process::run_timed(&mut command, std::time::Duration::from_secs(10))
+                .expect("bash must be available to render the installer unit");
         assert!(
             output.status.success(),
             "render_service_unit failed: {}",

@@ -364,7 +364,8 @@ impl AclService {
             if seen > Self::MAX_RECURSIVE_ENTRIES {
                 return Err(AclError::CommandFailed(format!(
                     "recursive ACL refused: more than {} entries under {}",
-                    Self::MAX_RECURSIVE_ENTRIES, path
+                    Self::MAX_RECURSIVE_ENTRIES,
+                    path
                 )));
             }
             let metadata = std::fs::symlink_metadata(&current)?;
@@ -396,10 +397,7 @@ impl AclService {
 
     /// Apply default ACL entries to a path and every descendant directory
     /// (default ACLs are meaningless on regular files).
-    pub fn set_default_acl_recursive(
-        path: &str,
-        entries: &[AclEntry],
-    ) -> Result<(), AclError> {
+    pub fn set_default_acl_recursive(path: &str, entries: &[AclEntry]) -> Result<(), AclError> {
         Self::walk_tree(path, |entry, is_dir| {
             if is_dir {
                 Self::set_default_acl(&entry.to_string_lossy(), entries)?;

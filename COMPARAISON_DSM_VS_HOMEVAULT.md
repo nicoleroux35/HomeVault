@@ -1223,7 +1223,7 @@ dans `TESTING.md`.
 | Frontend `npm run check` / `build` | **0 erreur, 0 warning** / build OK |
 | E2E Health + Storage + Backup (Firefox, 1 worker) | **125 passés, 4 ignorés, 0 échec** |
 | E2E Shares + Tasks + iSCSI | **91 passés, 1 ignoré, 0 échec** |
-| `cargo fmt --check` | **rouge** : 134 diffs préexistants (dérive `rustfmt`, hors périmètre) |
+| `cargo fmt --check` | **0 diff** (les 134 diffs de dérive `rustfmt` ont été corrigés) |
 
 **Défauts réels corrigés par ce run** : indentation du bloc GPU (test), niveau
 de compression Btrfs nu (`15` → `zstd:15`), borne basse `idmap` à 0 refusée,

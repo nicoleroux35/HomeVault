@@ -889,7 +889,9 @@ impl SetupService {
         let sftp_conf = "/etc/homevault-sftp/sshd_config";
         let sftp_service = "/etc/systemd/system/homevault-sftp.service";
         let ftp_jails_base = crate::config::paths::ftp_jails_dir().display().to_string();
-        let ftp_users_base = crate::config::paths::ftp_user_conf_dir().display().to_string();
+        let ftp_users_base = crate::config::paths::ftp_user_conf_dir()
+            .display()
+            .to_string();
         let ftp_jails_glob = format!("{ftp_jails_base}/*");
         let ftp_users_glob = format!("{ftp_users_base}/*");
         // DHCP + local DNS share one root-owned dnsmasq drop-in

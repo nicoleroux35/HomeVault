@@ -211,8 +211,7 @@ use crate::handlers::{
         handle_share_permission_revoke, handle_share_permissions_all_list,
         handle_share_permissions_all_sync, handle_share_permissions_list,
         handle_share_permissions_matrix, handle_share_permissions_report,
-        handle_share_permissions_sync,
-        handle_user_permissions, handle_user_permissions_effective,
+        handle_share_permissions_sync, handle_user_permissions, handle_user_permissions_effective,
     },
     power::{
         handle_power_action, handle_power_governor_set, handle_power_spindown_apply,
@@ -299,18 +298,16 @@ use crate::handlers::{
     shares::{
         handle_ftp_config_get, handle_ftp_config_update, handle_nfs_config_get,
         handle_nfs_config_update, handle_nfs_rules_get, handle_nfs_rules_set,
-        handle_sftp_config_get, handle_sftp_config_update,
-        handle_sftp_grantees_list, handle_sftp_key_set, handle_sftp_rebuild,
-        handle_share_bind_protocol, handle_share_create, handle_share_definition_create,
-        handle_share_definitions_list, handle_share_delete, handle_share_get,
-        handle_share_service_restart, handle_share_unbind_protocol, handle_smb_domain_join,
-        handle_smb_domain_leave,
-        handle_share_service_start, handle_share_service_stop, handle_share_toggle,
+        handle_sftp_config_get, handle_sftp_config_update, handle_sftp_grantees_list,
+        handle_sftp_key_set, handle_sftp_rebuild, handle_share_bind_protocol, handle_share_create,
+        handle_share_definition_create, handle_share_definitions_list, handle_share_delete,
+        handle_share_get, handle_share_service_restart, handle_share_service_start,
+        handle_share_service_stop, handle_share_toggle, handle_share_unbind_protocol,
         handle_share_update, handle_shares_list, handle_smb_config_get, handle_smb_config_update,
-        handle_smb_previous_versions_list, handle_smb_previous_versions_set,
-        handle_smb_recycle_list, handle_smb_recycle_set, handle_smb_time_machine_list,
-        handle_smb_time_machine_set, handle_webdav_config_get, handle_webdav_config_update,
-        handle_ws_discovery_status,
+        handle_smb_domain_join, handle_smb_domain_leave, handle_smb_previous_versions_list,
+        handle_smb_previous_versions_set, handle_smb_recycle_list, handle_smb_recycle_set,
+        handle_smb_time_machine_list, handle_smb_time_machine_set, handle_webdav_config_get,
+        handle_webdav_config_update, handle_ws_discovery_status,
     },
     shortcuts::handle_fetch_metadata,
     snapshot_locks::{
@@ -1501,9 +1498,7 @@ pub fn create_app(state: AppStateArc) -> Router {
         )
         .route(
             "/api/storage/iscsi/backstores/{id}/snapshots/{snapshot}",
-            axum::routing::delete(
-                crate::handlers::iscsi::handle_iscsi_backstore_snapshot_delete,
-            ),
+            axum::routing::delete(crate::handlers::iscsi::handle_iscsi_backstore_snapshot_delete),
         )
         .route(
             "/api/storage/iscsi/backstores/{id}/clone",
@@ -2041,10 +2036,7 @@ pub fn create_app(state: AppStateArc) -> Router {
             "/api/shares/definitions",
             get(handle_share_definitions_list).post(handle_share_definition_create),
         )
-        .route(
-            "/api/shares/{name}/bind",
-            post(handle_share_bind_protocol),
-        )
+        .route("/api/shares/{name}/bind", post(handle_share_bind_protocol))
         .route(
             "/api/shares/{name}/bind/{share_type}",
             axum::routing::delete(handle_share_unbind_protocol),
@@ -2083,10 +2075,7 @@ pub fn create_app(state: AppStateArc) -> Router {
         .route("/api/shares/smb/config", put(handle_smb_config_update))
         // WS-Discovery status (P1): discovery-only daemon managed by the SMB
         // settings; the toggle itself travels in the SmbConfig payload.
-        .route(
-            "/api/shares/ws-discovery",
-            get(handle_ws_discovery_status),
-        )
+        .route("/api/shares/ws-discovery", get(handle_ws_discovery_status))
         // Active Directory join/leave (P2-1). Credentials are posted, used on
         // stdin by `net ads`, and never stored.
         .route("/api/shares/smb/domain/join", post(handle_smb_domain_join))
@@ -2537,10 +2526,7 @@ pub fn create_app(state: AppStateArc) -> Router {
         // System Journal
         // P1-18: queryable audit trail (admin-only). The Journal screen reads
         // it through the `audit` source; these routes add filters and export.
-        .route(
-            "/api/audit",
-            get(crate::handlers::audit::handle_audit_list),
-        )
+        .route("/api/audit", get(crate::handlers::audit::handle_audit_list))
         .route(
             "/api/audit/export",
             get(crate::handlers::audit::handle_audit_export),

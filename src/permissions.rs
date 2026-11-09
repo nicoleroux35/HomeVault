@@ -251,7 +251,8 @@ impl PermissionService {
         pool: Arc<sqlx::SqlitePool>,
     ) -> Result<(), PermissionError> {
         Self::revoke_all_permissions(share_path, true)?;
-        Self::apply_share_permissions(share_name, share_type, share_path, Arc::clone(&pool)).await?;
+        Self::apply_share_permissions(share_name, share_type, share_path, Arc::clone(&pool))
+            .await?;
         if ShareType::parse(share_type) == Some(ShareType::Smb) {
             Self::refresh_smb_access(share_name, Arc::clone(&pool)).await?;
         }
@@ -462,12 +463,9 @@ impl PermissionService {
         // database row — otherwise a stale permission could never be cleaned
         // up from the UI. It's still attempted first so the common case
         // (path exists, ACL present) actually clears the real ACL.
-        if let Err(e) = Self::revoke_grantee_permissions(
-            share_path,
-            grantee_type,
-            grantee_name,
-            recursive,
-        ) {
+        if let Err(e) =
+            Self::revoke_grantee_permissions(share_path, grantee_type, grantee_name, recursive)
+        {
             tracing::warn!(
                 "Failed to remove filesystem ACL for {}:{} on '{}' ({}): {} — deleting database record anyway",
                 grantee_type, grantee_name, share_name, share_type, e

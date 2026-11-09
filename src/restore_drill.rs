@@ -25,9 +25,9 @@
 use crate::config_backup::{self, ArchiveError};
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
-use sqlx::SqlitePool;
-use sqlx::Row;
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
+use sqlx::Row;
+use sqlx::SqlitePool;
 use std::path::{Path, PathBuf};
 
 /// Largest configuration archive the drill will read into memory. Exports are
@@ -103,10 +103,7 @@ pub async fn run(
                 finished_at: Utc::now().to_rfc3339(),
                 ready: false,
                 database: failed,
-                config: DrillCheck::missing(
-                    "configuration",
-                    "the drill could not start",
-                ),
+                config: DrillCheck::missing("configuration", "the drill could not start"),
                 data_backup: DrillCheck::missing("data backup", "the drill could not start"),
                 warnings: Vec::new(),
             };
@@ -200,9 +197,7 @@ async fn check_database(dir: &Path, tmp: &Path) -> DrillCheck {
         };
     }
 
-    let options = SqliteConnectOptions::new()
-        .filename(&copy)
-        .read_only(true);
+    let options = SqliteConnectOptions::new().filename(&copy).read_only(true);
     let pool = match SqlitePoolOptions::new()
         .max_connections(1)
         .connect_with(options)
@@ -528,8 +523,7 @@ fn newest_file(dir: &Path, extension: &str) -> Option<PathBuf> {
             .map(|n| n.to_string_lossy().to_string())
             .unwrap_or_default();
         match &best {
-            Some((best_time, best_name, _))
-                if (modified, &name) <= (*best_time, best_name) => {}
+            Some((best_time, best_name, _)) if (modified, &name) <= (*best_time, best_name) => {}
             _ => best = Some((modified, name, path)),
         }
     }

@@ -806,13 +806,7 @@ async fn test_admin_can_read_outside_root_but_still_no_crash() {
 async fn test_read_only_grant_refuses_every_write_route() {
     let h = setup().await;
     create_test_user_without_grant(&h.state, "reader", "Password123!", 1).await;
-    grant_folder(
-        &h.state,
-        "reader",
-        &h.root.to_string_lossy(),
-        "read",
-    )
-    .await;
+    grant_folder(&h.state, "reader", &h.root.to_string_lossy(), "read").await;
     let mut r = explorer_router(h.state.clone());
     let token = login(&mut r, "reader", "Password123!").await;
 
@@ -939,7 +933,10 @@ async fn test_read_only_grant_refuses_every_write_route() {
     assert!(!h.root.join("uploaded.txt").exists());
 
     // Nothing above changed the file.
-    assert_eq!(std::fs::read(h.root.join("notes.txt")).unwrap(), b"original");
+    assert_eq!(
+        std::fs::read(h.root.join("notes.txt")).unwrap(),
+        b"original"
+    );
 }
 
 /// Copying *from* a read-only folder is a read: only the destination needs

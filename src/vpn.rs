@@ -376,9 +376,7 @@ pub fn validate_endpoint_host(raw: &str) -> Result<String, String> {
     if value.is_empty() {
         return Ok(String::new());
     }
-    if value.parse::<std::net::Ipv4Addr>().is_ok()
-        || value.parse::<std::net::Ipv6Addr>().is_ok()
-    {
+    if value.parse::<std::net::Ipv4Addr>().is_ok() || value.parse::<std::net::Ipv6Addr>().is_ok() {
         return Ok(value.to_string());
     }
     crate::ddns::validate_hostname(value)

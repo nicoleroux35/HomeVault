@@ -107,9 +107,7 @@ impl FtpJailService {
     /// Resolve every enabled FTP share's grantees from `share_permissions`.
     /// The group membership is read from the live OS group so a member added
     /// to a group later inherits the jail without a stored row per person.
-    async fn desired_jails(
-        pool: Arc<sqlx::SqlitePool>,
-    ) -> Result<Vec<FtpJail>, FtpError> {
+    async fn desired_jails(pool: Arc<sqlx::SqlitePool>) -> Result<Vec<FtpJail>, FtpError> {
         let shares = tokio::task::spawn_blocking(SharesService::get_shares)
             .await
             .map_err(|e| FtpError::CommandFailed(format!("share list worker failed: {e}")))?
@@ -198,12 +196,8 @@ impl FtpJailService {
             .map(|o| o.status.success())
             .unwrap_or(false);
         if !already {
-            let output = Self::run(Command::new("sudo").args([
-                "mount",
-                "--bind",
-                share_path,
-                mountpoint,
-            ]))?;
+            let output =
+                Self::run(Command::new("sudo").args(["mount", "--bind", share_path, mountpoint]))?;
             if !output.status.success() {
                 return Err(FtpError::CommandFailed(format!(
                     "mount --bind '{share_path}' -> '{mountpoint}' failed: {}",

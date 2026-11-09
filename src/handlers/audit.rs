@@ -20,12 +20,12 @@
 
 //! Admin endpoints for the queryable audit trail.
 
-use crate::audit::{AUDIT_EXPORT_MAX, AUDIT_PAGE_MAX, AUDIT_RETENTION_DAYS, AuditQuery};
+use crate::audit::{AuditQuery, AUDIT_EXPORT_MAX, AUDIT_PAGE_MAX, AUDIT_RETENTION_DAYS};
 use crate::handlers::AppState;
 use crate::utils::ResponseHelper;
 use axum::{
     extract::{Query, State},
-    http::{HeaderMap, HeaderValue, header},
+    http::{header, HeaderMap, HeaderValue},
     response::{IntoResponse, Response},
 };
 use serde::Deserialize;

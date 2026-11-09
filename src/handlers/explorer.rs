@@ -231,9 +231,12 @@ pub(crate) async fn effective_path_permission(
     let mut best: Option<ResourcePermission> = None;
     let mut deny = false;
 
-    if let Ok(folders) =
-        crate::handlers::resource_shares::effective_visible_resources(state, username, ResourceKind::Folder)
-            .await
+    if let Ok(folders) = crate::handlers::resource_shares::effective_visible_resources(
+        state,
+        username,
+        ResourceKind::Folder,
+    )
+    .await
     {
         for (root, level) in folders {
             let root = root.trim_end_matches('/');
@@ -319,9 +322,9 @@ async fn legacy_share_permission(
             if !matches {
                 continue;
             }
-            let Ok(acl) = crate::permissions::PermissionService::parse_permission(
-                &permission.permission,
-            ) else {
+            let Ok(acl) =
+                crate::permissions::PermissionService::parse_permission(&permission.permission)
+            else {
                 continue;
             };
             let level = if acl.write {
@@ -469,13 +472,12 @@ async fn visible_grant_roots(state: &Arc<AppState>, username: &str) -> Vec<PathB
     use crate::storage::resource_share_repo::ResourceKind;
     let mut roots: Vec<PathBuf> = Vec::new();
 
-    if let Ok(folders) =
-        crate::handlers::resource_shares::effective_visible_resources(
-            state,
-            username,
-            ResourceKind::Folder,
-        )
-        .await
+    if let Ok(folders) = crate::handlers::resource_shares::effective_visible_resources(
+        state,
+        username,
+        ResourceKind::Folder,
+    )
+    .await
     {
         for (path, level) in folders {
             if level != "deny" {
@@ -1914,16 +1916,8 @@ pub async fn handle_explorer_download(
     };
 
     let is_admin = state.auth.is_admin(&username).await;
-    if let Some(resp) = restricted_response(
-        &state,
-        &username,
-        is_admin,
-        &file_path,
-        false,
-        true,
-        false,
-    )
-    .await
+    if let Some(resp) =
+        restricted_response(&state, &username, is_admin, &file_path, false, true, false).await
     {
         return resp;
     }
@@ -2097,9 +2091,16 @@ pub async fn handle_explorer_download_ticket(
             "Access denied: path outside allowed directory".to_string(),
         );
     };
-    if let Some(resp) =
-        restricted_response(&state, &session.username, session.is_admin, &path, false, true, false)
-            .await
+    if let Some(resp) = restricted_response(
+        &state,
+        &session.username,
+        session.is_admin,
+        &path,
+        false,
+        true,
+        false,
+    )
+    .await
     {
         return resp;
     }
@@ -3225,33 +3226,34 @@ pub async fn handle_explorer_rename(
             Ok(token) => token,
             Err(resp) => return resp,
         };
-    let (old_path, new_path, username, is_admin) = match state.auth.get_session(&session_token).await {
-        Ok(session) => {
-            // Both the source and the destination are full paths — validate
-            // each so a rename can't move a file out of the allowed roots
-            // (the raw `new_name` was never checked before), and use the
-            // canonical validated paths for the rename itself.
-            match (
-                validate_path_access(&state, &params.path, &session).await,
-                validate_path_access(&state, &params.new_name, &session).await,
-            ) {
-                (Some(old_p), Some(new_p)) => {
-                    (old_p, new_p, session.username.clone(), session.is_admin)
-                }
-                _ => {
-                    tracing::warn!(
-                        "Explorer rename blocked: '{}' -> '{}' outside allowed roots",
-                        params.path,
-                        params.new_name
-                    );
-                    return ResponseHelper::json_error(
-                        "Access denied: path outside allowed directory".to_string(),
-                    );
+    let (old_path, new_path, username, is_admin) =
+        match state.auth.get_session(&session_token).await {
+            Ok(session) => {
+                // Both the source and the destination are full paths — validate
+                // each so a rename can't move a file out of the allowed roots
+                // (the raw `new_name` was never checked before), and use the
+                // canonical validated paths for the rename itself.
+                match (
+                    validate_path_access(&state, &params.path, &session).await,
+                    validate_path_access(&state, &params.new_name, &session).await,
+                ) {
+                    (Some(old_p), Some(new_p)) => {
+                        (old_p, new_p, session.username.clone(), session.is_admin)
+                    }
+                    _ => {
+                        tracing::warn!(
+                            "Explorer rename blocked: '{}' -> '{}' outside allowed roots",
+                            params.path,
+                            params.new_name
+                        );
+                        return ResponseHelper::json_error(
+                            "Access denied: path outside allowed directory".to_string(),
+                        );
+                    }
                 }
             }
-        }
-        Err(_) => return ResponseHelper::json_unauthorized("Session invalid".to_string()),
-    };
+            Err(_) => return ResponseHelper::json_unauthorized("Session invalid".to_string()),
+        };
 
     for candidate in [&old_path, &new_path] {
         if let Some(resp) =
@@ -3322,7 +3324,11 @@ pub async fn handle_explorer_copy(
             Ok(token) => token,
             Err(resp) => return resp,
         };
-    let (source, destination, username, is_admin) = match state.auth.get_session(&session_token).await {
+    let (source, destination, username, is_admin) = match state
+        .auth
+        .get_session(&session_token)
+        .await
+    {
         Ok(session) => {
             let src_valid = validate_path_access(&state, &params.source, &session).await;
             let dst_valid = validate_path_access(&state, &params.destination, &session).await;
@@ -3505,7 +3511,11 @@ pub async fn handle_explorer_move(
             Ok(token) => token,
             Err(resp) => return resp,
         };
-    let (source, destination, username, is_admin) = match state.auth.get_session(&session_token).await {
+    let (source, destination, username, is_admin) = match state
+        .auth
+        .get_session(&session_token)
+        .await
+    {
         Ok(session) => {
             let src_valid = validate_path_access(&state, &params.source, &session).await;
             let dst_valid = validate_path_access(&state, &params.destination, &session).await;
@@ -4036,8 +4046,11 @@ pub async fn handle_explorer_extract(
     let (archive_path, destination) = match (path_valid, dst_valid) {
         (Some(p), Some(d)) => (p, d),
         _ => {
-            tracing::warn!("Explorer extract blocked: path='{}' or destination='{}' outside allowed roots",
-                params.path, params.destination);
+            tracing::warn!(
+                "Explorer extract blocked: path='{}' or destination='{}' outside allowed roots",
+                params.path,
+                params.destination
+            );
             return ResponseHelper::json_error(
                 "Access denied: path outside allowed directory".to_string(),
             );
@@ -5180,10 +5193,7 @@ pub async fn handle_explorer_trash_empty(
 
     match result {
         Ok(Ok(_)) => {
-            crate::events::log_event(format!(
-                "User '{}' emptied the trash",
-                session.username
-            ));
+            crate::events::log_event(format!("User '{}' emptied the trash", session.username));
             ResponseHelper::json_success(serde_json::json!({"message": "Trash emptied"}))
         }
         Ok(Err(e)) => ResponseHelper::json_error(format!("Failed to empty trash: {}", e)),
@@ -5498,11 +5508,16 @@ async fn root_permission(
     path: &str,
 ) -> String {
     use crate::storage::resource_share_repo::ResourcePermission;
-    effective_path_permission(state, &session.username, session.is_admin, std::path::Path::new(path))
-        .await
-        .unwrap_or(ResourcePermission::Deny)
-        .as_str()
-        .to_string()
+    effective_path_permission(
+        state,
+        &session.username,
+        session.is_admin,
+        std::path::Path::new(path),
+    )
+    .await
+    .unwrap_or(ResourcePermission::Deny)
+    .as_str()
+    .to_string()
 }
 
 /// Classifies an allowed root into a `kind` key for the UI.

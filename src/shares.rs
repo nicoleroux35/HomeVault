@@ -1261,7 +1261,11 @@ ftpd_banner={banner}
     );
 
     if *allow_anonymous {
-        if let Some(root) = anonymous_root.as_deref().map(str::trim).filter(|r| !r.is_empty()) {
+        if let Some(root) = anonymous_root
+            .as_deref()
+            .map(str::trim)
+            .filter(|r| !r.is_empty())
+        {
             text.push_str(&format!("anon_root={root}\n"));
         }
     }
@@ -1359,9 +1363,8 @@ pub fn smb_valid_users(
 /// Build the appended smb.conf section for a share (single line per field;
 /// inputs are validated by the caller).
 fn smb_share_section(name: &str, comment: &str, path: &str, access: &SmbShareAccess) -> String {
-    let mut section = format!(
-        "\n[{name}]\n  comment = {comment}\n  path = {path}\n  browseable = yes\n"
-    );
+    let mut section =
+        format!("\n[{name}]\n  comment = {comment}\n  path = {path}\n  browseable = yes\n");
     for line in access.render() {
         section.push_str(&line);
         section.push('\n');
@@ -1416,10 +1419,7 @@ pub fn apply_smb_access_to_section(section: &str, access: &SmbShareAccess) -> St
 /// Rewrite the `[name]` section of `smb.conf` with a new access list and
 /// reload `smbd`. The caller resolves the grants; this function touches only
 /// that one section, so two shares never rewrite each other.
-pub fn rewrite_smb_share_access(
-    name: &str,
-    access: &SmbShareAccess,
-) -> Result<(), ShareError> {
+pub fn rewrite_smb_share_access(name: &str, access: &SmbShareAccess) -> Result<(), ShareError> {
     validate_share_name(name).map_err(ShareError::InvalidField)?;
     let config_path = smb_conf_path();
     if !std::path::Path::new(&config_path).exists() {
@@ -1784,8 +1784,7 @@ pub fn validate_nfs_config(config: &NfsConfig) -> Result<(), String> {
         "krb5" | "krb5i" | "krb5p" => {
             if !matches!(config.version.trim(), "4" | "4.1" | "4.2") {
                 return Err(
-                    "NFS Kerberos requires an explicit NFSv4 version (4, 4.1 or 4.2)"
-                        .to_string(),
+                    "NFS Kerberos requires an explicit NFSv4 version (4, 4.1 or 4.2)".to_string(),
                 );
             }
         }
@@ -1844,7 +1843,11 @@ pub fn validate_nfs_rules(rules: &[NfsClientRule]) -> Result<(), String> {
         }
         match rule.access.trim() {
             "rw" | "ro" => {}
-            other => return Err(format!("NFS rule access '{other}' is not valid (use rw or ro)")),
+            other => {
+                return Err(format!(
+                    "NFS rule access '{other}' is not valid (use rw or ro)"
+                ))
+            }
         }
         validate_nfs_options(&rule.options)?;
     }
@@ -2075,8 +2078,8 @@ pub fn join_smb_domain(username: &str, password: &str) -> Result<(), ShareError>
 pub fn leave_smb_domain() -> Result<(), ShareError> {
     let mut cmd = Command::new("sudo");
     cmd.args(["net", "ads", "leave"]);
-    let output = run_command(&mut cmd, SHARES_SERVICE_TIMEOUT)
-        .map_err(ShareError::CommandFailed)?;
+    let output =
+        run_command(&mut cmd, SHARES_SERVICE_TIMEOUT).map_err(ShareError::CommandFailed)?;
     if output.status.success() {
         Ok(())
     } else {
@@ -2274,8 +2277,7 @@ impl SharesService {
         validate_share_path(&share.path).map_err(ShareError::InvalidField)?;
         validate_share_comment(&share.comment).map_err(ShareError::InvalidField)?;
         validate_nfs_options(&share.options).map_err(ShareError::InvalidField)?;
-        if share.share_type == ShareType::Smb
-            && share.restrictions != ShareRestrictions::default()
+        if share.share_type == ShareType::Smb && share.restrictions != ShareRestrictions::default()
         {
             return Err(ShareError::InvalidField(
                 "advanced restrictions are not supported for SMB; use POSIX/ACL permissions"
@@ -2777,9 +2779,7 @@ impl SharesService {
     }
 
     pub fn get_nfs_rules(name: &str) -> Vec<NfsClientRule> {
-        Self::get_all_nfs_rules()
-            .remove(name)
-            .unwrap_or_default()
+        Self::get_all_nfs_rules().remove(name).unwrap_or_default()
     }
 
     pub fn save_nfs_rules(name: &str, rules: &[NfsClientRule]) -> Result<(), ShareError> {
@@ -4349,7 +4349,12 @@ mod tests {
 
     #[test]
     fn test_smb_share_section_is_one_field_per_line() {
-        let section = smb_share_section("media", "Family media", "/mnt/pool/media", &SmbShareAccess::admin_only());
+        let section = smb_share_section(
+            "media",
+            "Family media",
+            "/mnt/pool/media",
+            &SmbShareAccess::admin_only(),
+        );
         assert!(section.contains("\n[media]\n"), "{section:?}");
         assert!(
             section.contains("  comment = Family media\n"),
@@ -4385,7 +4390,12 @@ mod tests {
 
     #[test]
     fn test_apply_recycle_enable_is_idempotent() {
-        let base = smb_share_section("media", "Family media", "/mnt/pool/media", &SmbShareAccess::admin_only());
+        let base = smb_share_section(
+            "media",
+            "Family media",
+            "/mnt/pool/media",
+            &SmbShareAccess::admin_only(),
+        );
         let once = apply_recycle_to_section(&base, true);
         let twice = apply_recycle_to_section(&once, true);
         assert_eq!(once, twice, "enabling twice must not stack blocks");
@@ -4395,7 +4405,12 @@ mod tests {
 
     #[test]
     fn test_apply_recycle_disable_removes_the_block_and_keeps_the_section() {
-        let base = smb_share_section("media", "Family media", "/mnt/pool/media", &SmbShareAccess::admin_only());
+        let base = smb_share_section(
+            "media",
+            "Family media",
+            "/mnt/pool/media",
+            &SmbShareAccess::admin_only(),
+        );
         let enabled = apply_recycle_to_section(&base, true);
         let disabled = apply_recycle_to_section(&enabled, false);
         assert!(!section_has_recycle(&disabled));
@@ -4414,7 +4429,12 @@ mod tests {
     fn test_apply_recycle_preserves_hand_added_lines() {
         let base = format!(
             "{}{}",
-            smb_share_section("media", "Family media", "/mnt/pool/media", &SmbShareAccess::admin_only()),
+            smb_share_section(
+                "media",
+                "Family media",
+                "/mnt/pool/media",
+                &SmbShareAccess::admin_only()
+            ),
             "  veto files = /lost+found/\n"
         );
         let enabled = apply_recycle_to_section(&base, true);
@@ -4508,7 +4528,12 @@ mod tests {
 
     #[test]
     fn test_toggling_one_feature_keeps_the_other() {
-        let base = smb_share_section("tm", "Mac backups", "/mnt/pool/tm", &SmbShareAccess::admin_only());
+        let base = smb_share_section(
+            "tm",
+            "Mac backups",
+            "/mnt/pool/tm",
+            &SmbShareAccess::admin_only(),
+        );
         let tm = apply_vfs_to_section(
             &base,
             SmbVfsFlags {
@@ -4534,7 +4559,12 @@ mod tests {
 
     #[test]
     fn test_a_legacy_recycle_block_is_upgraded_not_stacked() {
-        let base = smb_share_section("media", "Family media", "/mnt/pool/media", &SmbShareAccess::admin_only());
+        let base = smb_share_section(
+            "media",
+            "Family media",
+            "/mnt/pool/media",
+            &SmbShareAccess::admin_only(),
+        );
         let legacy = format!(
             "{base}{SMB_LEGACY_BEGIN}\n  vfs objects = recycle\n  recycle:repository = {RECYCLE_DIR_NAME}\n{SMB_LEGACY_END}\n"
         );
@@ -4557,7 +4587,12 @@ mod tests {
 
     #[test]
     fn test_disabling_both_features_removes_the_managed_block() {
-        let base = smb_share_section("tm", "Mac backups", "/mnt/pool/tm", &SmbShareAccess::admin_only());
+        let base = smb_share_section(
+            "tm",
+            "Mac backups",
+            "/mnt/pool/tm",
+            &SmbShareAccess::admin_only(),
+        );
         let both = apply_vfs_to_section(
             &base,
             SmbVfsFlags {
@@ -4786,7 +4821,10 @@ mod tests {
             config.realm = "EXAMPLE.LAN".to_string();
             assert!(validate_smb_config(&config).is_ok(), "{mode} with a realm");
             let rendered = smb_global_params(&config).join("\n");
-            assert!(rendered.contains(&format!("security = {mode}")), "{rendered}");
+            assert!(
+                rendered.contains(&format!("security = {mode}")),
+                "{rendered}"
+            );
             assert!(rendered.contains("realm = EXAMPLE.LAN"), "{rendered}");
             assert!(
                 rendered.contains(&format!("idmap config * : range = {}", config.idmap_range)),
@@ -5180,7 +5218,10 @@ mod tests {
         assert!(SHARES_SERVICE_TIMEOUT <= Duration::from_secs(180));
     }
 
-    fn permission(grantee_type: &str, grantee_name: &str) -> crate::storage::share_perm_repo::SharePermission {
+    fn permission(
+        grantee_type: &str,
+        grantee_name: &str,
+    ) -> crate::storage::share_perm_repo::SharePermission {
         crate::storage::share_perm_repo::SharePermission {
             id: 0,
             share_name: "media".to_string(),
@@ -5249,7 +5290,10 @@ mod tests {
             guest_ok: Some(false),
         };
         let rendered = access.render().join("\n");
-        assert!(rendered.contains("valid users = @homevault_admin alice"), "{rendered}");
+        assert!(
+            rendered.contains("valid users = @homevault_admin alice"),
+            "{rendered}"
+        );
         assert!(rendered.contains("read only = yes"), "{rendered}");
         assert!(rendered.contains("guest ok = no"), "{rendered}");
     }
@@ -5326,7 +5370,10 @@ mod tests {
         let rendered = smb_global_params(&config).join("\n");
         assert!(rendered.contains("security = ads"), "{rendered}");
         assert!(rendered.contains("realm = EXAMPLE.LAN"), "{rendered}");
-        assert!(rendered.contains("idmap config * : range = 10000-999999"), "{rendered}");
+        assert!(
+            rendered.contains("idmap config * : range = 10000-999999"),
+            "{rendered}"
+        );
         assert!(rendered.contains("map acl inherit = yes"), "{rendered}");
     }
 

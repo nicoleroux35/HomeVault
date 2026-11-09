@@ -204,9 +204,7 @@ async fn send_public_upload(
     let mut body = Vec::new();
     if let Some(password) = password {
         body.extend_from_slice(format!("--{boundary}\r\n").as_bytes());
-        body.extend_from_slice(
-            b"Content-Disposition: form-data; name=\"password\"\r\n\r\n",
-        );
+        body.extend_from_slice(b"Content-Disposition: form-data; name=\"password\"\r\n\r\n");
         body.extend_from_slice(password.as_bytes());
         body.extend_from_slice(b"\r\n");
     }
@@ -345,7 +343,10 @@ async fn a_public_upload_lands_in_the_folder_and_collisions_are_kept() {
         send_public_upload(&mut r, &request_token, None, "hello.txt", b"second").await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(std::fs::read(dest.join("hello.txt")).unwrap(), b"hello");
-    assert_eq!(std::fs::read(dest.join("hello (1).txt")).unwrap(), b"second");
+    assert_eq!(
+        std::fs::read(dest.join("hello (1).txt")).unwrap(),
+        b"second"
+    );
 
     // The cap of 2 is spent.
     let (status, page) =
@@ -373,19 +374,28 @@ async fn a_password_protected_request_needs_the_password_first() {
     assert_eq!(status, StatusCode::OK, "{body}");
     let request_token = body["data"]["token"].as_str().unwrap().to_string();
 
-    let (status, page) =
-        send_public_upload(&mut r, &request_token, None, "x.txt", b"nope").await;
+    let (status, page) = send_public_upload(&mut r, &request_token, None, "x.txt", b"nope").await;
     assert_eq!(status, StatusCode::UNAUTHORIZED, "{page}");
     assert!(!dest.join("x.txt").exists());
 
     let (status, page) =
         send_public_upload(&mut r, &request_token, Some("wrong"), "x.txt", b"nope").await;
-    assert_eq!(status, StatusCode::OK, "a wrong password re-renders the page");
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "a wrong password re-renders the page"
+    );
     assert!(page.contains("incorrect"), "{page}");
     assert!(!dest.join("x.txt").exists());
 
-    let (status, page) =
-        send_public_upload(&mut r, &request_token, Some("correct-horse"), "x.txt", b"ok").await;
+    let (status, page) = send_public_upload(
+        &mut r,
+        &request_token,
+        Some("correct-horse"),
+        "x.txt",
+        b"ok",
+    )
+    .await;
     assert_eq!(status, StatusCode::OK, "{page}");
     assert_eq!(std::fs::read(dest.join("x.txt")).unwrap(), b"ok");
 }
@@ -425,17 +435,7 @@ async fn revoking_the_owner_grant_stops_public_uploads() {
 async fn unknown_request_tokens_render_an_unavailable_page() {
     let h = setup().await;
     let mut r = router(h.state.clone());
-    let (status, page) = send(
-        &mut r,
-        Method::GET,
-        "/request/does-not-exist",
-        None,
-        None,
-    )
-    .await;
+    let (status, page) = send(&mut r, Method::GET, "/request/does-not-exist", None, None).await;
     assert_eq!(status, StatusCode::NOT_FOUND);
-    assert!(page["raw"]
-        .as_str()
-        .unwrap_or("")
-        .contains("unavailable"));
+    assert!(page["raw"].as_str().unwrap_or("").contains("unavailable"));
 }

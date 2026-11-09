@@ -39,8 +39,8 @@
 use chrono::{DateTime, NaiveDate, TimeZone, Utc};
 use serde::{Deserialize, Serialize};
 use sqlx::{QueryBuilder, Row, SqlitePool};
-use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::OnceLock;
 
 /// Rows older than this are pruned. Matches the journal auto-cleanup default.
 pub const AUDIT_RETENTION_DAYS: u32 = 90;
@@ -292,7 +292,11 @@ pub async fn list(
         .push(" OFFSET ")
         .push_bind(valid.offset as i64);
 
-    let rows = qb.build().fetch_all(pool).await.map_err(|e| e.to_string())?;
+    let rows = qb
+        .build()
+        .fetch_all(pool)
+        .await
+        .map_err(|e| e.to_string())?;
     let entries = rows
         .into_iter()
         .map(|row| AuditEntry {
@@ -364,7 +368,12 @@ struct ValidQuery {
 
 impl ValidQuery {
     fn from_query(query: &AuditQuery, max_limit: u32) -> Result<Self, String> {
-        let from = match query.from.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        let from = match query
+            .from
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
             Some(value) => Some(parse_bound(value, Bound::Start)?),
             None => None,
         };
@@ -463,7 +472,10 @@ fn clean_filter(value: Option<&str>) -> Result<Option<String>, String> {
         return Ok(None);
     };
     if value.len() > MAX_FIELD_LEN {
-        return Err(format!("Filter is longer than {} characters", MAX_FIELD_LEN));
+        return Err(format!(
+            "Filter is longer than {} characters",
+            MAX_FIELD_LEN
+        ));
     }
     if value.chars().any(|c| c.is_control()) {
         return Err("Filter contains control characters".to_string());
@@ -622,7 +634,9 @@ mod tests {
         };
         let csv = to_csv(&[entry]);
         assert!(csv.starts_with("timestamp,severity,actor,action,target,client_ip,message\n"));
-        assert!(csv.contains("\"a, b \"\"quoted\"\" next\"") || csv.contains("\"a, b \"\"quoted\"\""));
+        assert!(
+            csv.contains("\"a, b \"\"quoted\"\" next\"") || csv.contains("\"a, b \"\"quoted\"\"")
+        );
     }
 
     #[test]

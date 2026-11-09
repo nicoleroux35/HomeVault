@@ -986,14 +986,8 @@ mod tests {
         .unwrap();
         assert!(!asked.contains("{{GPU_DEVICES}}"));
         if gpu_available() {
-            assert!(
-                asked.lines().any(|line| line == "    devices:"),
-                "{asked}"
-            );
-            assert!(
-                asked.contains("      - /dev/dri:/dev/dri"),
-                "{asked}"
-            );
+            assert!(asked.lines().any(|line| line == "    devices:"), "{asked}");
+            assert!(asked.contains("      - /dev/dri:/dev/dri"), "{asked}");
             assert!(
                 !asked.lines().any(|line| line == "devices:"),
                 "devices: must stay indented under the service:\n{asked}"

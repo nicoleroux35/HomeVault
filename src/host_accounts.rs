@@ -541,10 +541,7 @@ impl HostAccountService {
     }
 
     /// Disable/enable the Samba credential (`smbpasswd -d/-e`).
-    pub async fn set_samba_locked(
-        username: &str,
-        locked: bool,
-    ) -> Result<(), HostAccountError> {
+    pub async fn set_samba_locked(username: &str, locked: bool) -> Result<(), HostAccountError> {
         Self::validate_username(username)?;
         let mut cmd = Self::command("smbpasswd");
         cmd.arg(if locked { "-d" } else { "-e" });

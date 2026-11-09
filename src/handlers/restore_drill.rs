@@ -61,9 +61,8 @@ pub async fn handle_restore_drill_run(
 
     let mut body = serde_json::json!({ "report": report });
     if let Err(e) = crate::restore_drill::save_report(&base, &report) {
-        body["warning"] = serde_json::Value::String(format!(
-            "the report could not be persisted: {e}"
-        ));
+        body["warning"] =
+            serde_json::Value::String(format!("the report could not be persisted: {e}"));
     }
     ResponseHelper::json_success(body)
 }

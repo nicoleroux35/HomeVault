@@ -1271,7 +1271,7 @@ async fn test_virtual_disk_destroy_requires_name_and_password() {
     .await;
     assert_ne!(status, StatusCode::OK);
     assert!(body["message"].as_str().unwrap_or("").contains("not found"));
-    }
+}
 
 #[tokio::test]
 async fn btrfs_compression_policies_validate_and_round_trip() {

@@ -495,11 +495,7 @@ async fn link_allows_session(link: &ShareLink, username: &str) -> bool {
     if link.allowed_groups.is_empty() {
         return false;
     }
-    let allowed: Vec<String> = link
-        .allowed_groups
-        .split(',')
-        .map(str::to_string)
-        .collect();
+    let allowed: Vec<String> = link.allowed_groups.split(',').map(str::to_string).collect();
     let user = username.to_string();
     let groups = tokio::task::spawn_blocking(move || {
         crate::groups::GroupService::get_user_groups(&user).unwrap_or_default()
@@ -539,11 +535,7 @@ async fn build_folder_archive(
     let source = dir.to_string();
     let destination_for_job = destination_string.clone();
     tokio::task::spawn_blocking(move || {
-        crate::browser::FileBrowser::compress_items(
-            &[source],
-            &destination_for_job,
-            "tar.gz",
-        )
+        crate::browser::FileBrowser::compress_items(&[source], &destination_for_job, "tar.gz")
     })
     .await
     .map_err(|e| format!("Failed to build the folder archive: {e}"))?
@@ -676,7 +668,9 @@ pub async fn handle_share_link_create(
     // Scope the link to what the caller can actually reach, and store the
     // canonical resolved path so the public download never re-resolves a
     // symlink that could be swapped after the link is minted.
-    let Some(canonical) = crate::handlers::explorer::validate_path_access(&state, &path, &session).await else {
+    let Some(canonical) =
+        crate::handlers::explorer::validate_path_access(&state, &path, &session).await
+    else {
         tracing::warn!(
             "Share link creation blocked: path '{}' outside allowed roots for {}",
             path,
@@ -1057,10 +1051,7 @@ pub async fn handle_share_link_download(
             if page {
                 return share_page(nonce).await;
             }
-            return share_auth_refusal(
-                "This share is not available for your account",
-                "account",
-            );
+            return share_auth_refusal("This share is not available for your account", "account");
         }
     }
 
@@ -1069,22 +1060,19 @@ pub async fn handle_share_link_download(
     // revoked grant (or a disabled account) would keep serving the file until
     // the link expired.
     let owner_is_admin = state.auth.is_admin(&link.username).await;
-    let owner_allowed = crate::handlers::resource_shares::explorer_app_allowed(
-        &state,
-        &link.username,
-    )
-    .await
-        && crate::handlers::explorer::restricted_response(
-            &state,
-            &link.username,
-            owner_is_admin,
-            std::path::Path::new(&link.path),
-            false,
-            true,
-            false,
-        )
-        .await
-        .is_none();
+    let owner_allowed =
+        crate::handlers::resource_shares::explorer_app_allowed(&state, &link.username).await
+            && crate::handlers::explorer::restricted_response(
+                &state,
+                &link.username,
+                owner_is_admin,
+                std::path::Path::new(&link.path),
+                false,
+                true,
+                false,
+            )
+            .await
+            .is_none();
     if !owner_allowed {
         if page {
             return share_page(nonce).await;
@@ -1468,7 +1456,8 @@ mod tests {
     }
 
     #[test]
-    fn the_password_budget_is_finite_and_refills_after_the_window() {        let mut state = ShareAuthState::default();
+    fn the_password_budget_is_finite_and_refills_after_the_window() {
+        let mut state = ShareAuthState::default();
         let now = Instant::now();
         for attempt in 1..=SHARE_PASSWORD_MAX_FAILURES {
             assert!(

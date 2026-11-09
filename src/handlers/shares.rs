@@ -239,7 +239,10 @@ fn group_definitions(shares: Vec<Share>) -> Vec<ShareDefinition> {
             conflicts: Vec::new(),
         });
         entry.enabled |= share.enabled;
-        if !entry.protocols.contains(&share.share_type.as_str().to_string()) {
+        if !entry
+            .protocols
+            .contains(&share.share_type.as_str().to_string())
+        {
             entry.protocols.push(share.share_type.as_str().to_string());
         }
         if entry.comment.is_empty() && !share.comment.is_empty() {
@@ -343,7 +346,8 @@ pub async fn handle_share_definition_create(
             guest_ok: req.guest_ok,
             restrictions: req.restrictions.unwrap_or_default(),
         };
-        if let Err(e) = run_share_op("create share", move || SharesService::create_share(&share)).await
+        if let Err(e) =
+            run_share_op("create share", move || SharesService::create_share(&share)).await
         {
             let rollback_name = req.name.clone();
             for kind in created {
@@ -415,7 +419,11 @@ pub async fn handle_share_bind_protocol(
         guest_ok: req.guest_ok,
         restrictions: req.restrictions.unwrap_or_default(),
     };
-    match run_share_op("bind share protocol", move || SharesService::create_share(&share)).await {
+    match run_share_op("bind share protocol", move || {
+        SharesService::create_share(&share)
+    })
+    .await
+    {
         Ok(_) => {
             if kind == ShareType::Sftp {
                 rebuild_sftp_jails_best_effort(&state).await;
@@ -427,12 +435,11 @@ pub async fn handle_share_bind_protocol(
                 rebuild_ftp_jails_best_effort(&state).await;
             }
             if kind == ShareType::Smb {
-                if let Err(e) =
-                    crate::permissions::PermissionService::refresh_smb_access(
-                        &name,
-                        state.db.pool(),
-                    )
-                    .await
+                if let Err(e) = crate::permissions::PermissionService::refresh_smb_access(
+                    &name,
+                    state.db.pool(),
+                )
+                .await
                 {
                     tracing::warn!("Failed to refresh SMB access for '{}': {}", name, e);
                 }
@@ -645,9 +652,11 @@ pub async fn handle_share_update(
                 reload_webdav_best_effort(&state).await;
             }
             if share_type == ShareType::Smb {
-                if let Err(e) =
-                    crate::permissions::PermissionService::refresh_smb_access(&name, state.db.pool())
-                        .await
+                if let Err(e) = crate::permissions::PermissionService::refresh_smb_access(
+                    &name,
+                    state.db.pool(),
+                )
+                .await
                 {
                     tracing::warn!("Failed to refresh SMB access for '{}': {}", name, e);
                 }
