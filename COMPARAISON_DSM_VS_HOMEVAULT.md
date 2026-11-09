@@ -1048,8 +1048,9 @@ dans `TESTING.md`.
 1. Exécuter la suite complète et corriger les échecs d’intégration éventuels
    (les deux branches ne s’étaient jamais rencontrées).
 2. P2‑9 : reconstruction bare‑metal sur VM (FIAB‑05).
-3. FIAB‑02 (watchdog) et FIAB‑04 (DB/config hors disque système) — angles
-   morts de disponibilité identifiés par la revue fiabilité.
+3. FIAB‑02 : le watchdog systemd est livré (§10) ; reste la supervision des
+   boucles de fond (relance/backoff, état dans Health). FIAB‑04 (DB/config
+   hors disque système) reste ouvert.
 4. Clé de production et AppArmor enforce (P2‑7/P2‑8).
 
 ---
