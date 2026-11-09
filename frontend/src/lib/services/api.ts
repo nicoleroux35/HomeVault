@@ -1405,6 +1405,11 @@ class ApiClient {
     return this.get('/health/disk-health/predictions', { cache: false });
   }
 
+  /** Supervised background loops (FIAB-02, admin). */
+  async schedulerHealth() {
+    return this.get('/health/schedulers', { cache: false });
+  }
+
   /** Per-path Btrfs compression policies (`GET /api/storage/btrfs/policies`). */
   async btrfsPolicies() {
     return this.get('/storage/btrfs/policies', { cache: false });

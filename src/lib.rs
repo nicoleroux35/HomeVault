@@ -131,6 +131,7 @@ pub mod restic_scheduler;
 pub mod reverse_proxy;
 pub mod rsync_server;
 pub mod saml;
+pub mod scheduler_supervisor;
 pub mod scheduled_tasks_scheduler;
 pub mod security_advisor;
 pub mod smart;

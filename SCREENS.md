@@ -326,6 +326,9 @@ and in the Groups screen.
 - **Failure prediction** card: per-disk linear trends (reallocated, pending,
   offline uncorrectable, command timeouts, temperature), estimated days to
   the threshold and fit quality; hidden until at least one trend exists
+- **Background schedulers** card (administrators only, FIAB-02): each
+  supervised loop with running/stopped state, restart count and last error;
+  the loops are restarted automatically with exponential backoff
 - Auto revalidation on app focus (no manual refresh button)
 
 ---

@@ -80,6 +80,17 @@
   let diskPredictions: DiskPrediction[] = [];
   let predictionError = '';
 
+  /** FIAB-02: supervised background loops (admin only). */
+  interface SchedulerState {
+    name: string;
+    running: boolean;
+    restarts: number;
+    last_started: string | null;
+    last_error: string | null;
+  }
+  let schedulers: SchedulerState[] = [];
+  let schedulerError = '';
+
   // The 9 checks health.rs always runs, in a fixed, sensible display order —
   // `checks` from the API is already in this order, but this also gives each
   // one a translated display name (the raw `name` is a snake_case identifier
@@ -123,10 +134,26 @@
     loadHealth();
     loadDiskHealth();
     loadPredictions();
+    if ($isAdmin) loadSchedulers();
     // No manual refresh button — revalidate on focus + a slow poll (the
     // checks reflect live system state).
-    return onAppVisible(() => { void loadHealth(); void loadDiskHealth(); void loadPredictions(); }, { pollMs: 45_000 });
+    return onAppVisible(() => {
+      void loadHealth();
+      void loadDiskHealth();
+      void loadPredictions();
+      if ($isAdmin) void loadSchedulers();
+    }, { pollMs: 45_000 });
   });
+
+  async function loadSchedulers() {
+    const response = await api.schedulerHealth();
+    if (response.success && response.data) {
+      schedulers = response.data as SchedulerState[];
+      schedulerError = '';
+    } else {
+      schedulerError = response.error || translate('health.disk_health_error');
+    }
+  }
 
   async function loadPredictions() {
     const response = await api.diskHealthPredictions();
@@ -377,6 +404,45 @@
             {/if}
           {/each}
         </div>
+      {/if}
+    </div>
+
+    <div
+      data-testid="health-schedulers"
+      class="mt-5 rounded-xl bg-card border border-border shadow-[var(--hv-shell-shadow-card)] p-5"
+    >
+      <div class="mb-3">
+        <h2 class="m-0 text-c-md font-semibold text-foreground">{$t('health.schedulers_title')}</h2>
+        <p class="m-0 mt-1 text-c-base text-muted-foreground">{$t('health.schedulers_desc')}</p>
+      </div>
+      {#if schedulerError}
+        <span data-testid="health-schedulers-error" class="text-c-base" style="color: var(--hv-error)">{schedulerError}</span>
+      {:else if schedulers.length === 0}
+        <span data-testid="health-schedulers-empty" class="text-c-base text-muted-foreground">{$t('health.schedulers_empty')}</span>
+      {:else}
+        <ul class="m-0 p-0 list-none flex flex-col gap-2" data-testid="health-scheduler-list">
+          {#each schedulers as scheduler (scheduler.name)}
+            <li data-testid="health-scheduler-row" class="flex items-start gap-2 text-c-base flex-wrap">
+              <span
+                class="mt-1 h-2 w-2 rounded-full flex-none"
+                style="background: {scheduler.running ? 'var(--hv-success)' : 'var(--hv-error)'}"
+                aria-hidden="true"
+              ></span>
+              <span class="text-foreground font-medium">{scheduler.name}</span>
+              <span class="text-muted-foreground">
+                {scheduler.running ? $t('health.schedulers_running') : $t('health.schedulers_stopped')}
+              </span>
+              {#if scheduler.restarts > 0}
+                <span class="text-muted-foreground">
+                  · {scheduler.restarts} {$t('health.schedulers_restarts')}
+                </span>
+              {/if}
+              {#if scheduler.last_error}
+                <span class="w-full text-c-small" style="color: var(--hv-warning)">{scheduler.last_error}</span>
+              {/if}
+            </li>
+          {/each}
+        </ul>
       {/if}
     </div>
   {/if}

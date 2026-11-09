@@ -383,6 +383,21 @@ residual-based low/high interval.
   them (attribute, estimated days, fit quality). A disk with fewer than five
   samples simply has no trend.
 
+## Background schedulers (FIAB-02, 2026-11-09)
+
+`src/scheduler_supervisor.rs` wraps every long-running periodic loop. The loop
+runs inside an inner `tokio::spawn`, so a panic is returned as a `JoinError`
+instead of killing the supervisor; the outcome (`returned unexpectedly`,
+`panicked`, `cancelled`) is recorded and the loop is started again after an
+exponential backoff (5 s, doubling to 300 s, reset to 5 s after 60 s of
+healthy running). One-shot boot tasks (static routes, firewall rules, storage
+recovery, remote-mount restore) are deliberately not supervised: restarting
+them would repeat a side effect.
+
+`GET /api/health/schedulers` (admin) returns `name`, `running`, `restarts`,
+`last_started` and `last_error` for each loop; the Health screen shows the same
+in the **Background schedulers** card.
+
 ## Weekly health report (P2-12, 2026-11-05)
 
 `src/health_report.rs` sends one aggregated notification per week

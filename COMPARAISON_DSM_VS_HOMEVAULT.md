@@ -1048,19 +1048,21 @@ dans `TESTING.md`.
 1. Exécuter la suite complète et corriger les échecs d’intégration éventuels
    (les deux branches ne s’étaient jamais rencontrées).
 2. P2‑9 : reconstruction bare‑metal sur VM (FIAB‑05).
-3. FIAB‑02 : le watchdog systemd est livré (§10) ; reste la supervision des
-   boucles de fond (relance/backoff, état dans Health). FIAB‑04 (DB/config
-   hors disque système) reste ouvert.
+3. FIAB‑02 : watchdog systemd et superviseur des boucles **livrés** (§10) ;
+   reste le test terrain `kill -9`/`systemctl stop`. FIAB‑04 (DB/config hors
+   disque système) reste ouvert.
 4. Clé de production et AppArmor enforce (P2‑7/P2‑8).
 
 ---
 
-## 10. Watchdog applicatif — 2026‑11‑09 (FIAB‑02, moitié systemd)
+## 10. Watchdog et superviseur des boucles — 2026‑11‑09 (FIAB‑02)
 
 > Le lot fiabilité signalait l’absence de supervision : l’unité était
 > `Type=simple`, sans `WatchdogSec`, et un runtime bloqué gardait le port TCP
-> ouvert sans servir. La première moitié est livrée ; la supervision des
-> boucles de fond reste ouverte.
+> ouvert sans servir ; une boucle de fond qui mourait disparaissait en
+> silence. Les deux moitiés sont livrées.
+
+### 10.1 Watchdog systemd
 
 - `src/systemd_notify.rs` : `ready()` (READY=1 + STATUS) et un heartbeat
   `WATCHDOG=1` toutes les **10 s**, envoyé par un datagramme Unix sur
@@ -1071,10 +1073,35 @@ dans `TESTING.md`.
   le service au lieu de laisser une appliance à moitié vivante.
 - `src/web/mod.rs` envoie `READY=1` **après** la liaison du listener, puis
   démarre le heartbeat.
-- Tests écrits, non exécutés : format du datagramme, socket abstrait/chemin,
-  no‑op sans `NOTIFY_SOCKET`, livraison réelle sur un `UnixDatagram` de test,
-  et assertions d’installeur (`WatchdogSec`/`NotifyAccess`).
-- **Reste FIAB‑02** : envelopper les boucles `tokio::spawn` dans un
-  superviseur (handle conservé, relance avec backoff, état exposé dans Health)
-  — le watchdog systemd détecte un blocage global, pas la mort silencieuse
-  d’une seule boucle.
+
+### 10.2 Superviseur des boucles
+
+- `src/scheduler_supervisor.rs` enveloppe les boucles périodiques : chaque
+  future tourne dans un `tokio::spawn` interne, donc un **panic** devient un
+  `JoinError` au lieu de tuer le superviseur. Un retour inattendu ou un panic
+  est enregistré (`returned unexpectedly` / `panicked` / `cancelled`), puis la
+  boucle est relancée avec un **backoff exponentiel** (5 s → 300 s, remis à 5 s
+  après 60 s de fonctionnement sain).
+- Sont supervisés : restic, mises à jour Docker, historique quotas, snapshot
+  DB, cache, antivirus, purge Journal, corbeille, tâches planifiées,
+  snapshots, santé disque, iSCSI guard, RAID, Btrfs, rapport de santé,
+  libération des locks, réplication, backup target, traffic control, métriques,
+  reset quotas, balayage des sessions expirées, index de contenu, rclone,
+  activity poller, extraction du téléchargeur, nettoyage des jobs, ACME, DDNS,
+  syslog distant, notifications, mDNS, nettoyage des jobs de progression.
+- **Non supervisé volontairement** : le watcher ransomware (canal
+  mono-consommateur créé avec `AppState`, impossible à recréer à l’identique)
+  et les tâches de démarrage à effet unique (routes statiques, règles
+  pare-feu, reprise stockage, remontage réseau) — les relancer répéterait un
+  effet de bord.
+- `GET /api/health/schedulers` (admin) et la carte **Background schedulers** de
+  Health exposent `running`, `restarts`, `last_started` et `last_error`.
+
+### 10.3 Vérification
+
+- Tests écrits, non exécutés : backoff (doublement, plafond, remise à zéro),
+  boucle qui retourne, boucle qui panique, datagramme réel, no‑op sans
+  `NOTIFY_SOCKET`, endpoint admin-only et présence d’une boucle enregistrée.
+- Reste terrain : `kill -9` d’une boucle / `systemctl stop` sur un hôte réel,
+  et le choix de politique de redémarrage par boucle si un cas particulier
+  apparaît.

@@ -252,9 +252,14 @@ of leaving a process that holds the port but serves nothing. When HomeVault is
 started from a terminal there is no `NOTIFY_SOCKET`, so every notification is
 a no-op.
 
-The watchdog only covers the process as a whole. Supervising each detached
-background loop (restart with backoff, expose `scheduler: running/dead` in
-Health) remains the second half of FIAB-02.
+The watchdog only covers the process as a whole. The individual background
+loops are covered by `src/scheduler_supervisor.rs`: each loop runs inside an
+inner `tokio::spawn` so a panic becomes a `JoinError`, the outcome is recorded
+and the loop is restarted with an exponential backoff (5 s → 300 s, reset
+after 60 s of healthy running). `GET /api/health/schedulers` (admin) and the
+Health screen's *Background schedulers* card expose running/restarts/last
+error. One-shot boot tasks (static routes, firewall rules, storage recovery)
+stay on a plain spawn: re-running them would repeat a side effect.
 
 Deliberately **not** set, with the shipped feature that would break:
 

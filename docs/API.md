@@ -2148,6 +2148,7 @@ See [Health](./guides/health.md).
 | GET | `/api/health/disk-health/prediction` | session | `?serial=…` — least-squares trend for attrs 5/187/188/194/197/198 (needs ≥5 samples) |
 | GET | `/api/health/disk-health/predictions` | session | trends for every sampled disk (`[{ serial, trends[] }]`); no trend under 5 samples |
 | POST | `/api/health/disk-health/sample` | admin | run one S.M.A.R.T./I/O sample now |
+| GET | `/api/health/schedulers` | admin | supervised background loops (FIAB-02): `name`, `running`, `restarts`, `last_started`, `last_error`. Restarted with exponential backoff after a return/panic |
 
 Samples live in `disk_health_samples`; findings are deduplicated by
 `fingerprint = serial:attribute:condition` and raise `health.disk_smart` once

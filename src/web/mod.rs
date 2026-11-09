@@ -1079,6 +1079,11 @@ pub fn create_app(state: AppStateArc) -> Router {
         .route("/api/dashboard/health", get(handle_health_data))
         .route("/api/dashboard/server-details", get(handle_server_details))
         .route("/api/health", get(handle_health_endpoint))
+        // FIAB-02: supervised background loops (admin-only; internal names).
+        .route(
+            "/api/health/schedulers",
+            get(crate::handlers::scheduler_health::handle_scheduler_health),
+        )
         .route(
             "/api/health/disk-health",
             get(crate::handlers::disk_health::handle_disk_findings),
@@ -3060,61 +3065,106 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         Err(e) => tracing::debug!("SMB config unavailable for WS-Discovery: {}", e),
     });
 
-    // Background schedulers — a `tokio::spawn` call itself can't fail, so
-    // (unlike the checks above) there's no meaningful per-task success/error
-    // to log here; a real failure inside one of these loops is already
-    // logged from within it. One line instead of a pair per scheduler.
+    // Background schedulers — supervised (FIAB-02): a loop that returns or
+    // panics is recorded and restarted with exponential backoff instead of
+    // disappearing while the process keeps serving. `GET
+    // /api/health/schedulers` exposes the registry.
+    crate::scheduler_supervisor::spawn("restic", {
+        let state = state.clone();
+        move || crate::restic_scheduler::run_scheduler_loop(state.clone())
+    });
+    // P1: opt-in Docker/catalog update schedule (disabled until configured).
+    crate::scheduler_supervisor::spawn("docker-update", {
+        let state = state.clone();
+        move || crate::docker_update_scheduler::run_scheduler_loop(state.clone())
+    });
+    // P1: hourly transfer-quota usage samples + 90% crossing alerts.
+    crate::scheduler_supervisor::spawn("quota-history", {
+        let state = state.clone();
+        move || crate::quota_history::run_sampler_loop(state.clone())
+    });
+    // Snapshots of HomeVault's own database (WAL mode: the `.db` file alone is
+    // not restorable) plus the periodic WAL checkpoint that keeps `-wal` bounded.
+    crate::scheduler_supervisor::spawn("db-backup", {
+        let db = db.clone();
+        move || {
+            let db = db.clone();
+            async move {
+                crate::db_backup::DbBackupService::load(db)
+                    .await
+                    .run_scheduler_loop()
+                    .await;
+            }
+        }
+    });
+    crate::scheduler_supervisor::spawn("cache", {
+        let state = state.clone();
+        move || crate::cache_scheduler::run_scheduler_loop(state.clone())
+    });
+    crate::scheduler_supervisor::spawn("antivirus", {
+        let state = state.clone();
+        move || crate::antivirus_scheduler::run_scheduler_loop(state.clone())
+    });
+    crate::scheduler_supervisor::spawn("journal-cleanup", {
+        let state = state.clone();
+        move || crate::journal_cleanup_scheduler::run_scheduler_loop(state.clone())
+    });
+    crate::scheduler_supervisor::spawn("trash", {
+        let state = state.clone();
+        move || crate::trash_scheduler::run_scheduler_loop(state.clone())
+    });
+    crate::scheduler_supervisor::spawn("tasks", {
+        let state = state.clone();
+        move || crate::scheduled_tasks_scheduler::run_scheduler_loop(state.clone())
+    });
+    crate::scheduler_supervisor::spawn("snapshots", {
+        let state = state.clone();
+        move || crate::snapshot_scheduler::run_scheduler_loop(state.clone())
+    });
+    crate::scheduler_supervisor::spawn("disk-health", {
+        let state = state.clone();
+        move || crate::disk_health_scheduler::run_scheduler_loop(state.clone())
+    });
+    crate::scheduler_supervisor::spawn("iscsi-guard", {
+        let state = state.clone();
+        move || crate::iscsi_guard::run_scheduler_loop(state.clone())
+    });
+    crate::scheduler_supervisor::spawn("raid-monitor", {
+        let state = state.clone();
+        move || crate::raid_stability::run_monitor_loop(state.clone())
+    });
+    crate::scheduler_supervisor::spawn("btrfs-maintenance", {
+        let state = state.clone();
+        move || crate::btrfs_maintenance::run_scheduler_loop(state.clone())
+    });
+    crate::scheduler_supervisor::spawn("health-report", {
+        let state = state.clone();
+        move || crate::health_report::run_scheduler_loop(state.clone())
+    });
+    crate::scheduler_supervisor::spawn("snapshot-lock-release", {
+        let state = state.clone();
+        move || crate::snapshot_lock_scheduler::run_release_loop(state.clone())
+    });
+    crate::scheduler_supervisor::spawn("replication", {
+        let state = state.clone();
+        move || crate::replication_scheduler::run_scheduler_loop(state.clone())
+    });
+    crate::scheduler_supervisor::spawn("backup-target", {
+        let state = state.clone();
+        move || crate::backup_target_scheduler::run_scheduler_loop(state.clone())
+    });
+    // Per-service bandwidth control (P3.2): re-evaluates the weekly schedule
+    // once a minute and only runs `tc` when the effective policy changed.
+    crate::scheduler_supervisor::spawn("traffic-control", || {
+        crate::traffic_control::run_scheduler()
+    });
+    // The ransomware watcher owns a single-consumer channel created with
+    // `AppState`; its receiver cannot be recreated on a restart, so it stays a
+    // plain task (a closed channel makes a failure visible to every sender).
     tokio::spawn(crate::ransomware_watcher::run_watcher_loop(
         state.clone(),
         ransomware_watch_rx,
     ));
-    tokio::spawn(crate::restic_scheduler::run_scheduler_loop(state.clone()));
-    // P1: opt-in Docker/catalog update schedule (disabled until configured).
-    tokio::spawn(crate::docker_update_scheduler::run_scheduler_loop(
-        state.clone(),
-    ));
-    // P1: hourly transfer-quota usage samples + 90% crossing alerts.
-    tokio::spawn(crate::quota_history::run_sampler_loop(state.clone()));
-    // Snapshots of HomeVault's own database (WAL mode: the `.db` file alone is
-    // not restorable) plus the periodic WAL checkpoint that keeps `-wal` bounded.
-    let scheduler_db = db.clone();
-    tokio::spawn(async move {
-        crate::db_backup::DbBackupService::load(scheduler_db)
-            .await
-            .run_scheduler_loop()
-            .await;
-    });
-    tokio::spawn(crate::cache_scheduler::run_scheduler_loop(state.clone()));
-    tokio::spawn(crate::antivirus_scheduler::run_scheduler_loop(
-        state.clone(),
-    ));
-    tokio::spawn(crate::journal_cleanup_scheduler::run_scheduler_loop(
-        state.clone(),
-    ));
-    tokio::spawn(crate::trash_scheduler::run_scheduler_loop(state.clone()));
-    tokio::spawn(crate::scheduled_tasks_scheduler::run_scheduler_loop(
-        state.clone(),
-    ));
-    tokio::spawn(crate::snapshot_scheduler::run_scheduler_loop(state.clone()));
-    tokio::spawn(crate::disk_health_scheduler::run_scheduler_loop(
-        state.clone(),
-    ));
-    tokio::spawn(crate::iscsi_guard::run_scheduler_loop(state.clone()));
-    tokio::spawn(crate::raid_stability::run_monitor_loop(state.clone()));
-    tokio::spawn(crate::btrfs_maintenance::run_scheduler_loop(state.clone()));
-    tokio::spawn(crate::health_report::run_scheduler_loop(state.clone()));
-    tokio::spawn(crate::snapshot_lock_scheduler::run_release_loop(
-        state.clone(),
-    ));
-    tokio::spawn(crate::replication_scheduler::run_scheduler_loop(
-        state.clone(),
-    ));
-    tokio::spawn(crate::backup_target_scheduler::run_scheduler_loop(
-        state.clone(),
-    ));
-    // Per-service bandwidth control (P3.2): re-evaluates the weekly schedule
-    // once a minute and only runs `tc` when the effective policy changed.
-    tokio::spawn(crate::traffic_control::run_scheduler());
     // HomeVault-managed static routes: re-assert the saved list once the
     // interfaces have had time to come up. Failures are logged and the saved
     // entries are kept for the next boot (a slow DHCP lease is not a reason to
@@ -3144,30 +3194,39 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             Err(e) => tracing::warn!("WireGuard client boot task failed: {e}"),
         }
     });
-    tokio::spawn(crate::metrics::run_collector_loop(state.db.pool()));
+    crate::scheduler_supervisor::spawn("metrics", {
+        let pool = state.db.pool();
+        move || crate::metrics::run_collector_loop(pool.clone())
+    });
     // Transfer quotas (ROADMAP 23.2): re-opens the counters of every subject
     // whose counting window elapsed, so the Quotas/Users screens show a reset
     // that really happened. Enforcement does not depend on it — a stale row is
     // settled at check time by `transfer_quota::load_applicable`.
-    tokio::spawn(crate::transfer_quota::run_reset_loop(state.db.pool()));
+    crate::scheduler_supervisor::spawn("transfer-quota-reset", {
+        let pool = state.db.pool();
+        move || crate::transfer_quota::run_reset_loop(pool.clone())
+    });
     // Account-expiry deactivation path (2026-10-20, migration 050): a live
     // session of an account past its `users.expires_at` horizon dies at the
     // next sweep. Sign-in refusal is immediate (`AuthService::authenticate`
     // re-checks `expires_at` on every attempt), this loop only bounds how
     // long an already-held session can outlive the horizon. One cheap SQL
     // DELETE every 10 minutes; no scheduler module of its own.
-    {
+    crate::scheduler_supervisor::spawn("expired-account-sweep", {
         let auth = state.auth.clone();
-        tokio::spawn(async move {
-            let mut interval = tokio::time::interval(std::time::Duration::from_secs(600));
-            loop {
-                interval.tick().await;
-                if let Err(e) = auth.revoke_expired_account_sessions().await {
-                    tracing::warn!("Expired-account session sweep failed: {}", e);
+        move || {
+            let auth = auth.clone();
+            async move {
+                let mut interval = tokio::time::interval(std::time::Duration::from_secs(600));
+                loop {
+                    interval.tick().await;
+                    if let Err(e) = auth.revoke_expired_account_sessions().await {
+                        tracing::warn!("Expired-account session sweep failed: {}", e);
+                    }
                 }
             }
-        });
-    }
+        }
+    });
     // Re-apply persisted disk spindown settings after boot — hdparm's -S
     // timer is per-drive volatile state.
     {
@@ -3292,25 +3351,38 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // mDNS / Zeroconf: publish `homevault.local` + the running share
     // services on the LAN, and keep the advertisement in sync as shares are
     // enabled/disabled. Link-local only, no-op when avahi-daemon is absent.
-    tokio::spawn(crate::mdns::run_publisher_loop(settings.port));
+    crate::scheduler_supervisor::spawn("mdns", {
+        let port = settings.port;
+        move || crate::mdns::run_publisher_loop(port)
+    });
 
-    tokio::spawn(crate::notification_engine::run_notification_loop(
-        state.clone(),
-    ));
+    crate::scheduler_supervisor::spawn("notifications", {
+        let state = state.clone();
+        move || crate::notification_engine::run_notification_loop(state.clone())
+    });
 
     // Content index (phase D1): refresh an enabled index every 30 minutes.
     // Off by default, so a fresh appliance does no filesystem walk.
-    tokio::spawn(crate::content_index::run_periodic_loop(state.clone()));
+    crate::scheduler_supervisor::spawn("content-index", {
+        let state = state.clone();
+        move || crate::content_index::run_periodic_loop(state.clone())
+    });
 
     // Cloud Sync (rclone) scheduler: runs a persisted job on its interval or
     // cron, outside any HTTP request (ROADMAP 16.4). A job with no cadence is
     // simply never due, so an appliance that never scheduled one is unaffected.
-    tokio::spawn(crate::handlers::rclone::run_scheduler_loop(state.clone()));
+    crate::scheduler_supervisor::spawn("rclone", {
+        let state = state.clone();
+        move || crate::handlers::rclone::run_scheduler_loop(state.clone())
+    });
     // ROADMAP 28.3 — phase 2 of the activity feed: turn live host state
     // (`/proc/mdstat`, `zpool status` / `btrfs scrub status`, the Syncthing
     // API) into synthetic progress jobs, so a resync or a scrub the user did
     // not start from HomeVault still shows up in the desktop taskbar.
-    tokio::spawn(crate::activity_poller::run_poller_loop(state.clone()));
+    crate::scheduler_supervisor::spawn("activity-poller", {
+        let state = state.clone();
+        move || crate::activity_poller::run_poller_loop(state.clone())
+    });
 
     // Per-app reverse proxy: initialise with the pieces its tasks need, then
     // bring back a proxy for every catalog app that had one before restart.
@@ -3340,9 +3412,10 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // Downloader: unpack finished archives while "auto extract" is on. The
     // loop sleeps between passes and does nothing when the setting is off or
     // aria2 is not running, so a fresh appliance pays no cost for it.
-    tokio::spawn(crate::handlers::downloader::run_extract_loop(
-        state.clone(),
-    ));
+    crate::scheduler_supervisor::spawn("downloader-extract", {
+        let state = state.clone();
+        move || crate::handlers::downloader::run_extract_loop(state.clone())
+    });
 
     // Generic reverse proxy (phase C2): one host-routed listener for the
     // user-defined rules. A bind failure is reported by the status endpoint,
@@ -3376,7 +3449,7 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // jobs accumulate in memory for the lifetime of the process. Sweep hourly
     // and drop anything finished for more than a day; `cleanup_old_jobs`
     // already never removes a job that's still `Running`.
-    tokio::spawn(async {
+    crate::scheduler_supervisor::spawn("progress-job-cleanup", || async {
         let mut interval = tokio::time::interval(std::time::Duration::from_secs(3600));
         loop {
             interval.tick().await;
@@ -3389,16 +3462,19 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // Certificate automation: one daily pass that renews inside the window and
     // backs off on failure. Started unconditionally and inert while the
     // feature is disabled, so enabling it later needs no restart.
-    tokio::spawn(crate::acme_worker::run(state.clone()));
+    crate::scheduler_supervisor::spawn("acme", {
+        let state = state.clone();
+        move || crate::acme_worker::run(state.clone())
+    });
 
     // Dynamic DNS: one pass every five minutes, inert while disabled. Kept in
     // the same place as the certificate worker because the two features are
     // only useful together: the certificate names the DDNS name.
-    tokio::spawn(crate::ddns::run());
+    crate::scheduler_supervisor::spawn("ddns", || crate::ddns::run());
 
     // Remote syslog forwarding: one queue drained by one worker, inert while
     // the feature is disabled, so enabling it later needs no restart.
-    tokio::spawn(crate::syslog_forward::run());
+    crate::scheduler_supervisor::spawn("syslog-forward", || crate::syslog_forward::run());
 
     let app = create_app(state.clone());
 

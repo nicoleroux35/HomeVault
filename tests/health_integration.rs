@@ -144,6 +144,10 @@ fn health_router(state: Arc<AppState>) -> Router {
             "/api/health/disk-health/predictions",
             get(homevault::handlers::disk_health::handle_disk_predictions),
         )
+        .route(
+            "/api/health/schedulers",
+            get(homevault::handlers::scheduler_health::handle_scheduler_health),
+        )
         .with_state(state)
 }
 
@@ -731,4 +735,77 @@ async fn disk_health_sample_is_admin_only() {
     )
     .await;
     assert_ne!(status, StatusCode::FORBIDDEN, "{body}");
+}
+
+#[tokio::test]
+async fn scheduler_health_is_admin_only() {
+    let (state, _tmp, _guard) = setup_state().await;
+    create_test_user(&state, "u", "Password123!", 1).await;
+    create_test_user(&state, "admin", "Password123!", 2).await;
+    let mut router = health_router(state.clone());
+
+    let (status, _) = send(
+        &mut router,
+        Method::GET,
+        "/api/health/schedulers",
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+
+    let member = login(&mut router, "u", "Password123!").await;
+    let (status, _) = send(
+        &mut router,
+        Method::GET,
+        "/api/health/schedulers",
+        Some(&member),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+
+    let admin = login(&mut router, "admin", "Password123!").await;
+    let (status, body) = send(
+        &mut router,
+        Method::GET,
+        "/api/health/schedulers",
+        Some(&admin),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(body["data"].is_array(), "{body}");
+}
+
+#[tokio::test]
+async fn scheduler_health_lists_a_registered_loop() {
+    let (state, _tmp, _guard) = setup_state().await;
+    create_test_user(&state, "admin", "Password123!", 2).await;
+    let mut router = health_router(state.clone());
+    let admin = login(&mut router, "admin", "Password123!").await;
+
+    let supervisor = homevault::scheduler_supervisor::spawn("integration-test-loop", || async {});
+    tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    let (status, body) = send(
+        &mut router,
+        Method::GET,
+        "/api/health/schedulers",
+        Some(&admin),
+        None,
+    )
+    .await;
+    supervisor.abort();
+
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let names: Vec<&str> = body["data"]
+        .as_array()
+        .expect("data array")
+        .iter()
+        .filter_map(|entry| entry["name"].as_str())
+        .collect();
+    assert!(
+        names.contains(&"integration-test-loop"),
+        "registered loop missing from {names:?}"
+    );
 }

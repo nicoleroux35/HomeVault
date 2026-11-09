@@ -69,8 +69,23 @@ installer suites, and `npm run build`.
 | Installer (`installer/tests/unit-hardening.test.sh`) | +2 assertions for the watchdog directives in the root unit |
 
 **Still to run:** the unit tests above, the installer suite, and a live
-`systemctl stop`/`kill -9` on a host to prove the restart path. Supervision of
-the individual `tokio::spawn` loops remains open in FIAB-02.
+`systemctl stop`/`kill -9` on a host to prove the restart path. The per-loop
+supervisor is covered in the next section.
+
+## 2026-11-09 — background-loop supervisor (FIAB-02, written, not run)
+
+> **No test was executed.** Static checks: `cargo check --lib`,
+> `cargo check --tests`, `npm run check` (0 errors / 0 warnings).
+
+| Suite | Coverage |
+|---|---|
+| Unit (`src/scheduler_supervisor.rs`) | backoff doubles and caps at 300 s, resets after 60 s; a returning loop is recorded and restarted; a panicking loop becomes `JoinError` and is restarted |
+| Unit (`src/handlers/scheduler_health.rs`) | admin-only route, JSON array payload (via integration below) |
+| Integration (`tests/health_integration.rs`) | `/api/health/schedulers` is 401 without a session, 403 for a member, 200 for an admin; a registered loop appears in the list |
+| Frontend (`Health.svelte`) | admin-only **Background schedulers** card with running/stopped, restart count and last error |
+
+**Still to run:** the three tests above and a live `kill -9` of one loop to
+confirm the restart/backoff path.
 
 ## P1-28 — kernel stability + explicit monitoring choice — 2026-11-09 (not run)
 
