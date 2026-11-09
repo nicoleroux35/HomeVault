@@ -246,4 +246,32 @@ mod tests {
         assert_eq!(a.parent(), path.parent());
         assert_eq!(b.parent(), path.parent());
     }
+
+    #[test]
+    fn a_stale_temporary_file_does_not_disturb_the_target() {
+        // Simulates a crash between "temp file written" and "rename": the
+        // temporary file is left behind and the target still holds the old
+        // bytes. Reading and the next write must both ignore the leftover.
+        let dir = temp_dir();
+        let path = dir.path().join("smb.conf");
+        fs::write(&path, "[global]\n   workgroup = OLD\n").unwrap();
+        let stale = dir.path().join(".smb.conf.tmp.9999.123.0");
+        fs::write(&stale, "[global]\n   workgroup = HALF-WRIT").unwrap();
+
+        assert_eq!(
+            AtomicWriter::read(&path).unwrap(),
+            "[global]\n   workgroup = OLD\n"
+        );
+
+        AtomicWriter::write(&path, "[global]\n   workgroup = NEW\n").expect("next write");
+        assert_eq!(
+            AtomicWriter::read(&path).unwrap(),
+            "[global]\n   workgroup = NEW\n"
+        );
+        // The stale file is not mistaken for the target and is not rewritten.
+        assert_eq!(
+            fs::read_to_string(&stale).unwrap(),
+            "[global]\n   workgroup = HALF-WRIT"
+        );
+    }
 }

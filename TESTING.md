@@ -35,6 +35,25 @@ final green run:
   `sqlite::memory:`), quota message follows the delegated-manager wording, and
   the share-link owner gets a folder grant.
 
+## 2026-11-09 — failure-injection rehearsals (written, not run)
+
+> **Not executed for this pass**, per instruction. Static checks: `cargo fmt
+> --check` and `cargo test --lib --no-run` compile clean.
+
+Eight scenarios now have either an automated test or a manual runbook with the
+proof to collect (`docs/guides/failure-injection.md`).
+
+| Suite | Delta | Coverage |
+|---|---|---|
+| Unit (`src/storage/atomic.rs`) | +1 | a crash between the temporary write and the rename leaves the previous target readable; a leftover `.<name>.tmp.*` does not disturb the next read or write |
+| Unit (`src/storage/disk_health_repo.rs`) | +2 | a repeated finding stays a single active row (one alert, not one per sample); a resolved-then-reappearing finding reopens the same row and is notified once more |
+| Already covered | — | scrub marker + `resume_decision` (unit), corrupted USB destination (unit), restic `last_check_ok` (integration), recovery hardware ladder (opt-in) |
+| Manual runbook | — | SMB durable handles, iSCSI `configfs` semantics, full SIGKILL+reboot scrub, `dm-flakey`/superblock corruption |
+| RAG | — | one `FeatureDoc` (`failure-injection`) + a `rag.md` Document Sources row; the every-guide/mapping test stays satisfied |
+
+Expected totals after a full run: unit **2 950**, integration **4 582** (110
+suites).
+
 ## 2026-11-09 — USB copy modes and traceability (written, not run)
 
 > **Not executed for this pass**, per instruction. Static checks: `cargo check

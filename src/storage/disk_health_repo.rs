@@ -225,3 +225,103 @@ impl DiskHealthRepository {
         Ok(row.map(|(at,)| at))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    async fn repo() -> DiskHealthRepository {
+        let pool = Arc::new(
+            sqlx::sqlite::SqlitePoolOptions::new()
+                .max_connections(1)
+                .connect("sqlite::memory:")
+                .await
+                .unwrap(),
+        );
+        sqlx::query(
+            "CREATE TABLE disk_health_findings (\
+             id INTEGER PRIMARY KEY AUTOINCREMENT, \
+             fingerprint TEXT NOT NULL UNIQUE, \
+             serial TEXT NOT NULL, model TEXT NOT NULL DEFAULT '', \
+             kind TEXT NOT NULL, severity TEXT NOT NULL, message TEXT NOT NULL, \
+             first_seen TEXT NOT NULL, last_seen TEXT NOT NULL, resolved_at TEXT)",
+        )
+        .execute(pool.as_ref())
+        .await
+        .unwrap();
+        DiskHealthRepository::new(pool)
+    }
+
+    /// The notification decision is `is_active` before the upsert: a finding
+    /// that is still active must stay one row, so a daily sample cannot send a
+    /// second alert for the same condition.
+    #[tokio::test]
+    async fn a_repeated_finding_stays_one_active_row() {
+        let repo = repo().await;
+        repo.upsert_finding(
+            "reallocated:sda:5",
+            "SERIAL",
+            "Disk",
+            "reallocated_sectors",
+            "warning",
+            "5 reallocated sectors",
+            "2026-11-09T10:00:00Z",
+        )
+        .await
+        .unwrap();
+        assert!(repo.is_active("reallocated:sda:5").await.unwrap());
+
+        repo.upsert_finding(
+            "reallocated:sda:5",
+            "SERIAL",
+            "Disk",
+            "reallocated_sectors",
+            "warning",
+            "6 reallocated sectors",
+            "2026-11-10T10:00:00Z",
+        )
+        .await
+        .unwrap();
+        assert!(repo.is_active("reallocated:sda:5").await.unwrap());
+        assert_eq!(repo.list_active_findings().await.unwrap().len(), 1);
+    }
+
+    /// A resolved finding that comes back reopens the same row (same
+    /// fingerprint), so the alert is sent once more without duplicating the
+    /// history.
+    #[tokio::test]
+    async fn a_resolved_finding_reopens_once() {
+        let repo = repo().await;
+        repo.upsert_finding(
+            "temperature:sdb:60",
+            "SERIAL2",
+            "Disk",
+            "temperature",
+            "warning",
+            "60 C",
+            "2026-11-09T10:00:00Z",
+        )
+        .await
+        .unwrap();
+        sqlx::query("UPDATE disk_health_findings SET resolved_at = ?")
+            .bind("2026-11-09T12:00:00Z")
+            .execute(repo.pool.as_ref())
+            .await
+            .unwrap();
+        assert!(!repo.is_active("temperature:sdb:60").await.unwrap());
+
+        repo.upsert_finding(
+            "temperature:sdb:60",
+            "SERIAL2",
+            "Disk",
+            "temperature",
+            "warning",
+            "61 C",
+            "2026-11-10T10:00:00Z",
+        )
+        .await
+        .unwrap();
+        assert!(repo.is_active("temperature:sdb:60").await.unwrap());
+        assert_eq!(repo.list_active_findings().await.unwrap().len(), 1);
+    }
+}

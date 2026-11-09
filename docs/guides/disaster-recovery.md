@@ -191,4 +191,4 @@ backups" into "we have backups".
 - [Backup destination](./backup-target.md), [Replication](./replication.md),
   [Snapshots](./snapshots.md), [Backups (restic)](./backup-restic.md),
   [Rsync server](./rsync.md), [Configuration backup](./settings.md),
-  [Health](./health.md)
+  [Health](./health.md), [Failure injection](./failure-injection.md)

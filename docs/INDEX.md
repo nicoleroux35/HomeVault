@@ -96,6 +96,7 @@ methods, and notable invariants.
 | Directory sign-in and single sign-on (LDAP/AD, OpenID Connect, SAML, group→role mapping, break-glass local admin) | [guides/directory-sso.md](./guides/directory-sso.md) |
 | Immutable snapshots (retention locks, holds, break-glass) | [guides/snapshots.md](./guides/snapshots.md#immutable-snapshots-2026-10-31-roadmap-p25) |
 | Disaster recovery (runbook: config restore, rebuild, restic restore) | [guides/disaster-recovery.md](./guides/disaster-recovery.md) |
+| Failure injection (interrupted scrub, atomic config crash, corrupted mount, USB/restic corruption, SMB/iSCSI limits, alert dedup) | [guides/failure-injection.md](./guides/failure-injection.md) |
 | Notifications (persistent center, health/backup alerts, email, webhook, What's New) | [guides/notifications.md](./guides/notifications.md) |
 | Antivirus (ClamAV) | [guides/antivirus.md](./guides/antivirus.md) |
 | Anti-Ransomware (honeypots, rate detection) | [guides/ransomware.md](./guides/ransomware.md) |

@@ -1317,3 +1317,49 @@ le mode est rappelé sur la carte de la règle. i18n en/fr/de/es.
   inclus) reste manuel : il demande un périphérique amovible.
 - La rotation des dossiers `.versions/` (purge au‑delà de N exécutions) n’est
   pas encore exposée ; elle se décidera avec le quota de destination.
+
+---
+
+## 17. Rehearsals d’injection de pannes — 2026‑11‑09 (FIAB‑01)
+
+Le lot intégrité avait été livré avec des tests **écrits mais non exécutés**.
+FIAB‑01 demande une preuve par scénario : un test automatisé, ou un runbook
+manuel avec la sortie datée. Les deux moitiés sont maintenant explicites.
+
+### 17.1 Le guide
+
+`docs/guides/failure-injection.md` décrit huit scénarios : scrub interrompu par
+`SIGKILL`, coupure entre l’écriture temporaire et le `rename`, superbloc
+corrompu, copie USB corrompue, pack restic tronqué, coupure SMB (durable
+handles désactivés ou non), sémantique iSCSI sur un hôte `configfs`, et
+dédoublonnage des alertes SMART. Chaque section dit si le scénario est
+automatisé, quelle commande le rejoue, ce qu’il faut observer et quelle preuve
+conserver. Une table de résultats datée termine le guide ; une case vide veut
+dire « pas encore répété », jamais « supposé bon ».
+
+### 17.2 Ce qui est désormais automatisé
+
+| Scénario | Test |
+|---|---|
+| Coupure entre fichier temporaire et `rename` | `src/storage/atomic.rs` : la cible garde l’ancien contenu, le fichier `.tmp` résiduel est ignoré par la lecture **et** par l’écriture suivante |
+| Une alerte par nouveau défaut SMART | `src/storage/disk_health_repo.rs` : un défaut répété reste **une** ligne active (donc une notification), et un défaut résolu qui revient rouvre la même ligne |
+| Marqueur de scrub + décision de reprise | unitaires `src/scrub.rs` (déjà présents) |
+| Destination USB corrompue | unitaire `src/usb_copy.rs` (déjà présent) |
+| Verdict `restic check` | intégration `tests/restic_integration.rs` (déjà présent) |
+| Échelle de récupération de montage | `tests/recovery_hardware_integration.rs`, opt‑in sur un disque loop |
+
+### 17.3 Ce qui reste manuel, et pourquoi
+
+Le `SIGKILL` réel suivi d’un reboot, la corruption `dm-flakey`/superbloc, une
+reconnexion SMB réelle et les attributs `configfs` d’iSCSI demandent une machine
+jetable et, pour deux d’entre eux, un client externe. Ils restent des runbooks
+avec preuve : commande, sortie, date. C’est une limite assumée, pas un oubli —
+le guide le dit scénario par scénario.
+
+### 17.4 Documentation
+
+`docs/INDEX.md` référence le guide, `docs/guides/disaster-recovery.md` le lie
+depuis ses « Related », `docs/guides/rag.md` et `src/rag_indexers.rs` gagnent le
+`FeatureDoc` `failure-injection` (la règle « un guide = un FeatureDoc » reste
+vérifiée par le test existant), et `TESTING.md` enregistre les trois nouveaux
+unitaires sans les déclarer exécutés.
