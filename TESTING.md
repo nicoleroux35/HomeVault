@@ -1,5 +1,39 @@
 # HomeVault — Test tracking
 
+## 2026-11-09 — verification run (executed)
+
+| Suite | Result |
+|---|---|
+| Rust unit (`cargo test --lib`) | **2 939 passed / 0 failed** |
+| Rust integration (`cargo test --tests --no-fail-fast`) | **110 suites, 4 580 passed / 0 failed** |
+| Installer `unit-hardening.test.sh` | **57 passed / 0 failed** |
+| Installer `update-engine.test.sh` | **43 passed / 0 failed** |
+| Installer `data-dir.test.sh` | **12 passed / 0 failed** |
+| Frontend `npm run check` | **0 errors / 0 warnings** |
+| Frontend `npm run build` | **OK** (106 precompressed files) |
+| E2E (health, storage, backup, Firefox, workers=1) | see the run log / below |
+| `cargo fmt --check` | **fails: 134 pre-existing rustfmt diffs** (toolchain drift; not introduced by this pass) |
+
+The first executed run found real defects and stale tests, all fixed before the
+final green run:
+
+- product: the GPU `devices:` block was asserted at the wrong indent (the
+  renderer now correctly indents it); `validate_compression_level` accepts the
+  bare UI level (`15` → `zstd:15`); `validate_idmap_range` refuses a `0` low
+  bound; `resume_decision` treats “no scrub in progress” as finished (the
+  generic “in progress” check used to keep the marker forever); Samba sync is a
+  no-op when `sudo` cannot run `smbpasswd` (locale-independent `sudo:` prefix);
+  `systemd_notify::destination` rejects an empty socket; `e2fsck`/`dumpe2fs`
+  are listed as base binaries; the installer unit test routes `bash` through
+  `run_timed`.
+- tests/harness: GPU indentation expectation, disk-prediction 45-day math
+  (measured from the current, not the first, sample), WS-Discovery truncated
+  workgroup, content/global search fixtures grant the member the test folder
+  (non-admins no longer see every `PathGuard` root), restore-drill fixtures use
+  a file-backed SQLite database (`VACUUM INTO` is a no-op on SQLx
+  `sqlite::memory:`), quota message follows the delegated-manager wording, and
+  the share-link owner gets a folder grant.
+
 ## 2026-11-09 — DSM-parity verification fixes (written, not run)
 
 > **No Rust, integration, E2E or installer suite was executed for this pass**,

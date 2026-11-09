@@ -71,6 +71,12 @@ pub fn resume_decision(status: &str) -> ResumeDecision {
     if s.is_empty() {
         return ResumeDecision::Restart;
     }
+    // A finished scrub often says "no scrub in progress"; test the negative
+    // marker first, otherwise the generic `in progress` check below treats a
+    // completed run as still running and the marker is never cleared.
+    if s.contains("no scrub") || s.contains("not in progress") {
+        return ResumeDecision::Clear;
+    }
     if s.contains("in progress")
         || s.contains("running")
         || s.contains("resync")

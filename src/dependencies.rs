@@ -1342,6 +1342,10 @@ mod tests {
         // signed-update engine invokes (`src/update_engine.rs`).
         "bash",
         "blkid",
+        // e2fsprogs is part of the base install: `e2fsck`/`dumpe2fs` are the
+        // read-only probes `storage::recovery` uses on an unclean ext4 volume.
+        "dumpe2fs",
+        "e2fsck",
         // systemd, like `systemctl` / `journalctl` / `timedatectl` below: the
         // mDNS hostname is set and read back through `busctl` against
         // `org.freedesktop.Avahi` (`src/mdns.rs`).
@@ -1915,16 +1919,22 @@ ENV_FILE=/etc/homevault/homevault.env
 HTTPS_PORT=8443
 render_service_unit "$2" "$3" "" "$4"
 "#;
-        let output = std::process::Command::new("bash")
+        let mut command = std::process::Command::new("bash");
+        command
             .arg("-c")
             .arg(script)
             .arg("homevault-unit-test")
             .arg(root)
             .arg(run_user)
             .arg(run_group)
-            .arg(run_home)
-            .output()
-            .expect("bash must be available to render the installer unit");
+            .arg(run_home);
+        // Bounded like every production subprocess (ROADMAP X.9): the source
+        // guard scans the whole tree, tests included.
+        let output = crate::utils::process::run_timed(
+            &mut command,
+            std::time::Duration::from_secs(10),
+        )
+        .expect("bash must be available to render the installer unit");
         assert!(
             output.status.success(),
             "render_service_unit failed: {}",

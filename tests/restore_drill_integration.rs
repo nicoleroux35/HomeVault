@@ -49,7 +49,13 @@ async fn fixture() -> Fixture {
     let tmp = tempfile::tempdir().expect("temp dir");
     std::env::set_var("DATA_DIRECTORY", tmp.path());
 
-    let db = Database::new("sqlite::memory:").await.expect("db");
+    // A file-backed database, like production: `VACUUM INTO` is a no-op for
+    // SQLx's `sqlite::memory:` pool (SQLite refuses the copy between two
+    // in-memory databases), and the drill's whole point is a real snapshot.
+    let db_path = tmp.path().join("homevault.db");
+    let db = Database::new(&format!("sqlite:{}?mode=rwc", db_path.display()))
+        .await
+        .expect("db");
     db.run_migrations().await.expect("migrations");
 
     let auth = AuthService::new(db.clone());

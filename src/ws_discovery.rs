@@ -280,6 +280,6 @@ mod tests {
             "WORKGROUP\nExecStart=/bin/evil",
         );
         assert!(!unit.contains("ExecStart=/bin/evil"));
-        assert!(unit.contains("ExecStart=/usr/sbin/wsdd2 -n hostExecStartbi -w WORKGROUPEExecSt"));
+        assert!(unit.contains("ExecStart=/usr/sbin/wsdd2 -n hostExecStartbi -w WORKGROUPExecSt"));
     }
 }

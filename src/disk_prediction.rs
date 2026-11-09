@@ -233,7 +233,9 @@ mod tests {
         assert!(trend.slope_per_day > 0.0);
         assert!(trend.r_squared > 0.9);
         let days = trend.days_remaining.unwrap();
-        assert!((days - 50.0).abs() < 1.0, "{days}");
+        // The current value (1.0 at day 5) is 9 units from the threshold at
+        // 0.2/day: 45 days, not 50 from the first sample.
+        assert!((days - 45.0).abs() < 1.0, "{days}");
         assert!(trend.days_low.unwrap() <= days);
         assert!(trend.days_high.unwrap() >= days);
     }

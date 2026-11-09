@@ -436,6 +436,18 @@ async fn test_content_search_filters_by_the_callers_roots() {
     let token = login(&mut r, "reader").await;
     let share = f.share.to_string_lossy().to_string();
 
+    // The member's Explorer roots come from explicit grants; give them the
+    // test folder so the search has a visible root (the `/etc/shadow` row
+    // stays outside it).
+    sqlx::query(
+        "INSERT INTO resource_shares (owner, member, kind, resource, permission) \
+         VALUES ('reader', 'reader', 'folder', ?, 'read')",
+    )
+    .bind(&share)
+    .execute(&*f.state.db.pool())
+    .await
+    .expect("grant the test folder");
+
     // Turn the index on with the test share as its only root.
     let config = ContentIndexConfig {
         enabled: true,

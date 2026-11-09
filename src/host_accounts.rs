@@ -127,6 +127,14 @@ fn samba_sync_is_noop(stderr: &str) -> bool {
         || stderr.contains("No such user")
         || stderr.contains("When run by root")
         || stderr.contains("Permission denied")
+        // The call goes through `sudo` in the unprivileged deployment; a
+        // missing sudo credential is the same "Samba is not part of this
+        // deployment" case as a missing binary. `sudo` prefixes its own
+        // diagnostics in every locale, so the prefix is the stable marker.
+        || stderr.contains("sudo:")
+        || stderr.contains("a password is required")
+        || stderr.contains("not in the sudoers")
+        || stderr.contains("is not allowed to execute")
 }
 
 /// Lifecycle operations on the Linux account backing a HomeVault account.
@@ -879,6 +887,10 @@ mod tests {
             "No such user hv-x",
             "When run by root:\n    smbpasswd [options] [username]",
             "Permission denied",
+            "sudo: a password is required",
+            "sudo: il est nécessaire de saisir un mot de passe",
+            "hv is not in the sudoers file",
+            "sudo: hv is not allowed to execute '/usr/bin/smbpasswd'",
         ] {
             assert!(samba_sync_is_noop(benign), "{benign:?}");
         }

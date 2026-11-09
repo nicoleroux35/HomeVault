@@ -44,6 +44,9 @@ pub fn wire(payload: &str) -> String {
 /// be an abstract socket (`@name`). A malformed value is not an error: the
 /// process simply runs without systemd notifications.
 fn destination(socket: &str) -> Option<SocketAddr> {
+    if socket.is_empty() {
+        return None;
+    }
     if let Some(name) = socket.strip_prefix('@') {
         if name.is_empty() {
             return None;

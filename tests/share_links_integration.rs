@@ -881,6 +881,17 @@ async fn test_share_link_revoke_only_owner_or_admin() {
     let alice = login(&mut router, "alice", "pass").await;
     let bob = login(&mut router, "bob", "pass").await;
 
+    // A member's Explorer roots come from an explicit grant; alice needs the
+    // fixture folder to create her link (the admin's path_guard is not enough).
+    sqlx::query(
+        "INSERT INTO resource_shares (owner, member, kind, resource, permission) \
+         VALUES ('alice', 'alice', 'folder', ?, 'full')",
+    )
+    .bind(h.root.to_string_lossy().to_string())
+    .execute(&*h.state.db.pool())
+    .await
+    .expect("grant alice's folder");
+
     let file = make_file(&h.root, "alice.txt", "alice's file");
     let (_, body) = send(
         &mut router,

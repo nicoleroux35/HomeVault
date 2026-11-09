@@ -806,8 +806,8 @@ pub(crate) fn validate_idmap_range(range: &str) -> Result<(), String> {
         .trim()
         .parse()
         .map_err(|_| "idmap_range must look like '10000-99999'".to_string())?;
-    if low >= high {
-        return Err("idmap_range must have a lower bound below its upper bound".to_string());
+    if low == 0 || high <= low {
+        return Err("idmap_range must have 0 < low < high".to_string());
     }
     Ok(())
 }

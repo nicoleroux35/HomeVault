@@ -167,10 +167,11 @@ pub fn device_stats_command(mount_point: &str) -> Vec<String> {
 /// Compression levels the UI accepts (`zstd:1` fast … `zstd:15` slow).
 pub fn validate_compression_level(value: &str) -> Result<String, String> {
     let value = value.trim().to_ascii_lowercase();
+    // Accept the bare UI value (`15`) as well as the documented `zstd:15`.
     let level = value
         .strip_prefix("zstd:")
         .or_else(|| value.strip_prefix("zstd"))
-        .unwrap_or("");
+        .unwrap_or(&value);
     let level: u8 = level
         .parse()
         .map_err(|_| "compression must be 'zstd:<1-15>' or 'none'".to_string())?;

@@ -248,7 +248,7 @@ async fn test_home_put_requires_admin() {
     assert_eq!(body["success"], json!(false));
     assert_eq!(
         body["message"],
-        json!("Admin privileges required for this operation")
+        json!("Account management privileges required")
     );
 }
 

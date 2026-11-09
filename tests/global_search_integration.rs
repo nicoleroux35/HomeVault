@@ -143,6 +143,27 @@ async fn session(state: &AppState, username: &str, is_admin: bool) -> String {
     token
 }
 
+/// The member's roots come from explicit grants; the tests below need both
+/// fixture folders. Inserting the grant directly avoids mounting the admin
+/// share routes in this minimal router.
+async fn grant_folder(state: &AppState, member: &str, path: &std::path::Path) {
+    sqlx::query(
+        "INSERT INTO resource_shares (owner, member, kind, resource, permission) \
+         VALUES (?, ?, 'folder', ?, 'read')",
+    )
+    .bind(member)
+    .bind(member)
+    .bind(path.to_string_lossy().to_string())
+    .execute(&*state.db.pool())
+    .await
+    .expect("grant folder");
+}
+
+async fn grant_fixture_roots(f: &Fixture, member: &str) {
+    grant_folder(&f.state, member, &f.root_a).await;
+    grant_folder(&f.state, member, &f.root_b).await;
+}
+
 fn router(state: Arc<AppState>) -> Router {
     Router::new()
         .route("/api/search/files", get(handle_search_files))
@@ -263,6 +284,8 @@ fn test_global_search_tag_filter_is_private_and_acl_confined() {
         let f = fixture().await;
         let token = session(&f.state, "tag-owner", false).await;
         let other = session(&f.state, "tag-other", false).await;
+        grant_fixture_roots(&f, "tag-owner").await;
+        grant_fixture_roots(&f, "tag-other").await;
         let tagged = f
             .root_a
             .join("shared-report.txt")
@@ -299,6 +322,7 @@ fn test_global_search_finds_a_file_in_the_second_root() {
     run(async {
         let f = fixture().await;
         let token = session(&f.state, "member", false).await;
+        grant_fixture_roots(&f, "member").await;
         let mut r = router(f.state.clone());
 
         let (status, body) = search(&mut r, &token, "only-in-beta").await;
@@ -324,6 +348,7 @@ fn test_global_search_dedupes_and_ranks_across_roots() {
     run(async {
         let f = fixture().await;
         let token = session(&f.state, "member", false).await;
+        grant_fixture_roots(&f, "member").await;
         let mut r = router(f.state.clone());
 
         let (_, body) = search(&mut r, &token, "shared-report").await;
@@ -343,6 +368,7 @@ fn test_global_search_ranks_an_exact_name_first() {
     run(async {
         let f = fixture().await;
         let token = session(&f.state, "member", false).await;
+        grant_fixture_roots(&f, "member").await;
         let mut r = router(f.state.clone());
 
         let (_, body) = search(&mut r, &token, "photos").await;
@@ -363,6 +389,7 @@ fn test_global_search_caps_the_answer_and_says_so() {
     run(async {
         let f = fixture().await;
         let token = session(&f.state, "member", false).await;
+        grant_fixture_roots(&f, "member").await;
         let mut r = router(f.state.clone());
 
         let uri = "/api/search/files?q=txt&limit=1";
@@ -398,6 +425,7 @@ fn test_global_search_files_only_drops_directories() {
     run(async {
         let f = fixture().await;
         let token = session(&f.state, "member", false).await;
+        grant_fixture_roots(&f, "member").await;
         let mut r = router(f.state.clone());
 
         let uri = "/api/search/files?q=photos&files_only=true";
@@ -434,6 +462,7 @@ fn test_global_search_refuses_an_empty_query() {
     run(async {
         let f = fixture().await;
         let token = session(&f.state, "member", false).await;
+        grant_fixture_roots(&f, "member").await;
         let mut r = router(f.state.clone());
         let (status, body) = search(&mut r, &token, "").await;
         // A refusal is a `400` naming the rule — never a `200` with an empty
@@ -454,6 +483,7 @@ fn test_global_search_refuses_a_one_character_query() {
     run(async {
         let f = fixture().await;
         let token = session(&f.state, "member", false).await;
+        grant_fixture_roots(&f, "member").await;
         let mut r = router(f.state.clone());
         let (status, body) = search(&mut r, &token, "a").await;
         assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
@@ -468,6 +498,7 @@ fn test_global_search_refuses_a_path_shaped_query() {
     run(async {
         let f = fixture().await;
         let token = session(&f.state, "member", false).await;
+        grant_fixture_roots(&f, "member").await;
         let mut r = router(f.state.clone());
         let (status, body) = search(&mut r, &token, "../../etc/passwd").await;
         assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
@@ -481,6 +512,7 @@ fn test_global_search_refuses_an_oversized_query() {
     run(async {
         let f = fixture().await;
         let token = session(&f.state, "member", false).await;
+        grant_fixture_roots(&f, "member").await;
         let mut r = router(f.state.clone());
         let long = "x".repeat(crate::MAX_QUERY_LEN_PLUS_ONE);
         let (status, body) = search(&mut r, &token, &long).await;
@@ -507,6 +539,7 @@ fn test_global_search_never_leaves_the_allowed_roots() {
             return; // nothing to prove on this host
         }
         let token = session(&f.state, "member", false).await;
+        grant_fixture_roots(&f, "member").await;
         let mut r = router(f.state.clone());
 
         let (_, body) = search(&mut r, &token, "hostname").await;
