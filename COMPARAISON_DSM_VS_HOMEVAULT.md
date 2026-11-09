@@ -13,7 +13,7 @@
 
 | Champ | Valeur |
 |---|---|
-| Baseline HomeVault | `910a84f`, 09/11/2026 — plus les correctifs §8 et les lots fiabilité §9–§14 |
+| Baseline HomeVault | `1d9b1bd`, 09/11/2026 — correctifs §8, lots fiabilité §9–§15, puis FIAB‑13/USB Copy §16, FIAB‑01 §17, FIAB‑11/12 §18 et FIAB‑05 partiel §19 |
 | Firmware DSM analysé | 7.4.1‑90080 (DS925+), image `/media/nicolas/500GB/Projets/DSM7/DSM_DS925+_90080` |
 | Périmètre | 30 apps intégrées du launcher + 16 apps du catalogue Docker |
 | Méthode | Vérification du code (`src/`, `frontend/`, `catalog/`), des guides `docs/guides/` et du backlog `HOMEVAULT_TASKLIST_A_FAIRE.md` |
@@ -27,7 +27,7 @@
 L'analyse du 04/11/2026 (baseline `c37c803`) est en partie périmée. Ces manques
 qu'elle listait sont **désormais livrés** et ne doivent plus être comptés :
 
-| Ancien « manque » | État réel au HEAD `910a84f` (plus §8) |
+| Ancien « manque » | État réel au HEAD `1d9b1bd` (plus §8–§19) |
 |---|---|
 | Routes statiques, proxy sortant, client WireGuard | ✅ livrés (P1‑7, P1‑8, P1‑17) |
 | GeoIP, rétention métriques, expiration mot de passe | ✅ livrés (P1‑14, P1‑3, P1‑2) |
@@ -37,13 +37,13 @@ qu'elle listait sont **désormais livrés** et ne doivent plus être comptés :
 | ACL par partage, quotas par partage, Previous Versions, Time Machine, serveur rsync | ✅ livrés |
 | OpenAPI, DDNS 7 fournisseurs, SNMP v3 | ✅ livrés |
 | Table d'audit | ✅ **livrée le 2026‑11‑08, filtres structurés UI le 2026‑11‑09** (P1‑18 : table, API, export, source Journal, filtres gravité/utilisateur/action/dates, pagination, rétention 90 j) |
-| Signature + atomicité de mise à jour | ✅ **installeur 2026‑11‑08 + Apply update dans Settings 2026‑11‑09** (P2‑8 ; reste la clé de production) |
+| Signature + atomicité de mise à jour | ✅ **installeur 2026‑11‑08 + Apply update dans Settings 2026‑11‑09** (P2‑8 ; ancrages de confiance et rotation §18 ; reste la publication des clés de production) |
 | Signature des stores communautaires | ✅ **livrée le 2026‑11‑09** (P1‑27 : Ed25519 détachée sur le descripteur et chaque manifeste d’app, vérifiée au sync et au chargement, badge Signed/Unsigned/refused) |
 | Stabilité système / monitoring hôte | ✅ **livrée le 2026‑11‑09** (P1‑28 : `sysctl` noyau + cache d’écriture borné, `smartd`/`mdmonitor` opt‑in pour ne jamais doubler les alertes de HomeVault) |
 | OAuth2 e‑mail (Gmail / Microsoft 365) | ✅ **livré le 2026‑11‑09** (P1‑16 : flux code, refresh token scellé, msmtp `oauthbearer`/`xoauth2`, carte Settings — aucun mot de passe applicatif) |
-| Isolation d'exécution | 🟡 **installeur livré le 2026‑11‑08** (P2‑7 partiel : systemd durci + AppArmor opt‑in ; validation terrain/enforce restante) |
-| Restauration bare‑metal | 🟡 **drill non destructif livré le 2026‑11‑08** (P2‑9 partiel : snapshot DB + archive config + état backup vérifiés ; test de reconstruction VM restant) |
-| Scrub planifié, reprise après arrêt sale, récupération de montage/fsck, historique SMART/I‑O | ✅ **mergés dans `main` le 2026‑11‑09** (lot intégrité, §9 ; tests à exécuter) |
+| Isolation d'exécution | 🟡 **installeur livré** (P2‑7 : systemd durci + AppArmor opt‑in, **préflight de compilation** `apparmor_parser -Q` et checklist terrain §18 ; enforce sur hôte réel restant) |
+| Restauration bare‑metal | 🟡 **drill non destructif livré** (P2‑9 : snapshot DB + archive config + état backup vérifiés) et **grille RTO/RPO par scénario** §19 ; test de reconstruction VM restant |
+| Scrub planifié, reprise après arrêt sale, récupération de montage/fsck, historique SMART/I‑O | ✅ **mergés dans `main` le 2026‑11‑09** (lot intégrité, §9 ; suite complète exécutée et verte §15, scenarios terrain §17) |
 
 **Ce que la revue du 2026‑11‑08 ajoute.** Le diagnostic de ce document reste
 juste : les vrais manques sont la **confiance** (mise à jour, isolation, audit,
@@ -67,11 +67,11 @@ cas de désaccord avec le backlog, `HOMEVAULT_TASKLIST_A_FAIRE.md` §1bis gagne.
 | App HomeVault | Équivalent DSM 7.4 | Verdict | Ce qu'il faut améliorer |
 |---|---|---|---|
 | **Storage** | Storage Manager | 🟡 | **Cache SSD ZFS L2ARC/SLOG livré** (P2‑16, opt‑in, SSD obligatoire) ; restent SHR/SHR2, thin provisioning complet (seuls les zvol ZFS sont couverts), déduplication (design seulement), KMIP, WORM, extension DX525, mise à jour firmware disques |
-| **RAID** | Storage Manager (création de volume) / Storage Advisor | 🟡 | SHR/SHR2, ajout automatique de spare, extension à chaud, RAID F1, vitesse et moniteur de resync (migration de niveau déjà faite) |
+| **RAID** | Storage Manager (création de volume) / Storage Advisor | 🟡 | SHR/SHR2, ajout automatique de spare, extension à chaud, RAID F1. **Vitesse de resync livrée** (FIAB‑10, §12 : profils persistés, réappliqués au boot/création/rebuild) ; restent PPL RAID5 et le test terrain d’une reconstruction réelle (migration de niveau déjà faite) |
 | **Explorer** | File Station | ⭐ / ✅ | **Emplacements réseau CIFS/NFS montés et parcourus** et **versions Btrfs dans Rewind** livrés (P1‑35) ; cloud via rclone ; restent les vignettes vidéo/PDF (P2 opt‑in), les ACL Windows et le transcodage |
 | **Shares** | Control Panel > Dossier partagé + Services de fichiers | 🟡 | ACL Windows non simulées (POSIX uniquement) ; validation réelle DC/keytab AD ; NFSv4 Kerberos à valider sur matériel. **WS‑Discovery livré** (P1‑29) ; SMB multicanal, chiffrement, Previous Versions, Time Machine, rsync, FTP jails : **faits** |
 | **Quotas** | Control Panel > Quota | ✅ / ⭐ | Parité solide (utilisateur, partage, transfert) **+ historique horaire et alerte à 90 %** (P1‑32, rétention 90 j) |
-| **USB Copy** | USB Copy | ✅ | Ajouter déclenchement physique one‑touch et règles multiples si le matériel le permet |
+| **USB Copy** | USB Copy | ✅ / ⭐ | **Modes de copie DSM livrés** (`incremental`, `mirror`, `versioned`, `photo_import`), **politique de conflit** (`overwrite`/`skip`/`rename`) et **traçabilité** dans l’historique des transferts (FIAB‑13, §16). Restent le déclenchement physique one‑touch et les règles multiples si le matériel le permet |
 | **iSCSI** | SAN Manager | ✅ / 🟡 | **LUN fins ZFS avec snapshots et clones livrés** (P2‑17) ; restent Fibre Channel, multipath, VAAI. CHAP et apply‑now sont faits |
 | **Backup** | Hyper Backup | 🟡 | Pas d'image **bare‑metal/block‑level**, pas d'agent ABB (Windows/Linux/M365), pas de C2. Restic, dédup, chiffrement, rétention, `mount`, vérification : faits |
 | **Backup destination** | Hyper Backup Vault | ✅ | Ajouter multi‑protocole (rsync/WebDAV) et limite de bande passante par tenant |
@@ -163,21 +163,25 @@ Référence opérationnelle : `HOMEVAULT_TASKLIST_A_FAIRE.md` §1bis.
 | **P1** | **WireGuard UX** (QR, 1‑clic, DDNS) | VPN | L'accès distant est le vrai besoin domestique | Remplacer « serveur OpenVPN », pas l'ajouter | S/M | nouveau |
 | **P1** | **Unifier les tâches planifiées** sur les ordonnanceurs existants | Scheduled Tasks | 5 types exposés contre 13 boucles déjà présentes | **Un seul moteur** : exposer/rediriger, ne pas dupliquer | S/M | P1‑31 |
 
-**État au 2026‑11‑08.** P2‑8 est livré côté **installeur** : manifeste signé
+**État au 2026‑11‑09.** P2‑8 est livré côté **installeur** : manifeste signé
 vérifié avant téléchargement, application atomique, `homevault.previous`
 conservé, rollback automatique si le service ne devient pas prêt, résultat
 exposé dans Settings (`last_update`). Le **déclenchement depuis l'UI** est
 livré le 2026‑11‑09 (canal signé + **Apply update** + unité `homevault-update`,
-voir plus bas) ; reste la publication de la clé publique de production.
+voir plus bas). La clé de **release** est désormais installée au chemin par
+défaut par `install_trust_anchor` (§18) ; reste la publication des clés de
+production et le rejeu de la matrice de signature sur un artefact réel.
 
 P2‑7 est livré côté **installeur** : unité systemd durcie et mesurable
 (`ProtectSystem`, `ReadOnlyPaths`, `PrivateTmp`, `RestrictSUIDSGID`,
 `LockPersonality`, `RestrictRealtime`, `ProtectKernelLogs`, et
 `NoNewPrivileges` en mode root), directives qui casseraient une fonction
-volontairement absentes et documentées, profil AppArmor **opt‑in** en mode
+volontairement absentes et documentées, profil AppArmor **opt-in** en mode
 complain (enforce après validation terrain), score `systemd-analyze security`
-dans le journal d'installation. Restent la validation terrain et l'enforce
-AppArmor.
+dans le journal d'installation. L'installeur **compile le profil**
+(`apparmor_parser -Q`) avant de remplacer le profil chargé, et la checklist
+terrain par sous-système est écrite (§18). Restent la passe enforce sur hôte
+réel et la décision « un compte par sous-système ».
 
 P1‑18 est **livré** : table `audit_log` (migration 086), écriture non
 bloquante depuis `events::log_event`, champs structurés pour
@@ -225,8 +229,9 @@ snapshot DB (copie temporaire, ouverture en lecture seule,
 archive de configuration (checksums, passphrase si chiffrée) et rapporte le
 dernier job restic. Verdict *Ready to restore* seulement si les deux moitiés
 sont vérifiées ; API `GET/POST /api/settings/backup/restore-drill`, bouton
-**Verify restore** dans Settings, rapport persisté. Reste le test de
-reconstruction complète sur VM.
+**Verify restore** dans Settings, rapport persisté. La grille **RTO/RPO par
+scénario** est ajoutée au runbook (§19) ; reste le test de reconstruction
+complète sur VM jetable.
 
 ### 3.2 À recadrer — bon objectif, mauvais périmètre
 
@@ -443,11 +448,11 @@ PHP 8.1/Redis 4.0.
    NZB/eMule, KMIP/WORM, HA, IDS. Les traiter comme des régressions serait
    confondre parité et progrès.
 5. **DSM garde l'avantage** sur la profondeur stockage (SHR/SHR2, extents,
-   dédup, cache noyau), l'écosystème de paquets, l'identité d'entreprise, la
-   chaîne de mise à jour et la suite média/productivité. **HomeVault garde
-   l'avantage** sur la simplicité, la sécurité produit, l'intégrité des données,
-   l'IA et la testabilité — et **choisit de ne pas copier** ce qui contredit ces
-   avantages.
+   dédup, cache noyau), l'écosystème de paquets, l'identité d'entreprise et la
+   suite média/productivité. **HomeVault garde l'avantage** sur la simplicité,
+   la sécurité produit, l'intégrité des données, la **chaîne de mise à jour
+   signée avec rollback** (livrée, §18), l'IA et la testabilité — et **choisit
+   de ne pas copier** ce qui contredit ces avantages.
 
 ---
 
@@ -534,6 +539,18 @@ PHP 8.1/Redis 4.0.
   « tâche planifiée backup/scrub/corbeille » doit les exposer, pas les dupliquer
 - Serveur OpenVPN absent, client seul : `src/handlers/vpn.rs:953-1002` ;
   le commentaire d'en‑tête `src/vpn.rs:9` a été corrigé le 2026‑11‑08
+- **Modes de copie USB + traçabilité** : `CopyStrategy`/`ConflictPolicy` et
+  `copy_recursive` dans `src/usb_copy.rs`, `TransferOperation::UsbCopy` dans
+  `src/transfer_history.rs` et l’écriture d’une ligne par exécution dans
+  `src/handlers/usb_copy.rs` — FIAB‑13, §16
+- **Rehearsals d’injection de pannes** : guide
+  `docs/guides/failure-injection.md`, test de crash atomique
+  (`src/storage/atomic.rs`), dédoublonnage des défauts
+  (`src/storage/disk_health_repo.rs`) — FIAB‑01, §17
+- **Ancrages de confiance et AppArmor** : `install_trust_anchor` et préflight
+  `apparmor_parser -Q` dans `installer/install.sh`, assertions
+  `installer/tests/unit-hardening.test.sh`, rotation/révocation dans
+  `docs/guides/security.md` — FIAB‑11/FIAB‑12, §18
 - Backlog à jour : `HOMEVAULT_TASKLIST_A_FAIRE.md` (§1, §1bis et §6)
 
 ---
@@ -655,7 +672,8 @@ moteur depuis l'interface :
   `/opt/homevault/installer/install.sh`, donc le bouton existe aussi là.
 
 **Reste sur P2‑8** : publication de la clé publique de production et validation
-terrain sur un hôte réel.
+terrain sur un hôte réel. Depuis, l'installeur installe les deux ancrages et la
+rotation/révocation est documentée (§18).
 
 **P2‑7 — isolation d'exécution (partiel, côté installeur).**
 
@@ -924,6 +942,13 @@ cinq P2 (cache SSD ZFS L2ARC/SLOG, LUN fins iSCSI, export/import VM, versions
 Syncthing, calendrier/contacts en app catalogue). Restent les finitions
 P2‑7/P2‑8 (terrain, clé de production) et le test VM de P2‑9.
 
+**État courant (2026‑11‑09, HEAD `1d9b1bd`)** : la suite a depuis été exécutée
+(§15), la vitesse RAID (FIAB‑10), le verdict restic (FIAB‑14) et le rollback
+base (FIAB‑03) sont dans `main` (§12–§14), puis USB Copy (FIAB‑13, §16),
+l'injection de pannes (FIAB‑01, §17), les ancrages/AppArmor (FIAB‑11/12, §18)
+et la grille RTO/RPO (FIAB‑05, §19). Le reste est matériel : VM de
+reconstruction, enforce AppArmor, publication des clés et preuves manuelles.
+
 ---
 
 ## 8. Correctifs de vérification — 2026‑11‑09
@@ -973,13 +998,14 @@ faites : `bash -n` sur `install.sh` et les deux suites d’installeur,
 `cargo check --lib`, `cargo check --tests`. Restent à lancer sur un hôte :
 `cargo test` (unitaire + 109 suites d’intégration), `cargo fmt --check`,
 `npm run check && npm run build`, les E2E ciblés, puis reporter les compteurs
-dans `TESTING.md`.
+dans `TESTING.md`. **Depuis, la suite a été exécutée : voir §15 (tout vert).**
 
 ### 8.5 Documentation et vie privée
 
 - `PRIVACY.md` : **RoPA ligne 20** (client secret + refresh token OAuth2) et
   ligne sortante vers les points d’échange Google/Microsoft 365.
-- `docs/guides/rag.md` : la base de connaissances passe à **78 FeatureDocs**,
+- `docs/guides/rag.md` : la base de connaissances passe à **78 FeatureDocs**
+  (puis **79** avec `failure-injection`, §17),
   avec `email-oauth` et `remote-mounts`.
 - `docs/guides/settings.md` : distinction explicite entre
   `last-result.json` (lisible) et `history.jsonl` (un objet JSON compact par
@@ -1039,7 +1065,8 @@ dans `TESTING.md`.
 - `bash -n installer/install.sh` : vert.
 - `npm run check` : **0 erreur, 0 warning**.
 - `cargo test` (unitaire + 109 suites d’intégration), les E2E et
-  `cargo fmt --check` restent à lancer — même réserve que §8.4.
+  `cargo fmt --check` restent à lancer — même réserve que §8.4. **Depuis,
+  exécutés : §15.**
 - Test ajouté (écrit, non exécuté) :
   `scheduled_tasks_scheduler::tests::all_seven_task_types_coexist_after_the_integrity_merge`.
 
@@ -1054,6 +1081,15 @@ dans `TESTING.md`.
 4. FIAB‑10 (vitesse RAID, §12), FIAB‑14 (verdict restic, §13) et FIAB‑03
    (rollback base, §14) sont livrés avec leurs tests écrits. Restent la clé de
    production, AppArmor enforce et les tests terrain (P2‑7/P2‑8/FIAB‑01/05).
+
+**Mise à jour au 2026‑11‑09 (HEAD `1d9b1bd`).** Les points 1 et 2 ont avancé
+depuis : la suite complète a été exécutée (§15, tout vert), FIAB‑13 (modes USB +
+traçabilité, §16), FIAB‑01 (runbook d’injection de pannes + tests, §17),
+FIAB‑11/FIAB‑12 (ancrages de confiance, préflight AppArmor, rotation des clés,
+§18) et la grille RTO/RPO de FIAB‑05 (§19) sont livrés. Le reste est
+**matériel** : reconstruction bare‑metal sur VM, enforce AppArmor sur hôte
+réel, publication des clés de production, et les preuves manuelles de FIAB‑01
+(SIGKILL+reboot, `dm-flakey`, client SMB, `configfs` iSCSI).
 
 ---
 
@@ -1309,6 +1345,8 @@ le mode est rappelé sur la carte de la règle. i18n en/fr/de/es.
 - `tests/usb_copy_integration.rs` : un profil JSON antérieur sans
   `strategy`/`conflict` se charge avec les défauts ; chaque mode et politique
   sérialise exactement le littéral attendu par l’API.
+- `tests/e2e/settings/usb-copy.spec.ts` : le formulaire envoie le mode et la
+  politique choisis, et la carte de la règle affiche le mode.
 - `cargo check --tests`, `cargo fmt --check` et `npm run check` sont verts.
 
 ### 16.6 Reste
