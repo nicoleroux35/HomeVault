@@ -21,6 +21,9 @@ none of these handlers checked a session at all; that gap is closed.)
 | `DELETE /syncthing/folders/{id}` | admin | remove a folder, files kept |
 | `POST /syncthing/devices` | admin | pair a device (see below) |
 | `DELETE /syncthing/devices/{id}` | admin | unpair a device, files kept |
+| `GET /syncthing/folders/{id}/versions` | admin | the folder's versioning policy **and** its archived versions |
+| `PUT /syncthing/folders/{id}/versioning` | admin | `{ mode, keep?, cleanout_days?, max_age_days? }` |
+| `POST /syncthing/folders/{id}/versions/restore` | admin | `{ file, version_time }` |
 
 `pause`/`resume`/`scan`'s `device`/`folder` values are URL-encoded
 (`url::form_urlencoded::byte_serialize`) before being interpolated into the
@@ -116,6 +119,37 @@ The key rules, in order:
 The key read itself (`find_syncthing_config`, up to four paths) is blocking file
 I/O and runs on `tokio::task::spawn_blocking`, once per proxied request; it used
 to run straight inside the async handler (ROADMAP X.1).
+
+### File versions (P2, 2026-11-09)
+
+Syncthing already keeps the previous copy of a replaced file in the folder's
+`.stversions` area. HomeVault does **not** add a second version store: the
+screen edits the daemon's own policy and asks the daemon to restore a version.
+
+| Mode | What it keeps | Parameters |
+|---|---|---|
+| off | nothing (a replaced file is gone) | — |
+| trash can | every replaced file | `cleanoutDays` |
+| simple | the last N copies of each file | `keep`, `cleanoutDays` |
+| staggered | copies until a per-file age limit | `maxAge` (seconds), `cleanoutDays` |
+
+`src/syncthing_versions.rs` owns every shape: `VersioningSettings::to_config`
+writes Syncthing's `versioning` object (`params` is a `map[string]string`, so
+every value is a decimal **string**), `from_config` reads it back tolerantly,
+and an `external` versioner — a script HomeVault does not manage — reads as
+*off* rather than being half-edited.
+
+- `PUT …/versioning` is a **read-modify-write** of the folder's whole config:
+  Syncthing's folder sub-resource replaces the object, so path, devices and type
+  are sent back untouched; only `versioning` changes.
+- `GET …/versions` returns the policy and the archived list in one call, and an
+  empty list when versioning is off — asking the daemon would report a stale
+  archive directory from a policy that was disabled.
+- `POST …/versions/restore` validates the file (relative, no `..`, no absolute
+  path, no backslash) and the stamp (RFC 3339) **before** the daemon call, and
+  refuses outright when versioning is off.
+- Bounds: `keep` 1–1000, `cleanoutDays` ≤ 3650, `maxAge` ≤ 3650 days. Above
+  that, retention is a disk-space decision that a UI typo should not make.
 
 ## Frontend
 

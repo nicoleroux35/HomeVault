@@ -26,7 +26,7 @@
 //! Syncthing integration endpoints (proxying the local REST API) — admin-only.
 
 use axum::{
-    extract::State,
+    extract::{Path, State},
     http::{HeaderMap, HeaderValue},
     Json,
 };
@@ -1370,6 +1370,222 @@ pub async fn handle_syncthing_delete_device(
                 admin_username, device_id
             ));
             Json(ApiResponse::success("Device removed".to_string()))
+        }
+        Err(e) => Json(ApiResponse::error(&e)),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// File versions (P2, 2026-11-09)
+//
+// Syncthing already keeps the old copies; HomeVault reads the folder's policy,
+// lets the admin change it, lists what is archived and asks the daemon for a
+// restore. No second version store, no filesystem walk of our own.
+// ---------------------------------------------------------------------------
+
+fn encode_folder(id: &str) -> String {
+    url::form_urlencoded::byte_serialize(id.as_bytes()).collect()
+}
+
+/// `GET /api/syncthing/folders/{id}/versions`
+///
+/// Returns the folder's versioning policy **and** what is archived, in one
+/// call: the UI needs both to decide what to show (a folder with versioning
+/// off has no archived versions to browse).
+pub async fn handle_syncthing_folder_versions(
+    State(state): State<AppStateArc>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+) -> Json<ApiResponse<serde_json::Value>> {
+    if let Err(resp) = crate::handlers::admin_guard::check_admin(&state, &headers).await {
+        return Json(ApiResponse::error(&denial(resp)));
+    }
+    let endpoint = format!("config/folders/{}", encode_folder(&id));
+    let folder_raw = match syncthing_get(&endpoint).await {
+        Ok(raw) => raw,
+        Err(e) => return Json(ApiResponse::error(&e)),
+    };
+    let folder: serde_json::Value = match serde_json::from_str(&folder_raw) {
+        Ok(value) => value,
+        Err(e) => {
+            return Json(ApiResponse::error(&format!(
+                "Failed to parse the folder: {e}"
+            )))
+        }
+    };
+    let versioning = crate::syncthing_versions::VersioningSettings::from_config(
+        folder.get("versioning").unwrap_or(&serde_json::Value::Null),
+    );
+
+    // A folder with versioning off has nothing to list; asking the daemon for
+    // versions would still work but reports the *stale* archive directory of a
+    // policy that was disabled — the honest answer is an empty list.
+    let versions = if versioning.mode == crate::syncthing_versions::VersioningMode::Off {
+        Vec::new()
+    } else {
+        let raw =
+            match syncthing_get(&format!("folder/versions?folder={}", encode_folder(&id))).await {
+                Ok(raw) => raw,
+                Err(e) => return Json(ApiResponse::error(&e)),
+            };
+        match crate::syncthing_versions::parse_versions(&raw) {
+            Ok(list) => list,
+            Err(e) => return Json(ApiResponse::error(&e)),
+        }
+    };
+
+    Json(ApiResponse::success(serde_json::json!({
+        "folder": id,
+        "versioning": versioning,
+        "versions": versions,
+    })))
+}
+
+#[derive(Debug, Deserialize)]
+pub struct VersioningRequest {
+    pub mode: String,
+    #[serde(default)]
+    pub keep: Option<u32>,
+    #[serde(default)]
+    pub cleanout_days: Option<u32>,
+    #[serde(default)]
+    pub max_age_days: Option<u32>,
+}
+
+/// `PUT /api/syncthing/folders/{id}/versioning`
+///
+/// Read-modify-write of the folder's `versioning` object: everything else in
+/// the folder's config (path, devices, type) is sent back untouched, because a
+/// `PUT` on the sub-resource replaces the whole object.
+pub async fn handle_syncthing_folder_versioning(
+    State(state): State<AppStateArc>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+    Json(req): Json<VersioningRequest>,
+) -> Json<ApiResponse<serde_json::Value>> {
+    let admin = match crate::handlers::admin_guard::check_admin(&state, &headers).await {
+        Ok(username) => username,
+        Err(resp) => return Json(ApiResponse::error(&denial(resp))),
+    };
+    let Some(mode) = crate::syncthing_versions::VersioningMode::parse(&req.mode) else {
+        return Json(ApiResponse::error(
+            "Choose a versioning mode: off, trash can, simple or staggered",
+        ));
+    };
+    let settings = crate::syncthing_versions::VersioningSettings {
+        mode,
+        keep: req.keep.unwrap_or(crate::syncthing_versions::DEFAULT_KEEP),
+        cleanout_days: req.cleanout_days.unwrap_or(0),
+        max_age_days: req.max_age_days.unwrap_or(0),
+    };
+    if let Err(e) = settings.validate() {
+        return Json(ApiResponse::error(&e));
+    }
+
+    let endpoint = format!("config/folders/{}", encode_folder(&id));
+    let folder_raw = match syncthing_get(&endpoint).await {
+        Ok(raw) => raw,
+        Err(e) => return Json(ApiResponse::error(&e)),
+    };
+    let mut folder: serde_json::Value = match serde_json::from_str(&folder_raw) {
+        Ok(value) => value,
+        Err(e) => {
+            return Json(ApiResponse::error(&format!(
+                "Failed to parse the folder: {e}"
+            )))
+        }
+    };
+    let Some(object) = folder.as_object_mut() else {
+        return Json(ApiResponse::error("The folder config is not an object"));
+    };
+    object.insert("versioning".to_string(), settings.to_config());
+
+    match syncthing_send(reqwest::Method::PUT, &endpoint, Some(&folder)).await {
+        Ok(_) => {
+            crate::events::log_event(format!(
+                "Admin '{admin}' set versioning on Syncthing folder '{id}' to {}",
+                if settings.mode == crate::syncthing_versions::VersioningMode::Off {
+                    "off".to_string()
+                } else {
+                    format!(
+                        "{} ({} version(s), cleanout {} day(s))",
+                        settings.mode.as_str(),
+                        settings.keep,
+                        settings.cleanout_days
+                    )
+                }
+            ));
+            Json(ApiResponse::success(serde_json::json!({
+                "folder": id,
+                "versioning": settings,
+            })))
+        }
+        Err(e) => Json(ApiResponse::error(&e)),
+    }
+}
+
+#[derive(Debug, Deserialize)]
+pub struct RestoreVersionRequest {
+    pub file: String,
+    pub version_time: String,
+}
+
+/// `POST /api/syncthing/folders/{id}/versions/restore`
+pub async fn handle_syncthing_version_restore(
+    State(state): State<AppStateArc>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+    Json(req): Json<RestoreVersionRequest>,
+) -> Json<ApiResponse<serde_json::Value>> {
+    let admin = match crate::handlers::admin_guard::check_admin(&state, &headers).await {
+        Ok(username) => username,
+        Err(resp) => return Json(ApiResponse::error(&denial(resp))),
+    };
+    if let Err(e) = crate::syncthing_versions::validate_restore(&req.file, &req.version_time) {
+        return Json(ApiResponse::error(&e));
+    }
+
+    // The daemon restores through `.stversions`; the folder must exist and
+    // have versioning on, otherwise the answer would be a confusing 500 from
+    // Syncthing itself.
+    let endpoint = format!("config/folders/{}", encode_folder(&id));
+    let folder_raw = match syncthing_get(&endpoint).await {
+        Ok(raw) => raw,
+        Err(e) => return Json(ApiResponse::error(&e)),
+    };
+    let folder: serde_json::Value = match serde_json::from_str(&folder_raw) {
+        Ok(value) => value,
+        Err(e) => {
+            return Json(ApiResponse::error(&format!(
+                "Failed to parse the folder: {e}"
+            )))
+        }
+    };
+    let versioning = crate::syncthing_versions::VersioningSettings::from_config(
+        folder.get("versioning").unwrap_or(&serde_json::Value::Null),
+    );
+    if versioning.mode == crate::syncthing_versions::VersioningMode::Off {
+        return Json(ApiResponse::error(
+            "This folder keeps no versions: turn versioning on before restoring one",
+        ));
+    }
+
+    let body = serde_json::json!({
+        "folder": id,
+        "file": req.file.trim(),
+        "versionTime": req.version_time.trim(),
+    });
+    match syncthing_send(reqwest::Method::POST, "folder/versions", Some(&body)).await {
+        Ok(_) => {
+            crate::events::log_event(format!(
+                "Admin '{admin}' restored '{}' from a version in Syncthing folder '{id}'",
+                req.file.trim()
+            ));
+            Json(ApiResponse::success(serde_json::json!({
+                "folder": id,
+                "file": req.file.trim(),
+                "version_time": req.version_time.trim(),
+            })))
         }
         Err(e) => Json(ApiResponse::error(&e)),
     }

@@ -2319,6 +2319,19 @@ pub fn create_app(state: AppStateArc) -> Router {
             "/api/syncthing/folders/{folder_id}",
             delete(handle_syncthing_delete_folder),
         )
+        // File versions (P2): the folder's policy and its archived copies.
+        .route(
+            "/api/syncthing/folders/{folder_id}/versions",
+            get(crate::handlers::syncthing::handle_syncthing_folder_versions),
+        )
+        .route(
+            "/api/syncthing/folders/{folder_id}/versioning",
+            put(crate::handlers::syncthing::handle_syncthing_folder_versioning),
+        )
+        .route(
+            "/api/syncthing/folders/{folder_id}/versions/restore",
+            post(crate::handlers::syncthing::handle_syncthing_version_restore),
+        )
         .route(
             "/api/syncthing/connections",
             get(handle_syncthing_connections),

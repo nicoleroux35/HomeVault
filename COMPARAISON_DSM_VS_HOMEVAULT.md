@@ -101,7 +101,7 @@ cas de désaccord avec le backlog, `HOMEVAULT_TASKLIST_A_FAIRE.md` §1bis gagne.
 | **Journal** | Log Center | ✅ / ⭐ | **Table d'audit interrogeable livrée** (P1‑18 : filtres API, export CSV/JSON, source `audit`, rétention 90 j) **+ Export CSV de la vue courante** (P1‑32) ; restent les filtres structurés dans l'UI et les alertes. Syslog distant TLS : fait |
 | **Widgets / Edit Widgets** | Widgets DSM | ✅ | Widgets backup/UPS/interface réseau/croissance stockage |
 | **Cloud Sync** | Cloud Sync | ✅ | Remotes chiffrés (rclone crypt), présets fournisseurs, limites de bande passante |
-| **Syncthing** | Synology Drive | 🟡 | **Navigateur de versions/restauration**, sync sélective/à la demande, dossiers d'équipe, apps mobiles, verrouillage de fichiers |
+| **Syncthing** | Synology Drive | 🟡 / ✅ | **Navigateur de versions et restauration livrés** (P2‑19, politique du démon éditée depuis HomeVault) ; restent sync sélective/à la demande, dossiers d'équipe, apps mobiles, verrouillage de fichiers |
 | **Downloader** | Download Station | ✅ | **RSS/Atom, planification, limites par tâche, extraction auto, ratio** livrés (P1‑36) ; HTTP/HTTPS/FTP/SFTP/magnet. **NZB et eMule restent rejetés** (§3.3) |
 | **AI Assistant** | (pas d'équivalent dans l'image) | ⭐ | GPU, davantage de sources RAG. Déjà au‑delà |
 | **PublicShare** | File Station (liens de partage) | ⭐ | Page de marque, statistiques de consultation. File requests et liens dossier : déjà au‑delà |
@@ -198,7 +198,7 @@ reconstruction complète sur VM.
 | **P2 ✅** | Cache SSD L2ARC/SLOG | **Opt‑in ZFS**, jamais par défaut (exige un SSD) : **livré** (P2‑16) | Gain réel seulement sur matériel adapté | M | nouveau |
 | **P2 ✅** | iSCSI snapshots/clones de LUN, thin LUN | **P2 home‑lab** : **livré** (P2‑17) — LUN fin ZFS + snapshots/clones | Usage domestique marginal | M | nouveau |
 | **P2 ✅** | VM export/import OVA | **P2** en s'appuyant sur `incus export` natif : **livré** (P2‑18) | Portabilité/backup, pas un sous‑système | M | nouveau |
-| **P2** | Syncthing navigateur de versions | **P2** intégration UI seule (Syncthing gère déjà les versions) | Faible effort, pas de nouveau moteur | S/M | nouveau |
+| **P2 ✅** | Syncthing navigateur de versions | **P2** intégration UI seule (Syncthing gère déjà les versions) : **livré** (P2‑19) | Faible effort, pas de nouveau moteur | S/M | nouveau |
 | **P2** | Calendrier/Contacts manquants | **App catalogue** (Radicale/Baïkal), pas natif | Cohérent avec le backlog §6 | S | nouveau |
 
 **P1‑34 — Intégration média (livrée).**
@@ -315,6 +315,20 @@ reconstruction complète sur VM.
 - Tests **écrits, non exécutés** : 6 unitaires, 3 d'intégration (**aucune
   commande `incus` exécutée**), E2E VM §11. Docs : `docs/guides/vm.md`,
   `SCREENS.md`, FeatureDoc `virtual-machines`.
+
+**P2‑19 — Syncthing : navigateur de versions (livré).**
+
+- `src/syncthing_versions.rs` : politique de versionnage (off / corbeille /
+  N versions / âge max), `params` en chaînes (`maxAge` en secondes), relecture
+  tolérante, bornes, parsing de la liste et validation d'une restauration.
+- `GET /api/syncthing/folders/{id}/versions`, `PUT …/versioning` (read‑modify‑
+  write du config du dossier) et `POST …/versions/restore` — admin, journalisés.
+- Une restauration est refusée quand le versionnage est désactivé ; un nom qui
+  sort du dossier n'atteint jamais le démon.
+- UI : dialogue **Versions** dans le détail d'un dossier.
+- Tests **écrits, non exécutés** : 6 unitaires, 3 d'intégration (**démon jamais
+  contacté**), E2E Syncthing §15. Docs : `docs/guides/syncthing.md`,
+  `SCREENS.md`, FeatureDoc `syncthing`.
 
 ### 3.3 Geler ou rejeter — parité sans valeur pour la cible
 
@@ -451,6 +465,9 @@ PHP 8.1/Redis 4.0.
   `src/handlers/vm.rs` (`/exports`, `/{name}/export`, `/import`), dialogue dans
   `frontend/src/routes/VirtualMachines.svelte`, grants `incus export|import`
   épinglés au dossier d'export (`src/setup.rs`) — P2‑18
+- **Versions Syncthing** : `src/syncthing_versions.rs` (politique, parsing,
+  validation), `src/handlers/syncthing.rs` (`/folders/{id}/versions*`), dialogue
+  dans `frontend/src/routes/Syncthing.svelte` — P2‑19
 - **13 ordonnanceurs déjà existants** (`src/web/mod.rs:2809-2850`) : une
   « tâche planifiée backup/scrub/corbeille » doit les exposer, pas les dupliquer
 - Serveur OpenVPN absent, client seul : `src/handlers/vpn.rs:953-1002` ;
@@ -755,7 +772,7 @@ Journal — l'API les porte déjà.
 **Reste sur P2‑9** : le test de reconstruction complète sur une VM jetable
 (boot, installation, restauration DB + configuration + données, vérification)
 et, si la cible le justifie, une image système équivalente à `md0`. **Tous les
-P1 de §3.2 sont livrés** (média, Explorer, téléchargeur) et **trois P2** le sont
-aussi (cache SSD ZFS L2ARC/SLOG, LUN fins iSCSI, export/import VM) ; restent les
-versions Syncthing et le calendrier en app catalogue, puis les finitions
+P1 de §3.2 sont livrés** (média, Explorer, téléchargeur) et **quatre P2** le sont
+aussi (cache SSD ZFS L2ARC/SLOG, LUN fins iSCSI, export/import VM, versions
+Syncthing) ; reste le calendrier en app catalogue, puis les finitions
 P1‑18/P2‑7/P2‑8.

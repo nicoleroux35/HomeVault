@@ -955,3 +955,64 @@ test.describe('14 — Edge cases & memory', () => {
     }
   });
 });
+
+// ===========================================================================
+// 15 — File versions (P2)
+//
+// The daemon is mocked, so the dialog is driven against a known policy and a
+// known list. Nothing is restored: the test only proves what the screen shows
+// and what it would send.
+// ===========================================================================
+test.describe('15 — File versions', () => {
+  test('15.1 — the Versions dialog shows the policy and the archived copies', async ({ page }) => {
+    const mock = newMock();
+    mock.folders.push(folderFixture({ id: 'photos', label: 'Photos' }));
+    await installDaemonMock(page, mock);
+
+    // Registered after the generic folders mock, so it answers first.
+    await page.route('**/api/syncthing/folders/*/versions', (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          success: true,
+          error: null,
+          data: {
+            folder: 'photos',
+            versioning: { mode: 'simple', keep: 5, cleanout_days: 30, max_age_days: 0 },
+            versions: [
+              {
+                file: 'holidays/day1.jpg',
+                version_time: '2026-11-09T10:00:00Z',
+                mod_time: '2026-11-08T09:00:00Z',
+                size: 2048,
+              },
+            ],
+          },
+        }),
+      }),
+    );
+
+    await gotoSyncthing(page, adminTokens);
+    await openTab(page, /folders|dossiers|carpetas|ordner/i);
+    await win(page).locator('[data-testid="syncthing-folder-list-row"]').first().click();
+    await win(page).locator('[data-testid="syncthing-versions-open"]').click();
+
+    const modal = page.locator('[data-testid="syncthing-versions"]');
+    await expect(modal).toBeVisible({ timeout: 10_000 });
+
+    // The policy the daemon reports is selected, with its numbers.
+    await expect(modal.locator('[data-testid="syncthing-versioning-mode"]')).toHaveValue('simple');
+    await expect(modal.locator('[data-testid="syncthing-versioning-keep"]')).toHaveValue('5');
+    await expect(modal.locator('[data-testid="syncthing-versioning-cleanout"]')).toHaveValue('30');
+
+    // And the archived copy is listed with its restore action.
+    const list = modal.locator('[data-testid="syncthing-versions-list"]');
+    await expect(list).toBeVisible();
+    await expect(list).toContainText('holidays/day1.jpg');
+    await expect(modal.locator('[data-testid="syncthing-version-restore"]')).toBeEnabled();
+
+    await modal.getByRole('button', { name: /Close|Fermer|Cerrar|Schließen/i }).click();
+    await expect(modal).toBeHidden();
+  });
+});

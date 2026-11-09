@@ -64,7 +64,7 @@
 //!   cargo test --test syncthing_integration -- --nocapture
 
 use axum::{
-    routing::{delete, get, post},
+    routing::{delete, get, post, put},
     Router,
 };
 use http::{Method, Request, StatusCode};
@@ -83,8 +83,10 @@ use homevault::handlers::{
         handle_syncthing_config, handle_syncthing_connections, handle_syncthing_create_device,
         handle_syncthing_create_folder, handle_syncthing_delete_device,
         handle_syncthing_delete_folder, handle_syncthing_devices, handle_syncthing_errors,
+        handle_syncthing_folder_versioning, handle_syncthing_folder_versions,
         handle_syncthing_folders, handle_syncthing_pause_device, handle_syncthing_restart,
         handle_syncthing_resume_device, handle_syncthing_scan_folder, handle_syncthing_status,
+        handle_syncthing_version_restore,
     },
     AppState,
 };
@@ -166,6 +168,18 @@ fn syncthing_router(state: Arc<AppState>) -> Router {
             post(handle_syncthing_resume_device),
         )
         .route("/api/syncthing/scan", post(handle_syncthing_scan_folder))
+        .route(
+            "/api/syncthing/folders/{folder_id}/versions",
+            get(handle_syncthing_folder_versions),
+        )
+        .route(
+            "/api/syncthing/folders/{folder_id}/versioning",
+            put(handle_syncthing_folder_versioning),
+        )
+        .route(
+            "/api/syncthing/folders/{folder_id}/versions/restore",
+            post(handle_syncthing_version_restore),
+        )
         .with_state(state)
 }
 
@@ -695,4 +709,116 @@ async fn test_valid_config_edits_pass_validation_and_reach_the_transport() {
             "{uri}: a valid body must reach the daemon, got {res}"
         );
     }
+}
+
+// ---------------------------------------------------------------------------
+// File versions (P2)
+//
+// The daemon is not running in this suite, so every case below is refused
+// before the first proxied request: an unknown mode, an out-of-range policy, a
+// traversal, an invalid timestamp. The admin gate is checked first, which is
+// exactly what these assertions pin.
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_versioning_policy_is_admin_only_and_validated() {
+    let (state, _tmp, _guard) = setup_state().await;
+    create_test_user(&state, "admin", "pw012345", 2).await;
+    create_test_user(&state, "member", "pw012345", 1).await;
+    let mut router = syncthing_router(state);
+    let admin = login(&mut router, "admin", "pw012345").await;
+    let member = login(&mut router, "member", "pw012345").await;
+
+    // A member never reaches the daemon.
+    let (_, body) = send(
+        &mut router,
+        Method::PUT,
+        "/api/syncthing/folders/photos/versioning",
+        Some(&member),
+        Some(json!({ "mode": "simple", "keep": 5 })),
+    )
+    .await;
+    assert_eq!(body["success"], json!(false));
+
+    // An unknown mode is refused before anything is proxied.
+    let (_, body) = send(
+        &mut router,
+        Method::PUT,
+        "/api/syncthing/folders/photos/versioning",
+        Some(&admin),
+        Some(json!({ "mode": "keep-everything" })),
+    )
+    .await;
+    assert_eq!(body["success"], json!(false), "{body}");
+    assert!(body["error"]
+        .as_str()
+        .unwrap_or_default()
+        .contains("versioning mode"));
+
+    // Out-of-range policies are refused with the bound in the sentence.
+    for payload in [
+        json!({ "mode": "simple", "keep": 0 }),
+        json!({ "mode": "simple", "keep": 5000 }),
+        json!({ "mode": "trashcan", "cleanout_days": 99999 }),
+        json!({ "mode": "staggered", "max_age_days": 99999 }),
+    ] {
+        let (_, body) = send(
+            &mut router,
+            Method::PUT,
+            "/api/syncthing/folders/photos/versioning",
+            Some(&admin),
+            Some(payload.clone()),
+        )
+        .await;
+        assert_eq!(body["success"], json!(false), "{payload}: {body}");
+    }
+}
+
+#[tokio::test]
+async fn test_restore_version_validates_before_the_daemon() {
+    let (state, _tmp, _guard) = setup_state().await;
+    create_test_user(&state, "admin", "pw012345", 2).await;
+    let mut router = syncthing_router(state);
+    let admin = login(&mut router, "admin", "pw012345").await;
+
+    for (file, stamp) in [
+        ("../etc/shadow", "2026-11-09T10:00:00Z"),
+        ("/etc/shadow", "2026-11-09T10:00:00Z"),
+        ("docs/a.txt", "yesterday"),
+        ("docs/a.txt", ""),
+        ("", "2026-11-09T10:00:00Z"),
+    ] {
+        let (_, body) = send(
+            &mut router,
+            Method::POST,
+            "/api/syncthing/folders/photos/versions/restore",
+            Some(&admin),
+            Some(json!({ "file": file, "version_time": stamp })),
+        )
+        .await;
+        assert_eq!(body["success"], json!(false), "{file:?}/{stamp:?}: {body}");
+    }
+}
+
+#[tokio::test]
+async fn test_versions_list_is_admin_only() {
+    let (state, _tmp, _guard) = setup_state().await;
+    create_test_user(&state, "member", "pw012345", 1).await;
+    let mut router = syncthing_router(state);
+    let member = login(&mut router, "member", "pw012345").await;
+
+    let (_, body) = send(
+        &mut router,
+        Method::GET,
+        "/api/syncthing/folders/photos/versions",
+        Some(&member),
+        None,
+    )
+    .await;
+    assert_eq!(body["success"], json!(false));
+    assert!(body["error"]
+        .as_str()
+        .unwrap_or_default()
+        .to_lowercase()
+        .contains("admin"));
 }

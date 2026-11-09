@@ -598,6 +598,10 @@ The screen refreshes on tab switch, on window focus and every 45 s
 - Folder list: label, path, status, file counters, connected devices
 - Pause/Resume per folder
 - Manual scan (triggers resync)
+- **Versions** dialog: the folder's versioning policy (off, trash can, last N
+  versions, or until an age limit, with the cleanout period) and the archived
+  copies Syncthing holds — file, version date, size — each with a **Restore**
+  action. Turning versioning off states that a replaced file is then lost
 
 ---
 

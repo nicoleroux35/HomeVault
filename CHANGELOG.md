@@ -8,6 +8,22 @@ follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **Syncthing file versions: policy and restore (2026-11-09, P2).** Syncthing
+  already keeps the previous copy of a replaced file; HomeVault now lets you see
+  and control it without a second version store.
+  - `GET /api/syncthing/folders/{id}/versions` returns the folder's policy and
+    its archived copies; `PUT …/versioning` sets the mode (off, trash can, last
+    N versions, or until an age limit) as a read-modify-write of the folder's
+    own config; `POST …/versions/restore` restores one file version.
+  - On/off, the count (1–1000), the age and the cleanout period are validated
+    before any daemon call; an `external` versioner reads as *off* instead of
+    being half-edited; a restore is refused when versioning is off, and the file
+    name must stay inside the folder.
+  - The folder's detail gains a **Versions** dialog listing each archived copy
+    with its date, size and a **Restore** action.
+  Tests: 6 unit, 3 integration (the daemon is never contacted), Syncthing E2E
+  §15 (written, not run).
+
 - **Virtual-machine export / import, one portable archive (2026-11-09, P2).**
   DSM's OVA export, built on the native Incus primitive: a whole machine
   (configuration + disk) becomes one file that `incus import` restores here or

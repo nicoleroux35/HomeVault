@@ -132,6 +132,7 @@ justifie.
 | **P2-16** | Cache SSD ZFS L2ARC/SLOG — livré 2026‑11‑09 | P2 | M | Accélération opt‑in sur SSD |
 | **P2-17** | iSCSI : LUN fins ZFS + snapshots/clones — livré 2026‑11‑09 | P2 | M | Export bloc avec snapshots |
 | **P2-18** | VM : export/import d'archive (OVA) — livré 2026‑11‑09 | P2 | M | Portabilité des machines |
+| **P2-19** | Syncthing : navigateur de versions — livré 2026‑11‑09 | P2 | S/M | Récupérer un fichier remplacé |
 | **P2-1** | SMB AD/Kerberos complet (winbind, realm, idmap, keytab) — **gelé au partiel** (config ADS + join/leave ; DC réel seulement si cible entreprise) | P2 | L | Entreprise Windows |
 | **P2-2** | NFSv4 + Kerberos (`sec=krb5`) — **gelé au partiel** (flavor + validation keytab ; KDC réel seulement si cible entreprise) | P2 | L | Entreprise Unix |
 | **P2-3** | Thin provisioning — **gelé au partiel** (zvols ZFS thin/thick ; overcommit/LVM rejetés) | P2 | L | Sur‑allocation |
@@ -2135,6 +2136,29 @@ qu'`incus import` restaure ici ou sur un autre HomeVault.
 Tests : 6 unitaires, 3 d'intégration (**aucune commande `incus` exécutée**), E2E
 VM §11 — écrits, **non exécutés**. Docs : `docs/guides/vm.md`, `SCREENS.md`,
 FeatureDoc `virtual-machines`.
+
+### [x] P2-19 — Syncthing : navigateur de versions · S/M
+
+**Livré 2026‑11‑09.** Syncthing conserve déjà la copie précédente d'un fichier
+remplacé (`.stversions`) ; HomeVault n'ajoute **aucun** second magasin de
+versions — il règle la politique du démon et lui demande la restauration.
+
+- `src/syncthing_versions.rs` : objet `versioning` par mode (`off`, corbeille,
+  N dernières versions, âge maximum), `params` en **chaînes** comme l'attend
+  Syncthing (`maxAge` en secondes), relecture tolérante (un versionneur
+  `external` se lit comme désactivé), bornes (keep 1–1000, 3650 jours),
+  parsing de la liste (plus récent d'abord) et validation d'une restauration.
+- `GET /api/syncthing/folders/{id}/versions` (politique + copies archivées),
+  `PUT …/versioning` (read‑modify‑write du config du dossier, tout le reste
+  préservé), `POST …/versions/restore` — admin, journalisés.
+- Une restauration est refusée si le versionnage est désactivé, et un nom qui
+  sort du dossier n'est jamais envoyé au démon.
+- UI : dialogue **Versions** dans le détail d'un dossier (politique éditable +
+  copies archivées avec date, taille et bouton **Restaurer**).
+
+Tests : 6 unitaires, 3 d'intégration (**le démon n'est jamais contacté**), E2E
+Syncthing §15 — écrits, **non exécutés**. Docs : `docs/guides/syncthing.md`,
+`SCREENS.md`, FeatureDoc `syncthing`.
 
 ---
 

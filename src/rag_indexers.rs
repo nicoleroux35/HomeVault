@@ -989,7 +989,9 @@ Separately, the Cache tab also manages ZFS's own accelerators on an existing ZFS
 - Removing a folder or a device only changes Syncthing's configuration: files already on disk are kept, and a removed device can be paired again later.
 - The daemon itself can be restarted from the screen.
 
-Syncthing keeps running independently of HomeVault — this screen is a management view over it, not a replacement. Folder paths and device keys are sensitive, so every action here requires an administrator. If the daemon is not reachable, or if its own configuration needs attention (for example an API key that HomeVault cannot use), the screen explains what to fix instead of failing silently. A rejected value is reported next to the field that is wrong, with what you typed still in place."#.to_string(),
+Syncthing keeps running independently of HomeVault — this screen is a management view over it, not a replacement. Folder paths and device keys are sensitive, so every action here requires an administrator. If the daemon is not reachable, or if its own configuration needs attention (for example an API key that HomeVault cannot use), the screen explains what to fix instead of failing silently. A rejected value is reported next to the field that is wrong, with what you typed still in place.
+
+File versions: each folder can keep the previous copies of a replaced file — off, a trash can, the last N versions, or versions until an age limit. HomeVault does not store a second copy: it edits the daemon's own versioning policy, lists what Syncthing has archived with its date and size, and asks the daemon to restore one version. Restoring is refused when the folder keeps no versions, and a file name that escapes the folder is never sent."#.to_string(),
         },
         FeatureDoc {
             id: "downloader".to_string(),

@@ -1,5 +1,20 @@
 # HomeVault — Test tracking
 
+## P2 Syncthing file versions (policy + restore) — 2026-11-09 (not run)
+
+> **Instruction followed: no test command was executed for this change.**
+> Static checks passed: `cargo check --lib`, `cargo check --tests`,
+> `cd frontend && npm run check` and `npm run build`.
+> **The daemon is never contacted by these tests**: every integration case is
+> refused before the first proxied request, and the E2E suite mocks it.
+
+| Coverage | Added / changed |
+|---|---|
+| Unit (`src/syncthing_versions.rs`) | **+6** — the `versioning` object shape per mode (params as **strings**, `maxAge` in seconds); config round-trip and an `external` versioner reading as off; policy bounds (0/5000 versions, 99999 days); version list parsing (newest first, broken rows skipped, non-list refused); restore validation (traversal, absolute path, backslash, invalid stamp); mode parsing |
+| Integration (`tests/syncthing_integration.rs`) | **+3** — the policy route is admin-only and validates the mode and the bounds before the daemon; restore validates the file and the stamp before the daemon; the versions list is admin-only |
+| E2E (`tests/e2e/syncthing/syncthing.spec.ts`) | **+1** — §15.1 the Versions dialog shows the reported policy (mode, keep, cleanout) and lists an archived copy with its restore action |
+| Docs | `docs/guides/syncthing.md`, `SCREENS.md`, `CHANGELOG.md`, RAG `syncthing`, `HOMEVAULT_TASKLIST_A_FAIRE.md` (P2‑19), `COMPARAISON_DSM_VS_HOMEVAULT.md` |
+
 ## P2 VM export / import (portable archive) — 2026-11-09 (not run)
 
 > **Instruction followed: no test command was executed for this change.**

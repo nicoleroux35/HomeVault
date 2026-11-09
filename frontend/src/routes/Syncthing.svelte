@@ -23,7 +23,7 @@
   import { PageLayout, StatCard, EmptyState } from '$lib/components/app';
   import { cn } from '$lib/utils.js';
   import WindowHeader from '$lib/components/desktop/WindowHeader.svelte';
-  import { IconRefresh, IconPlayerPause, IconPlayerPlay, IconFolder, IconDeviceMobile, IconServer, IconCircleCheck, IconAlertCircle, IconClock, IconActivity, IconPlus, IconTrash } from '@tabler/icons-svelte';
+  import { IconRefresh, IconPlayerPause, IconPlayerPlay, IconFolder, IconDeviceMobile, IconServer, IconCircleCheck, IconAlertCircle, IconClock, IconActivity, IconPlus, IconTrash, IconHistory, IconArrowBackUp } from '@tabler/icons-svelte';
 
   // ---------------------------------------------------------------------------
   // Types
@@ -35,6 +35,22 @@
     my_id: string | null;
     uptime: number | null;
     last_seen: string | null;
+  }
+
+  type VersioningMode = 'off' | 'trashcan' | 'simple' | 'staggered';
+
+  interface VersioningSettings {
+    mode: VersioningMode;
+    keep: number;
+    cleanout_days: number;
+    max_age_days: number;
+  }
+
+  interface ArchivedVersion {
+    file: string;
+    version_time: string;
+    mod_time: string | null;
+    size: number | null;
   }
 
   interface DeviceWithStatus {
@@ -197,6 +213,94 @@
   // ---------------------------------------------------------------------------
   // Actions
   // ---------------------------------------------------------------------------
+
+  // File versions (P2): the folder's policy and its archived copies.
+  // This component is still in legacy reactivity mode (`$:` below), so the
+  // state is plain `let` — mixing `$state` here is a compile error.
+  let versionsOpen = false;
+  let versionsFolder: { id: string; label: string } | null = null;
+  let versioning: VersioningSettings = { mode: 'off', keep: 5, cleanout_days: 0, max_age_days: 0 };
+  let versions: ArchivedVersion[] = [];
+  let versionsLoading = false;
+  let versionsError = '';
+  let versionsNotice = '';
+  let versionBusy = false;
+
+  async function openVersions(folderId: string, label: string) {
+    versionsFolder = { id: folderId, label };
+    versionsOpen = true;
+    versions = [];
+    versionsError = '';
+    versionsNotice = '';
+    await loadVersions();
+  }
+
+  async function loadVersions() {
+    if (!versionsFolder) return;
+    versionsLoading = true;
+    versionsError = '';
+    const res = await api.get<{ versioning: VersioningSettings; versions: ArchivedVersion[] }>(
+      `/syncthing/folders/${encodeURIComponent(versionsFolder.id)}/versions`,
+      { cache: false },
+    );
+    versionsLoading = false;
+    if (res.success && res.data) {
+      versioning = res.data.versioning;
+      versions = res.data.versions ?? [];
+    } else {
+      versionsError = res.error || $t('syncthing.versions_load_failed');
+    }
+  }
+
+  async function saveVersioning() {
+    if (!versionsFolder) return;
+    versionBusy = true;
+    versionsError = '';
+    versionsNotice = '';
+    const res = await api.put(
+      `/syncthing/folders/${encodeURIComponent(versionsFolder.id)}/versioning`,
+      {
+        mode: versioning.mode,
+        keep: versioning.keep,
+        cleanout_days: versioning.cleanout_days,
+        max_age_days: versioning.max_age_days,
+      },
+    );
+    versionBusy = false;
+    if (res.success) {
+      versionsNotice = $t('syncthing.versions_saved');
+      await loadVersions();
+    } else {
+      versionsError = res.error || $t('syncthing.versions_save_failed');
+    }
+  }
+
+  async function restoreVersion(version: ArchivedVersion) {
+    if (!versionsFolder) return;
+    versionBusy = true;
+    versionsError = '';
+    versionsNotice = '';
+    const res = await api.post(
+      `/syncthing/folders/${encodeURIComponent(versionsFolder.id)}/versions/restore`,
+      { file: version.file, version_time: version.version_time },
+    );
+    versionBusy = false;
+    if (res.success) {
+      versionsNotice = $t('syncthing.version_restored', { file: version.file });
+      await loadVersions();
+    } else {
+      versionsError = res.error || $t('syncthing.version_restore_failed');
+    }
+  }
+
+  function versioningSummary(value: VersioningSettings): string {
+    if (value.mode === 'off') return translate('syncthing.versioning_off');
+    if (value.mode === 'simple') {
+      return translate('syncthing.versioning_simple_summary', { count: String(value.keep) });
+    }
+    if (value.mode === 'trashcan') return translate('syncthing.versioning_trashcan');
+    return translate('syncthing.versioning_staggered', { days: String(value.max_age_days) });
+  }
 
   async function toggleDevice(device: DeviceWithStatus) {
     acting = true;
@@ -651,6 +755,7 @@
             {/if}
             <div class="flex flex-wrap items-center gap-2 px-4 pb-4">
               <Button variant="ghost" size="sm" data-testid="syncthing-btn-primary" onclick={() => scanFolder(selectedFolder!.id)} disabled={acting}><IconRefresh size={14} /> {$t('syncthing.scan_button')}</Button>
+              <Button variant="ghost" size="sm" data-testid="syncthing-versions-open" onclick={() => openVersions(selectedFolder!.id, selectedFolder!.label || selectedFolder!.id)} disabled={acting}><IconHistory size={14} /> {$t('syncthing.versions_button')}</Button>
               <Button variant="danger" size="sm" data-testid="syncthing-remove-folder" onclick={() => askRemoveFolder(selectedFolder!)} disabled={acting}><IconTrash size={14} /> {$t('syncthing.remove_button')}</Button>
             </div>
           </div>
@@ -856,5 +961,95 @@
     <Button variant="danger" size="lg" data-testid="syncthing-confirm-remove" onclick={confirmRemove} loading={acting}>
       {$t('syncthing.remove_button')}
     </Button>
+  {/snippet}
+</Modal>
+
+<!-- File versions (P2). Syncthing keeps the copies; this window sets the
+     policy and asks the daemon to restore one archived version. -->
+<Modal
+  open={versionsOpen}
+  title={$t('syncthing.versions_title', { name: versionsFolder?.label ?? '' })}
+  size="md"
+  onclose={() => (versionsOpen = false)}
+>
+  {#snippet icon()}<IconHistory size={22} stroke={1.75} />{/snippet}
+  {#snippet children()}
+    <div class="flex flex-col gap-3" data-testid="syncthing-versions">
+      <p class="m-0 text-c-label text-[var(--hv-shell-text-2)]">{$t('syncthing.versions_hint')}</p>
+
+      {#if versionsError}
+        <Alert variant="error" dismissible ondismiss={() => (versionsError = '')}>{versionsError}</Alert>
+      {/if}
+      {#if versionsNotice}
+        <p role="status" data-testid="syncthing-versions-notice" class="m-0 px-3 py-2 rounded-lg bg-[var(--hv-success-bg)] text-[var(--hv-success)] text-xs font-semibold">{versionsNotice}</p>
+      {/if}
+
+      <div class="flex flex-wrap items-end gap-2 px-3 py-3 rounded-xl bg-[var(--hv-shell-border-soft)] border border-[var(--hv-shell-border)]">
+        <label class="flex flex-col gap-1 flex-1 min-w-[160px]">
+          <span class="text-c-xs font-semibold text-[var(--hv-shell-text-2)]">{$t('syncthing.versioning_mode')}</span>
+          <select
+            class="w-full h-11 px-3 border border-[var(--hv-shell-border-strong)] rounded-lg bg-[var(--hv-shell-border-soft)] text-sm"
+            bind:value={versioning.mode}
+            data-testid="syncthing-versioning-mode"
+          >
+            <option value="off">{$t('syncthing.versioning_off')}</option>
+            <option value="trashcan">{$t('syncthing.versioning_trashcan')}</option>
+            <option value="simple">{$t('syncthing.versioning_simple')}</option>
+            <option value="staggered">{$t('syncthing.versioning_staggered_option')}</option>
+          </select>
+        </label>
+        {#if versioning.mode === 'simple'}
+          <label class="flex flex-col gap-1 w-[120px]">
+            <span class="text-c-xs font-semibold text-[var(--hv-shell-text-2)]">{$t('syncthing.versioning_keep')}</span>
+            <input class="w-full h-11 px-3 border border-[var(--hv-shell-border-strong)] rounded-lg bg-[var(--hv-shell-border-soft)] text-sm" type="number" min="1" max="1000" bind:value={versioning.keep} data-testid="syncthing-versioning-keep" />
+          </label>
+        {/if}
+        {#if versioning.mode === 'staggered'}
+          <label class="flex flex-col gap-1 w-[120px]">
+            <span class="text-c-xs font-semibold text-[var(--hv-shell-text-2)]">{$t('syncthing.versioning_max_age')}</span>
+            <input class="w-full h-11 px-3 border border-[var(--hv-shell-border-strong)] rounded-lg bg-[var(--hv-shell-border-soft)] text-sm" type="number" min="0" max="3650" bind:value={versioning.max_age_days} data-testid="syncthing-versioning-max-age" />
+          </label>
+        {/if}
+        {#if versioning.mode !== 'off'}
+          <label class="flex flex-col gap-1 w-[150px]">
+            <span class="text-c-xs font-semibold text-[var(--hv-shell-text-2)]">{$t('syncthing.versioning_cleanout')}</span>
+            <input class="w-full h-11 px-3 border border-[var(--hv-shell-border-strong)] rounded-lg bg-[var(--hv-shell-border-soft)] text-sm" type="number" min="0" max="3650" bind:value={versioning.cleanout_days} data-testid="syncthing-versioning-cleanout" />
+          </label>
+        {/if}
+        <Button variant="primary" onclick={saveVersioning} disabled={versionBusy} data-testid="syncthing-versioning-save">
+          {$t('common.save')}
+        </Button>
+      </div>
+
+      <div class="flex flex-col gap-1">
+        <span class="text-c-label font-semibold text-[var(--hv-shell-text-strong)]">{$t('syncthing.versions_list')}</span>
+        {#if versioning.mode === 'off'}
+          <span class="text-c-xs text-[var(--hv-shell-text-2)]" data-testid="syncthing-versions-off">{$t('syncthing.versions_off_hint')}</span>
+        {:else if versionsLoading}
+          <span class="text-c-xs text-[var(--hv-shell-text-2)]" role="status">{$t('common.loading')}</span>
+        {:else if versions.length === 0}
+          <span class="text-c-xs text-[var(--hv-shell-text-2)]" data-testid="syncthing-versions-empty">{$t('syncthing.versions_none')}</span>
+        {:else}
+          <div class="flex flex-col gap-1.5" data-testid="syncthing-versions-list">
+            {#each versions as version (version.file + version.version_time)}
+              <div class="flex items-start justify-between gap-2 flex-wrap px-3 py-2 rounded-lg bg-[var(--hv-shell-card)] border border-[var(--hv-shell-border)]">
+                <div class="flex flex-col gap-0.5 min-w-0">
+                  <span class="text-c-sm font-semibold text-[var(--hv-shell-text-strong)] break-all">{version.file}</span>
+                  <span class="text-c-xs text-[var(--hv-shell-text-2)]">{version.version_time}{version.size != null ? ` · ${formatBytes(version.size)}` : ''}</span>
+                </div>
+                <Button variant="secondary" size="sm" onclick={() => restoreVersion(version)} disabled={versionBusy} data-testid="syncthing-version-restore">
+                  <IconArrowBackUp size={14} /> {$t('syncthing.version_restore')}
+                </Button>
+              </div>
+            {/each}
+          </div>
+        {/if}
+      </div>
+    </div>
+  {/snippet}
+  {#snippet footer()}
+    <div class="flex justify-end">
+      <Button variant="primary" onclick={() => (versionsOpen = false)}>{$t('common.close')}</Button>
+    </div>
   {/snippet}
 </Modal>
