@@ -8,6 +8,26 @@ follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **Downloader: RSS subscriptions, per-task limits and automatic extraction
+  (2026-11-09, P1).** The Download Station gap, filled with what the appliance
+  already has (aria2 + the generic scheduled-task engine):
+  - **RSS/Atom feeds** (`src/downloader_rss.rs`): subscribe by address, check a
+    feed, queue **Download new**, or let a scheduled task do it
+    (`service = downloader_rss`). The pure parser keeps only items with a
+    downloadable URL (enclosure, else link; `http(s)`/magnet only), a bounded
+    per-feed `seen` marker records what was *actually* queued, and a feed URL
+    is refused when it points at loopback/RFC 1918 — the refresh must not
+    become an SSRF primitive. Feeds live in `data/downloader_feeds.json` (0600).
+  - **Per-task limits** on `/downloader/add`: `max_download_limit`,
+    `max_upload_limit`, `seed_ratio`, validated (aria2 syntax) and sent in the
+    task's own options.
+  - **Automatic extraction** (off by default): a finished `.zip`/`.tar.*`
+    archive is unpacked **in the folder that download wrote into**, from an
+    allowlist that matches the installed `tar`/`unzip`; the archive is kept and
+    each download is recorded once. A **Extract archives** button does the same
+    on demand.
+  Tests: 14 unit, 4 integration, Downloader E2E §15 (written, not run).
+
 - **Network locations — CIFS/NFS remote mounts in the Explorer (2026-11-09, P1).**
   A share on another NAS or computer is now browsable like any folder, without
   a new daemon:

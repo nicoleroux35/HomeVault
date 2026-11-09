@@ -1162,10 +1162,16 @@ admin-only. There are no read-only `auth` endpoints here.
 | POST | `/downloader/pause` | pause a task |
 | POST | `/downloader/unpause` | unpause a task |
 | POST | `/downloader/remove` | remove a task |
+| GET/PUT | `/downloader/settings` | `{ auto_extract }` — unpack finished archives automatically (off by default) |
+| POST | `/downloader/extract` | `{ gid }` — unpack the archives a finished download left in its own folder; returns the archive names |
+| GET/POST | `/downloader/feeds` | list the RSS/Atom subscriptions / subscribe `{ url, name?, auto_download? }` |
+| PUT/DELETE | `/downloader/feeds/{id}` | rename, enable, auto-download / unsubscribe |
+| POST | `/downloader/feeds/{id}/refresh` | `{ queue? }` — fetch and list the feed, and queue every new item when `queue` is true |
+| POST | `/downloader/feeds/refresh` | check every enabled feed, queueing where the feed opted in; `{ queued, failed }` |
 
 ### `POST /downloader/add` — request validation
 
-`{ "uri": string, "dir"?: string, "out"?: string }`. Every field is validated
+`{ "uri": string, "dir"?: string, "out"?: string, "max_download_limit"?: string, "max_upload_limit"?: string, "seed_ratio"?: string }`. Every field is validated
 **before** the daemon is touched: a refused request returns
 `{ success: false, error }` (HTTP 200, like the rest of the module) and never
 spawns aria2.
@@ -1175,10 +1181,24 @@ spawns aria2.
 | `uri` | Required. Scheme allowlist `http`, `https`, `ftp`, `sftp`, `magnet`; plain links need a host, magnet links need `xt=`; no spaces/control characters; ≤ 2048 chars. |
 | `dir` | **Relative** sub-folder of the download root (`<DATA_DIRECTORY>/downloads`). No leading `/`, no `..`/`.` segment, no backslash, no control characters; ≤ 128 chars. Absolute paths were accepted before 2026-10-23 and are now refused. |
 | `out` | Bare file name only — no path separator, not `.`/`..`, no control characters; ≤ 255 chars. |
+| `max_download_limit` / `max_upload_limit` | Digits with an optional `K`/`M`/`G` suffix (`0` = unlimited, ≤ 9 digits), sent as aria2's `max-download-limit` / `max-upload-limit` for that task only. |
+| `seed_ratio` | Number 0–100 (`0` = no seeding), sent as `seed-ratio`. |
 
 `dir` is always sent to aria2 explicitly (defaulting to the root), so the daemon
 never falls back to its own working directory. The response never contains the
 daemon's RPC secret.
+
+### `/downloader/feeds` — RSS subscriptions
+
+A feed URL is validated against the appliance: `http(s)` only, no
+`user:password@`, no `localhost`, no literal loopback/RFC 1918 address (the
+refresh must not become an SSRF primitive aimed at HomeVault's own services).
+The parser (RSS 2.0 and Atom) keeps only items carrying a downloadable URL —
+an enclosure, else the item link — and only `http(s)`/magnet; each queued URL
+still goes through the `/add` allowlist. A bounded per-feed `seen` marker
+(500 ids) records what was actually queued, so a check never consumes items a
+later scheduled refresh should pick up. Feeds live in
+`data/downloader_feeds.json` (mode 0600).
 
 ## Snapshots
 

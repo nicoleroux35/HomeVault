@@ -106,7 +106,7 @@
    * second scheduler. Restic/scrub keep their own schedule, so they are not
    * listed here — that would be two schedules for the same work.
    */
-  const SERVICES = ['docker_update', 'trash_purge', 'db_backup', 'notification'];
+  const SERVICES = ['docker_update', 'trash_purge', 'db_backup', 'notification', 'downloader_rss'];
 
   let tasks: ScheduledTask[] = [];
   let loading = true;

@@ -74,7 +74,7 @@
 //!   cargo test --test downloader_integration -- --nocapture
 
 use axum::{
-    routing::{get, post},
+    routing::{delete, get, post, put},
     Router,
 };
 use http::{Method, Request, StatusCode};
@@ -90,8 +90,12 @@ use homevault::handlers::terminal_pty::PtyManager;
 use homevault::handlers::{
     auth::handle_login,
     downloader::{
-        handle_downloader_add, handle_downloader_global_stat, handle_downloader_pause,
-        handle_downloader_remove, handle_downloader_start, handle_downloader_status,
+        handle_downloader_add, handle_downloader_extract, handle_downloader_feed_add,
+        handle_downloader_feed_delete, handle_downloader_feed_refresh,
+        handle_downloader_feed_update, handle_downloader_feeds_list,
+        handle_downloader_feeds_refresh_all, handle_downloader_global_stat,
+        handle_downloader_pause, handle_downloader_remove, handle_downloader_settings_get,
+        handle_downloader_settings_update, handle_downloader_start, handle_downloader_status,
         handle_downloader_stop, handle_downloader_task, handle_downloader_tasks,
         handle_downloader_unpause,
     },
@@ -162,6 +166,27 @@ fn downloader_router(state: Arc<AppState>) -> Router {
         .route("/api/downloader/unpause", post(handle_downloader_unpause))
         .route("/api/downloader/remove", post(handle_downloader_remove))
         .route("/api/downloader/task/{gid}", get(handle_downloader_task))
+        .route(
+            "/api/downloader/settings",
+            get(handle_downloader_settings_get).put(handle_downloader_settings_update),
+        )
+        .route("/api/downloader/extract", post(handle_downloader_extract))
+        .route(
+            "/api/downloader/feeds",
+            get(handle_downloader_feeds_list).post(handle_downloader_feed_add),
+        )
+        .route(
+            "/api/downloader/feeds/refresh",
+            post(handle_downloader_feeds_refresh_all),
+        )
+        .route(
+            "/api/downloader/feeds/{id}",
+            put(handle_downloader_feed_update).delete(handle_downloader_feed_delete),
+        )
+        .route(
+            "/api/downloader/feeds/{id}/refresh",
+            post(handle_downloader_feed_refresh),
+        )
         .with_state(state)
 }
 
@@ -648,4 +673,255 @@ async fn test_status_reports_aria2_available_when_binary_is_installed() {
     )
     .await;
     assert_eq!(body["data"]["available"], true);
+}
+
+// ---------------------------------------------------------------------------
+// P1: per-task limits, automatic extraction settings and RSS subscriptions
+//
+// Same rule as the rest of this suite: **no aria2 process is ever spawned**.
+// Each case below is refused (or handled) before `ensure_aria2_running`, or
+// only touches the JSON settings files in the test's own `DATA_DIRECTORY`.
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_per_task_limits_are_validated_before_aria2() {
+    let (state, _tmp, _guard) = setup_state().await;
+    create_test_user(&state, "admin1", "Password123!", 2).await;
+    let mut router = downloader_router(state);
+    let token = login(&mut router, "admin1", "Password123!").await;
+
+    // aria2 parses `500K`/`2M` itself; anything else would be a silent
+    // no-limit or a daemon-side error, so it is refused here.
+    for limit in ["fast", "-5", "5T", "1.5M", ""] {
+        if limit.is_empty() {
+            continue;
+        }
+        let (_, body) = send(
+            &mut router,
+            Method::POST,
+            "/api/downloader/add",
+            Some(&token),
+            Some(json!({"uri": "https://example.com/f.iso", "max_download_limit": limit})),
+        )
+        .await;
+        assert_eq!(body["success"], json!(false), "{limit}: {body}");
+        assert!(
+            body["error"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("K, M or G"),
+            "{limit}: {body}"
+        );
+    }
+
+    for ratio in ["200", "-1", "abc"] {
+        let (_, body) = send(
+            &mut router,
+            Method::POST,
+            "/api/downloader/add",
+            Some(&token),
+            Some(json!({"uri": "https://example.com/f.iso", "seed_ratio": ratio})),
+        )
+        .await;
+        assert_eq!(body["success"], json!(false), "{ratio}: {body}");
+        assert!(body["error"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("between 0 and 100"));
+    }
+}
+
+#[tokio::test]
+async fn test_downloader_settings_default_off_and_round_trip() {
+    let (state, _tmp, _guard) = setup_state().await;
+    create_test_user(&state, "admin1", "Password123!", 2).await;
+    create_test_user(&state, "member1", "Password123!", 1).await;
+    let mut router = downloader_router(state);
+    let token = login(&mut router, "admin1", "Password123!").await;
+    let member = login(&mut router, "member1", "Password123!").await;
+
+    let (_, body) = send(
+        &mut router,
+        Method::GET,
+        "/api/downloader/settings",
+        Some(&token),
+        None,
+    )
+    .await;
+    assert_eq!(body["data"]["auto_extract"], json!(false), "{body}");
+
+    let (_, body) = send(
+        &mut router,
+        Method::PUT,
+        "/api/downloader/settings",
+        Some(&token),
+        Some(json!({"auto_extract": true})),
+    )
+    .await;
+    assert_eq!(body["success"], json!(true), "{body}");
+    assert_eq!(body["data"]["auto_extract"], json!(true));
+
+    let (_, body) = send(
+        &mut router,
+        Method::GET,
+        "/api/downloader/settings",
+        Some(&token),
+        None,
+    )
+    .await;
+    assert_eq!(body["data"]["auto_extract"], json!(true), "value persisted");
+
+    let (_, body) = send(
+        &mut router,
+        Method::PUT,
+        "/api/downloader/settings",
+        Some(&member),
+        Some(json!({"auto_extract": false})),
+    )
+    .await;
+    assert_eq!(body["success"], json!(false), "admin only");
+}
+
+#[tokio::test]
+async fn test_rss_feed_crud_and_ssrf_guard() {
+    let (state, _tmp, _guard) = setup_state().await;
+    create_test_user(&state, "admin1", "Password123!", 2).await;
+    let mut router = downloader_router(state);
+    let token = login(&mut router, "admin1", "Password123!").await;
+
+    // A feed URL is admin-chosen, but pointing it at the appliance itself
+    // would make the refresh an SSRF primitive.
+    for bad in [
+        "http://127.0.0.1/feed",
+        "http://192.168.1.5/feed",
+        "http://localhost:8080/feed",
+        "ftp://example.com/feed",
+        "https://user:pw@example.com/feed",
+    ] {
+        let (_, body) = send(
+            &mut router,
+            Method::POST,
+            "/api/downloader/feeds",
+            Some(&token),
+            Some(json!({"url": bad})),
+        )
+        .await;
+        assert_eq!(body["success"], json!(false), "{bad}: {body}");
+    }
+
+    // A public address is stored; no fetch happens on subscribe.
+    let (_, body) = send(
+        &mut router,
+        Method::POST,
+        "/api/downloader/feeds",
+        Some(&token),
+        Some(json!({"url": "https://example.com/feed.xml", "name": "Shows"})),
+    )
+    .await;
+    assert_eq!(body["success"], json!(true), "{body}");
+    let id = body["data"]["id"].as_str().expect("feed id").to_string();
+    assert_eq!(body["data"]["name"], json!("Shows"));
+    assert_eq!(body["data"]["enabled"], json!(true));
+    assert_eq!(body["data"]["auto_download"], json!(false));
+
+    // The same URL twice is refused instead of silently duplicated.
+    let (_, body) = send(
+        &mut router,
+        Method::POST,
+        "/api/downloader/feeds",
+        Some(&token),
+        Some(json!({"url": "https://example.com/feed.xml"})),
+    )
+    .await;
+    assert_eq!(body["success"], json!(false), "{body}");
+    assert!(body["error"]
+        .as_str()
+        .unwrap_or_default()
+        .contains("already subscribed"));
+
+    let (_, body) = send(
+        &mut router,
+        Method::GET,
+        "/api/downloader/feeds",
+        Some(&token),
+        None,
+    )
+    .await;
+    assert_eq!(body["data"].as_array().map(|a| a.len()), Some(1), "{body}");
+
+    // Opting a feed into automatic queueing is a field, not a URL trick.
+    let (_, body) = send(
+        &mut router,
+        Method::PUT,
+        &format!("/api/downloader/feeds/{id}"),
+        Some(&token),
+        Some(json!({"auto_download": true})),
+    )
+    .await;
+    assert_eq!(body["data"]["auto_download"], json!(true), "{body}");
+
+    let (_, body) = send(
+        &mut router,
+        Method::DELETE,
+        &format!("/api/downloader/feeds/{id}"),
+        Some(&token),
+        None,
+    )
+    .await;
+    assert_eq!(body["success"], json!(true), "{body}");
+
+    let (_, body) = send(
+        &mut router,
+        Method::GET,
+        "/api/downloader/feeds",
+        Some(&token),
+        None,
+    )
+    .await;
+    assert_eq!(body["data"].as_array().map(|a| a.len()), Some(0), "{body}");
+}
+
+#[tokio::test]
+async fn test_rss_refresh_and_extract_refuse_before_any_call() {
+    let (state, _tmp, _guard) = setup_state().await;
+    create_test_user(&state, "admin1", "Password123!", 2).await;
+    let mut router = downloader_router(state);
+    let token = login(&mut router, "admin1", "Password123!").await;
+
+    // Unknown feed: refused from the stored list, so no HTTP request is made
+    // and no daemon is needed.
+    for path in [
+        "/api/downloader/feeds/nope/refresh",
+        "/api/downloader/feeds/refresh",
+    ] {
+        let (_, body) = send(&mut router, Method::POST, path, Some(&token), None).await;
+        // "refresh all" with no feeds succeeds with zeros; an unknown id fails.
+        if path.ends_with("/refresh") && !path.contains("/nope/") {
+            assert_eq!(body["success"], json!(true), "{body}");
+            assert_eq!(body["data"]["queued"], json!(0));
+        } else {
+            assert_eq!(body["success"], json!(false), "{path}: {body}");
+            assert!(body["error"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("No such feed"));
+        }
+    }
+
+    // A download id is an aria2 gid (hex); a path is refused before the RPC.
+    for bad in ["../../etc/passwd", "not-a-gid", ""] {
+        let (_, body) = send(
+            &mut router,
+            Method::POST,
+            "/api/downloader/extract",
+            Some(&token),
+            Some(json!({ "gid": bad })),
+        )
+        .await;
+        assert_eq!(body["success"], json!(false), "{bad}: {body}");
+        assert!(body["error"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("Invalid download id"));
+    }
 }

@@ -41,7 +41,7 @@ Request body (create/update): `name`, `task_type`, `cron`, `payload`,
 | `snapshot` | `{"pool": "...", "recursive": false}` | creates `hv-auto-YYYYMMDD-HHMMSS` |
 | `smart_test` | `{"device": "sda", "test_type": "short\|long\|conveyance\|offline"}` | `smartctl -t` |
 | `power` | `{"action": "reboot\|shutdown\|suspend"}` | host power action (`src/power.rs`) |
-| `service` | `{"service": "docker_update\|trash_purge\|db_backup\|notification", "message?": "..."}` | triggers an existing subsystem (P1) |
+| `service` | `{"service": "docker_update\|trash_purge\|db_backup\|notification\|downloader_rss", "message?": "..."}` | triggers an existing subsystem (P1) |
 
 ### `service` tasks — one engine, no duplication (P1, 2026-11-09)
 
@@ -54,6 +54,7 @@ growing a second schedule for the same work:
 | `trash_purge` | the saved trash-retention policy runs now (`trash::purge_all`) |
 | `db_backup` | one `VACUUM INTO` snapshot of HomeVault's database (`DbBackupService::backup_now`) |
 | `notification` | creates a system notification with `message` (required, ≤ 500 chars, no control characters) |
+| `downloader_rss` | checks every enabled Downloader RSS feed and queues new items on the feeds that opted into `auto_download` (`downloader::refresh_all_feeds`) |
 
 Restic, scrub, snapshot schedules, metrics retention and the other periodic
 jobs **keep their own scheduler**: their schedule is already the source of

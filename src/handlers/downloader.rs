@@ -35,6 +35,7 @@
 //! all admin-only.
 
 use axum::{
+    body::Bytes,
     extract::{Path, State},
     http::HeaderMap,
     Json,
@@ -296,6 +297,55 @@ pub fn redact_userinfo(uri: &str) -> String {
     }
 }
 
+/// Validates an optional per-task download/upload rate limit (`500K`, `2M`,
+/// `1024`, `0` = unlimited).
+///
+/// aria2 parses this string itself, so the shape is fixed here: digits and at
+/// most one K/M/G suffix. Anything else is refused before the RPC call.
+pub fn validate_rate_limit(field: &str, raw: &str) -> Result<Option<String>, String> {
+    let value = raw.trim();
+    if value.is_empty() {
+        return Ok(None);
+    }
+    let (digits, suffix) = match value.char_indices().last() {
+        Some((index, c)) if c.is_ascii_alphabetic() => {
+            (&value[..index], Some(c.to_ascii_uppercase()))
+        }
+        _ => (value, None),
+    };
+    if digits.is_empty() || digits.len() > 9 || !digits.chars().all(|c| c.is_ascii_digit()) {
+        return Err(format!(
+            "The {field} must be a number, optionally followed by K, M or G (for example 500K)"
+        ));
+    }
+    match suffix {
+        None => Ok(Some(digits.to_string())),
+        Some('K' | 'M' | 'G') => Ok(Some(format!("{digits}{}", suffix.unwrap()))),
+        Some(_) => Err(format!(
+            "The {field} must be a number, optionally followed by K, M or G (for example 500K)"
+        )),
+    }
+}
+
+/// Validates an optional seed ratio (`0` disables seeding for the task,
+/// `1.5` stops after 1.5 uploaded copies). aria2 accepts `0.0`–`100.0`.
+pub fn validate_seed_ratio(raw: &str) -> Result<Option<String>, String> {
+    let value = raw.trim();
+    if value.is_empty() {
+        return Ok(None);
+    }
+    if value.len() > 6 || !value.chars().all(|c| c.is_ascii_digit() || c == '.') {
+        return Err("The seed ratio must be a number between 0 and 100".to_string());
+    }
+    let ratio: f64 = value
+        .parse()
+        .map_err(|_| "The seed ratio must be a number between 0 and 100".to_string())?;
+    if !(0.0..=100.0).contains(&ratio) {
+        return Err("The seed ratio must be a number between 0 and 100".to_string());
+    }
+    Ok(Some(value.to_string()))
+}
+
 #[derive(Serialize)]
 pub struct ApiResponse<T: Serialize> {
     pub success: bool,
@@ -391,6 +441,15 @@ pub struct AddUriRequest {
     pub uri: String,
     pub dir: Option<String>,
     pub out: Option<String>,
+    /// Per-task speed cap (`500K`, `2M`, `0` = unlimited).
+    #[serde(default)]
+    pub max_download_limit: Option<String>,
+    /// Per-task upload cap (torrents).
+    #[serde(default)]
+    pub max_upload_limit: Option<String>,
+    /// Stop seeding after this ratio (`0` = no seeding).
+    #[serde(default)]
+    pub seed_ratio: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -837,6 +896,24 @@ pub async fn handle_downloader_add(
         Ok(out) => out,
         Err(e) => return Json(ApiResponse::error(&e)),
     };
+    let max_download = match validate_rate_limit(
+        "download limit",
+        req.max_download_limit.as_deref().unwrap_or(""),
+    ) {
+        Ok(value) => value,
+        Err(e) => return Json(ApiResponse::error(&e)),
+    };
+    let max_upload = match validate_rate_limit(
+        "upload limit",
+        req.max_upload_limit.as_deref().unwrap_or(""),
+    ) {
+        Ok(value) => value,
+        Err(e) => return Json(ApiResponse::error(&e)),
+    };
+    let seed_ratio = match validate_seed_ratio(req.seed_ratio.as_deref().unwrap_or("")) {
+        Ok(value) => value,
+        Err(e) => return Json(ApiResponse::error(&e)),
+    };
 
     let root = match ensure_aria2_running(&state.downloader).await {
         Ok(dir) => dir,
@@ -853,6 +930,15 @@ pub async fn handle_downloader_add(
     let mut options = serde_json::json!({ "dir": dir.display().to_string() });
     if let Some(out) = &out {
         options["out"] = serde_json::json!(out);
+    }
+    if let Some(limit) = &max_download {
+        options["max-download-limit"] = serde_json::json!(limit);
+    }
+    if let Some(limit) = &max_upload {
+        options["max-upload-limit"] = serde_json::json!(limit);
+    }
+    if let Some(ratio) = &seed_ratio {
+        options["seed-ratio"] = serde_json::json!(ratio);
     }
 
     let params = vec![serde_json::json!([uri]), options];
@@ -1021,6 +1107,554 @@ async fn guard_admin(state: &AppStateArc, headers: &HeaderMap) -> Result<String,
     match crate::handlers::admin_guard::check_admin(state, headers).await {
         Ok(username) => Ok(username),
         Err(reason) => Err((reason.status().as_u16(), reason.message().to_string())),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Per-task limits, automatic extraction and RSS subscriptions (P1, 2026-11-09)
+// ---------------------------------------------------------------------------
+
+/// Queue one already-validated link in the download root.
+///
+/// Shared by the RSS refresh and the scheduler, so both go through the same
+/// `validate_uri` + `resolve_download_dir` gate the manual add uses.
+async fn queue_uri(state: &AppStateArc, uri: &str) -> Result<String, String> {
+    let uri = validate_uri(uri)?;
+    let root = ensure_aria2_running(&state.downloader).await?;
+    let dir = resolve_download_dir(&root, None)?;
+    let options = serde_json::json!({ "dir": dir.display().to_string() });
+    let params = vec![serde_json::json!([uri]), options];
+    let value = aria2_rpc(&state.downloader, "aria2.addUri", params).await?;
+    Ok(value.as_str().unwrap_or("unknown").to_string())
+}
+
+/// `GET /api/downloader/settings` — the extraction preference.
+pub async fn handle_downloader_settings_get(
+    State(state): State<AppStateArc>,
+    headers: HeaderMap,
+) -> Json<ApiResponse<crate::downloader_extract::DownloaderSettings>> {
+    if let Err((_, msg)) = guard_admin(&state, &headers).await {
+        return Json(ApiResponse::error(&msg));
+    }
+    let settings = tokio::task::spawn_blocking(crate::downloader_extract::load_settings).await;
+    match settings {
+        Ok(settings) => Json(ApiResponse::success(settings)),
+        Err(e) => Json(ApiResponse::error(&format!("Settings task failed: {e}"))),
+    }
+}
+
+#[derive(Deserialize)]
+pub struct DownloaderSettingsRequest {
+    #[serde(default)]
+    pub auto_extract: bool,
+}
+
+/// `PUT /api/downloader/settings` — turn automatic extraction on or off.
+pub async fn handle_downloader_settings_update(
+    State(state): State<AppStateArc>,
+    headers: HeaderMap,
+    Json(req): Json<DownloaderSettingsRequest>,
+) -> Json<ApiResponse<crate::downloader_extract::DownloaderSettings>> {
+    let admin = match guard_admin(&state, &headers).await {
+        Ok(u) => u,
+        Err((_, msg)) => return Json(ApiResponse::error(&msg)),
+    };
+    let settings = crate::downloader_extract::DownloaderSettings {
+        auto_extract: req.auto_extract,
+    };
+    let saved = settings.clone();
+    let result =
+        tokio::task::spawn_blocking(move || crate::downloader_extract::save_settings(&saved)).await;
+    match result {
+        Ok(Ok(())) => {
+            crate::events::log_event(format!(
+                "Admin '{}' turned automatic extraction {}",
+                admin,
+                if settings.auto_extract { "on" } else { "off" }
+            ));
+            Json(ApiResponse::success(settings))
+        }
+        Ok(Err(e)) => Json(ApiResponse::error(&e)),
+        Err(e) => Json(ApiResponse::error(&format!("Settings task failed: {e}"))),
+    }
+}
+
+/// The folder a finished task wrote into: the parent of its first file, else
+/// the task's own `dir`. Never a path from a request.
+fn task_folder(task: &Aria2Task) -> PathBuf {
+    task.files
+        .first()
+        .and_then(|file| FsPath::new(&file.path).parent().map(|p| p.to_path_buf()))
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or_else(|| PathBuf::from(&task.dir))
+}
+
+/// `POST /api/downloader/extract` — unpack the archives a task left behind.
+pub async fn handle_downloader_extract(
+    State(state): State<AppStateArc>,
+    headers: HeaderMap,
+    Json(req): Json<GidRequest>,
+) -> Json<ApiResponse<Vec<String>>> {
+    let admin = match guard_admin(&state, &headers).await {
+        Ok(u) => u,
+        Err((_, msg)) => return Json(ApiResponse::error(&msg)),
+    };
+    let gid = req.gid.trim().to_string();
+    if gid.is_empty() || gid.len() > 64 || !gid.chars().all(|c| c.is_ascii_hexdigit()) {
+        return Json(ApiResponse::error("Invalid download id"));
+    }
+    if let Err(e) = ensure_aria2_running(&state.downloader).await {
+        return Json(ApiResponse::error(&e));
+    }
+    let task = match aria2_rpc(
+        &state.downloader,
+        "aria2.tellStatus",
+        vec![serde_json::json!(gid)],
+    )
+    .await
+    {
+        Ok(value) => match serde_json::from_value::<Aria2Task>(value) {
+            Ok(task) => task,
+            Err(e) => return Json(ApiResponse::error(&format!("parse error: {e}"))),
+        },
+        Err(e) => return Json(ApiResponse::error(&e)),
+    };
+    if task.status != "complete" {
+        return Json(ApiResponse::error(
+            "Only a finished download can be extracted",
+        ));
+    }
+    let folder = task_folder(&task);
+    let extracted = tokio::task::spawn_blocking(move || {
+        crate::downloader_extract::extract_archives_in(&folder)
+    })
+    .await;
+    match extracted {
+        Ok(Ok(extracted)) => {
+            if !extracted.is_empty() {
+                crate::events::log_event(format!(
+                    "Admin '{admin}' extracted {} archive(s) from download {gid}",
+                    extracted.len()
+                ));
+            }
+            Json(ApiResponse::success(extracted))
+        }
+        Ok(Err(e)) => Json(ApiResponse::error(&e)),
+        Err(e) => Json(ApiResponse::error(&format!("Extract task failed: {e}"))),
+    }
+}
+
+/// Unpack the archives of every finished download not handled yet.
+///
+/// Runs from [`run_extract_loop`] while `auto_extract` is on, and never
+/// spawns aria2 — a daemon that is not running has no finished downloads.
+async fn extract_finished(state: &AppStateArc) -> Result<usize, String> {
+    let stopped = aria2_rpc(
+        &state.downloader,
+        "aria2.tellStopped",
+        vec![serde_json::json!(0), serde_json::json!(50)],
+    )
+    .await?;
+    let tasks: Vec<Aria2Task> =
+        serde_json::from_value(stopped).map_err(|e| format!("parse error: {e}"))?;
+
+    let mut processed = crate::downloader_extract::load_processed();
+    let mut handled = 0usize;
+    for task in tasks.iter().filter(|task| task.status == "complete") {
+        if processed.gids.iter().any(|gid| gid == &task.gid) {
+            continue;
+        }
+        let folder = task_folder(task);
+        let gid = task.gid.clone();
+        let extracted = tokio::task::spawn_blocking(move || {
+            crate::downloader_extract::extract_archives_in(&folder)
+        })
+        .await
+        .map_err(|e| format!("Extract task failed: {e}"))?;
+        match extracted {
+            Ok(names) if !names.is_empty() => {
+                crate::events::log_event(format!(
+                    "Downloader extracted {} archive(s) from download {gid}: {}",
+                    names.len(),
+                    names.join(", ")
+                ));
+            }
+            Ok(_) => {}
+            Err(e) => {
+                // Recorded once instead of retried forever: a broken archive
+                // would otherwise fail every 20 seconds.
+                crate::events::log_event_warn(format!(
+                    "Downloader could not extract download {gid}: {e}"
+                ));
+            }
+        }
+        processed.gids.push(gid);
+        handled += 1;
+    }
+    if handled > 0 {
+        crate::downloader_extract::save_processed(processed)?;
+    }
+    Ok(handled)
+}
+
+/// Background pass: while automatic extraction is on, unpack what finished.
+pub async fn run_extract_loop(state: AppStateArc) {
+    loop {
+        tokio::time::sleep(Duration::from_secs(20)).await;
+        if !crate::downloader_extract::load_settings().auto_extract {
+            continue;
+        }
+        let running = { state.downloader.lock().await.child.is_some() };
+        if !running {
+            continue;
+        }
+        if let Err(e) = extract_finished(&state).await {
+            tracing::debug!("downloader extraction pass: {e}");
+        }
+    }
+}
+
+// -- RSS subscriptions ------------------------------------------------------
+
+/// `GET /api/downloader/feeds` — the subscribed feeds.
+pub async fn handle_downloader_feeds_list(
+    State(state): State<AppStateArc>,
+    headers: HeaderMap,
+) -> Json<ApiResponse<Vec<crate::downloader_rss::RssFeed>>> {
+    if let Err((_, msg)) = guard_admin(&state, &headers).await {
+        return Json(ApiResponse::error(&msg));
+    }
+    match tokio::task::spawn_blocking(crate::downloader_rss::load).await {
+        Ok(feeds) => Json(ApiResponse::success(feeds)),
+        Err(e) => Json(ApiResponse::error(&format!("Feeds task failed: {e}"))),
+    }
+}
+
+#[derive(Deserialize)]
+pub struct AddFeedRequest {
+    pub url: String,
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub auto_download: bool,
+}
+
+/// `POST /api/downloader/feeds` — subscribe to a feed.
+pub async fn handle_downloader_feed_add(
+    State(state): State<AppStateArc>,
+    headers: HeaderMap,
+    Json(req): Json<AddFeedRequest>,
+) -> Json<ApiResponse<crate::downloader_rss::RssFeed>> {
+    let admin = match guard_admin(&state, &headers).await {
+        Ok(u) => u,
+        Err((_, msg)) => return Json(ApiResponse::error(&msg)),
+    };
+    let url = match crate::downloader_rss::validate_feed_url(&req.url) {
+        Ok(url) => url,
+        Err(e) => return Json(ApiResponse::error(&e)),
+    };
+    let name = match req.name.as_deref().filter(|n| !n.trim().is_empty()) {
+        Some(name) => match crate::downloader_rss::validate_feed_name(name) {
+            Ok(name) => name,
+            Err(e) => return Json(ApiResponse::error(&e)),
+        },
+        None => crate::downloader_rss::default_feed_name(&url),
+    };
+
+    let feed = crate::downloader_rss::RssFeed {
+        id: uuid::Uuid::new_v4().simple().to_string(),
+        name,
+        url: url.clone(),
+        enabled: true,
+        auto_download: req.auto_download,
+        last_checked_at: None,
+        last_error: None,
+        seen: Vec::new(),
+    };
+    let to_save = feed.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        let mut feeds = crate::downloader_rss::load();
+        if feeds.iter().any(|existing| existing.url == to_save.url) {
+            return Err("This feed is already subscribed".to_string());
+        }
+        feeds.push(to_save);
+        crate::downloader_rss::save(&feeds)
+    })
+    .await;
+    match result {
+        Ok(Ok(())) => {
+            crate::events::log_event(format!(
+                "Admin '{}' subscribed to the feed '{}' ({})",
+                admin,
+                feed.name,
+                crate::downloader_rss::default_feed_name(&url)
+            ));
+            Json(ApiResponse::success(feed))
+        }
+        Ok(Err(e)) => Json(ApiResponse::error(&e)),
+        Err(e) => Json(ApiResponse::error(&format!("Feeds task failed: {e}"))),
+    }
+}
+
+#[derive(Deserialize)]
+pub struct UpdateFeedRequest {
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub enabled: Option<bool>,
+    #[serde(default)]
+    pub auto_download: Option<bool>,
+}
+
+/// `PUT /api/downloader/feeds/{id}` — rename, enable/disable, auto-download.
+pub async fn handle_downloader_feed_update(
+    State(state): State<AppStateArc>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+    Json(req): Json<UpdateFeedRequest>,
+) -> Json<ApiResponse<crate::downloader_rss::RssFeed>> {
+    let admin = match guard_admin(&state, &headers).await {
+        Ok(u) => u,
+        Err((_, msg)) => return Json(ApiResponse::error(&msg)),
+    };
+    let result = tokio::task::spawn_blocking(move || {
+        let mut feeds = crate::downloader_rss::load();
+        let Some(feed) = feeds.iter_mut().find(|feed| feed.id == id) else {
+            return Err("No such feed".to_string());
+        };
+        if let Some(name) = req.name.as_deref().filter(|n| !n.trim().is_empty()) {
+            feed.name = crate::downloader_rss::validate_feed_name(name)?;
+        }
+        if let Some(enabled) = req.enabled {
+            feed.enabled = enabled;
+        }
+        if let Some(auto_download) = req.auto_download {
+            feed.auto_download = auto_download;
+        }
+        let updated = feed.clone();
+        crate::downloader_rss::save(&feeds)?;
+        Ok(updated)
+    })
+    .await;
+    match result {
+        Ok(Ok(feed)) => {
+            crate::events::log_event(format!(
+                "Admin '{}' updated the feed '{}'",
+                admin, feed.name
+            ));
+            Json(ApiResponse::success(feed))
+        }
+        Ok(Err(e)) => Json(ApiResponse::error(&e)),
+        Err(e) => Json(ApiResponse::error(&format!("Feeds task failed: {e}"))),
+    }
+}
+
+/// `DELETE /api/downloader/feeds/{id}` — unsubscribe.
+pub async fn handle_downloader_feed_delete(
+    State(state): State<AppStateArc>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> Json<ApiResponse<String>> {
+    if let Err((_, msg)) = guard_admin(&state, &headers).await {
+        return Json(ApiResponse::error(&msg));
+    }
+    let result = tokio::task::spawn_blocking(move || {
+        let mut feeds = crate::downloader_rss::load();
+        let before = feeds.len();
+        feeds.retain(|feed| feed.id != id);
+        if feeds.len() == before {
+            return Err("No such feed".to_string());
+        }
+        crate::downloader_rss::save(&feeds)?;
+        Ok(())
+    })
+    .await;
+    match result {
+        Ok(Ok(())) => Json(ApiResponse::success("Feed removed".to_string())),
+        Ok(Err(e)) => Json(ApiResponse::error(&e)),
+        Err(e) => Json(ApiResponse::error(&format!("Feeds task failed: {e}"))),
+    }
+}
+
+#[derive(Serialize)]
+pub struct FeedRefreshResult {
+    pub feed_id: String,
+    pub items: Vec<FeedItemView>,
+    pub queued: usize,
+    pub errors: Vec<String>,
+}
+
+#[derive(Serialize)]
+pub struct FeedItemView {
+    #[serde(flatten)]
+    pub item: crate::downloader_rss::RssItem,
+    /// Already queued for this feed (so the UI can say "already downloaded").
+    pub seen: bool,
+}
+
+/// Fetch one feed, queue what is new when asked, and record the check.
+///
+/// One code path for the button, the "download all new" action and the
+/// scheduled refresh. The seen marker only ever records what was **actually
+/// queued**: listing a feed (or a failed queue) leaves the item eligible, so a
+/// later scheduled refresh still picks it up.
+pub async fn refresh_feed(
+    state: &AppStateArc,
+    id: &str,
+    queue: bool,
+) -> Result<FeedRefreshResult, String> {
+    let id = id.to_string();
+    let feeds = tokio::task::spawn_blocking(crate::downloader_rss::load)
+        .await
+        .map_err(|e| format!("Feeds task failed: {e}"))?;
+    let feed = feeds
+        .iter()
+        .find(|feed| feed.id == id)
+        .cloned()
+        .ok_or_else(|| "No such feed".to_string())?;
+
+    let fetched = crate::downloader_rss::fetch(&feed.url).await;
+    let (items, error) = match fetched {
+        Ok(items) => (items, None),
+        Err(e) => (Vec::new(), Some(e)),
+    };
+    let unseen: Vec<crate::downloader_rss::RssItem> = crate::downloader_rss::unseen(&feed, &items)
+        .into_iter()
+        .cloned()
+        .collect();
+
+    let mut queued = 0usize;
+    let mut queued_items: Vec<crate::downloader_rss::RssItem> = Vec::new();
+    let mut errors: Vec<String> = Vec::new();
+    if queue && error.is_none() {
+        for item in &unseen {
+            match queue_uri(state, &item.download_url).await {
+                Ok(_) => {
+                    queued += 1;
+                    queued_items.push(item.clone());
+                }
+                Err(e) => errors.push(format!("{}: {e}", item.label())),
+            }
+        }
+    }
+
+    // The check time and the error are always recorded; only queued items are
+    // marked seen.
+    let update_id = feed.id.clone();
+    let error_for_store = error.clone();
+    let seen_for_store = queued_items.clone();
+    tokio::task::spawn_blocking(move || {
+        let mut feeds = crate::downloader_rss::load();
+        if let Some(stored) = feeds.iter_mut().find(|feed| feed.id == update_id) {
+            crate::downloader_rss::mark_seen(stored, &seen_for_store);
+            stored.last_checked_at = Some(chrono::Utc::now().to_rfc3339());
+            stored.last_error = error_for_store;
+            crate::downloader_rss::save(&feeds)?;
+        }
+        Ok::<(), String>(())
+    })
+    .await
+    .map_err(|e| format!("Feeds task failed: {e}"))??;
+
+    if let Some(error) = &error {
+        return Err(error.clone());
+    }
+
+    Ok(FeedRefreshResult {
+        feed_id: feed.id,
+        items: items
+            .into_iter()
+            .map(|item| FeedItemView {
+                seen: feed.seen.iter().any(|guid| guid == &item.guid)
+                    || queued_items.iter().any(|queued| queued.guid == item.guid),
+                item,
+            })
+            .collect(),
+        queued,
+        errors,
+    })
+}
+
+/// `POST /api/downloader/feeds/{id}/refresh` — check now, optionally queue.
+pub async fn handle_downloader_feed_refresh(
+    State(state): State<AppStateArc>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+    body: Bytes,
+) -> Json<ApiResponse<FeedRefreshResult>> {
+    let admin = match guard_admin(&state, &headers).await {
+        Ok(u) => u,
+        Err((_, msg)) => return Json(ApiResponse::error(&msg)),
+    };
+    // Body is optional: the button sends nothing and queues nothing; "download
+    // all new" sends `{"queue": true}`.
+    let queue = if body.is_empty() {
+        false
+    } else {
+        match serde_json::from_slice::<serde_json::Value>(&body) {
+            Ok(value) => value
+                .get("queue")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false),
+            Err(e) => return Json(ApiResponse::error(&format!("Malformed request body: {e}"))),
+        }
+    };
+
+    match refresh_feed(&state, &id, queue).await {
+        Ok(result) => {
+            if result.queued > 0 {
+                crate::events::log_event(format!(
+                    "Admin '{admin}' queued {} item(s) from feed '{}'",
+                    result.queued, result.feed_id
+                ));
+            }
+            Json(ApiResponse::success(result))
+        }
+        Err(e) => Json(ApiResponse::error(&e)),
+    }
+}
+
+/// Refresh every enabled feed, queueing new items when the feed opted in.
+/// Shared by the manual "refresh all" action and the scheduled task.
+pub async fn refresh_all_feeds(state: &AppStateArc) -> Result<(usize, usize), String> {
+    let feeds = tokio::task::spawn_blocking(crate::downloader_rss::load)
+        .await
+        .map_err(|e| format!("Feeds task failed: {e}"))?;
+    let mut queued = 0usize;
+    let mut failures = 0usize;
+    for feed in feeds.into_iter().filter(|feed| feed.enabled) {
+        let auto = feed.auto_download;
+        match refresh_feed(state, &feed.id, auto).await {
+            Ok(result) => queued += result.queued,
+            Err(e) => {
+                failures += 1;
+                tracing::warn!("feed '{}' failed: {e}", feed.name);
+            }
+        }
+    }
+    Ok((queued, failures))
+}
+
+/// `POST /api/downloader/feeds/refresh` — check every enabled feed now.
+pub async fn handle_downloader_feeds_refresh_all(
+    State(state): State<AppStateArc>,
+    headers: HeaderMap,
+) -> Json<ApiResponse<serde_json::Value>> {
+    let admin = match guard_admin(&state, &headers).await {
+        Ok(u) => u,
+        Err((_, msg)) => return Json(ApiResponse::error(&msg)),
+    };
+    match refresh_all_feeds(&state).await {
+        Ok((queued, failures)) => {
+            crate::events::log_event(format!(
+                "Admin '{admin}' refreshed all feeds: {queued} item(s) queued, {failures} feed(s) failed"
+            ));
+            Json(ApiResponse::success(serde_json::json!({
+                "queued": queued,
+                "failed": failures,
+            })))
+        }
+        Err(e) => Json(ApiResponse::error(&e)),
     }
 }
 
@@ -1517,5 +2151,43 @@ mod tests {
         assert_eq!(v["success"], false);
         assert_eq!(v["data"], serde_json::Value::Null);
         assert_eq!(v["error"], "boom");
+    }
+
+    // -- per-task limits (P1) ------------------------------------------------
+
+    #[test]
+    fn test_rate_limit_accepts_aria2_syntax_only() {
+        // Empty means "no per-task limit": the global setting applies.
+        assert_eq!(validate_rate_limit("download limit", "").unwrap(), None);
+        assert_eq!(
+            validate_rate_limit("download limit", " 500k ").unwrap(),
+            Some("500K".to_string())
+        );
+        assert_eq!(
+            validate_rate_limit("download limit", "2M").unwrap(),
+            Some("2M".to_string())
+        );
+        assert_eq!(
+            validate_rate_limit("download limit", "0").unwrap(),
+            Some("0".to_string())
+        );
+        // aria2 would silently ignore, or fail on, all of these.
+        for bad in ["fast", "-5", "5T", "1.5M", "1 G", "1234567890K"] {
+            assert!(
+                validate_rate_limit("download limit", bad).is_err(),
+                "{bad:?} must be refused"
+            );
+        }
+    }
+
+    #[test]
+    fn test_seed_ratio_range() {
+        assert_eq!(validate_seed_ratio("").unwrap(), None);
+        assert_eq!(validate_seed_ratio("0").unwrap(), Some("0".to_string()));
+        assert_eq!(validate_seed_ratio("1.5").unwrap(), Some("1.5".to_string()));
+        assert_eq!(validate_seed_ratio("100").unwrap(), Some("100".to_string()));
+        for bad in ["200", "-1", "abc", "1.5.0", "1000000"] {
+            assert!(validate_seed_ratio(bad).is_err(), "{bad:?} must be refused");
+        }
     }
 }

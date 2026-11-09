@@ -89,6 +89,9 @@ pub enum ServiceKind {
     DbBackup,
     /// Create a system notification with the task's `message`.
     Notification,
+    /// Downloader: check every enabled RSS feed and queue new items on the
+    /// feeds that opted in (`auto_download`).
+    DownloaderRss,
 }
 
 impl TaskAction {
@@ -190,6 +193,7 @@ impl TaskAction {
                     "trash_purge" => ServiceKind::TrashPurge,
                     "db_backup" => ServiceKind::DbBackup,
                     "notification" => ServiceKind::Notification,
+                    "downloader_rss" => ServiceKind::DownloaderRss,
                     other => return Err(format!("Unknown service '{other}'")),
                 };
                 let message = raw
@@ -793,6 +797,13 @@ async fn perform(action: &TaskAction, state: &Arc<AppState>) -> Result<String, S
                 .map_err(|e| format!("Could not create the notification: {e}"))?;
                 Ok("Notification created".to_string())
             }
+            ServiceKind::DownloaderRss => {
+                let (queued, failed) =
+                    crate::handlers::downloader::refresh_all_feeds(state).await?;
+                Ok(format!(
+                    "RSS refresh: {queued} new item(s) queued, {failed} feed(s) failed"
+                ))
+            }
         },
     }
 }
@@ -890,6 +901,7 @@ mod tests {
             (r#"{"service":"docker_update"}"#, ServiceKind::DockerUpdate),
             (r#"{"service":"trash_purge"}"#, ServiceKind::TrashPurge),
             (r#"{"service":"db_backup"}"#, ServiceKind::DbBackup),
+            (r#"{"service":"downloader_rss"}"#, ServiceKind::DownloaderRss),
         ] {
             let action = TaskAction::from_parts("service", payload).expect(payload);
             assert_eq!(action.type_name(), "service");

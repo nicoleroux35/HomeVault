@@ -72,6 +72,7 @@ or alters a feature touching personal data.
 | 16 | **Queryable audit trail** (`audit_log`) — timestamp, severity, optional actor, action, target, client IP and the plain-English event sentence | Accountability and incident investigation (sign-in, permission, share, storage, network and settings changes) | Legitimate interest (security); legal obligation where the controller must keep records | **90 days**, pruned at startup and every 6 hours; deleted with the database | Local only; admin-only reads |
 | 17 | **Transfer-quota history** (`transfer_quota_history`) — subject type/name, counting period, upload/download used and limit bytes, hourly timestamp | Show usage trends and warn the administrator before a quota is hit | Legitimate interest (capacity management) | **90 days**, pruned on every hourly sample | Local only; admin-only reads |
 | 18 | **Network-location credentials** (`data/remote-mounts/<name>.cred`) — the user name, optional domain and password an administrator enters to mount another server's SMB share | Browse a share on another NAS or computer from the File Explorer | Controller's own basis (a credential the controller chose to store) | Until the location is removed or its account is cleared; file mode **0600**, never returned by the API, never in a command line or log line | Local only; sent to the remote SMB server by the kernel at mount time |
+| 19 | **Downloader RSS subscriptions** (`data/downloader_feeds.json`) — the feed URLs the administrator subscribes to, plus a bounded list of the item ids already queued; a URL may carry a private token in its path | Queue new files published by a feed the administrator chose | Controller's own basis | Until the feed is removed; file mode **0600**; never returned to a non-administrator | Local only; the list of items is fetched from the feed's own host when the feed is checked |
 
 ## Outbound third-party calls
 
@@ -84,6 +85,7 @@ or alters a feature touching personal data.
 | Docker Hub / GHCR registry APIs | Docker app + app-catalog update detection | Only when Docker features are used | Image names being queried | Container image search & digest comparison (read-only, no pull) |
 | `images.linuxcontainers.org` | Virtual Machines app — image download, on demand | Only when the admin downloads a VM image | Server's outbound request | Linux container image downloads |
 | `fedorapeople.org` (virtio-win ISO) | Virtual Machines app — driver ISO download, on demand | Only when the admin clicks the VirtIO driver download | Server's outbound request | Windows VM driver ISO |
+| RSS/Atom feed host (admin-configured) | Downloader → checking a feed, on demand or from a scheduled task | Off until the administrator subscribes to a feed | Server's outbound IP, the feed URL | Read the feed's item list (no telemetry, nothing sent but the request) |
 | SMTP server (admin-configured) | Notification emails | Off until the admin configures it | Alert content, recipient address | Email notifications |
 | `webhook_url` (admin-configured) | Notification webhooks | Off until the admin sets a URL | Alert JSON | Discord/Slack-style notifications |
 

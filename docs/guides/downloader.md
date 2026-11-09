@@ -16,8 +16,14 @@ was started with and the canonical download root.
 | `GET /downloader/tasks` | admin | task list |
 | `GET /downloader/task/{gid}` | admin | single task |
 | `POST /downloader/start\|stop` | admin | daemon control |
-| `POST /downloader/add` | admin | `{ uri, dir?, out? }` |
+| `POST /downloader/add` | admin | `{ uri, dir?, out?, max_download_limit?, max_upload_limit?, seed_ratio? }` |
 | `POST /downloader/pause\|unpause\|remove` | admin | `{ gid }` |
+| `GET\|PUT /downloader/settings` | admin | `{ auto_extract }` |
+| `POST /downloader/extract` | admin | `{ gid }` — unpack the archives that download left behind |
+| `GET\|POST /downloader/feeds` | admin | list / subscribe `{ url, name?, auto_download? }` |
+| `PUT\|DELETE /downloader/feeds/{id}` | admin | rename, enable, auto-download / unsubscribe |
+| `POST /downloader/feeds/{id}/refresh` | admin | `{ queue? }` — fetch and list, and queue new items when `queue` |
+| `POST /downloader/feeds/refresh` | admin | check every enabled feed, queueing where the feed opted in |
 
 ## Frontend
 
@@ -38,6 +44,8 @@ daemon as a side effect.
 | `uri` | Scheme allowlist: `http`, `https`, `ftp`, `sftp`, `magnet`. Plain links need a host; magnet links need `xt=`. No spaces or control characters, ≤ 2048 chars. | `file:///etc/shadow`, `data:…`, `javascript:…`, `smb://…`, `http://` |
 | `dir` | **Relative** sub-folder of the download root. No leading `/`, no `..` or `.` segment, no backslash, no control characters, ≤ 128 chars. | `/etc`, `../etc`, `films/../../etc`, `a\b` |
 | `out` | Bare file name — never a path. No separator, not `.`/`..`, no control characters, ≤ 255 chars. | `../x`, `a/b`, `/etc/passwd` |
+| `max_download_limit` / `max_upload_limit` | Digits with an optional `K`/`M`/`G` suffix (aria2's own syntax), `0` = unlimited, ≤ 9 digits. | `fast`, `-5`, `5T`, `1.5M` |
+| `seed_ratio` | Number 0–100 (`0` = stop seeding immediately). | `200`, `-1`, `abc` |
 
 `dir` is always sent to aria2 explicitly (never omitted), so the daemon cannot
 fall back to its own working directory.
@@ -76,6 +84,42 @@ cannot redirect a download outside it.
   state and kills + waits the child on Ctrl+C or a systemd stop, so aria2 never
   outlives the server that owns it.
 
+## Per-task limits, automatic extraction, RSS (P1, 2026-11-09)
+
+- **Per-task limits** are fields of `POST /downloader/add`, not free-form aria2
+  options: `max_download_limit`, `max_upload_limit` and `seed_ratio`. They are
+  validated in the same pre-flight as everything else and sent as
+  `max-download-limit` / `max-upload-limit` / `seed-ratio` in the task's own
+  options, so one large download cannot be throttled — or left unthrottled —
+  by the global aria2 setting.
+- **Automatic extraction** is one switch (`auto_extract`, **off** by default).
+  When on, a background pass every 20 s asks aria2 for finished downloads and
+  unpacks any archive in **the folder that download wrote into** — never a
+  path from a request, never another folder. Accepted archives: `.zip`, `.tar`,
+  `.tar.gz`/`.tgz`, `.tar.bz2`/`.tbz2`, `.tar.xz`/`.txz` (exactly what the
+  installer's `tar`/`unzip` group covers; `.rar`/`.7z` are not extracted). The
+  archive itself is kept. Each finished download is recorded once
+  (`data/downloader_extracted.json`, bounded to 200 ids), so a poll never
+  unpacks twice and a broken archive does not retry every 20 seconds. The
+  button on a completed download runs the same pass on demand.
+- **RSS subscriptions** (`src/downloader_rss.rs`) watch RSS 2.0 and Atom feeds.
+  The parser is pure and keeps only items that carry a *downloadable* URL: an
+  enclosure, else the item link, and only `http(s)`/magnet — a `file://`
+  enclosure in a hostile feed is dropped, and every queued URL still goes
+  through the downloader's own `validate_uri`.
+  - A feed URL is validated against the appliance: `http(s)` only, no
+    `user:password@`, no `localhost` and no literal loopback/RFC 1918 address —
+    otherwise the refresh would be an SSRF primitive aimed at HomeVault's own
+    services.
+  - `seen` is a bounded per-feed marker (500 ids) of what was **actually
+    queued**, so a plain "check" lists items without consuming them and the
+    next scheduled refresh still picks them up.
+  - **Scheduling reuses the generic engine**: a scheduled task with
+    `service = downloader_rss` calls `refresh_all_feeds` (P1-31 — one engine,
+    not a second scheduler). A feed opts into queueing with `auto_download`.
+  - Feeds are stored in `data/downloader_feeds.json` with mode 0600 (a URL can
+    carry a private token in its path).
+
 ## Invariants
 
 - The daemon is started/stopped only through the admin-gated
@@ -94,6 +138,11 @@ cannot redirect a download outside it.
 - A task card is a container, not a button: its selectable part is a real
   `<button data-testid="downloader-card-select">`, and the action buttons are
   siblings — no interactive control ever nests another.
+- **Extraction only ever targets the folder a finished download wrote into.**
+  No request names a folder; the archive allowlist matches the tools the
+  installer guarantees; the archive is never deleted.
+- **A feed refresh only queues URLs the downloader would accept anyway**, and
+  only when the admin (or the feed's `auto_download` opt-in) asked for it.
 
 ## Residual risk
 

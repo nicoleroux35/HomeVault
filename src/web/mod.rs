@@ -122,8 +122,12 @@ use crate::handlers::{
         handle_store_sync, handle_stores_list,
     },
     downloader::{
-        handle_downloader_add, handle_downloader_global_stat, handle_downloader_pause,
-        handle_downloader_remove, handle_downloader_start, handle_downloader_status,
+        handle_downloader_add, handle_downloader_extract, handle_downloader_feed_add,
+        handle_downloader_feed_delete, handle_downloader_feed_refresh,
+        handle_downloader_feed_update, handle_downloader_feeds_list,
+        handle_downloader_feeds_refresh_all, handle_downloader_global_stat,
+        handle_downloader_pause, handle_downloader_remove, handle_downloader_settings_get,
+        handle_downloader_settings_update, handle_downloader_start, handle_downloader_status,
         handle_downloader_stop, handle_downloader_task, handle_downloader_tasks,
         handle_downloader_unpause,
     },
@@ -1298,6 +1302,29 @@ pub fn create_app(state: AppStateArc) -> Router {
         .route("/api/downloader/unpause", post(handle_downloader_unpause))
         .route("/api/downloader/remove", post(handle_downloader_remove))
         .route("/api/downloader/task/{gid}", get(handle_downloader_task))
+        // P1: per-task limits ride on `/add`; extraction settings, a manual
+        // extraction pass and RSS subscriptions have their own routes.
+        .route(
+            "/api/downloader/settings",
+            get(handle_downloader_settings_get).put(handle_downloader_settings_update),
+        )
+        .route("/api/downloader/extract", post(handle_downloader_extract))
+        .route(
+            "/api/downloader/feeds",
+            get(handle_downloader_feeds_list).post(handle_downloader_feed_add),
+        )
+        .route(
+            "/api/downloader/feeds/refresh",
+            post(handle_downloader_feeds_refresh_all),
+        )
+        .route(
+            "/api/downloader/feeds/{id}",
+            put(handle_downloader_feed_update).delete(handle_downloader_feed_delete),
+        )
+        .route(
+            "/api/downloader/feeds/{id}/refresh",
+            post(handle_downloader_feed_refresh),
+        )
         // Storage
         .route("/api/storage/disks", get(handle_disks_list))
         .route(
@@ -3118,6 +3145,13 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             Err(e) => tracing::warn!("remote mount restore task failed: {e}"),
         }
     });
+
+    // Downloader: unpack finished archives while "auto extract" is on. The
+    // loop sleeps between passes and does nothing when the setting is off or
+    // aria2 is not running, so a fresh appliance pays no cost for it.
+    tokio::spawn(crate::handlers::downloader::run_extract_loop(
+        state.clone(),
+    ));
 
     // Generic reverse proxy (phase C2): one host-routed listener for the
     // user-defined rules. A bind failure is reported by the status endpoint,

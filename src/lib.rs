@@ -105,6 +105,8 @@ pub mod ransomware_watcher;
 pub mod reachability;
 pub mod release_notes;
 pub mod remote_mounts;
+pub mod downloader_extract;
+pub mod downloader_rss;
 pub mod replication;
 pub mod replication_scheduler;
 pub mod restore_drill;

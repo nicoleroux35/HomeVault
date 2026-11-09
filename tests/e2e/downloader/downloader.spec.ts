@@ -1148,3 +1148,58 @@ test.describe('14 — Edge cases & memory regression', () => {
     }
   });
 });
+
+// ===========================================================================
+// 15 — RSS subscriptions and automatic extraction (P1)
+//
+// The suite never adds a valid feed (it would persist on the host) and never
+// flips the extraction switch (it would change the host's setting): it proves
+// the dialog renders, the safe defaults, and that a refused feed shows the
+// server's own sentence.
+// ===========================================================================
+
+test.describe('15 — RSS subscriptions and automatic extraction', () => {
+  test('15.1 — the RSS dialog shows feeds, the safe defaults and the extraction switch', async ({
+    page,
+  }) => {
+    await gotoDownloader(page, adminTokens);
+    await skipIfNoAria2(page);
+    await win(page).locator('[data-testid="downloader-rss-toggle"]').click();
+    const modal = page.locator('[data-slot="dialog-content"]');
+    await expect(modal).toBeVisible({ timeout: 10_000 });
+
+    // The extraction switch exists and its consequence is spelled out; its
+    // value is whatever the host has, so it is only checked for presence.
+    const extract = modal.locator('[data-testid="downloader-auto-extract"]');
+    await expect(extract).toBeVisible();
+    await expect(modal.locator('[data-testid="downloader-rss"]')).toContainText(/archive/i);
+
+    // Either the empty state, or the host's own feeds — never both.
+    const empty = modal.locator('[data-testid="downloader-rss-empty"]');
+    const list = modal.locator('[data-testid="downloader-rss-list"]');
+    expect((await empty.count()) + (await list.count())).toBeGreaterThan(0);
+
+    // Subscribing to a private address is refused *before* anything is
+    // stored: a feed URL must not turn the refresh into an SSRF primitive.
+    await modal.locator('[data-testid="downloader-rss-url"]').fill('http://127.0.0.1/feed.xml');
+    await modal.locator('[data-testid="downloader-rss-add"]').click();
+    const error = modal.locator('[data-testid="downloader-rss-error"]');
+    await expect(error).toBeVisible({ timeout: 10_000 });
+    await expect(error).toContainText(/private or loopback/i);
+
+    await modal.getByRole('button', { name: /Close/i }).click();
+    await expect(modal).toBeHidden();
+  });
+
+  test('15.2 — the add form offers an optional per-task speed limit', async ({ page }) => {
+    await gotoDownloader(page, adminTokens);
+    await skipIfNoAria2(page);
+    await win(page).locator('[data-testid="downloader-add-toggle"]').click();
+    const limit = win(page).locator('[data-testid="downloader-limit"]');
+    await expect(limit).toBeVisible();
+    await expect(limit).toHaveAttribute('placeholder', /500K/);
+    // Optional: the download action stays enabled with the field empty.
+    await win(page).locator('[data-testid="downloader-input"]').fill('https://example.com/file.iso');
+    await expect(win(page).locator('[data-testid="downloader-add-toggle"]')).toBeVisible();
+  });
+});

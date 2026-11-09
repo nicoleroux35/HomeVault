@@ -128,6 +128,7 @@ justifie.
 | **P1-33** | WireGuard UX (QR, 1‑clic, endpoint DDNS) — livré 2026‑11‑09 | P1 | S/M | Accès distant simple |
 | **P1-34** | Intégration média (partage + transcodage matériel) — livré 2026‑11‑09 | P1 | M | Le besoin n°1 d'un NAS familial |
 | **P1-35** | Explorer : emplacements réseau CIFS/NFS + versions Btrfs — livré 2026‑11‑09 | P1 | M | Dernier écart avec File Station |
+| **P1-36** | Téléchargeur : RSS, planification, limites/tâche, extraction auto — livré 2026‑11‑09 | P1 | M | Dernier écart avec Download Station |
 | **P2-1** | SMB AD/Kerberos complet (winbind, realm, idmap, keytab) — **gelé au partiel** (config ADS + join/leave ; DC réel seulement si cible entreprise) | P2 | L | Entreprise Windows |
 | **P2-2** | NFSv4 + Kerberos (`sec=krb5`) — **gelé au partiel** (flavor + validation keytab ; KDC réel seulement si cible entreprise) | P2 | L | Entreprise Unix |
 | **P2-3** | Thin provisioning — **gelé au partiel** (zvols ZFS thin/thick ; overcommit/LVM rejetés) | P2 | L | Sur‑allocation |
@@ -1757,6 +1758,33 @@ Tests : 10 unitaires `src/remote_mounts.rs`, 2 unitaires `src/snapshots.rs`,
 exécuté**), E2E Explorer §19 — écrits, **non exécutés**. Docs :
 `docs/guides/remote-mounts.md` (nouveau), `docs/guides/explorer.md`,
 `docs/INDEX.md`, `docs/API.md`, `SCREENS.md`, FeatureDocs `explorer`/`snapshots`.
+
+### [x] P1-36 — Téléchargeur : RSS, planification, limites/tâche, extraction auto · M
+
+**Livré 2026‑11‑09.** Le dernier écart avec Download Station, avec aria2 et le
+moteur de tâches planifiées déjà présents (pas de second ordonnanceur).
+
+- **Flux RSS/Atom** (`src/downloader_rss.rs`) : abonnement par adresse,
+  vérification d'un flux, **Télécharger les nouveaux**, ou vérification
+  planifiée (`service = downloader_rss`). Le parseur (pur) ne garde que les
+  éléments portant une URL téléchargeable (enclosure sinon lien, http(s)/magnet
+  seulement) ; un marqueur `seen` borné (500) par flux n'enregistre que ce qui a
+  **réellement été mis en file**, donc une simple vérification ne consomme pas
+  les éléments. Une adresse pointant sur loopback/RFC 1918 est refusée (sinon le
+  rafraîchissement serait une primitive SSRF). Fichier `data/downloader_feeds.json`
+  en 0600.
+- **Limites par tâche** : `max_download_limit`, `max_upload_limit`,
+  `seed_ratio` validés (syntaxe aria2) et envoyés dans les options de la tâche.
+- **Extraction automatique** (désactivée par défaut) : une archive `.zip`/
+  `.tar.*` terminée est décompressée **dans le dossier où le téléchargement a
+  été écrit**, allowlist alignée sur `tar`/`unzip` installés, archive conservée,
+  chaque téléchargement traité une seule fois. Bouton **Extraire les archives**
+  pour le faire à la demande.
+- Tests : 14 unitaires, 4 d'intégration (**aucun démon aria2 lancé, aucun flux
+  récupéré**), E2E Téléchargeur §15 — écrits, **non exécutés**. Docs :
+  `docs/guides/downloader.md`, `docs/API.md`, `docs/guides/scheduled-tasks.md`,
+  `docs/SCREENS.md`, `PRIVACY.md` (table sortante + RoPA 19), FeatureDocs
+  `downloader`/`scheduled-tasks`.
 
 ---
 

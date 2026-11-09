@@ -30,6 +30,7 @@
  */
 
 import type { ApiResponse, DbBackupEntry, DbBackupStatus, LoginRequest, LoginResponse, RestoreDrillReport, SetupAdminRequest, SetupStatus } from '$lib/types/api';
+import type { DownloaderFeedRefresh, DownloaderRssFeed } from '$lib/types/downloader';
 import type { RemoteMountRequest, RemoteMountView } from '$lib/types/explorer';
 import type {
   DockerAppStore,
@@ -3761,10 +3762,23 @@ class ApiClient {
   /**
    * Enqueue a download. `dir` is a sub-folder **relative to the server's
    * download root** (the server refuses absolute paths and `..`), `out` is a
-   * bare file name — never a path.
+   * bare file name — never a path. `limits` are per-task caps (aria2 syntax:
+   * `500K`, `2M`, `0` = unlimited) and a seed ratio (`0` = no seeding).
    */
-  async addDownloaderUrl(uri: string, dir?: string, out?: string) {
-    return this.post('/downloader/add', { uri, dir, out });
+  async addDownloaderUrl(
+    uri: string,
+    dir?: string,
+    out?: string,
+    limits?: { maxDownloadLimit?: string; maxUploadLimit?: string; seedRatio?: string },
+  ) {
+    return this.post('/downloader/add', {
+      uri,
+      dir,
+      out,
+      max_download_limit: limits?.maxDownloadLimit,
+      max_upload_limit: limits?.maxUploadLimit,
+      seed_ratio: limits?.seedRatio,
+    });
   }
 
   async pauseDownloader(gid: string) {
@@ -3777,6 +3791,56 @@ class ApiClient {
 
   async removeDownloader(gid: string) {
     return this.post('/downloader/remove', { gid });
+  }
+
+  // --- Downloader: automatic extraction + RSS subscriptions (P1) -----------
+
+  /** Whether finished archives are unpacked automatically (off by default). */
+  async getDownloaderSettings() {
+    return this.get<{ auto_extract: boolean }>('/downloader/settings', { cache: false });
+  }
+
+  async updateDownloaderSettings(settings: { auto_extract: boolean }) {
+    return this.put<{ auto_extract: boolean }>('/downloader/settings', settings);
+  }
+
+  /** Unpack the archives a finished download left behind; returns their names. */
+  async extractDownloaderTask(gid: string) {
+    return this.post<string[]>('/downloader/extract', { gid });
+  }
+
+  async listDownloaderFeeds() {
+    return this.get<DownloaderRssFeed[]>('/downloader/feeds', { cache: false });
+  }
+
+  async addDownloaderFeed(payload: { url: string; name?: string; auto_download?: boolean }) {
+    return this.post<DownloaderRssFeed>('/downloader/feeds', payload);
+  }
+
+  async updateDownloaderFeed(
+    id: string,
+    payload: { name?: string; enabled?: boolean; auto_download?: boolean },
+  ) {
+    return this.put<DownloaderRssFeed>(`/downloader/feeds/${encodeURIComponent(id)}`, payload);
+  }
+
+  async deleteDownloaderFeed(id: string) {
+    return this.delete(`/downloader/feeds/${encodeURIComponent(id)}`);
+  }
+
+  /**
+   * Fetch one feed. `queue: true` sends every new item to aria2 ("download all
+   * new"); without it the call only lists what the feed currently offers.
+   */
+  async refreshDownloaderFeed(id: string, queue = false) {
+    return this.post<DownloaderFeedRefresh>(
+      `/downloader/feeds/${encodeURIComponent(id)}/refresh`,
+      { queue },
+    );
+  }
+
+  async refreshAllDownloaderFeeds() {
+    return this.post<{ queued: number; failed: number }>('/downloader/feeds/refresh');
   }
 
   // ==============================================

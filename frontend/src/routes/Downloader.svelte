@@ -19,10 +19,11 @@
   import { onMount, onDestroy } from 'svelte';
   import { api } from '$lib/services/api';
   import { t, translate } from '$lib/stores/i18n';
-  import { Spinner, Button, Alert } from '$lib/components/theme';
+  import { Spinner, Button, Alert, Modal } from '$lib/components/theme';
   import { PageLayout, iconBtn, iconBtnDanger, StatCard } from '$lib/components/app';
   import { cn } from '$lib/utils.js';
-  import { IconDownload, IconLink, IconPlayerPlay, IconPlayerPause, IconTrash, IconLoader, IconArrowDown, IconArrowUp, IconFile, IconCircleCheck, IconCircleX, IconClock, IconAlertCircle, IconActivity, IconPower } from '@tabler/icons-svelte';
+  import type { DownloaderFeedItem, DownloaderRssFeed } from '$lib/types/downloader';
+  import { IconDownload, IconLink, IconPlayerPlay, IconPlayerPause, IconTrash, IconLoader, IconArrowDown, IconArrowUp, IconFile, IconCircleCheck, IconCircleX, IconClock, IconAlertCircle, IconActivity, IconPower, IconRss, IconPlus, IconRefresh, IconPackage } from '@tabler/icons-svelte';
 
   interface Aria2Task {
     gid: string;
@@ -66,6 +67,8 @@
   let downloadRoot = $state('');
   let showAddForm = $state(false);
   let addingUrl = $state(false);
+  /** Optional per-task speed cap, passed straight to aria2 (`500K`, `2M`). */
+  let limitDownload = $state('');
   let startingService = $state(false);
   /** Last failed action, shown in a dismissible alert (never swallowed). */
   let actionError = $state<string | null>(null);
@@ -151,10 +154,16 @@
     if (!newUrl.trim()) return;
     addingUrl = true;
     actionError = null;
-    const res = await api.addDownloaderUrl(newUrl.trim(), subfolder.trim() || undefined);
+    const res = await api.addDownloaderUrl(
+      newUrl.trim(),
+      subfolder.trim() || undefined,
+      undefined,
+      limitDownload.trim() ? { maxDownloadLimit: limitDownload.trim() } : undefined,
+    );
     if (res.success) {
       newUrl = '';
       subfolder = '';
+      limitDownload = '';
       showAddForm = false;
       await loadData();
     } else {
@@ -272,6 +281,172 @@
   // Shared control shapes (iconBtn / iconBtnDanger) come from
   // components/app controlClasses.ts — see docs/guides/design-system.md §4.3.
   const progressTrack = 'h-2 rounded-full bg-[var(--hv-shell-border-soft)] overflow-hidden';
+
+  // ── RSS subscriptions and automatic extraction (P1) ──────────────────────
+  let showRss = $state(false);
+  let feeds = $state<DownloaderRssFeed[]>([]);
+  let feedsLoading = $state(false);
+  let feedsError = $state<string | null>(null);
+  let rssNotice = $state<string | null>(null);
+  let newFeedUrl = $state('');
+  let newFeedName = $state('');
+  let newFeedAuto = $state(false);
+  let addingFeed = $state(false);
+  /** The feed whose items are listed in the modal, and its last fetch. */
+  let activeFeedId = $state<string | null>(null);
+  let feedItems = $state<DownloaderFeedItem[]>([]);
+  let feedItemsLoading = $state(false);
+  let feedBusyId = $state<string | null>(null);
+  let bulkBusy = $state(false);
+  let autoExtract = $state(false);
+  let extractBusyGid = $state<string | null>(null);
+
+  async function openRss() {
+    showRss = true;
+    await Promise.all([loadFeeds(), loadAutomation()]);
+  }
+
+  async function loadFeeds() {
+    feedsLoading = true;
+    const res = await api.listDownloaderFeeds();
+    if (res.success && res.data) {
+      feeds = res.data;
+      feedsError = null;
+    } else {
+      feedsError = res.error || translate('downloader.rss_load_failed');
+    }
+    feedsLoading = false;
+  }
+
+  async function loadAutomation() {
+    const res = await api.getDownloaderSettings();
+    if (res.success && res.data) autoExtract = !!res.data.auto_extract;
+  }
+
+  async function saveAutoExtract() {
+    const res = await api.updateDownloaderSettings({ auto_extract: autoExtract });
+    if (res.success) {
+      rssNotice = translate(
+        autoExtract ? 'downloader.extract_enabled' : 'downloader.extract_disabled',
+      );
+    } else {
+      // Put the switch back where the server says it is.
+      autoExtract = !autoExtract;
+      feedsError = res.error || translate('downloader.action_failed');
+    }
+  }
+
+  async function addFeed() {
+    if (!newFeedUrl.trim()) return;
+    addingFeed = true;
+    feedsError = null;
+    const res = await api.addDownloaderFeed({
+      url: newFeedUrl.trim(),
+      name: newFeedName.trim() || undefined,
+      auto_download: newFeedAuto,
+    });
+    if (res.success) {
+      newFeedUrl = '';
+      newFeedName = '';
+      newFeedAuto = false;
+      rssNotice = translate('downloader.rss_added');
+      await loadFeeds();
+    } else {
+      feedsError = res.error || translate('downloader.rss_add_failed');
+    }
+    addingFeed = false;
+  }
+
+  async function removeFeed(feed: DownloaderRssFeed) {
+    feedBusyId = feed.id;
+    feedsError = null;
+    const res = await api.deleteDownloaderFeed(feed.id);
+    if (res.success) {
+      if (activeFeedId === feed.id) {
+        activeFeedId = null;
+        feedItems = [];
+      }
+      rssNotice = translate('downloader.rss_removed', { name: feed.name });
+      await loadFeeds();
+    } else {
+      feedsError = res.error || translate('downloader.action_failed');
+    }
+    feedBusyId = null;
+  }
+
+  async function toggleFeed(feed: DownloaderRssFeed, field: 'enabled' | 'auto_download') {
+    feedBusyId = feed.id;
+    const res = await api.updateDownloaderFeed(feed.id, { [field]: !feed[field] });
+    if (res.success && res.data) {
+      feeds = feeds.map((f) => (f.id === feed.id ? res.data! : f));
+    } else {
+      feedsError = res.error || translate('downloader.action_failed');
+    }
+    feedBusyId = null;
+  }
+
+  /** Fetch a feed; `queue` sends every new item to aria2. */
+  async function checkFeed(feed: DownloaderRssFeed, queue: boolean) {
+    feedBusyId = queue ? `${feed.id}:queue` : feed.id;
+    feedsError = null;
+    rssNotice = null;
+    const res = await api.refreshDownloaderFeed(feed.id, queue);
+    if (res.success && res.data) {
+      activeFeedId = feed.id;
+      feedItems = res.data.items;
+      if (res.data.queued > 0) {
+        rssNotice = translate('downloader.rss_queued', { count: String(res.data.queued) });
+      } else if (res.data.errors.length) {
+        feedsError = res.data.errors.join(' · ');
+      } else if (queue) {
+        rssNotice = translate('downloader.rss_nothing_new');
+      }
+      await loadFeeds();
+      if (queue) await loadData();
+    } else {
+      feedsError = res.error || translate('downloader.rss_check_failed');
+      activeFeedId = feed.id;
+      feedItems = [];
+    }
+    feedBusyId = null;
+  }
+
+  async function checkAllFeeds() {
+    bulkBusy = true;
+    feedsError = null;
+    const res = await api.refreshAllDownloaderFeeds();
+    if (res.success && res.data) {
+      rssNotice = translate('downloader.rss_all_checked', {
+        queued: String(res.data.queued),
+        failed: String(res.data.failed),
+      });
+      await loadFeeds();
+      await loadData();
+    } else {
+      feedsError = res.error || translate('downloader.action_failed');
+    }
+    bulkBusy = false;
+  }
+
+  /** Unpack a finished download now (the automatic pass is a setting). */
+  async function extractTask(task: Aria2Task) {
+    extractBusyGid = task.gid;
+    actionError = null;
+    const res = await api.extractDownloaderTask(task.gid);
+    if (res.success && res.data) {
+      if (res.data.length) {
+        actionError = null;
+        rssNotice = translate('downloader.extracted', { count: String(res.data.length) });
+        if (!showRss) showRss = true;
+      } else {
+        rssNotice = translate('downloader.extract_none');
+        if (!showRss) showRss = true;
+      }
+    } else {
+      actionError = res.error || translate('downloader.action_failed');
+    }
+    extractBusyGid = null;
+  }
 </script>
 <PageLayout
   title={$t('downloader.title')}
@@ -289,6 +464,10 @@
          without it, and adding a link would start a background process the
          user has not asked for. -->
     {#if aria2Available && aria2Running}
+      <Button variant="secondary" data-testid="downloader-rss-toggle" onclick={openRss}>
+        <IconRss size={16} />
+        <span>{$t('downloader.rss_title')}</span>
+      </Button>
       <Button variant="primary" data-testid="downloader-add-toggle" onclick={() => (showAddForm = !showAddForm)}>
         <IconLink size={16} />
         <span>{$t('downloader.add_link')}</span>
@@ -364,6 +543,16 @@
             class="w-[190px] h-11 px-3 border border-[var(--hv-shell-border-strong)] rounded-lg bg-[var(--hv-shell-border-soft)] text-sm outline-none focus:border-[var(--hv-primary)]"
             placeholder={$t('downloader.subfolder_placeholder')}
             bind:value={subfolder}
+            onkeydown={(e) => e.key === 'Enter' && addUrl()}
+          />
+          <!-- Optional per-task speed cap: aria2's own syntax (500K, 2M). -->
+          <input
+            data-testid="downloader-limit"
+            type="text"
+            aria-label={$t('downloader.limit_label')}
+            class="w-[140px] h-11 px-3 border border-[var(--hv-shell-border-strong)] rounded-lg bg-[var(--hv-shell-border-soft)] text-sm outline-none focus:border-[var(--hv-primary)]"
+            placeholder={$t('downloader.limit_placeholder')}
+            bind:value={limitDownload}
             onkeydown={(e) => e.key === 'Enter' && addUrl()}
           />
           <Button variant="primary" data-testid="downloader-btn-primary" onclick={addUrl} disabled={addingUrl || !newUrl.trim()}>
@@ -464,6 +653,9 @@
                       </div>
                       <span class={cn('px-2 py-0.5 rounded-full text-c-xs font-bold uppercase flex-none', task.status === 'complete' ? 'bg-[var(--hv-success-bg)] text-[var(--hv-success)]' : 'bg-[var(--hv-error-bg)] text-[var(--hv-error)]')}>{statusLabel(task.status)}</span>
                     </button>
+                    {#if task.status === 'complete'}
+                      <button type="button" data-testid="downloader-extract" class={iconBtn} onclick={() => extractTask(task)} disabled={extractBusyGid === task.gid} title={$t('downloader.extract_title')} aria-label={$t('downloader.extract_named', { name: fileName(task) })}><IconPackage size={13} /></button>
+                    {/if}
                     <button type="button" data-testid="downloader-action-danger" class={iconBtnDanger} onclick={() => removeTask(task.gid)} title={$t('downloader.delete_title')} aria-label={$t('downloader.delete_title')}><IconTrash size={13} /></button>
                   </div>
                 {/each}
@@ -526,3 +718,156 @@
     {/if}
   {/snippet}
 </PageLayout>
+<!-- RSS subscriptions and automatic extraction (P1).
+     One window, two halves: what the Downloader watches (feeds) and the one
+     automatic action it takes on its own (unpacking). Both are off unless the
+     admin turns them on; nothing here starts aria2. -->
+<Modal
+  open={showRss}
+  title={$t('downloader.rss_title')}
+  size="lg"
+  onclose={() => (showRss = false)}
+>
+  {#snippet icon()}<IconRss size={22} stroke={1.75} />{/snippet}
+  {#snippet children()}
+    <div class="flex flex-col gap-4" data-testid="downloader-rss">
+      {#if rssNotice}
+        <p role="status" data-testid="downloader-rss-notice" class="m-0 px-3 py-2 rounded-lg bg-[var(--hv-success-bg)] text-[var(--hv-success)] text-xs font-semibold">{rssNotice}</p>
+      {/if}
+      {#if feedsError}
+        <p role="alert" data-testid="downloader-rss-error" class="m-0 px-3 py-2 rounded-lg bg-[var(--hv-error-bg)] text-[var(--hv-error)] text-xs font-semibold">{feedsError}</p>
+      {/if}
+
+      <!-- Automatic extraction: one switch, one consequence spelled out. -->
+      <div class="flex flex-col gap-1 px-3 py-2.5 rounded-xl bg-[var(--hv-shell-border-soft)] border border-[var(--hv-shell-border)]">
+        <label class="flex items-center gap-2 text-c-sm font-semibold text-[var(--hv-shell-text-strong)] cursor-pointer">
+          <input
+            type="checkbox"
+            class="accent-[var(--hv-primary)]"
+            bind:checked={autoExtract}
+            onchange={saveAutoExtract}
+            data-testid="downloader-auto-extract"
+          />
+          {$t('downloader.auto_extract')}
+        </label>
+        <span class="text-c-xs text-[var(--hv-shell-text-2)]">{$t('downloader.auto_extract_hint')}</span>
+      </div>
+
+      <!-- Add a feed -->
+      <div class="flex flex-col gap-2">
+        <div class="flex flex-wrap items-end gap-2">
+          <label class="flex flex-col gap-1 flex-1 min-w-[220px]">
+            <span class="text-c-xs font-semibold text-[var(--hv-shell-text-2)]">{$t('downloader.rss_url')}</span>
+            <input
+              type="url"
+              class="h-11 px-3 border border-[var(--hv-shell-border-strong)] rounded-lg bg-[var(--hv-shell-border-soft)] text-sm outline-none focus:border-[var(--hv-primary)]"
+              placeholder="https://example.com/feed.xml"
+              bind:value={newFeedUrl}
+              data-testid="downloader-rss-url"
+            />
+          </label>
+          <label class="flex flex-col gap-1 w-[180px]">
+            <span class="text-c-xs font-semibold text-[var(--hv-shell-text-2)]">{$t('downloader.rss_name')}</span>
+            <input
+              type="text"
+              class="h-11 px-3 border border-[var(--hv-shell-border-strong)] rounded-lg bg-[var(--hv-shell-border-soft)] text-sm outline-none focus:border-[var(--hv-primary)]"
+              placeholder={$t('downloader.rss_name_placeholder')}
+              bind:value={newFeedName}
+              data-testid="downloader-rss-name"
+            />
+          </label>
+          <Button variant="primary" onclick={addFeed} disabled={addingFeed || !newFeedUrl.trim()} data-testid="downloader-rss-add">
+            <IconPlus size={15} />
+            <span>{$t('downloader.rss_subscribe')}</span>
+          </Button>
+        </div>
+        <label class="flex items-center gap-2 text-c-sm text-[var(--hv-shell-text)]">
+          <input type="checkbox" class="accent-[var(--hv-primary)]" bind:checked={newFeedAuto} data-testid="downloader-rss-auto" />
+          {$t('downloader.rss_auto_download')}
+        </label>
+      </div>
+
+      <!-- Feeds -->
+      <div class="flex items-center justify-between gap-2">
+        <h3 class="m-0 text-c-card-title font-semibold text-[var(--hv-shell-text-strong)]">{$t('downloader.rss_feeds')}</h3>
+        <Button variant="ghost" size="sm" onclick={checkAllFeeds} disabled={bulkBusy || feeds.length === 0} data-testid="downloader-rss-check-all">
+          <IconRefresh size={14} />
+          <span>{$t('downloader.rss_check_all')}</span>
+        </Button>
+      </div>
+
+      {#if feedsLoading}
+        <p class="m-0 text-xs text-[var(--hv-shell-text-2)]" role="status">{$t('common.loading')}</p>
+      {:else if feeds.length === 0}
+        <p class="m-0 text-xs text-[var(--hv-shell-text-2)]" data-testid="downloader-rss-empty">{$t('downloader.rss_none')}</p>
+      {:else}
+        <ul class="m-0 p-0 list-none flex flex-col gap-2" data-testid="downloader-rss-list">
+          {#each feeds as feed (feed.id)}
+            <li class="px-3 py-2.5 rounded-xl bg-[var(--hv-shell-card)] border border-[var(--hv-shell-border)]" data-testid="downloader-rss-feed">
+              <div class="flex items-start justify-between gap-3">
+                <div class="min-w-0">
+                  <div class="text-sm font-bold text-[var(--hv-shell-text-strong)] truncate">{feed.name}</div>
+                  <div class="text-c-xs text-[var(--hv-shell-text-2)] truncate font-[family-name:var(--hv-font-mono)]">{feed.url}</div>
+                  {#if feed.last_error}
+                    <div class="text-c-xs text-[var(--hv-error)] mt-1" data-testid="downloader-rss-feed-error">{feed.last_error}</div>
+                  {/if}
+                </div>
+                <div class="flex items-center gap-1 flex-none">
+                  <Button variant="ghost" size="sm" onclick={() => checkFeed(feed, false)} disabled={feedBusyId === feed.id || feedBusyId === `${feed.id}:queue`} data-testid="downloader-rss-check">
+                    <IconRefresh size={14} />
+                    <span>{$t('downloader.rss_check')}</span>
+                  </Button>
+                  <Button variant="secondary" size="sm" onclick={() => checkFeed(feed, true)} disabled={feedBusyId === feed.id || feedBusyId === `${feed.id}:queue`} data-testid="downloader-rss-download-new">
+                    <IconDownload size={14} />
+                    <span>{$t('downloader.rss_download_new')}</span>
+                  </Button>
+                  <button type="button" class={iconBtnDanger} onclick={() => removeFeed(feed)} disabled={feedBusyId === feed.id} aria-label={$t('downloader.rss_remove_named', { name: feed.name })} data-testid="downloader-rss-remove"><IconTrash size={14} /></button>
+                </div>
+              </div>
+              <div class="flex flex-wrap items-center gap-3 mt-2">
+                <label class="flex items-center gap-1.5 text-c-xs text-[var(--hv-shell-text)]">
+                  <input type="checkbox" class="accent-[var(--hv-primary)]" checked={feed.enabled} onchange={() => toggleFeed(feed, 'enabled')} />
+                  {$t('downloader.rss_enabled')}
+                </label>
+                <label class="flex items-center gap-1.5 text-c-xs text-[var(--hv-shell-text)]">
+                  <input type="checkbox" class="accent-[var(--hv-primary)]" checked={feed.auto_download} onchange={() => toggleFeed(feed, 'auto_download')} />
+                  {$t('downloader.rss_auto_short')}
+                </label>
+                <span class="text-c-xs text-[var(--hv-shell-text-3)]">{$t('downloader.rss_seen', { count: String(feed.seen.length) })}</span>
+              </div>
+            </li>
+          {/each}
+        </ul>
+      {/if}
+
+      <!-- Items of the last checked feed -->
+      {#if activeFeedId && feedItems.length > 0}
+        <div class="flex flex-col gap-1" data-testid="downloader-rss-items">
+          <h3 class="m-0 text-c-card-title font-semibold text-[var(--hv-shell-text-strong)]">{$t('downloader.rss_items')}</h3>
+          <ul class="m-0 p-0 list-none flex flex-col">
+            {#each feedItems as item (item.guid)}
+              <li class="flex items-center justify-between gap-3 py-1.5 border-b border-[var(--hv-shell-border)] last:border-0">
+                <div class="min-w-0">
+                  <div class="text-xs font-semibold text-[var(--hv-shell-text-strong)] truncate">{item.title || item.download_url}</div>
+                  <div class="text-c-xs text-[var(--hv-shell-text-2)] truncate font-[family-name:var(--hv-font-mono)]">{item.download_url}</div>
+                </div>
+                {#if item.seen}
+                  <span class="text-c-xs font-semibold text-[var(--hv-success)] flex-none">{$t('downloader.rss_already')}</span>
+                {:else}
+                  <Button variant="ghost" size="sm" onclick={() => { newUrl = item.download_url; showRss = false; showAddForm = true; }} data-testid="downloader-rss-item-use">
+                    {$t('downloader.rss_use')}
+                  </Button>
+                {/if}
+              </li>
+            {/each}
+          </ul>
+        </div>
+      {/if}
+    </div>
+  {/snippet}
+  {#snippet footer()}
+    <div class="flex justify-end">
+      <Button variant="primary" onclick={() => (showRss = false)}>{$t('common.close')}</Button>
+    </div>
+  {/snippet}
+</Modal>

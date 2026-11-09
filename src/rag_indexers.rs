@@ -992,7 +992,9 @@ Syncthing keeps running independently of HomeVault — this screen is a manageme
             content: r#"A download manager backed by aria2: paste a link and let the server fetch it.
 
 - Start the download service from the screen when it is stopped — opening the app never starts a background process on its own.
-- Add a download, optionally choosing a sub-folder inside the download folder and the output file name; then pause, resume or remove it.
+- Add a download, optionally choosing a sub-folder inside the download folder, the output file name and a **speed limit for that download**; then pause, resume or remove it.
+- A completed download can be unpacked in place ("Extract archives"): .zip and .tar archives are expanded in the folder the download was saved in, and the archive is kept. The same can happen automatically with one switch (off by default).
+- RSS and Atom feeds can be subscribed to: check a feed to see its items, queue the new ones, or let a scheduled task do it. A feed only ever queues files it publishes over http(s); an address pointing at the appliance itself is refused.
 - Accepted links are http, https, ftp, sftp and magnet. Local paths (file://) and other schemes are refused, and every file is saved inside the server's download folder — a sub-folder can be named but cannot escape it.
 - Follow progress live: percentage, speed, size and connection count.
 - Global statistics: the overall speed, and how many downloads are active, waiting or stopped.
@@ -1249,8 +1251,8 @@ Passkeys (WebAuthn) are a third, separate credential: an account can sign in wit
 - power: reboot, shutdown or suspend the host.
 - service: trigger an existing subsystem instead of a second schedule — a
   Docker/catalog update pass, the trash-retention policy, a database snapshot,
-  or a notification with a message. Restic, scrub and the other periodic jobs
-  keep their own scheduler on purpose.
+  a Downloader RSS check, or a notification with a message. Restic, scrub and
+  the other periodic jobs keep their own scheduler on purpose.
 
 Each task has a name, a 5-field cron expression and an enabled toggle. The task list shows the last run status/error and the computed next run; every execution is recorded in a run history (status, timing, output tail). Run now triggers a task immediately regardless of the cron. A task whose previous execution is still running is never started twice.
 

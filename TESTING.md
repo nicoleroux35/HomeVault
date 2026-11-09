@@ -1,5 +1,23 @@
 # HomeVault — Test tracking
 
+## P1 Downloader — RSS, per-task limits, automatic extraction — 2026-11-09 (not run)
+
+> **Instruction followed: no test command was executed for this change.**
+> Static checks passed: `cargo check --lib`, `cargo check --tests`,
+> `cd frontend && npm run check` and `npm run build`.
+> **No aria2 daemon is spawned and no feed is fetched by these tests**: the
+> integration cases are refused before any RPC/network call, and the E2E suite
+> only opens the dialogs.
+
+| Coverage | Added / changed |
+|---|---|
+| Unit (`src/downloader_rss.rs`) | **+7** — feed URL shape and SSRF guard (loopback, RFC 1918, IPv6 loopback, `user:pw@`, non-http schemes); RSS parsing keeps only downloadable items (news-only and `file://` dropped); Atom enclosure/`rel=alternate`; malformed/empty documents; magnet vs `https://` shape; the `seen` marker queues once and stays bounded (500); default name/label; store round-trip and forward-compatible defaults |
+| Unit (`src/downloader_extract.rs`) | **+4** — archive allowlist matches the installed tools (`.rar`/`.7z` refused, `.zip.part` refused); exact `unzip`/`tar` argv (argv only, `--no-absolute-names`, download folder as target); a folder with no archive is a no-op; settings default off and round-trip; the processed marker stays bounded |
+| Unit (`src/handlers/downloader.rs`) | **+3** — `validate_rate_limit` (K/M/G only, ≤ 9 digits, `-5`/`1.5M`/`5T` refused), `validate_seed_ratio` (0–100), and the existing confinement matrix unchanged |
+| Integration (`tests/downloader_integration.rs`) | **+4** — limits refused before aria2; `/settings` default off + round-trip + admin gate; RSS CRUD with the SSRF guard, duplicate refusal and admin gate; refresh/extract refused before any call |
+| E2E (`tests/e2e/downloader/downloader.spec.ts`) | **+2** — §15.1 the RSS dialog, its safe defaults and the refused private feed URL; §15.2 the optional per-task speed limit field |
+| Docs | `docs/guides/downloader.md`, `docs/API.md`, `docs/guides/scheduled-tasks.md` (new service), `SCREENS.md`, `PRIVACY.md` (outbound table + RoPA 19), `CHANGELOG.md`, RAG `downloader`, `HOMEVAULT_TASKLIST_A_FAIRE.md` (P1‑36), `COMPARAISON_DSM_VS_HOMEVAULT.md` |
+
 ## P1 Explorer — network locations (CIFS/NFS) + Btrfs versions — 2026-11-09 (not run)
 
 > **Instruction followed: no test command was executed for this change.**

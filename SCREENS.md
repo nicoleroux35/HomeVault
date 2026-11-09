@@ -601,10 +601,17 @@ The screen refreshes on tab switch, on window focus and every 45 s
 **Features:**
 - Global statistics: download/upload speed, number active/pending/stopped
 - Task list: GID, name, status, progress, speed, error message
-- URL addition with a destination directory
+- URL addition with a destination directory, an output name and an optional **speed limit** for that download
+- A completed download offers **Extract archives**; the archive itself is kept
 - Actions: pause, remove, delete (3-step fallback chain)
 - Status icons: active, paused, completed, error, pending
 - Refresh every 2s
+- **RSS subscriptions** (toolbar button): the feed list with per-feed
+  *checked by the schedule* and *queue new items* switches, **Check** and
+  **Download new**, the items the last check found, subscribing by address with
+  an optional name, and **Check all**
+- **Automatic extraction** switch in the same window (off by default): a
+  finished `.zip`/`.tar` archive is unpacked in its own download folder
 
 ---
 

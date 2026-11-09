@@ -102,7 +102,7 @@ cas de désaccord avec le backlog, `HOMEVAULT_TASKLIST_A_FAIRE.md` §1bis gagne.
 | **Widgets / Edit Widgets** | Widgets DSM | ✅ | Widgets backup/UPS/interface réseau/croissance stockage |
 | **Cloud Sync** | Cloud Sync | ✅ | Remotes chiffrés (rclone crypt), présets fournisseurs, limites de bande passante |
 | **Syncthing** | Synology Drive | 🟡 | **Navigateur de versions/restauration**, sync sélective/à la demande, dossiers d'équipe, apps mobiles, verrouillage de fichiers |
-| **Downloader** | Download Station | 🟡 | **NZB, eMule, RSS, planification, limites par tâche, extraction auto, ratio**. HTTP/HTTPS/FTP/SFTP/magnet seulement aujourd'hui |
+| **Downloader** | Download Station | ✅ | **RSS/Atom, planification, limites par tâche, extraction auto, ratio** livrés (P1‑36) ; HTTP/HTTPS/FTP/SFTP/magnet. **NZB et eMule restent rejetés** (§3.3) |
 | **AI Assistant** | (pas d'équivalent dans l'image) | ⭐ | GPU, davantage de sources RAG. Déjà au‑delà |
 | **PublicShare** | File Station (liens de partage) | ⭐ | Page de marque, statistiques de consultation. File requests et liens dossier : déjà au‑delà |
 
@@ -194,7 +194,7 @@ reconstruction complète sur VM.
 |---|---|---|---|---|---|
 | **P1 ✅** | « Média first‑class » (apps natives) | **Intégration média** : installation 1‑clic + **binding sur un partage** + backup/rétention + reverse‑proxy + accès distant + détection transcodage HW — **partage + transcodage livrés** | Le backlog §6 rejette le natif ; l'usage n°1 d'un NAS reste à couvrir par le catalogue | M | nouveau |
 | **P1 ✅** | Explorer : CIFS/NFS/cloud, vignettes vidéo/PDF, versions Btrfs, favoris | **CIFS/NFS + favoris + versions Btrfs** : **livrés** (P1‑35) ; cloud via rclone existant ; **vignettes vidéo/PDF en P2 opt‑in** (ffmpeg/poppler = surface + CPU) | Dernier vrai écart avec File Station | M | nouveau |
-| **P1** | Téléchargeur : NZB, RSS, planification, limites, extraction | **RSS + planification + limites/tâche + extraction auto** ; **NZB/eMule rejetés** | Niche, credentials, exposition légale | M | nouveau |
+| **P1 ✅** | Téléchargeur : NZB, RSS, planification, limites, extraction | **RSS + planification + limites/tâche + extraction auto** : **livrés** (P1‑36) ; **NZB/eMule rejetés** | Niche, credentials, exposition légale | M | nouveau |
 | **P2** | Cache SSD L2ARC/SLOG | **Opt‑in ZFS**, jamais par défaut (exige un SSD) | Gain réel seulement sur matériel adapté | M | nouveau |
 | **P2** | iSCSI snapshots/clones de LUN, thin LUN | **P2 home‑lab** ; le thin zvol existe déjà | Usage domestique marginal | M | nouveau |
 | **P2** | VM export/import OVA | **P2** en s'appuyant sur `incus export` natif | Portabilité/backup, pas un sous‑système | M | nouveau |
@@ -242,6 +242,27 @@ reconstruction complète sur VM.
   montage exécuté**), E2E Explorer §19. Docs :
   `docs/guides/remote-mounts.md`, `docs/guides/explorer.md`, `docs/API.md`,
   `SCREENS.md`, FeatureDocs `explorer`/`snapshots`.
+
+**P1‑36 — Téléchargeur : RSS, planification, limites par tâche, extraction auto
+(livré).**
+
+- `src/downloader_rss.rs` : parseur RSS 2.0/Atom pur (seuls les éléments avec
+  une URL téléchargeable sont retenus), marqueur `seen` borné (500) par flux,
+  refus d'une adresse loopback/RFC 1918 (sinon le refresh serait une primitive
+  SSRF), fichier en 0600.
+- `src/downloader_extract.rs` : réglage `auto_extract` (**off** par défaut),
+  allowlist `.zip`/`.tar.*` alignée sur `tar`/`unzip`, argv sans shell,
+  extraction **dans le dossier du téléchargement**, archive conservée, ids
+  traités bornés (200).
+- `POST /api/downloader/add` gagne `max_download_limit`, `max_upload_limit` et
+  `seed_ratio` (validés avant tout appel aria2).
+- Planification : `service = downloader_rss` dans le moteur générique (P1‑31),
+  qui appelle `refresh_all_feeds` — **un seul ordonnanceur**.
+- Tests **écrits, non exécutés** : 14 unitaires, 4 d'intégration (aucun démon
+  lancé, aucun flux récupéré), E2E Téléchargeur §15. Docs :
+  `docs/guides/downloader.md`, `docs/API.md`, `docs/guides/scheduled-tasks.md`,
+  `SCREENS.md`, `PRIVACY.md` (table sortante + RoPA 19), FeatureDocs
+  `downloader`/`scheduled-tasks`.
 
 ### 3.3 Geler ou rejeter — parité sans valeur pour la cible
 
@@ -361,6 +382,11 @@ PHP 8.1/Redis 4.0.
 - **Versions Btrfs** : `btrfs_versions_for_path` + `version_path_in_snapshot`
   + `deepest_containing_root` (`src/snapshots.rs`), branchés dans
   `handle_explorer_history` (`src/handlers/explorer.rs`) — P1‑35
+- **Téléchargeur RSS + extraction** : `src/downloader_rss.rs` (parseur,
+  `seen`, garde SSRF), `src/downloader_extract.rs` (`auto_extract`, allowlist,
+  argv), `src/handlers/downloader.rs` (`/feeds*`, `/settings`, `/extract`,
+  limites par tâche, `run_extract_loop`), `ServiceKind::DownloaderRss`
+  (`src/scheduled_tasks_scheduler.rs`) — P1‑36
 - **13 ordonnanceurs déjà existants** (`src/web/mod.rs:2809-2850`) : une
   « tâche planifiée backup/scrub/corbeille » doit les exposer, pas les dupliquer
 - Serveur OpenVPN absent, client seul : `src/handlers/vpn.rs:953-1002` ;
@@ -411,7 +437,7 @@ Tout item retenu qui touche des données personnelles met à jour `PRIVACY.md` :
 | Table d'audit (P1‑18) | acteur, IP, action, horodatage | admin‑only, rétention bornée, pas de contenu de fichier |
 | Intégration média | photos/vidéos, métadonnées, visages (ML Immich) | traitement **local**, aucune API cloud, opt‑in |
 | Montages CIFS/NFS (P1‑35) | credentials distants | fichier **0600**, jamais en argv/log/réponse, opt‑in, documenté (RoPA ligne 18) |
-| Téléchargeur RSS/scheduling | URLs, credentials éventuels | pas de télémétrie, limites par tâche |
+| Téléchargeur RSS (P1‑36) | URLs de flux (jeton possible dans le chemin) | fichier 0600, adresse loopback privée refusée, pas de télémétrie, limites par tâche (RoPA ligne 19) |
 | WireGuard UX | clés privées | jamais loguées, jamais renvoyées en clair |
 
 ### 6.4 Définition d'une « vraie avancée »
@@ -664,6 +690,7 @@ Journal — l'API les porte déjà.
 
 **Reste sur P2‑9** : le test de reconstruction complète sur une VM jetable
 (boot, installation, restauration DB + configuration + données, vérification)
-et, si la cible le justifie, une image système équivalente à `md0`. Les P1 de
-l'ordre sont livrés (dont l'intégration média) ; restent les P2 (profondeur
-stockage, etc.) et les finitions P1‑18/P2‑7/P2‑8.
+et, si la cible le justifie, une image système équivalente à `md0`. **Tous les
+P1 de §3.2 sont désormais livrés** (média, Explorer, téléchargeur) ; restent les
+P2 (profondeur stockage, OVA, versions Syncthing, calendrier en app catalogue)
+et les finitions P1‑18/P2‑7/P2‑8.
