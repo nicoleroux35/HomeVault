@@ -58,6 +58,9 @@
     public_key: string;
     listen_port: number;
     endpoint_host: string | null;
+    /** `manual` | `ddns` | `public_ip` | `unset`. */
+    endpoint_source: string;
+    endpoint_warning: string | null;
     running: boolean;
   }
 
@@ -117,6 +120,19 @@
   // backend verifies the tunnel connects before answering (~1–10 s), so the
   // card's start button becomes a disabled spinner meanwhile.
   let connectingName: string | null = null;
+
+  // Public endpoint shown in peer configs. The backend resolves it from the
+  // manual override, then the DDNS hostname, then the detected public IP.
+  interface WgEndpoint {
+    endpoint_host: string | null;
+    endpoint_source: string;
+    endpoint_warning: string | null;
+  }
+  let wgEndpoint: WgEndpoint | null = null;
+  let showEndpointModal = false;
+  let endpointDraft = '';
+  let endpointSaving = false;
+  let endpointError = '';
 
   // Modals
   let showWireGuardModal = false;
@@ -195,6 +211,7 @@
     await Promise.all([
       loadConnections(),
       capabilities?.wireguard ? loadWireGuardServer() : Promise.resolve(),
+      capabilities?.wireguard ? loadWireGuardEndpoint() : Promise.resolve(),
       capabilities?.wireguard ? loadWireGuardPeers() : Promise.resolve(),
       capabilities?.wireguard ? loadWireGuardClients() : Promise.resolve(),
     ]);
@@ -230,6 +247,32 @@
     const response = await api.getWireGuardServerStatus();
     if (response.success && response.data?.server) {
       wgServer = response.data.server;
+    }
+  }
+
+  async function loadWireGuardEndpoint() {
+    const response = await api.get('/vpn/wireguard/endpoint');
+    if (response.success && response.data) wgEndpoint = response.data;
+  }
+
+  function openEndpointModal() {
+    endpointDraft = wgEndpoint?.endpoint_host ?? '';
+    endpointError = '';
+    showEndpointModal = true;
+  }
+
+  async function saveEndpoint(host: string) {
+    endpointSaving = true;
+    endpointError = '';
+    const response = await api.put('/vpn/wireguard/endpoint', { host });
+    endpointSaving = false;
+    if (response.success && response.data) {
+      wgEndpoint = response.data;
+      showEndpointModal = false;
+      await loadWireGuardServer();
+      notifyVpn(translate('vpn.endpoint_saved'));
+    } else {
+      endpointError = response.message || response.error || translate('vpn.endpoint_failed');
     }
   }
 
@@ -672,6 +715,37 @@
     </div>
 
     {#if activeTab === 'wireguard'}
+      <!-- Public endpoint: manual override, then DDNS, then the detected IP. -->
+      <div
+        data-testid="vpn-endpoint-card"
+        class="px-4 py-3 rounded-xl bg-[var(--hv-shell-card)] border border-[var(--hv-shell-border)] mb-4"
+      >
+        <div class="flex items-center gap-3 flex-wrap">
+          <span class={detailLabel}>{$t('vpn.server_endpoint')}</span>
+          <span data-testid="vpn-endpoint-value" class={detailMono}>
+            {wgEndpoint?.endpoint_host
+              ? `${wgEndpoint.endpoint_host}:${wgServer?.listen_port ?? 51820}`
+              : $t('vpn.endpoint_unset')}
+          </span>
+          {#if wgEndpoint}
+            <span
+              data-testid="vpn-endpoint-source"
+              class="px-2 py-0.5 rounded-full border border-[var(--hv-shell-border)] text-c-xs text-[var(--hv-shell-text-2)]"
+            >
+              {$t(`vpn.endpoint_source_${wgEndpoint.endpoint_source}`)}
+            </span>
+          {/if}
+          <Button variant="ghost" onclick={openEndpointModal} data-testid="vpn-endpoint-edit">
+            {$t('vpn.endpoint_edit')}
+          </Button>
+        </div>
+        {#if wgEndpoint?.endpoint_warning}
+          <p class="m-0 mt-2 text-c-xs text-[var(--hv-warning)]" data-testid="vpn-endpoint-warning">
+            {$t(wgEndpoint.endpoint_host ? 'vpn.endpoint_warning_private' : 'vpn.endpoint_warning_unset')}
+          </p>
+        {/if}
+      </div>
+
       {#if wgServer}
         <div class="flex items-center gap-3 flex-wrap px-4 py-3 rounded-xl bg-[var(--hv-shell-card)] border border-[var(--hv-shell-border)] mb-4">
           <span class="flex items-center gap-2 text-sm font-semibold text-[var(--hv-shell-text-strong)]">
@@ -913,6 +987,35 @@
   </div>
   {#snippet footer()}
     <div class="flex justify-end"><Button variant="primary" onclick={() => { showPeerConfigModal = false; configPeerConfig = ''; configPeerQrDataUrl = ''; }}>{$t('vpn.close')}</Button></div>
+  {/snippet}
+</Modal>
+
+<!-- Public endpoint: manual override, or automatic (DDNS then public IP). -->
+<Modal open={showEndpointModal} title={$t('vpn.endpoint_title')} size="sm" onclose={() => (showEndpointModal = false)}>
+  <div class="flex flex-col gap-1.5">
+    <label for="wg-endpoint-host" class="text-c-label font-semibold text-[var(--hv-shell-text-strong)]">{$t('vpn.endpoint_field')}</label>
+    <input
+      id="wg-endpoint-host"
+      class="w-full h-11 px-3 border border-[var(--hv-shell-border-strong)] rounded-lg bg-[var(--hv-shell-border-soft)] text-sm outline-none focus:border-[var(--hv-primary)]"
+      type="text"
+      bind:value={endpointDraft}
+      placeholder="home.example.com"
+      data-testid="vpn-endpoint-input"
+    />
+    <span class="text-c-xs text-[var(--hv-shell-text-2)]">{$t('vpn.endpoint_hint')}</span>
+    {#if endpointError}
+      <p role="alert" class="m-0 text-c-xs text-[var(--hv-error)]" data-testid="vpn-endpoint-error">
+        {$t('vpn.endpoint_failed')}
+      </p>
+    {/if}
+  </div>
+  {#snippet footer()}
+    <div class="flex gap-2.5 justify-end">
+      <Button variant="ghost" onclick={() => saveEndpoint('')} disabled={endpointSaving}>{$t('vpn.endpoint_automatic')}</Button>
+      <Button variant="primary" onclick={() => saveEndpoint(endpointDraft)} disabled={endpointSaving} data-testid="vpn-endpoint-save">
+        {endpointSaving ? $t('vpn.endpoint_saving') : $t('vpn.endpoint_save')}
+      </Button>
+    </div>
   {/snippet}
 </Modal>
 

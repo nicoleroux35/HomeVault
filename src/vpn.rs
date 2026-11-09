@@ -326,20 +326,130 @@ pub struct WireGuardServerInfo {
     pub public_key: String,
     pub listen_port: u16,
     pub endpoint_host: Option<String>,
+    /// Where `endpoint_host` came from: `manual`, `ddns`, `public_ip`, `unset`.
+    pub endpoint_source: String,
+    /// A sentence when the endpoint is unset or only reachable on the LAN.
+    pub endpoint_warning: Option<String>,
     pub running: bool,
+}
+
+/// The admin's endpoint override. Empty means "automatic" (DDNS, then the
+/// detected public IP), so a home user never has to type an address unless
+/// the automatic value is wrong.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct WgEndpointConfig {
+    #[serde(default)]
+    pub host: String,
+}
+
+fn endpoint_config_path() -> std::path::PathBuf {
+    crate::config::paths::data_dir().join("wg_endpoint.json")
+}
+
+pub fn load_endpoint_config() -> WgEndpointConfig {
+    std::fs::read_to_string(endpoint_config_path())
+        .ok()
+        .and_then(|raw| serde_json::from_str::<WgEndpointConfig>(&raw).ok())
+        .unwrap_or_default()
+}
+
+/// Persists the override atomically. An empty host clears it.
+pub fn save_endpoint_config(host: &str) -> Result<(), String> {
+    let path = endpoint_config_path();
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    let body = serde_json::to_vec_pretty(&WgEndpointConfig {
+        host: host.trim().to_string(),
+    })
+    .map_err(|e| e.to_string())?;
+    let tmp = path.with_extension("json.tmp");
+    std::fs::write(&tmp, body).map_err(|e| e.to_string())?;
+    std::fs::rename(&tmp, &path).map_err(|e| e.to_string())
+}
+
+/// A public endpoint is either a bare DNS name (same rules as DDNS) or an
+/// IPv4/IPv6 address. Schemes, ports and paths are refused so the value can
+/// be spliced into `Endpoint = <host>:<port>` without ambiguity.
+pub fn validate_endpoint_host(raw: &str) -> Result<String, String> {
+    let value = raw.trim();
+    if value.is_empty() {
+        return Ok(String::new());
+    }
+    if value.parse::<std::net::Ipv4Addr>().is_ok()
+        || value.parse::<std::net::Ipv6Addr>().is_ok()
+    {
+        return Ok(value.to_string());
+    }
+    crate::ddns::validate_hostname(value)
+}
+
+fn is_private_ip(ip: std::net::IpAddr) -> bool {
+    match ip {
+        std::net::IpAddr::V4(v4) => {
+            v4.is_private()
+                || v4.is_loopback()
+                || v4.is_link_local()
+                || v4.octets()[0] == 100 && (64..=127).contains(&v4.octets()[1])
+        }
+        std::net::IpAddr::V6(v6) => {
+            v6.is_loopback()
+                || (v6.segments()[0] & 0xfe00) == 0xfc00
+                || (v6.segments()[0] & 0xffc0) == 0xfe80
+        }
+    }
+}
+
+/// The sentence shown under the endpoint. `None` when the value is a DNS name
+/// or a public address (we cannot prove reachability, but there is nothing
+/// obviously wrong to warn about).
+pub fn endpoint_warning(host: Option<&str>) -> Option<String> {
+    let Some(host) = host.map(str::trim).filter(|value| !value.is_empty()) else {
+        return Some(
+            "No public endpoint is known yet: set a dynamic DNS name or enter your public IP so phones and laptops can reach this server."
+                .to_string(),
+        );
+    };
+    if let Ok(ip) = host.parse::<std::net::IpAddr>() {
+        if is_private_ip(ip) {
+            return Some(
+                "This endpoint is a private, LAN or CGNAT address: it only works inside your network. Use a dynamic DNS name or a public IP for remote access."
+                    .to_string(),
+            );
+        }
+    }
+    None
+}
+
+/// Resolves the endpoint used in peer configs, in order: manual override,
+/// the configured DDNS hostname, the detected public IP.
+pub async fn resolve_endpoint() -> (Option<String>, String) {
+    let manual = load_endpoint_config().host;
+    if !manual.trim().is_empty() {
+        return (Some(manual), "manual".to_string());
+    }
+    let ddns = crate::ddns::load_settings();
+    if ddns.enabled && !ddns.hostname.trim().is_empty() {
+        return (Some(ddns.hostname), "ddns".to_string());
+    }
+    match crate::network::discover_public_ip().await {
+        Some(ip) => (Some(ip.to_string()), "public_ip".to_string()),
+        None => (None, "unset".to_string()),
+    }
 }
 
 pub async fn get_wireguard_server_status() -> Result<WireGuardServerInfo, String> {
     let public_key = read_server_public_key()?;
     let running = is_wireguard_server_running();
-    let endpoint_host = crate::network::discover_public_ip()
-        .await
-        .map(|ip| ip.to_string());
+    let (endpoint_host, endpoint_source) = resolve_endpoint().await;
+    let endpoint_warning = endpoint_warning(endpoint_host.as_deref());
 
     Ok(WireGuardServerInfo {
         public_key,
         listen_port: WG_SERVER_PORT,
         endpoint_host,
+        endpoint_source,
+        endpoint_warning,
         running,
     })
 }
@@ -2188,6 +2298,8 @@ mod tests {
             public_key: "SERVERPUBKEY=".to_string(),
             listen_port: 51820,
             endpoint_host: Some("vpn.example.com".to_string()),
+            endpoint_source: "manual".to_string(),
+            endpoint_warning: None,
             running: true,
         };
         let config = build_client_config("PEERPRIVKEY=", "10.8.0.2", &server, "PSK=");
@@ -2207,6 +2319,8 @@ mod tests {
             public_key: "SERVERPUBKEY=".to_string(),
             listen_port: 51820,
             endpoint_host: None,
+            endpoint_source: "unset".to_string(),
+            endpoint_warning: Some("unset".to_string()),
             running: true,
         };
         let config = build_client_config("PEERPRIVKEY=", "10.8.0.5", &server, "PSK=");
@@ -2688,5 +2802,41 @@ cipher AES-256-GCM\nauth-user-pass\nverb 3\n";
         // The daemon start must sit above the parent's own grace, or the
         // verification loop could outlive the deadline that killed it.
         assert!(VPN_WRITE_TIMEOUT >= OPENVPN_START_GRACE);
+    }
+
+    #[test]
+    fn test_validate_endpoint_host_accepts_ip_and_dns_names() {
+        assert_eq!(validate_endpoint_host("").unwrap(), "");
+        assert_eq!(
+            validate_endpoint_host("203.0.113.7").unwrap(),
+            "203.0.113.7"
+        );
+        assert_eq!(
+            validate_endpoint_host("2001:db8::1").unwrap(),
+            "2001:db8::1"
+        );
+        assert_eq!(
+            validate_endpoint_host("Home.Example.com").unwrap(),
+            "home.example.com"
+        );
+        // A scheme or a port would be spliced into `Endpoint = host:port` and
+        // produce an unreachable config.
+        assert!(validate_endpoint_host("https://home.example.com").is_err());
+        assert!(validate_endpoint_host("home.example.com:51820").is_err());
+        assert!(validate_endpoint_host("not a host").is_err());
+    }
+
+    #[test]
+    fn test_endpoint_warning_flags_unset_and_private_addresses() {
+        assert!(endpoint_warning(None).is_some());
+        assert!(endpoint_warning(Some("")).is_some());
+        assert!(endpoint_warning(Some("192.168.1.10")).is_some());
+        assert!(endpoint_warning(Some("10.0.0.5")).is_some());
+        assert!(endpoint_warning(Some("100.64.0.1")).is_some()); // CGNAT
+        assert!(endpoint_warning(Some("127.0.0.1")).is_some());
+        assert!(endpoint_warning(Some("fd00::1")).is_some());
+        // A public IP or a DNS name is not obviously wrong.
+        assert!(endpoint_warning(Some("203.0.113.7")).is_none());
+        assert!(endpoint_warning(Some("home.example.com")).is_none());
     }
 }

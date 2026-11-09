@@ -372,6 +372,70 @@ pub async fn handle_wg_server_status(
 }
 
 /// GET /api/vpn/wireguard/peers - List provisioned peers with live status.
+/// `GET /api/vpn/wireguard/endpoint` — the public endpoint peer configs use.
+///
+/// Independent of the server key, so the card can show (and warn about) the
+/// endpoint before the first peer creates the server.
+pub async fn handle_wg_endpoint_get(
+    State(state): State<AppStateArc>,
+    headers: HeaderMap,
+) -> HandlerResult {
+    let _username = guard_admin(&state, &headers).await?;
+    let (endpoint_host, endpoint_source) = vpn_mod::resolve_endpoint().await;
+    let endpoint_warning = vpn_mod::endpoint_warning(endpoint_host.as_deref());
+    Ok(Json(ApiSuccess {
+        success: true,
+        message: None,
+        data: Some(serde_json::json!({
+            "endpoint_host": endpoint_host,
+            "endpoint_source": endpoint_source,
+            "endpoint_warning": endpoint_warning,
+        })),
+    }))
+}
+
+/// Body for `PUT /api/vpn/wireguard/endpoint`.
+#[derive(Debug, Deserialize)]
+pub struct WgEndpointRequest {
+    /// Empty clears the override and returns to automatic (DDNS, then the
+    /// detected public IP).
+    pub host: String,
+}
+
+/// `PUT /api/vpn/wireguard/endpoint` — set or clear the manual override.
+pub async fn handle_wg_endpoint_update(
+    State(state): State<AppStateArc>,
+    headers: HeaderMap,
+    Json(request): Json<WgEndpointRequest>,
+) -> HandlerResult {
+    let username = guard_admin(&state, &headers).await?;
+    let host = vpn_mod::validate_endpoint_host(&request.host)
+        .map_err(|e| err(axum::http::StatusCode::BAD_REQUEST, e))?;
+    vpn_mod::save_endpoint_config(&host)
+        .map_err(|e| err(axum::http::StatusCode::INTERNAL_SERVER_ERROR, e))?;
+    crate::events::log_event(format!(
+        "Admin '{}' set the WireGuard public endpoint to '{}'",
+        username,
+        if host.is_empty() { "automatic" } else { &host }
+    ));
+
+    let (endpoint_host, endpoint_source) = vpn_mod::resolve_endpoint().await;
+    let endpoint_warning = vpn_mod::endpoint_warning(endpoint_host.as_deref());
+    Ok(Json(ApiSuccess {
+        success: true,
+        message: Some(if host.is_empty() {
+            "Public endpoint reset to automatic".to_string()
+        } else {
+            format!("Public endpoint set to {host}")
+        }),
+        data: Some(serde_json::json!({
+            "endpoint_host": endpoint_host,
+            "endpoint_source": endpoint_source,
+            "endpoint_warning": endpoint_warning,
+        })),
+    }))
+}
+
 pub async fn handle_wg_peers_list(
     State(state): State<AppStateArc>,
     headers: HeaderMap,
@@ -958,6 +1022,11 @@ pub fn create_vpn_router(state: AppStateArc) -> Router {
         .route(
             "/wireguard/server",
             axum::routing::get(handle_wg_server_status),
+        )
+        // Public endpoint (DDNS / manual / detected), independent of the key.
+        .route(
+            "/wireguard/endpoint",
+            axum::routing::get(handle_wg_endpoint_get).put(handle_wg_endpoint_update),
         )
         .route("/wireguard/peers", axum::routing::get(handle_wg_peers_list))
         .route(

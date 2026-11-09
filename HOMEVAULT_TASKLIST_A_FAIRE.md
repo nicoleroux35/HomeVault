@@ -125,6 +125,7 @@ justifie.
 | **P1-30** | Mises à jour Docker planifiées/auto — livré 2026‑11‑09 | P1 | S/M | Hygiène de patch |
 | **P1-31** | Unifier les tâches planifiées (type `service`) — livré 2026‑11‑09 | P1 | S/M | Un seul moteur |
 | **P1-32** | Historique/alertes quotas + export Journal — livré 2026‑11‑09 | P1 | S | Visibilité sans surveillance |
+| **P1-33** | WireGuard UX (QR, 1‑clic, endpoint DDNS) — livré 2026‑11‑09 | P1 | S/M | Accès distant simple |
 | **P2-1** | SMB AD/Kerberos complet (winbind, realm, idmap, keytab) — **gelé au partiel** (config ADS + join/leave ; DC réel seulement si cible entreprise) | P2 | L | Entreprise Windows |
 | **P2-2** | NFSv4 + Kerberos (`sec=krb5`) — **gelé au partiel** (flavor + validation keytab ; KDC réel seulement si cible entreprise) | P2 | L | Entreprise Unix |
 | **P2-3** | Thin provisioning — **gelé au partiel** (zvols ZFS thin/thick ; overcommit/LVM rejetés) | P2 | L | Sur‑allocation |
@@ -1678,6 +1679,20 @@ l'écran, CSV ou JSON, 5 000 entrées). Tests : 2 unitaires quotas + 2 Journal,
 2 d'intégration, E2E Quotas 4.4 / Journal 3.1b — écrits, non exécutés. Docs :
 `docs/guides/transfer-quotas.md`, `docs/guides/journal.md`, `docs/API.md`,
 `PRIVACY.md` (RoPA ligne 17), FeatureDocs `quotas`/`journal`.
+
+### [x] P1-33 — WireGuard UX (QR, 1‑clic, DDNS) · S/M
+
+**Livré 2026‑11‑09.** Les configs de pairs (et leurs QR codes, déjà livrés)
+utilisent désormais un **endpoint public résolu** dans cet ordre : override
+manuel de l'admin (`data/wg_endpoint.json`), nom **DNS dynamique** configuré,
+puis IP publique détectée. `GET/PUT /api/vpn/wireguard/endpoint` expose
+`endpoint_host`, `endpoint_source` (`manual`/`ddns`/`public_ip`/`unset`) et
+`endpoint_warning`. La carte VPN affiche la valeur et sa source, et avertit
+quand elle est absente ou privée/LAN/CGNAT — le cas où une config qui semble
+valide ne fonctionne qu'en intérieur. Tests : 2 unitaires (`src/vpn.rs`),
+1 d'intégration (`tests/vpn_integration.rs`), E2E VPN 1.5 — écrits, non
+exécutés. Docs : `docs/guides/vpn.md`, `docs/API.md`, `SCREENS.md`, FeatureDoc
+`vpn`.
 
 ---
 

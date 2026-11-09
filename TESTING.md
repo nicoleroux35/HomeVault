@@ -1,5 +1,18 @@
 # HomeVault — Test tracking
 
+## P1 WireGuard remote-access UX — 2026-11-09 (not run)
+
+> **Instruction followed: no test command was executed for this change.**
+> Static checks passed: `cargo check --lib`, `cargo check --tests`,
+> `cd frontend && npm run check` and `npm run build`.
+
+| Coverage | Added / changed |
+|---|---|
+| Unit (`src/vpn.rs`) | **+2** — endpoint host validation (IPv4/IPv6/DNS accepted, scheme/port refused); the warning matrix (unset, RFC 1918, CGNAT, loopback, IPv6 ULA/link-local, public IP/DNS) |
+| Integration (`tests/vpn_integration.rs`) | **+1** — GET/PUT admin gate, invalid value `400`, manual override persists, clearing returns to automatic (env public IP), a LAN address is accepted and warned |
+| E2E (`tests/e2e/vpn/vpn.spec.ts`) | **+1** — 1.5 the endpoint card resolves, shows the source badge, and Change opens the editor |
+| Docs | `docs/guides/vpn.md`, `docs/API.md`, `SCREENS.md`, `CHANGELOG.md`, RAG `vpn` FeatureDoc, `HOMEVAULT_TASKLIST_A_FAIRE.md` (P1-33), `COMPARAISON_DSM_VS_HOMEVAULT.md` |
+
 ## P1 quota history/alerts + Journal export — 2026-11-09 (not run)
 
 > **Instruction followed: no test command was executed for this change.**

@@ -1269,6 +1269,7 @@ engine in `src/vpn.rs`; full semantics in [guides/vpn.md](./guides/vpn.md).
 | GET | `/connections` | legacy flat list — `{connections: [...]}` |
 | GET | `/connections/{id}` | `{connection}` |
 | GET | `/wireguard/server` | server status; **provisions `wg0` on first call** (`10.8.0.1/24`, port 51820) |
+| GET/PUT | `/wireguard/endpoint` | admin | public endpoint used in peer configs: resolved (manual → DDNS → detected public IP) or set/cleared (`{host}`) — returns `endpoint_host`, `endpoint_source`, `endpoint_warning` |
 | GET | `/wireguard/peers` | provisioned devices + live handshake status (`connected` = handshake < 180 s) |
 | POST | `/wireguard/peers` | add device — `{name}` only; response carries the one `client_config` |
 | GET | `/wireguard/peers/{id}/config` | re-display the device's client config/QR (keys stored per migration 026) |

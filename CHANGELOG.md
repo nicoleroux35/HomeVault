@@ -8,6 +8,16 @@ follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **WireGuard remote-access UX (2026-11-09, P1).** Peer configs (and their QR
+  codes, already shipped) now use a public endpoint resolved in order: a manual
+  admin override, the configured Dynamic DNS hostname, then the detected public
+  IP. The VPN card shows the value and its source and warns when it is unset or
+  a private/LAN/CGNAT address, so a config that looks valid but only works
+  indoors is called out before a device is created.
+  `GET/PUT /api/vpn/wireguard/endpoint`; the override persists in
+  `data/wg_endpoint.json`. Tests: 2 unit, 1 integration, VPN E2E 1.5 (written,
+  not run).
+
 - **Quota usage history, 90% alerts, and Journal export (2026-11-09, P1).**
   An hourly sampler stores transfer-quota usage in `transfer_quota_history`
   (migration 088, 90-day retention) and raises one system notification when a

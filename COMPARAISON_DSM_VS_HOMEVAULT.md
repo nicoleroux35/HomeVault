@@ -80,7 +80,7 @@ cas de désaccord avec le backlog, `HOMEVAULT_TASKLIST_A_FAIRE.md` §1bis gagne.
 |---|---|---|---|
 | **Dashboard** | Bureau DSM / Info Center | ✅ | Widget sauvegarde/scrub/UPS et alerte unifiée ; le reste est au niveau |
 | **Network** | Control Panel > Réseau | 🟡 | DHCPv6‑PD/RA, OVS, modes de bond (2 seulement), PPPoE (rejeté volontairement). Routes statiques, proxy, diagnostic : faits |
-| **VPN** | VPN Server + VPN Client | 🟡 | **Serveur OpenVPN absent** (seul le client existe), L2TP/IPSec, site‑à‑site. WireGuard serveur + client : faits |
+| **VPN** | VPN Server + VPN Client | ✅ / ⭐ | WireGuard serveur + client, **QR code et configuration 1‑clic**, **endpoint résolu manuel → DDNS → IP publique avec avertissement LAN/CGNAT** (P1‑33). Serveur OpenVPN/L2TP volontairement absents |
 | **Traffic control** | Control Panel > Trafic | 🟡 | Classification par app/protocole, DSCP, shaping entrant (aujourd'hui egress seulement) |
 | **Docker** | Container Manager | ⭐ / ✅ | Mises à jour planifiées/auto, graphiques ressources, compose (fait), registries privés (fait), exec/logs (fait) |
 | **Virtual Machines** | Virtual Machine Manager | 🟡 | Export/import OVA, migration à chaud, HA, switches virtuels, passthrough USB/PCI. Clone, snapshots, VNC, cloud‑init : faits |
@@ -295,6 +295,9 @@ PHP 8.1/Redis 4.0.
   horaire, alerte au franchissement de 90 %, purge 90 j), migration `088`,
   `GET /api/transfer-quotas/history`, `GET /api/journal/export` et bouton
   *Export CSV* (P1‑32)
+- **WireGuard UX** : `WgEndpointConfig` + `resolve_endpoint`/`endpoint_warning`
+  dans `src/vpn.rs`, `GET/PUT /api/vpn/wireguard/endpoint`, carte endpoint
+  dans VPN (P1‑33)
 - Catalogue : `catalog/*/homevault-app.toml` (15 apps)
 - Apps catalogue **non liées aux partages** : le compose ne binde que
   `/srv/apps/<app>` (`src/app_catalog/mod.rs:261-270`) — d'où le chantier
@@ -544,7 +547,21 @@ Journal — l'API les porte déjà.
 - Docs : `docs/guides/transfer-quotas.md`, `docs/guides/journal.md`,
   `docs/API.md`, `PRIVACY.md` (RoPA ligne 17), FeatureDocs `quotas`/`journal`.
 
+**P1‑33 — WireGuard UX (livré).**
+
+- Les configs de pairs (et leurs QR codes, déjà livrés) utilisent un
+  **endpoint public résolu** : override manuel (`data/wg_endpoint.json`), nom
+  **DNS dynamique** configuré, puis IP publique détectée.
+- `GET/PUT /api/vpn/wireguard/endpoint` expose `endpoint_host`,
+  `endpoint_source` (`manual`/`ddns`/`public_ip`/`unset`) et
+  `endpoint_warning`. La carte VPN affiche la valeur et sa source et avertit
+  quand elle est absente ou privée/LAN/CGNAT.
+- Tests écrits mais **non exécutés** : 2 unitaires (`src/vpn.rs`), 1
+  d'intégration (`tests/vpn_integration.rs`), E2E VPN 1.5.
+- Docs : `docs/guides/vpn.md`, `docs/API.md`, `SCREENS.md`, FeatureDoc `vpn`.
+
 **Reste sur P2‑9** : le test de reconstruction complète sur une VM jetable
 (boot, installation, restauration DB + configuration + données, vérification)
-et, si la cible le justifie, une image système équivalente à `md0`. Le dernier
-P1 de l'ordre reste : WireGuard UX.
+et, si la cible le justifie, une image système équivalente à `md0`. **Tous les
+P1 de l'ordre sont désormais livrés** ; restent les P2 (profondeur stockage,
+média, etc.) et les finitions P1‑18/P2‑7/P2‑8.

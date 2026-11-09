@@ -210,6 +210,19 @@ test.describe('1 — Page load', () => {
     if ((await tiles.count()) === 0) test.skip(true, 'no WireGuard/OpenVPN support on this host');
     await expect(tiles).toHaveCount(4);
   });
+
+  test('1.5 — the public endpoint card resolves and opens its editor', async ({ page }) => {
+    await gotoVpn(page, adminTokens);
+    const card = win(page).locator('[data-testid="vpn-endpoint-card"]');
+    if ((await card.count()) === 0) test.skip(true, 'WireGuard not available on this host');
+    await expect(card).toBeVisible();
+    await expect(card.locator('[data-testid="vpn-endpoint-value"]')).not.toBeEmpty();
+    await expect(card.locator('[data-testid="vpn-endpoint-source"]')).toBeVisible();
+    await card.locator('[data-testid="vpn-endpoint-edit"]').click();
+    await expect(page.locator('[data-testid="vpn-endpoint-input"]')).toBeVisible();
+    // Do not save: this suite must not change the host's endpoint.
+    await page.keyboard.press('Escape');
+  });
 });
 
 // ===========================================================================

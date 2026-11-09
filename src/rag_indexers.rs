@@ -698,7 +698,10 @@ Turning HTTPS on redirects plain-HTTP visitors to it by default, so the password
             id: "vpn".to_string(),
             title: "VPN Management".to_string(),
             content: r#"Manage VPN connections:
-- WireGuard server: create roadwarrior peers, manage tunnels
+- WireGuard server: create roadwarrior peers, manage tunnels; the public
+  endpoint is resolved from a manual override, then your Dynamic DNS name,
+  then the detected public IP, and the card warns when it is unset or a
+  private/CGNAT address
 - WireGuard client: import a provider .conf (file or paste), optional kill switch, connect at boot
 - OpenVPN: import/manage client profiles
 - VPN status monitoring

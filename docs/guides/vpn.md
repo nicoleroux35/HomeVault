@@ -210,15 +210,26 @@ means "not running"). A source guard
 `.output()`/`.spawn()`/`.status()`/`wait_with_output()` comes back, and requires
 `run_timed_detached(` to stay in the daemon path.
 
-## Public endpoint detection
+## Public endpoint detection (P1, 2026-11-09)
 
-The server card and the generated client configs embed the detected public
-IPv4 (`discover_public_ip` in `src/network.rs`: `HOMEVAULT_PUBLIC_IP` env
-override, else three echo endpoints `api.ipify.org` / `ifconfig.me` /
-`icanhazip.com`). A hit is cached **15 min**, a miss **60 s**
-(`PublicIpCache`), so status polls and peer provisioning no longer mean an
-external HTTPS request per page view. When nothing resolves, the client
-config ships the `YOUR-SERVER-IP` placeholder the admin must replace.
+Peer configs embed the endpoint a phone or laptop dials. It is resolved in
+this order:
+
+1. a **manual override** saved by an admin (`data/wg_endpoint.json`) — a DNS
+   name or an IPv4/IPv6 address, validated before it is stored;
+2. the **Dynamic DNS hostname** when DDNS is enabled in Settings;
+3. the **detected public IPv4** (`discover_public_ip` in `src/network.rs`:
+   `HOMEVAULT_PUBLIC_IP` env override, else three echo endpoints
+   `api.ipify.org` / `ifconfig.me` / `icanhazip.com`; a hit is cached **15
+   min**, a miss **60 s**).
+
+`GET /api/vpn/wireguard/endpoint` returns `endpoint_host`, `endpoint_source`
+(`manual`/`ddns`/`public_ip`/`unset`) and `endpoint_warning`; `PUT` sets or
+clears the override. The VPN card shows the value and its source, and warns
+when the value is unset or a private/LAN/CGNAT address — the case where a
+config that looks valid cannot work from outside. The generated config keeps
+the `YOUR-SERVER-IP` placeholder as a last resort, but the warning is on
+screen before a peer is created.
 
 ## Invariants
 

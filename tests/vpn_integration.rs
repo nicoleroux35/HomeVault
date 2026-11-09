@@ -73,9 +73,9 @@ use homevault::handlers::{
         handle_openvpn_create, handle_openvpn_delete, handle_openvpn_start, handle_openvpn_stop,
         handle_vpn_capabilities, handle_vpn_get, handle_vpn_list, handle_wg_client_delete,
         handle_wg_client_import, handle_wg_client_start, handle_wg_client_stop,
-        handle_wg_client_update_autostart, handle_wg_clients_list, handle_wg_peer_config,
-        handle_wg_peer_create, handle_wg_peer_revoke, handle_wg_peers_list,
-        handle_wg_server_status,
+        handle_wg_client_update_autostart, handle_wg_clients_list, handle_wg_endpoint_get,
+        handle_wg_endpoint_update, handle_wg_peer_config, handle_wg_peer_create,
+        handle_wg_peer_revoke, handle_wg_peers_list, handle_wg_server_status,
     },
     AppState,
 };
@@ -135,6 +135,10 @@ fn vpn_router(state: Arc<AppState>) -> Router {
         .route("/api/vpn/connections", get(handle_vpn_list))
         .route("/api/vpn/connections/{id}", get(handle_vpn_get))
         .route("/api/vpn/wireguard/server", get(handle_wg_server_status))
+        .route(
+            "/api/vpn/wireguard/endpoint",
+            get(handle_wg_endpoint_get).put(handle_wg_endpoint_update),
+        )
         .route("/api/vpn/wireguard/peers", get(handle_wg_peers_list))
         .route("/api/vpn/wireguard/peers", post(handle_wg_peer_create))
         .route("/api/vpn/wireguard/peers/{id}", get(handle_wg_peer_config))
@@ -961,4 +965,106 @@ async fn test_wg_client_id_rejects_path_traversal() {
     )
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
+}
+
+/// P1: the public endpoint resolves automatically (DDNS → detected IP) but an
+/// admin can override it; a private/CGNAT value is accepted and warned about.
+#[tokio::test]
+async fn wireguard_endpoint_override_is_admin_only_and_validated() {
+    let (state, _tmp, _guard) = setup_state().await;
+    // Make automatic detection deterministic and offline.
+    std::env::set_var("HOMEVAULT_PUBLIC_IP", "203.0.113.7");
+    create_test_user(&state, "admin1", "Password123!", 2).await;
+    create_test_user(&state, "user1", "Password123!", 1).await;
+    let mut router = vpn_router(state);
+    let admin = login(&mut router, "admin1", "Password123!").await;
+    let user = login(&mut router, "user1", "Password123!").await;
+
+    let (status, _) = send(
+        &mut router,
+        Method::GET,
+        "/api/vpn/wireguard/endpoint",
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+
+    let (status, _) = send(
+        &mut router,
+        Method::GET,
+        "/api/vpn/wireguard/endpoint",
+        Some(&user),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+
+    let (status, body) = send(
+        &mut router,
+        Method::GET,
+        "/api/vpn/wireguard/endpoint",
+        Some(&admin),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["data"]["endpoint_host"], "203.0.113.7");
+    assert_eq!(body["data"]["endpoint_source"], "public_ip");
+    assert_eq!(body["data"]["endpoint_warning"], serde_json::Value::Null);
+
+    let (status, _) = send(
+        &mut router,
+        Method::PUT,
+        "/api/vpn/wireguard/endpoint",
+        Some(&admin),
+        Some(json!({"host": "https://home.example.com"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+
+    let (status, body) = send(
+        &mut router,
+        Method::PUT,
+        "/api/vpn/wireguard/endpoint",
+        Some(&admin),
+        Some(json!({"host": "vpn.example.com"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["data"]["endpoint_host"], "vpn.example.com");
+    assert_eq!(body["data"]["endpoint_source"], "manual");
+
+    let (_, body) = send(
+        &mut router,
+        Method::GET,
+        "/api/vpn/wireguard/endpoint",
+        Some(&admin),
+        None,
+    )
+    .await;
+    assert_eq!(body["data"]["endpoint_source"], "manual");
+
+    // Clearing returns to automatic.
+    let (_, body) = send(
+        &mut router,
+        Method::PUT,
+        "/api/vpn/wireguard/endpoint",
+        Some(&admin),
+        Some(json!({"host": ""})),
+    )
+    .await;
+    assert_eq!(body["data"]["endpoint_source"], "public_ip");
+
+    // A LAN address is accepted (useful on a home network) but warned about.
+    let (status, body) = send(
+        &mut router,
+        Method::PUT,
+        "/api/vpn/wireguard/endpoint",
+        Some(&admin),
+        Some(json!({"host": "192.168.1.10"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(body["data"]["endpoint_warning"].is_string());
 }

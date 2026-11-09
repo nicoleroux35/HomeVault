@@ -377,6 +377,7 @@ and in the Groups screen.
 **3 tabs:**
 
 ### WireGuard
+- **Public endpoint** card: resolved value, source badge (Manual / Dynamic DNS / Detected IP / Automatic), inline warning when unset or LAN/CGNAT, and a **Change** dialog (hostname/IP or "Use automatic")
 - Server status: public key, listening port, state
 - Peer (device) list: name, IP, creation date, status, last handshake
 - Device addition: config generation + QR code
