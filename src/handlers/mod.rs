@@ -94,6 +94,7 @@ pub mod network;
 pub mod notifications;
 pub mod oidc;
 pub mod remote_mounts;
+pub mod zfs_cache;
 pub mod openapi;
 pub mod passkey;
 pub mod password_policy;

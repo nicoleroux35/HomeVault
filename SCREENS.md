@@ -270,6 +270,11 @@ and in the Groups screen.
 - Move scheduling (cron, age)
 - Per-share cache mode
 - Move history
+- **ZFS read cache / separate log** card (admin): every ZFS pool with its
+  attached `L2ARC`/`SLOG` devices (state, error counters, detach), and an
+  *Attach* form (pool, role, disk). A spinning disk is listed but disabled with
+  the reason, and a host without `zpool` (or without a ZFS pool) says so
+  instead of offering a dead action
 
 ### Snapshots
 - Scheduled snapshots per pool **or per share** with cron and GFS retention

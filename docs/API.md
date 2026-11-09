@@ -1200,6 +1200,18 @@ still goes through the `/add` allowlist. A bounded per-feed `seen` marker
 later scheduled refresh should pick up. Feeds live in
 `data/downloader_feeds.json` (mode 0600).
 
+### `/zfs-cache` — L2ARC / SLOG (admin)
+
+| Method | Path | Notes |
+|--------|------|-------|
+| GET | `/zfs-cache` | `{ available, pools: [{ pool, state, devices: [{ device, kind: "l2arc"\|"slog", state, read_errors, write_errors, checksum_errors }] }], candidates: [{ name, size, model, rotational }] }`. `available: false` means `zpool` is missing; `candidates` only lists free whole disks |
+| POST | `/zfs-cache` | `{ pool, kind, device }` — attaches a cache/log vdev (`zpool add`). `400` when the pool is unknown or not ZFS, the device is not a free whole disk, the pool already has that vdev group, or the disk is spinning (an L2ARC/SLOG needs flash) |
+| POST | `/zfs-cache/remove` | `{ pool, device }` — detaches a cache/log vdev (`zpool remove`); refused unless the device is listed as a cache/log device of that pool |
+
+Both mutations are admin-only and journaled. The device path is validated as an
+absolute `/dev/…` path (one argv entry, no `..`/whitespace) and the sudoers
+grant covers only the `zpool add` / `zpool remove` subcommands.
+
 ## Snapshots
 
 > The standalone `/snapshots/{pool}` endpoints and `src/handlers/snapshots.rs`

@@ -1483,6 +1483,11 @@ impl StorageBins<'_> {
         vec![
             grant(self.zpool, "create *"),
             grant(self.zpool, "destroy *"),
+            // ZFS read cache / separate log (Cache app): attach and detach a
+            // cache/log vdev only — this subcommand cannot create a pool or
+            // move data.
+            grant(self.zpool, "add *"),
+            grant(self.zpool, "remove *"),
             // Bare `import` lists importable pools; the two-argument form
             // imports (and optionally renames) one.
             grant(self.zpool, "import"),
@@ -2434,6 +2439,8 @@ mod tests {
         for sub in [
             "create *",
             "destroy *",
+            "add *",
+            "remove *",
             "import",
             "import *",
             "list *",

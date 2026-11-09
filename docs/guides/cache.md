@@ -198,6 +198,51 @@ The mover runs live over SSE (`JobType::CacheMover`, surfaced in the UI via
 `api.subscribeToProgress`) and posts a system notification (category `cache`)
 on completion/failure, reusing the shared `NotificationRepository`.
 
+## ZFS read cache and separate log (L2ARC / SLOG) — P2, 2026-11-09
+
+The **Cache tier** above is a HomeVault invention: a whole pool used as a write
+buffer, drained to the target by a mover. The other half of DSM's "SSD cache"
+is a **ZFS-native vdev**: an L2ARC (read cache) or a SLOG (separate log)
+attached to an existing pool. It holds no data of its own, survives as long as
+the pool does without being listed as a pool, and is removed at any time
+without losing a byte. Both live in the same Cache tab, in their own card.
+
+| | L2ARC (`cache`) | SLOG (`log`) |
+|---|---|---|
+| What it accelerates | repeated random **reads** on a pool short on RAM | **sync writes** that must reach disk before they are acknowledged |
+| Command | `zpool add <pool> cache <dev>` | `zpool add <pool> log <dev>` |
+| Remove | `zpool remove <pool> <dev>` | same |
+| Failure impact | none: it is a cache, the pool keeps serving | a **non-mirrored** SLOG loses the last few seconds of sync writes if it dies |
+
+`src/zfs_cache.rs` parses `zpool status -P` (pure, unit-tested: sections,
+device rows, error counters, mirrored log groups) and `src/handlers/zfs_cache.rs`
+exposes:
+
+| Endpoint | Guard | Purpose |
+|---|---|---|
+| `GET /api/zfs-cache` | admin | every ZFS pool with its cache/log devices, plus the free disks that could be attached |
+| `POST /api/zfs-cache` | admin | `{ pool, kind: "l2arc"\|"slog", device }` |
+| `POST /api/zfs-cache/remove` | admin | `{ pool, device }` — refused unless the device really is a cache/log vdev of that pool |
+
+**Refusals (server-side, each with a sentence):**
+
+1. the pool must exist **and** be ZFS (`zpool add` on a Btrfs/mdadm pool is a
+   confusing failure, not a feature);
+2. the device must be a whole disk from the server's own inventory, not in
+   use, and not already a cache device of the pool;
+3. one `logs` group and one `cache` group at most — a second one is refused
+   rather than stacked;
+4. **a spinning disk is refused**: an L2ARC on an HDD makes the pool *slower*
+   (every miss costs a random read on the cache device), and a SLOG on an HDD
+   gains nothing. DSM lets the admin pick any disk; HomeVault states the rule
+   and the UI greys the disk out with the reason.
+
+The device path is one argv entry of `zpool add`/`remove`, so it is validated
+as an absolute `/dev/…` path with no `..`, whitespace or control character. The
+scope extension is the only sudoers change (`zpool add *`, `zpool remove *` —
+two subcommands, not a broader `zpool` grant), and both operations are
+journaled with the admin's name.
+
 ## Invariants
 
 - `cache_pool` in `cache_settings` is just a **pool name** string — there is no
@@ -234,6 +279,12 @@ on completion/failure, reusing the shared `NotificationRepository`.
   share's new active location.
 - The scheduler and every handler keep the same auth split as the rest of the
   Storage area (auth for reads, admin for mutations). Do not weaken it.
+- **L2ARC/SLOG are not data.** They may be detached at any moment (that is the
+  point), the UI must never present them as a pool, and `zpool remove` must be
+  refused for a device that is not listed as a cache/log vdev of that pool.
+- **A flash device only.** The refusal lives on the server, not only in the
+  greyed-out option: a direct API call with a spinning disk is refused with the
+  reason.
 
 ## Verified
 

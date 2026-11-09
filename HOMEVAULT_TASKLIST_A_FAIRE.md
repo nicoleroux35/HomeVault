@@ -129,6 +129,7 @@ justifie.
 | **P1-34** | Intégration média (partage + transcodage matériel) — livré 2026‑11‑09 | P1 | M | Le besoin n°1 d'un NAS familial |
 | **P1-35** | Explorer : emplacements réseau CIFS/NFS + versions Btrfs — livré 2026‑11‑09 | P1 | M | Dernier écart avec File Station |
 | **P1-36** | Téléchargeur : RSS, planification, limites/tâche, extraction auto — livré 2026‑11‑09 | P1 | M | Dernier écart avec Download Station |
+| **P2-16** | Cache SSD ZFS L2ARC/SLOG — livré 2026‑11‑09 | P2 | M | Accélération opt‑in sur SSD |
 | **P2-1** | SMB AD/Kerberos complet (winbind, realm, idmap, keytab) — **gelé au partiel** (config ADS + join/leave ; DC réel seulement si cible entreprise) | P2 | L | Entreprise Windows |
 | **P2-2** | NFSv4 + Kerberos (`sec=krb5`) — **gelé au partiel** (flavor + validation keytab ; KDC réel seulement si cible entreprise) | P2 | L | Entreprise Unix |
 | **P2-3** | Thin provisioning — **gelé au partiel** (zvols ZFS thin/thick ; overcommit/LVM rejetés) | P2 | L | Sur‑allocation |
@@ -2055,6 +2056,31 @@ restent externes ; ne pas investir sans scénario multi-site réel.*
   témoin (ou un verrou S3) empêche les deux nœuds de se croire actifs.
 - Dépend de P1-26 (réplication vérifiée). Ne pas livrer sans scénario
   split‑brain testé et procédure de recovery.
+
+### [x] P2-16 — Cache SSD ZFS L2ARC / SLOG · M
+
+**Livré 2026‑11‑09.** L'autre moitié du « cache SSD » de DSM, à côté du cache
+tier (pool d'écriture + mover) déjà livré : un vdev **L2ARC** (cache de
+lecture) ou **SLOG** (journal séparé) attaché à un pool ZFS existant.
+
+- `src/zfs_cache.rs` : parseur **pur** de `zpool status -P` (sections
+  `logs`/`cache`, lignes d'appareil, compteurs d'erreurs, groupe log miroir),
+  validation du chemin (`/dev/…`, un seul argument argv, sans `..` ni espace),
+  argv `zpool add`/`remove`.
+- `src/handlers/zfs_cache.rs` : `GET /api/zfs-cache` (pools + appareils +
+  disques libres), `POST /api/zfs-cache`, `POST /api/zfs-cache/remove` — admin,
+  journalisés. Refus **nommés** : pool inconnu ou non‑ZFS, appareil inutilisé
+  absent de l'inventaire, second groupe `logs`/`cache`, et **disque
+  mécanique** (un L2ARC sur HDD ralentit le pool, un SLOG n'apporte rien).
+- Sudoers : exactement deux sous‑commandes de plus (`zpool add`, `zpool
+  remove`), pas une autorisation plus large.
+- UI : carte **Cache de lecture et journal séparé ZFS** dans l'onglet Cache
+  (état, erreurs, détachement, formulaire d'attache) ; un disque mécanique est
+  listé mais désactivé avec la raison.
+
+Tests : 8 unitaires, 3 d'intégration (**aucune commande `zpool` exécutée**),
+E2E Storage §14 — écrits, **non exécutés**. Docs : `docs/guides/cache.md`,
+`docs/API.md`, `SCREENS.md`, FeatureDoc `cache`.
 
 ---
 

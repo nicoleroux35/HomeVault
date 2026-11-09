@@ -8,6 +8,22 @@ follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **ZFS read cache and separate log (L2ARC / SLOG) (2026-11-09, P2).** The
+  other half of DSM's SSD cache, next to HomeVault's existing write-cache tier:
+  an L2ARC or SLOG vdev attached to an existing ZFS pool, from the Cache tab.
+  - `GET/POST /api/zfs-cache` and `POST /api/zfs-cache/remove` (admin): list
+    each pool's cache/log devices with their state and error counters, attach a
+    free disk, detach one;
+  - `zpool status -P` is parsed by a pure, unit-tested function (sections,
+    device rows, mirrored log groups);
+  - the server refuses a **spinning disk** (an L2ARC on an HDD makes the pool
+    slower, a SLOG gains nothing), a device in use, a second vdev group, and a
+    pool that is not ZFS — each with a sentence the UI shows verbatim;
+  - the sudoers grant grows by exactly two subcommands (`zpool add`,
+    `zpool remove`), and both operations are journaled.
+  Tests: 8 unit, 3 integration (no `zpool` command is executed), Storage E2E
+  §14 (written, not run).
+
 - **Downloader: RSS subscriptions, per-task limits and automatic extraction
   (2026-11-09, P1).** The Download Station gap, filled with what the appliance
   already has (aria2 + the generic scheduled-task engine):

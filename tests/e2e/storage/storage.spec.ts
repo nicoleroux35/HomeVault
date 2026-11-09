@@ -481,6 +481,7 @@ test.describe('4 — Security', () => {
         ['put', '/api/cache/settings', { mover_enabled: true }],
         ['post', '/api/cache/shares', { name: 'x', cache_mode: 'yes', target_pool: 'p' }],
         ['post', '/api/cache/mover/run', {}],
+        ['post', '/api/zfs-cache', { pool: 'tank', kind: 'l2arc', device: '/dev/sdb' }],
         ['post', '/api/encryption/volumes', { device: '/dev/x', filesystem: 'ext4', label: 'l', passphrase: 'correct-horse-battery' }],
         [
           'post',
@@ -1255,5 +1256,64 @@ test.describe('14 — Scrub status & foreign-pool import', () => {
       snapshot: 'hv-auto-20261105-030000',
       confirm: true,
     });
+  });
+});
+
+// ===========================================================================
+// 14 — ZFS read cache / separate log (L2ARC / SLOG)
+//
+// The suite never attaches or detaches a vdev (that would run `zpool add` as
+// root on the host). It proves the card exists, that the host's own state is
+// reported honestly (no `zpool`, no ZFS pool), and that a spinning disk is
+// either absent from the list or disabled with its reason.
+// ===========================================================================
+
+test.describe('14 — ZFS read cache / separate log', () => {
+  test('14.1 — the card reports the host state instead of offering a dead action', async ({
+    page,
+  }) => {
+    await gotoStorage(page, adminTokens);
+    await switchTab(page, /cache|caché|zwischenspeicher|caché/i);
+
+    const card = win(page).locator('[data-testid="storage-zfs-cache-card"]');
+    await expect(card).toBeVisible({ timeout: 8_000 });
+
+    // Exactly one of the three states: no zpool, no ZFS pool, or a pool list
+    // with the attach form. Never an enabled "Attach" with nothing to attach.
+    const unavailable = card.locator('[data-testid="storage-zfs-cache-unavailable"]');
+    const none = card.locator('[data-testid="storage-zfs-cache-none"]');
+    const pools = card.locator('[data-testid="storage-zfs-cache-pools"]');
+    const states =
+      (await unavailable.count()) + (await none.count()) + (await pools.count());
+    expect(states).toBe(1);
+
+    if ((await pools.count()) === 0) return;
+
+    // A pool is listed with its role selector and the disk picker; no device
+    // is preselected, so Attach stays disabled until the admin chooses one.
+    await expect(card.locator('[data-testid="storage-zfs-cache-kind"]')).toBeVisible();
+    const device = card.locator('[data-testid="storage-zfs-cache-device"]');
+    await expect(device).toBeVisible();
+    await expect(device).toHaveValue('');
+    await expect(card.locator('[data-testid="storage-zfs-cache-attach"]')).toBeDisabled();
+  });
+
+  test('14.2 — the API refuses a role and a device it cannot use', async ({ page }) => {
+    await gotoStorage(page, adminTokens);
+
+    const badRole = await api(page, adminTokens, 'POST', '/api/zfs-cache', {
+      pool: 'tank',
+      kind: 'nvme',
+      device: '/dev/sdb',
+    });
+    expect(badRole.success).toBe(false);
+
+    const badDevice = await api(page, adminTokens, 'POST', '/api/zfs-cache', {
+      pool: 'tank',
+      kind: 'l2arc',
+      device: 'sdb',
+    });
+    expect(badDevice.success).toBe(false);
+    // A member is refused on every route: the 403 is covered by test 4.3.
   });
 });

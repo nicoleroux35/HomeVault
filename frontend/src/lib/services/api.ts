@@ -3743,6 +3743,41 @@ class ApiClient {
     return this.post('/cache/mover/run');
   }
 
+  // --- ZFS read cache / separate log (L2ARC / SLOG) ------------------------
+
+  /**
+   * Every ZFS pool with its attached cache/log devices, plus the free disks
+   * that could be attached. `available: false` means `zpool` is missing.
+   */
+  async getZfsCache() {
+    return this.get<{
+      available: boolean;
+      pools: Array<{
+        pool: string;
+        state: string;
+        devices: Array<{
+          device: string;
+          kind: 'l2arc' | 'slog';
+          state: string;
+          read_errors: number;
+          write_errors: number;
+          checksum_errors: number;
+        }>;
+      }>;
+      candidates: Array<{ name: string; size: number; model: string; rotational: boolean }>;
+    }>('/zfs-cache', { cache: false });
+  }
+
+  /** Attach a free flash disk as a read cache (`l2arc`) or separate log (`slog`). */
+  async attachZfsCache(payload: { pool: string; kind: 'l2arc' | 'slog'; device: string }) {
+    return this.post('/zfs-cache', payload);
+  }
+
+  /** Detach a cache/log device; the request cannot name a data disk. */
+  async detachZfsCache(payload: { pool: string; device: string }) {
+    return this.post('/zfs-cache/remove', payload);
+  }
+
   async getCacheMoverRuns() {
     return this.get<CacheMoverRun[]>('/cache/mover/runs', { cache: false });
   }

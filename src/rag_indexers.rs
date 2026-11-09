@@ -968,7 +968,9 @@ Btrfs pools can also be rolled back in place, without recreating the pool. New B
 - The mover can also be started immediately, with live progress in the desktop activity taskbar; every run is recorded with the number of files and bytes moved.
 - Each share's cache mode decides whether it uses the cache at all and how eagerly it is drained, so a small hot dataset can sit on the fast disk while bulk data goes straight to the array.
 
-The point is to absorb bursts of writes on fast media and let the slower array catch up out of hours."#.to_string(),
+The point is to absorb bursts of writes on fast media and let the slower array catch up out of hours.
+
+Separately, the Cache tab also manages ZFS's own accelerators on an existing ZFS pool: a read cache (L2ARC) speeds up repeated random reads on a pool short on memory, and a separate log (SLOG) speeds up writes that must reach disk before they are acknowledged. Both are opt-in, removable at any time without losing data, and need a flash device — a spinning disk is refused because it would make the pool slower. Attaching and detaching are administrator-only and journaled."#.to_string(),
         },
         FeatureDoc {
             id: "syncthing".to_string(),

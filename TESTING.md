@@ -1,5 +1,21 @@
 # HomeVault — Test tracking
 
+## P2 ZFS read cache / separate log (L2ARC / SLOG) — 2026-11-09 (not run)
+
+> **Instruction followed: no test command was executed for this change.**
+> Static checks passed: `cargo check --lib`, `cargo check --tests`,
+> `cd frontend && npm run check` and `npm run build`.
+> **No `zpool add`/`zpool remove` is executed by these tests**: the integration
+> and E2E cases only drive the read-only listing and the refusals.
+
+| Coverage | Added / changed |
+|---|---|
+| Unit (`src/zfs_cache.rs`) | **+8** — `zpool status -P` parsing (pool/state, no devices, logs vs cache, error counters, a data vdev ignored, mirrored log group, no pool header); device path shape; the refusal matrix (in use, missing, already attached, second group, spinning disk for both roles); exact `zpool add`/`remove` argv; role parsing and vdev keywords |
+| Unit (`src/setup.rs`) | **+2 assertions** — `zpool add *` and `zpool remove *` are per-subcommand grants |
+| Integration (`tests/zfs_cache_integration.rs`) | **+3** — admin gate on every route + listing shape; role/device validation before any `zpool` call; detach refuses a non-`/dev` device |
+| E2E (`tests/e2e/storage/storage.spec.ts`) | **+2 tests, +1 assertion** — §14.1 the card reports exactly one host state and never offers a dead Attach; §14.2 the API refuses an unknown role and a bare device name; §4.3 now also asserts a member gets `403` on `POST /api/zfs-cache` |
+| Docs | `docs/guides/cache.md`, `docs/API.md`, `SCREENS.md`, `CHANGELOG.md`, RAG `cache`, `HOMEVAULT_TASKLIST_A_FAIRE.md` (P2‑16), `COMPARAISON_DSM_VS_HOMEVAULT.md` |
+
 ## P1 Downloader — RSS, per-task limits, automatic extraction — 2026-11-09 (not run)
 
 > **Instruction followed: no test command was executed for this change.**

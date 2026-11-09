@@ -323,6 +323,20 @@
   let cacheBusy = false;
   let cacheError = '';
   let showCacheShareModal = false;
+
+  // ── ZFS read cache / separate log (L2ARC / SLOG) ──
+  // Distinct from the cache *tier* above: these are ZFS vdevs attached to an
+  // existing pool, not a second pool used as a write buffer.
+  interface ZfsCacheDevice { device: string; kind: 'l2arc' | 'slog'; state: string; read_errors: number; write_errors: number; checksum_errors: number }
+  interface ZfsPoolCache { pool: string; state: string; devices: ZfsCacheDevice[] }
+  interface ZfsCandidate { name: string; size: number; model: string; rotational: boolean }
+  let zfsCacheAvailable = false;
+  let zfsPools: ZfsPoolCache[] = [];
+  let zfsCandidates: ZfsCandidate[] = [];
+  let zfsBusy = false;
+  let zfsError = '';
+  let zfsNotice = '';
+  let zfsForm = { pool: '', kind: 'l2arc' as 'l2arc' | 'slog', device: '' };
   let moverJobId: string | null = null;
   let moverRunning = false;
   let moverProgress = 0;
@@ -884,6 +898,68 @@
     } finally {
       cacheLoading = false;
     }
+    await loadZfsCache();
+  }
+
+  async function loadZfsCache() {
+    zfsError = '';
+    const resp = await api.getZfsCache();
+    if (resp.success && resp.data) {
+      zfsCacheAvailable = !!resp.data.available;
+      zfsPools = resp.data.pools ?? [];
+      zfsCandidates = resp.data.candidates ?? [];
+      if (!zfsPools.some((p) => p.pool === zfsForm.pool)) {
+        zfsForm.pool = zfsPools[0]?.pool ?? '';
+      }
+    } else {
+      zfsError = resp.message || resp.error || $t('cache.zfs_load_failed');
+    }
+  }
+
+  /**
+   * A spinning disk is refused by the server: say so before submitting.
+   * A plain function, not `$derived` — this component is still in legacy
+   * reactivity mode (`$:` above), and mixing the two modes is an error.
+   */
+  function zfsDeviceRefusal(): string {
+    const candidate = zfsCandidates.find((c) => c.name === zfsForm.device);
+    if (!candidate) return $t('cache.zfs_pick_device');
+    if (candidate.rotational) return $t('cache.zfs_need_flash');
+    return '';
+  }
+
+  async function attachZfsCache() {
+    if (!zfsForm.pool || !zfsForm.device) return;
+    zfsBusy = true;
+    zfsError = '';
+    zfsNotice = '';
+    const resp = await api.attachZfsCache({
+      pool: zfsForm.pool,
+      kind: zfsForm.kind,
+      device: zfsForm.device,
+    });
+    if (resp.success) {
+      zfsNotice = $t('cache.zfs_attached', { device: zfsForm.device, pool: zfsForm.pool });
+      zfsForm.device = '';
+      await loadZfsCache();
+    } else {
+      zfsError = resp.message || resp.error || $t('cache.zfs_action_failed');
+    }
+    zfsBusy = false;
+  }
+
+  async function detachZfsCache(pool: string, device: string) {
+    zfsBusy = true;
+    zfsError = '';
+    zfsNotice = '';
+    const resp = await api.detachZfsCache({ pool, device });
+    if (resp.success) {
+      zfsNotice = $t('cache.zfs_detached', { device, pool });
+      await loadZfsCache();
+    } else {
+      zfsError = resp.message || resp.error || $t('cache.zfs_action_failed');
+    }
+    zfsBusy = false;
   }
 
   async function saveCacheSettings() {
@@ -1667,6 +1743,98 @@
             <div class="mt-3">
               <Button variant="primary" onclick={saveCacheSettings} disabled={cacheBusy}>{$t('cache.save_config')}</Button>
             </div>
+          </div>
+
+          <!-- ZFS-native accelerators. Distinct from the cache *tier* above:
+               these are vdevs attached to an existing pool, they hold no data
+               of their own, and the server refuses a spinning disk. -->
+          <div data-testid="storage-zfs-cache-card" class="px-5 py-4 rounded-2xl bg-[var(--hv-shell-card)] border border-[var(--hv-shell-border)] shadow-[var(--hv-shell-shadow-card)]">
+            <div class="flex items-center gap-2 mb-2"><IconBolt size={18} class="text-[var(--hv-primary)]" /><h3 class="m-0 text-c-card-title font-semibold text-[var(--hv-shell-text-strong)]">{$t('cache.zfs_title')}</h3></div>
+            <p class="m-0 text-xs text-[var(--hv-shell-text)]">{$t('cache.zfs_hint')}</p>
+
+            {#if zfsError}
+              <div class="mt-3"><Alert variant="error">{zfsError}</Alert></div>
+            {/if}
+            {#if zfsNotice}
+              <p role="status" data-testid="storage-zfs-cache-notice" class="m-0 mt-3 px-3 py-2 rounded-lg bg-[var(--hv-success-bg)] text-[var(--hv-success)] text-xs font-semibold">{zfsNotice}</p>
+            {/if}
+
+            {#if !zfsCacheAvailable}
+              <p class="m-0 mt-3 text-xs text-[var(--hv-shell-text-2)]" data-testid="storage-zfs-cache-unavailable">{$t('cache.zfs_unavailable')}</p>
+            {:else if zfsPools.length === 0}
+              <p class="m-0 mt-3 text-xs text-[var(--hv-shell-text-2)]" data-testid="storage-zfs-cache-none">{$t('cache.zfs_no_pool')}</p>
+            {:else}
+              <div class="mt-3 flex flex-col gap-2" data-testid="storage-zfs-cache-pools">
+                {#each zfsPools as entry (entry.pool)}
+                  <div class="px-3 py-2.5 rounded-lg bg-[var(--hv-shell-border-soft)] border border-[var(--hv-shell-border)]" data-testid="storage-zfs-cache-pool">
+                    <div class="flex items-center gap-2">
+                      <span class="text-sm font-bold text-[var(--hv-shell-text-strong)]">{entry.pool}</span>
+                      <span class="text-c-xs font-semibold text-[var(--hv-shell-text-2)]">{entry.state}</span>
+                    </div>
+                    {#if entry.devices.length === 0}
+                      <span class="block mt-1 text-c-xs text-[var(--hv-shell-text-2)]">{$t('cache.zfs_no_devices')}</span>
+                    {:else}
+                      <ul class="m-0 mt-1.5 p-0 list-none flex flex-col gap-1">
+                        {#each entry.devices as device (device.device)}
+                          <li class="flex items-center gap-2 text-c-xs">
+                            <span class="px-1.5 py-0.5 rounded bg-[var(--hv-primary-light)] text-[var(--hv-primary)] font-bold uppercase">{device.kind === 'slog' ? $t('cache.zfs_kind_slog_short') : $t('cache.zfs_kind_l2arc_short')}</span>
+                            <span class="font-[family-name:var(--hv-font-mono)] text-[var(--hv-shell-text-strong)] truncate">{device.device}</span>
+                            <span class={cn('font-semibold', device.state === 'ONLINE' ? 'text-[var(--hv-success)]' : 'text-[var(--hv-error)]')}>{device.state}</span>
+                            {#if device.read_errors + device.write_errors + device.checksum_errors > 0}
+                              <span class="text-[var(--hv-warning)]">{$t('cache.zfs_errors', { count: String(device.read_errors + device.write_errors + device.checksum_errors) })}</span>
+                            {/if}
+                            <button
+                              type="button"
+                              class="hv-ic is-danger ml-auto"
+                              onclick={() => detachZfsCache(entry.pool, device.device)}
+                              disabled={zfsBusy}
+                              aria-label={$t('cache.zfs_detach_named', { device: device.device })}
+                              data-testid="storage-zfs-cache-detach"
+                            ><IconTrash size={13} /></button>
+                          </li>
+                        {/each}
+                      </ul>
+                    {/if}
+                  </div>
+                {/each}
+              </div>
+
+              <div class="mt-3 flex flex-wrap items-end gap-2">
+                <label class="flex flex-col gap-1 flex-1 min-w-[150px] text-c-label text-[var(--hv-shell-text-2)]">
+                  <span>{$t('cache.zfs_pool')}</span>
+                  <select class={inpSel} bind:value={zfsForm.pool} data-testid="storage-zfs-cache-pool-select">
+                    {#each zfsPools as entry (entry.pool)}<option value={entry.pool}>{entry.pool}</option>{/each}
+                  </select>
+                </label>
+                <label class="flex flex-col gap-1 w-[190px] text-c-label text-[var(--hv-shell-text-2)]">
+                  <span>{$t('cache.zfs_kind')}</span>
+                  <select class={inpSel} bind:value={zfsForm.kind} data-testid="storage-zfs-cache-kind">
+                    <option value="l2arc">{$t('cache.zfs_kind_l2arc')}</option>
+                    <option value="slog">{$t('cache.zfs_kind_slog')}</option>
+                  </select>
+                </label>
+                <label class="flex flex-col gap-1 flex-1 min-w-[180px] text-c-label text-[var(--hv-shell-text-2)]">
+                  <span>{$t('cache.zfs_device')}</span>
+                  <select class={inpSel} bind:value={zfsForm.device} data-testid="storage-zfs-cache-device">
+                    <option value="">{$t('cache.zfs_pick_device')}</option>
+                    {#each zfsCandidates as candidate (candidate.name)}
+                      <option value={candidate.name} disabled={candidate.rotational}>
+                        {candidate.name} · {capacityStr(candidate.size)}{candidate.rotational ? ` · ${$t('cache.zfs_spinning')}` : ''}
+                      </option>
+                    {/each}
+                  </select>
+                </label>
+                <Button
+                  variant="primary"
+                  onclick={attachZfsCache}
+                  disabled={zfsBusy || !zfsForm.pool || !zfsForm.device || !!zfsDeviceRefusal()}
+                  data-testid="storage-zfs-cache-attach"
+                >{$t('cache.zfs_attach')}</Button>
+              </div>
+              {#if zfsForm.device && zfsDeviceRefusal()}
+                <p class="m-0 mt-1.5 text-c-xs text-[var(--hv-error)]" role="alert">{$t('cache.zfs_need_flash')}</p>
+              {/if}
+            {/if}
           </div>
 
           <div data-testid="storage-cache-card" class="px-5 py-4 rounded-2xl bg-[var(--hv-shell-card)] border border-[var(--hv-shell-border)] shadow-[var(--hv-shell-shadow-card)]">

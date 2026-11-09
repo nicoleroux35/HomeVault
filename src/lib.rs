@@ -150,3 +150,4 @@ pub mod usb_copy;
 pub mod utils;
 pub mod web_push;
 pub mod webdav;
+pub mod zfs_cache;

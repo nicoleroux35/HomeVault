@@ -1414,7 +1414,7 @@ impl PoolService {
 
     /// Validates a new pool `name` the same way `disk.rs`'s RAID creation
     /// does (kept as an independent copy since that code is frozen).
-    fn validate_pool_name(name: &str) -> Result<(), PoolError> {
+    pub(crate) fn validate_pool_name(name: &str) -> Result<(), PoolError> {
         if name.is_empty() || name.len() > 32 {
             return Err(PoolError::Parse(
                 "Pool name must be 1-32 characters".to_string(),

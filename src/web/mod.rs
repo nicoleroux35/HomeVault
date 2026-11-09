@@ -1474,6 +1474,16 @@ pub fn create_app(state: AppStateArc) -> Router {
         )
         .route("/api/cache/mover/run", post(handle_cache_mover_run))
         .route("/api/cache/mover/runs", get(handle_cache_mover_runs))
+        // ZFS-native accelerators (L2ARC / SLOG) — distinct from the cache tier.
+        .route(
+            "/api/zfs-cache",
+            get(crate::handlers::zfs_cache::handle_zfs_cache_list)
+                .post(crate::handlers::zfs_cache::handle_zfs_cache_attach),
+        )
+        .route(
+            "/api/zfs-cache/remove",
+            post(crate::handlers::zfs_cache::handle_zfs_cache_detach),
+        )
         // Disk encryption (LUKS2, manual unlock only)
         .route("/api/encryption/volumes", get(handle_encryption_list))
         .route("/api/encryption/volumes", post(handle_encryption_create))

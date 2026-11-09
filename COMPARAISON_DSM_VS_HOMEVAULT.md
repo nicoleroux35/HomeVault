@@ -62,7 +62,7 @@ cas de désaccord avec le backlog, `HOMEVAULT_TASKLIST_A_FAIRE.md` §1bis gagne.
 
 | App HomeVault | Équivalent DSM 7.4 | Verdict | Ce qu'il faut améliorer |
 |---|---|---|---|
-| **Storage** | Storage Manager | 🟡 | SHR/SHR2, thin provisioning complet (seuls les zvol ZFS sont couverts), déduplication (design seulement), cache SSD L2ARC/SLOG (le « cache » actuel est un mover de pool), KMIP, WORM, extension DX525, mise à jour firmware disques |
+| **Storage** | Storage Manager | 🟡 | **Cache SSD ZFS L2ARC/SLOG livré** (P2‑16, opt‑in, SSD obligatoire) ; restent SHR/SHR2, thin provisioning complet (seuls les zvol ZFS sont couverts), déduplication (design seulement), KMIP, WORM, extension DX525, mise à jour firmware disques |
 | **RAID** | Storage Manager (création de volume) / Storage Advisor | 🟡 | SHR/SHR2, ajout automatique de spare, extension à chaud, RAID F1, vitesse et moniteur de resync (migration de niveau déjà faite) |
 | **Explorer** | File Station | ⭐ / ✅ | **Emplacements réseau CIFS/NFS montés et parcourus** et **versions Btrfs dans Rewind** livrés (P1‑35) ; cloud via rclone ; restent les vignettes vidéo/PDF (P2 opt‑in), les ACL Windows et le transcodage |
 | **Shares** | Control Panel > Dossier partagé + Services de fichiers | 🟡 | ACL Windows non simulées (POSIX uniquement) ; validation réelle DC/keytab AD ; NFSv4 Kerberos à valider sur matériel ; WS‑Discovery absent ; SMB multicanal, chiffrement, Previous Versions, Time Machine, rsync, FTP jails : **faits** |
@@ -195,7 +195,7 @@ reconstruction complète sur VM.
 | **P1 ✅** | « Média first‑class » (apps natives) | **Intégration média** : installation 1‑clic + **binding sur un partage** + backup/rétention + reverse‑proxy + accès distant + détection transcodage HW — **partage + transcodage livrés** | Le backlog §6 rejette le natif ; l'usage n°1 d'un NAS reste à couvrir par le catalogue | M | nouveau |
 | **P1 ✅** | Explorer : CIFS/NFS/cloud, vignettes vidéo/PDF, versions Btrfs, favoris | **CIFS/NFS + favoris + versions Btrfs** : **livrés** (P1‑35) ; cloud via rclone existant ; **vignettes vidéo/PDF en P2 opt‑in** (ffmpeg/poppler = surface + CPU) | Dernier vrai écart avec File Station | M | nouveau |
 | **P1 ✅** | Téléchargeur : NZB, RSS, planification, limites, extraction | **RSS + planification + limites/tâche + extraction auto** : **livrés** (P1‑36) ; **NZB/eMule rejetés** | Niche, credentials, exposition légale | M | nouveau |
-| **P2** | Cache SSD L2ARC/SLOG | **Opt‑in ZFS**, jamais par défaut (exige un SSD) | Gain réel seulement sur matériel adapté | M | nouveau |
+| **P2 ✅** | Cache SSD L2ARC/SLOG | **Opt‑in ZFS**, jamais par défaut (exige un SSD) : **livré** (P2‑16) | Gain réel seulement sur matériel adapté | M | nouveau |
 | **P2** | iSCSI snapshots/clones de LUN, thin LUN | **P2 home‑lab** ; le thin zvol existe déjà | Usage domestique marginal | M | nouveau |
 | **P2** | VM export/import OVA | **P2** en s'appuyant sur `incus export` natif | Portabilité/backup, pas un sous‑système | M | nouveau |
 | **P2** | Syncthing navigateur de versions | **P2** intégration UI seule (Syncthing gère déjà les versions) | Faible effort, pas de nouveau moteur | S/M | nouveau |
@@ -263,6 +263,24 @@ reconstruction complète sur VM.
   `docs/guides/downloader.md`, `docs/API.md`, `docs/guides/scheduled-tasks.md`,
   `SCREENS.md`, `PRIVACY.md` (table sortante + RoPA 19), FeatureDocs
   `downloader`/`scheduled-tasks`.
+
+**P2‑16 — Cache SSD ZFS L2ARC/SLOG (livré).**
+
+- `src/zfs_cache.rs` : parseur **pur** de `zpool status -P` (sections
+  `logs`/`cache`, lignes d'appareil, compteurs d'erreurs, log miroir),
+  validation du chemin et argv `zpool add`/`remove`.
+- `src/handlers/zfs_cache.rs` : `GET/POST /api/zfs-cache`,
+  `POST /api/zfs-cache/remove` — admin, journalisés. Refus nommés : pool
+  inconnu ou non‑ZFS, disque absent de l'inventaire ou déjà utilisé, second
+  groupe `logs`/`cache`, et **disque mécanique** (un L2ARC sur HDD ralentit le
+  pool, un SLOG n'apporte rien). Le détachement refuse tout appareil qui n'est
+  pas un vdev cache/log de ce pool — jamais un disque de données.
+- Sudoers : deux sous‑commandes de plus (`zpool add`, `zpool remove`).
+- UI : carte dédiée dans l'onglet Cache, distincte du mover ; disque mécanique
+  listé mais désactivé avec la raison.
+- Tests **écrits, non exécutés** : 8 unitaires, 3 d'intégration (**aucune
+  commande `zpool` exécutée**), E2E Storage §14. Docs :
+  `docs/guides/cache.md`, `docs/API.md`, `SCREENS.md`, FeatureDoc `cache`.
 
 ### 3.3 Geler ou rejeter — parité sans valeur pour la cible
 
@@ -387,6 +405,10 @@ PHP 8.1/Redis 4.0.
   argv), `src/handlers/downloader.rs` (`/feeds*`, `/settings`, `/extract`,
   limites par tâche, `run_extract_loop`), `ServiceKind::DownloaderRss`
   (`src/scheduled_tasks_scheduler.rs`) — P1‑36
+- **Cache ZFS L2ARC/SLOG** : `src/zfs_cache.rs` (parseur `zpool status -P`,
+  validation, argv), `src/handlers/zfs_cache.rs` (`/api/zfs-cache`), carte
+  dans `frontend/src/routes/Storage.svelte`, grants `zpool add|remove`
+  (`src/setup.rs`) — P2‑16
 - **13 ordonnanceurs déjà existants** (`src/web/mod.rs:2809-2850`) : une
   « tâche planifiée backup/scrub/corbeille » doit les exposer, pas les dupliquer
 - Serveur OpenVPN absent, client seul : `src/handlers/vpn.rs:953-1002` ;
@@ -691,6 +713,6 @@ Journal — l'API les porte déjà.
 **Reste sur P2‑9** : le test de reconstruction complète sur une VM jetable
 (boot, installation, restauration DB + configuration + données, vérification)
 et, si la cible le justifie, une image système équivalente à `md0`. **Tous les
-P1 de §3.2 sont désormais livrés** (média, Explorer, téléchargeur) ; restent les
-P2 (profondeur stockage, OVA, versions Syncthing, calendrier en app catalogue)
-et les finitions P1‑18/P2‑7/P2‑8.
+P1 de §3.2 sont livrés** (média, Explorer, téléchargeur) et le **premier P2**
+(cache SSD ZFS L2ARC/SLOG) l'est aussi ; restent les P2 OVA, versions
+Syncthing et calendrier en app catalogue, puis les finitions P1‑18/P2‑7/P2‑8.
