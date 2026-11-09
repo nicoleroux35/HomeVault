@@ -65,6 +65,30 @@ pub enum TaskAction {
     SmartTest { device: String, test_type: String },
     /// Reboot / shutdown / suspend the host.
     Power { action: PowerAction },
+    /// Trigger an existing HomeVault subsystem instead of duplicating its
+    /// scheduler (P1 — one engine). `message` is only used by
+    /// [`ServiceKind::Notification`].
+    Service {
+        service: ServiceKind,
+        #[serde(default)]
+        message: Option<String>,
+    },
+}
+
+/// HomeVault subsystems a `service` task can trigger. Restic, scrub and the
+/// other periodic jobs keep their own scheduler: adding them here would be a
+/// second schedule for the same work, which is exactly what P1 avoids.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ServiceKind {
+    /// Run one scheduled Docker/catalog update pass now.
+    DockerUpdate,
+    /// Run the trash-retention pass now (the saved policy applies).
+    TrashPurge,
+    /// Take a `VACUUM INTO` snapshot of HomeVault's own database now.
+    DbBackup,
+    /// Create a system notification with the task's `message`.
+    Notification,
 }
 
 impl TaskAction {
@@ -74,6 +98,7 @@ impl TaskAction {
             TaskAction::Snapshot { .. } => "snapshot",
             TaskAction::SmartTest { .. } => "smart_test",
             TaskAction::Power { .. } => "power",
+            TaskAction::Service { .. } => "service",
         }
     }
 
@@ -157,6 +182,46 @@ impl TaskAction {
                     .ok_or_else(|| format!("Unknown power action '{}'", raw.action))?;
                 TaskAction::Power { action }
             }
+            "service" => {
+                let raw: RawServicePayload = serde_json::from_str(payload_json)
+                    .map_err(|e| format!("Invalid service payload: {e}"))?;
+                let service = match raw.service.trim() {
+                    "docker_update" => ServiceKind::DockerUpdate,
+                    "trash_purge" => ServiceKind::TrashPurge,
+                    "db_backup" => ServiceKind::DbBackup,
+                    "notification" => ServiceKind::Notification,
+                    other => return Err(format!("Unknown service '{other}'")),
+                };
+                let message = raw
+                    .message
+                    .unwrap_or_default()
+                    .trim()
+                    .to_string();
+                match service {
+                    ServiceKind::Notification => {
+                        if message.is_empty() {
+                            return Err("A notification task needs a message".into());
+                        }
+                        if message.chars().count() > 500 {
+                            return Err("The notification message is longer than 500 characters".into());
+                        }
+                        if message
+                            .chars()
+                            .any(|c| c.is_control() && c != '\n' && c != '\t')
+                        {
+                            return Err("The notification message contains control characters".into());
+                        }
+                    }
+                    _ if !message.is_empty() => {
+                        return Err("Only a notification task accepts a message".into())
+                    }
+                    _ => {}
+                }
+                TaskAction::Service {
+                    service,
+                    message: if message.is_empty() { None } else { Some(message) },
+                }
+            }
             other => return Err(format!("Unknown task type '{other}'")),
         };
         debug_assert_eq!(action.type_name(), task_type);
@@ -187,6 +252,13 @@ struct RawSmartTestPayload {
 #[derive(Deserialize)]
 struct RawPowerPayload {
     action: String,
+}
+
+#[derive(Deserialize)]
+struct RawServicePayload {
+    service: String,
+    #[serde(default)]
+    message: Option<String>,
 }
 
 /// Pool/dataset names end up spliced into `zfs`/`btrfs` argv — restrict to
@@ -512,7 +584,7 @@ async fn finish_run(state: &Arc<AppState>, task: &ScheduledTask, run_id: &str) {
         Ok(()) => match TaskAction::from_parts(&task.task_type, &task.payload) {
             // Re-validate at run time: a row written directly into the DB by
             // some other path still goes through the same validators.
-            Ok(action) => perform(&action).await.map(|out| preface + &out),
+            Ok(action) => perform(&action, state).await.map(|out| preface + &out),
             Err(e) => Err(e),
         },
     };
@@ -575,7 +647,7 @@ async fn wake_first(
 }
 
 /// Dispatches one validated action. Pure I/O — no schedule logic here.
-async fn perform(action: &TaskAction) -> Result<String, String> {
+async fn perform(action: &TaskAction, state: &Arc<AppState>) -> Result<String, String> {
     match action {
         TaskAction::Command { command, args } => {
             let mut cmd = tokio::process::Command::new(command);
@@ -672,6 +744,56 @@ async fn perform(action: &TaskAction) -> Result<String, String> {
                 .map_err(|e| format!("Power task panicked: {e}"))?
                 .map(|_| format!("Host {} issued", action.as_str()))
         }
+        TaskAction::Service { service, message } => match service {
+            ServiceKind::DockerUpdate => {
+                let report =
+                    crate::docker_update_scheduler::run_now(state, "scheduled-task").await?;
+                Ok(format!(
+                    "Docker update: {} updated, {} failed",
+                    report.updated.len(),
+                    report.failed.len()
+                ))
+            }
+            ServiceKind::TrashPurge => {
+                let repo = crate::storage::trash_policy_repo::TrashPolicyRepository::new(
+                    state.db.pool(),
+                );
+                let settings = repo.get_settings().await.map_err(|e| e.to_string())?;
+                let policy = settings.policy();
+                let state = state.clone();
+                let report = tokio::task::spawn_blocking(move || {
+                    crate::trash::purge_all(&state, &policy)
+                })
+                .await
+                .map_err(|e| format!("Trash purge task panicked: {e}"))?;
+                Ok(format!(
+                    "Trash purge removed {} item(s), reclaimed {} byte(s)",
+                    report.purged, report.freed_bytes
+                ))
+            }
+            ServiceKind::DbBackup => {
+                let service = crate::db_backup::DbBackupService::load(state.db.clone()).await;
+                let entry = service.backup_now().await?;
+                Ok(format!(
+                    "Database snapshot {} written ({} bytes)",
+                    entry.name, entry.size_bytes
+                ))
+            }
+            ServiceKind::Notification => {
+                let message = message.as_deref().unwrap_or("Scheduled task ran");
+                let repo = crate::storage::NotificationRepository::new(state.db.pool());
+                repo.create(
+                    "HomeVault scheduled task",
+                    message,
+                    "info",
+                    "system",
+                    "scheduled_task",
+                )
+                .await
+                .map_err(|e| format!("Could not create the notification: {e}"))?;
+                Ok("Notification created".to_string())
+            }
+        },
     }
 }
 
@@ -760,6 +882,57 @@ mod tests {
     #[test]
     fn unknown_task_type_is_rejected() {
         assert!(TaskAction::from_parts("rm_rf", "{}").is_err());
+    }
+
+    #[test]
+    fn service_task_accepts_the_known_subsystems() {
+        for (payload, expected) in [
+            (r#"{"service":"docker_update"}"#, ServiceKind::DockerUpdate),
+            (r#"{"service":"trash_purge"}"#, ServiceKind::TrashPurge),
+            (r#"{"service":"db_backup"}"#, ServiceKind::DbBackup),
+        ] {
+            let action = TaskAction::from_parts("service", payload).expect(payload);
+            assert_eq!(action.type_name(), "service");
+            match action {
+                TaskAction::Service { service, message } => {
+                    assert_eq!(service, expected);
+                    assert!(message.is_none());
+                }
+                other => panic!("unexpected action: {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn notification_service_requires_and_bounds_its_message() {
+        assert!(TaskAction::from_parts("service", r#"{"service":"notification"}"#).is_err());
+        assert!(TaskAction::from_parts(
+            "service",
+            r#"{"service":"notification","message":"Backup finished"}"#
+        )
+        .is_ok());
+
+        let long = "x".repeat(501);
+        assert!(TaskAction::from_parts(
+            "service",
+            &format!(r#"{{"service":"notification","message":"{long}"}}"#)
+        )
+        .is_err());
+        assert!(TaskAction::from_parts(
+            "service",
+            r#"{"service":"notification","message":"a\u0000b"}"#
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn service_task_rejects_unknown_services_and_stray_messages() {
+        assert!(TaskAction::from_parts("service", r#"{"service":"reboot"}"#).is_err());
+        assert!(TaskAction::from_parts(
+            "service",
+            r#"{"service":"docker_update","message":"not allowed"}"#
+        )
+        .is_err());
     }
 
     /// 12.1: one process-wide running set. A second start of the same task is

@@ -8,6 +8,16 @@ follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **Scheduled tasks can trigger existing subsystems (2026-11-09, P1).** The
+  Tasks engine gained a fifth type, `service`, so a cron can trigger work that
+  already has an implementation instead of a second scheduler: a Docker/catalog
+  update pass, the trash-retention policy, a `VACUUM INTO` database snapshot,
+  or a notification with a custom message. Restic/scrub keep their own
+  schedule on purpose (one engine per job). Migration 087 rebuilds the task
+  tables to widen the type CHECK while preserving run history. The create form
+  shows a service picker (and a message field only for notifications). Tests:
+  3 unit, 1 integration, Tasks E2E 3.5 (written, not run).
+
 - **Scheduled Docker/catalog updates (2026-11-09, P1).** The Docker catalog tab
   gained an opt-in **Scheduled updates** disclosure. Off by default; the first
   tick after enabling records a baseline and waits one interval, so no

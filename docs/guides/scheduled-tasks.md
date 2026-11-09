@@ -41,6 +41,25 @@ Request body (create/update): `name`, `task_type`, `cron`, `payload`,
 | `snapshot` | `{"pool": "...", "recursive": false}` | creates `hv-auto-YYYYMMDD-HHMMSS` |
 | `smart_test` | `{"device": "sda", "test_type": "short\|long\|conveyance\|offline"}` | `smartctl -t` |
 | `power` | `{"action": "reboot\|shutdown\|suspend"}` | host power action (`src/power.rs`) |
+| `service` | `{"service": "docker_update\|trash_purge\|db_backup\|notification", "message?": "..."}` | triggers an existing subsystem (P1) |
+
+### `service` tasks — one engine, no duplication (P1, 2026-11-09)
+
+The generic engine can **trigger** a subsystem that already exists instead of
+growing a second schedule for the same work:
+
+| Service | Effect |
+|---|---|
+| `docker_update` | one scheduled Docker/catalog update pass (`docker_update_scheduler::run_now`) |
+| `trash_purge` | the saved trash-retention policy runs now (`trash::purge_all`) |
+| `db_backup` | one `VACUUM INTO` snapshot of HomeVault's database (`DbBackupService::backup_now`) |
+| `notification` | creates a system notification with `message` (required, ≤ 500 chars, no control characters) |
+
+Restic, scrub, snapshot schedules, metrics retention and the other periodic
+jobs **keep their own scheduler**: their schedule is already the source of
+truth, so exposing them here would be two schedules for the same work. The
+`notification` message is the only free-text field; every other service ignores
+it and rejects a non-empty one at creation.
 
 ## Timezones (ROADMAP 12.2)
 

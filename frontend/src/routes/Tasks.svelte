@@ -40,7 +40,7 @@
   import { groupTimezones, timezoneIsListed, SERVER_TIMEZONE, type TimezoneGroup } from '$lib/utils/timezones';
   import { IconClock, IconPlus, IconPlayerPlay, IconHistory, IconTrash } from '@tabler/icons-svelte';
 
-  type TaskType = 'command' | 'snapshot' | 'smart_test' | 'power';
+  type TaskType = 'command' | 'snapshot' | 'smart_test' | 'power' | 'service';
 
   interface TaskForm {
     id: string | null;
@@ -61,6 +61,9 @@
     test_type: string;
     // power
     action: string;
+    // service
+    service: string;
+    message: string;
   }
 
   const EMPTY_FORM: TaskForm = {
@@ -77,6 +80,8 @@
     device: '',
     test_type: 'short',
     action: 'reboot',
+    service: 'docker_update',
+    message: '',
   };
 
   /** How long "Run now" keeps polling the task row after a start. The run
@@ -90,11 +95,18 @@
     { id: 'snapshot', label: 'tasks.type_snapshot' },
     { id: 'smart_test', label: 'tasks.type_smart_test' },
     { id: 'power', label: 'tasks.type_power' },
+    { id: 'service', label: 'tasks.type_service' },
     { id: 'command', label: 'tasks.type_command' },
   ];
 
   const SMART_TYPES = ['short', 'long', 'conveyance', 'offline'];
   const POWER_ACTIONS = ['reboot', 'shutdown', 'suspend'];
+  /**
+   * P1: `service` tasks trigger an existing subsystem instead of creating a
+   * second scheduler. Restic/scrub keep their own schedule, so they are not
+   * listed here — that would be two schedules for the same work.
+   */
+  const SERVICES = ['docker_update', 'trash_purge', 'db_backup', 'notification'];
 
   let tasks: ScheduledTask[] = [];
   let loading = true;
@@ -185,6 +197,8 @@
       device: String(payload.device ?? ''),
       test_type: String(payload.test_type ?? 'short'),
       action: String(payload.action ?? 'reboot'),
+      service: String(payload.service ?? 'docker_update'),
+      message: String(payload.message ?? ''),
     };
     formError = '';
     showForm = true;
@@ -235,6 +249,11 @@
         return { device: form.device.trim(), test_type: form.test_type };
       case 'power':
         return { action: form.action };
+      case 'service':
+        return {
+          service: form.service,
+          ...(form.service === 'notification' ? { message: form.message.trim() } : {}),
+        };
     }
   }
 
@@ -605,6 +624,21 @@
         bind:value={form.action}
         options={POWER_ACTIONS.map((a) => ({ value: a, label: $t(`tasks.power_${a}`) }))}
       />
+    {:else if form.task_type === 'service'}
+      <Select
+        label={$t('tasks.field_service')}
+        bind:value={form.service}
+        options={SERVICES.map((s) => ({ value: s, label: $t(`tasks.service_${s}`) }))}
+      />
+      {#if form.service === 'notification'}
+        <Input
+          label={$t('tasks.field_message')}
+          id="taskMessage"
+          bind:value={form.message}
+          maxlength={500}
+          helper={$t('tasks.field_message_help')}
+        />
+      {/if}
     {/if}
     <Switch bind:checked={form.enabled} label={$t('tasks.field_enabled')} data-testid="tasks-field-enabled" />
   </div>

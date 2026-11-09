@@ -1229,10 +1229,14 @@ Passkeys (WebAuthn) are a third, separate credential: an account can sign in wit
 - snapshot: create a pool snapshot (ZFS/Btrfs) named hv-auto-<timestamp>.
 - smart_test: start a S.M.A.R.T. self-test (short, long, conveyance, offline) on a disk.
 - power: reboot, shutdown or suspend the host.
+- service: trigger an existing subsystem instead of a second schedule — a
+  Docker/catalog update pass, the trash-retention policy, a database snapshot,
+  or a notification with a message. Restic, scrub and the other periodic jobs
+  keep their own scheduler on purpose.
 
 Each task has a name, a 5-field cron expression and an enabled toggle. The task list shows the last run status/error and the computed next run; every execution is recorded in a run history (status, timing, output tail). Run now triggers a task immediately regardless of the cron. A task whose previous execution is still running is never started twice.
 
-Everything is admin-only: tasks execute host actions. Payloads are validated at creation and again at run time — commands must be absolute existing executables (no shell), devices bare kernel names, pools well-formed names, power actions from a fixed whitelist."#.to_string(),
+Everything is admin-only: tasks execute host actions. Payloads are validated at creation and again at run time — commands must be absolute existing executables (no shell), devices bare kernel names, pools well-formed names, power actions from a fixed whitelist, service names from a fixed list, and only a notification service accepts a message (500 characters maximum)."#.to_string(),
         },
         FeatureDoc {
             id: "metrics".to_string(),

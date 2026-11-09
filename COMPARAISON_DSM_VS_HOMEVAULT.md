@@ -287,6 +287,10 @@ PHP 8.1/Redis 4.0.
   (`plan_tick`, baseline, `run_now`), `update_all_pending` partagé avec
   « Tout mettre à jour », `GET/PUT /api/docker/updates/schedule` et
   `POST /api/docker/updates/run-now` (P1‑30)
+- **Tâches planifiées unifiées** : `TaskAction::Service` +
+  `ServiceKind` (`docker_update`, `trash_purge`, `db_backup`,
+  `notification`) dans `src/scheduled_tasks_scheduler.rs`, migration `087`
+  (CHECK élargi, historique conservé), sélecteur dans Tasks (P1‑31)
 - Catalogue : `catalog/*/homevault-app.toml` (15 apps)
 - Apps catalogue **non liées aux partages** : le compose ne binde que
   `/srv/apps/<app>` (`src/app_catalog/mod.rs:261-270`) — d'où le chantier
@@ -505,8 +509,23 @@ Journal — l'API les porte déjà.
 - Docs : `docs/guides/docker.md`, `docs/API.md`, `SCREENS.md`, FeatureDoc
   `docker`.
 
+**P1‑31 — unification des tâches planifiées (livré).**
+
+- Le moteur générique gagne `service`, un cinquième type qui **déclenche** un
+  sous-système existant au lieu de créer un second ordonnanceur :
+  `docker_update`, `trash_purge`, `db_backup` (snapshot `VACUUM INTO`) et
+  `notification` (message obligatoire, ≤ 500 caractères).
+- Restic, scrub, snapshots planifiés et les autres boucles **gardent leur
+  propre ordonnanceur** : leur planification est déjà la source de vérité.
+- Migration `087` reconstruit `scheduled_tasks` / `scheduled_task_runs` avec un
+  CHECK élargi, en conservant l'historique (renommage, pas de cascade).
+- UI : sélecteur de service ; champ message uniquement pour la notification.
+- Tests écrits mais **non exécutés** : 3 unitaires, 1 d'intégration
+  (`tests/scheduled_tasks_integration.rs`), E2E Tasks 3.5.
+- Docs : `docs/guides/scheduled-tasks.md`, `docs/API.md`, `SCREENS.md`,
+  FeatureDoc `scheduled-tasks`.
+
 **Reste sur P2‑9** : le test de reconstruction complète sur une VM jetable
 (boot, installation, restauration DB + configuration + données, vérification)
 et, si la cible le justifie, une image système équivalente à `md0`. Les autres
-P1 de l'ordre restent : unification des tâches planifiées, historique/alertes
-quotas, WireGuard UX.
+P1 de l'ordre restent : historique/alertes quotas, WireGuard UX.

@@ -246,6 +246,29 @@ test('3.1 — Edit repopulates the per-type payload fields', async ({ page }) =>
   await page.keyboard.press('Escape');
 });
 
+test('3.5 — the type select offers a service trigger', async ({ page }) => {
+  await openTasks(page, adminTokens);
+  await win(page).locator('[data-testid="tasks-new-btn"]').click();
+  const modal = page
+    .locator('[role="dialog"]')
+    .filter({ has: page.locator('[data-testid="tasks-save-btn"]') })
+    .first();
+
+  const typeCombobox = modal.getByRole('combobox').first();
+  await typeCombobox.click();
+  const option = page.getByRole('option', {
+    name: /Trigger a service|Déclencher un service|Ejecutar un servicio|Dienst auslösen/,
+  });
+  await expect(option).toBeVisible({ timeout: 10_000 });
+  await option.click();
+
+  // The service picker replaces the type-specific fields; the default service
+  // (Docker update) needs no extra input.
+  await expect(modal).toContainText(/Service|Dienst|Servicio/);
+  await expect(modal.locator('#taskMessage')).toHaveCount(0);
+  await page.keyboard.press('Escape');
+});
+
 test('4.1 — Run now flips the status and records a run', async ({ page }) => {
   test.skip(!createdTaskId, 'task not created');
   // Re-point the task at /bin/true through the API so the run succeeds on

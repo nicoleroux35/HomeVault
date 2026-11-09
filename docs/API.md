@@ -1895,7 +1895,7 @@ power actions). See [guides/scheduled-tasks.md](./guides/scheduled-tasks.md).
 | Method | Path | Auth | Handler |
 |--------|------|------|---------|
 | GET | `/scheduled-tasks` | admin | `handle_tasks_list` |
-| POST | `/scheduled-tasks` | admin | `handle_task_create` — payload validated at creation; optional `timezone` (IANA name) |
+| POST | `/scheduled-tasks` | admin | `handle_task_create` — payload validated at creation; optional `timezone` (IANA name). `task_type: "service"` triggers an existing subsystem (`docker_update`, `trash_purge`, `db_backup`, `notification` with a required `message`) |
 | GET | `/scheduled-tasks/{id}` | admin | `handle_task_get` — one task, the status endpoint of a started run |
 | PUT | `/scheduled-tasks/{id}` | admin | `handle_task_update` — resets the run summary |
 | POST | `/scheduled-tasks/{id}/enabled` | admin | `handle_task_set_enabled` — `{"enabled": bool}`, toggles only (keeps the run summary) |

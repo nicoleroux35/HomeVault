@@ -744,9 +744,11 @@ The screen refreshes on tab switch, on window focus and every 45 s
   and next run
 - Create/edit dialog: task type, cron expression (5 fields), payload fields
   per type
-- Four task types: `command` (single executable, no shell), `snapshot`
-  (pool snapshot, optional recursive), `smart_test` (S.M.A.R.T. self-test)
-  and `power` (reboot / shutdown / suspend)
+- Five task types: `command` (single executable, no shell), `snapshot`
+  (pool snapshot, optional recursive), `smart_test` (S.M.A.R.T. self-test),
+  `power` (reboot / shutdown / suspend) and **`service`** (trigger an existing
+  subsystem: Docker update, trash purge, database snapshot, or a notification
+  with a message)
 - Run now, enable/disable, delete (history included) and per-task run history
   (50 newest runs, output tail)
 

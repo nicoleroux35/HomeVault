@@ -1,5 +1,19 @@
 # HomeVault — Test tracking
 
+## P1 scheduled tasks — service triggers — 2026-11-09 (not run)
+
+> **Instruction followed: no test command was executed for this change.**
+> Static checks passed: `cargo check --lib`, `cargo check --tests`,
+> `cd frontend && npm run check` and `npm run build`.
+
+| Coverage | Added / changed |
+|---|---|
+| Unit (`src/scheduled_tasks_scheduler.rs`) | **+3** — the known services build the right action; a notification requires and bounds its message; unknown services and a stray message are refused |
+| Integration (`tests/scheduled_tasks_integration.rs`) | **+1** — a `service` task round-trips its payload; an unknown service and a notification without a message are `400` |
+| E2E (`tests/e2e/tasks/tasks.spec.ts`) | **+1** — 3.5 the type select offers a service trigger and swaps to the service picker |
+| Migration (`087_scheduled_service_tasks.sql`) | rebuilds `scheduled_tasks` + `scheduled_task_runs` to widen the type CHECK; run history is copied, never cascaded away |
+| Docs | `docs/guides/scheduled-tasks.md`, `docs/API.md`, `SCREENS.md`, `docs/BACKEND.md` (migration range), `CHANGELOG.md`, RAG `scheduled-tasks` FeatureDoc, `HOMEVAULT_TASKLIST_A_FAIRE.md` (P1-31), `COMPARAISON_DSM_VS_HOMEVAULT.md` |
+
 ## P1 scheduled Docker/catalog updates — 2026-11-09 (not run)
 
 > **Instruction followed: no test command was executed for this change.**

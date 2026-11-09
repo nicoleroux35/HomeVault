@@ -123,6 +123,7 @@ justifie.
 | **P1-28** | Stabilité système : `LimitNOFILE`, `sysctl`, `smartd`/`mdmonitor`, write cache + UPS — **partiel assumé** (avertissement installateur suffit ; carte UI rejetée) | P1 | S/M | Moins de coupures évitables |
 | **P1-29** | SMB WS-Discovery (découverte Windows) — livré 2026‑11‑08 | P1 | S | Découverte sans config |
 | **P1-30** | Mises à jour Docker planifiées/auto — livré 2026‑11‑09 | P1 | S/M | Hygiène de patch |
+| **P1-31** | Unifier les tâches planifiées (type `service`) — livré 2026‑11‑09 | P1 | S/M | Un seul moteur |
 | **P2-1** | SMB AD/Kerberos complet (winbind, realm, idmap, keytab) — **gelé au partiel** (config ADS + join/leave ; DC réel seulement si cible entreprise) | P2 | L | Entreprise Windows |
 | **P2-2** | NFSv4 + Kerberos (`sec=krb5`) — **gelé au partiel** (flavor + validation keytab ; KDC réel seulement si cible entreprise) | P2 | L | Entreprise Unix |
 | **P2-3** | Thin provisioning — **gelé au partiel** (zvols ZFS thin/thick ; overcommit/LVM rejetés) | P2 | L | Sur‑allocation |
@@ -1644,6 +1645,23 @@ dans l'onglet App Catalog. Tests : 5 unitaires, 3 d'intégration
 (`tests/docker_update_schedule_integration.rs`), E2E Docker 15.6 — écrits, non
 exécutés. Docs : `docs/guides/docker.md`, `docs/API.md`, `SCREENS.md`,
 FeatureDoc `docker`.
+
+### [x] P1-31 — Unifier les tâches planifiées · S/M
+
+**Livré 2026‑11‑09.** Le moteur générique gagne un cinquième type `service`
+qui **déclenche** un sous-système existant au lieu de créer un second
+ordonnanceur : `docker_update` (un passage de mise à jour catalogue),
+`trash_purge` (la politique de rétention), `db_backup` (un snapshot
+`VACUUM INTO`) et `notification` (message obligatoire, ≤ 500 caractères).
+Restic, scrub, snapshots planifiés et les autres boucles **gardent leur propre
+ordonnanceur** : leur planification est déjà la source de vérité, l'exposer ici
+serait deux horaires pour le même travail. Migration `087` reconstruit les
+tables `scheduled_tasks` / `scheduled_task_runs` (CHECK élargi) en conservant
+l'historique. UI : sélecteur de service, champ message seulement pour la
+notification. Tests : 3 unitaires, 1 d'intégration
+(`tests/scheduled_tasks_integration.rs`), E2E Tasks 3.5 — écrits, non exécutés.
+Docs : `docs/guides/scheduled-tasks.md`, `docs/API.md`, `SCREENS.md`,
+FeatureDoc `scheduled-tasks`.
 
 ---
 

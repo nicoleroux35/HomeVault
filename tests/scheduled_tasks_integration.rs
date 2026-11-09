@@ -305,6 +305,79 @@ async fn crud_cycle_round_trips() {
 }
 
 #[tokio::test]
+async fn service_task_round_trips_and_validates_its_payload() {
+    let (state, _tmp, _guard) = setup_state().await;
+    create_test_user(&state, "admin", "AdminPass123!", ADMIN_ROLE_ID).await;
+    let mut router = tasks_router(state.clone());
+    let admin = login(&mut router, "admin", "AdminPass123!").await;
+
+    let (status, body) = send(
+        &mut router,
+        Method::POST,
+        "/api/scheduled-tasks",
+        Some(&admin),
+        Some(json!({
+            "name": "Nightly Docker update",
+            "task_type": "service",
+            "cron": "0 4 * * *",
+            "payload": { "service": "docker_update" },
+            "enabled": true
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "create failed: {body}");
+    assert_eq!(body["data"]["task_type"], "service");
+    let id = body["data"]["id"].as_str().expect("id").to_string();
+
+    let (status, body) = send(
+        &mut router,
+        Method::GET,
+        &format!("/api/scheduled-tasks/{id}"),
+        Some(&admin),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let payload: Value =
+        serde_json::from_str(body["data"]["payload"].as_str().expect("payload")).unwrap();
+    assert_eq!(payload["service"], "docker_update");
+
+    // An unknown service is a 400 at creation, before any row exists.
+    let (status, _) = send(
+        &mut router,
+        Method::POST,
+        "/api/scheduled-tasks",
+        Some(&admin),
+        Some(json!({
+            "name": "Bad service",
+            "task_type": "service",
+            "cron": "0 4 * * *",
+            "payload": { "service": "reboot" },
+            "enabled": true
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+
+    // A notification without a message is refused too.
+    let (status, _) = send(
+        &mut router,
+        Method::POST,
+        "/api/scheduled-tasks",
+        Some(&admin),
+        Some(json!({
+            "name": "Empty notification",
+            "task_type": "service",
+            "cron": "0 4 * * *",
+            "payload": { "service": "notification" },
+            "enabled": true
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
 async fn auth_guards_reject_anonymous_and_non_admin() {
     let (state, _tmp, _guard) = setup_state().await;
     create_test_user(&state, "admin", "AdminPass123!", ADMIN_ROLE_ID).await;
