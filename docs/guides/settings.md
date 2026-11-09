@@ -482,17 +482,20 @@ never claims a signature it did not verify.
    executable.
 2. `homevault --version` is run on the staged binary and must match the
    manifest (smoke test).
-3. The live binary is replaced by a same-filesystem rename; the previous build
+3. The service is stopped and the SQLite set (`homevault.db`, `-wal`, `-shm`)
+   is copied to `data/backups/pre-update.db*` (FIAB-03).
+4. The live binary is replaced by a same-filesystem rename; the previous build
    is copied to `homevault.previous` first.
-4. The service is restarted and `/api/auth/setup-status` is polled for 20 s.
-5. If it does not answer, the installer stops the service, restores
-   `homevault.previous`, keeps the failed build as `homevault.failed`, starts
-   again, re-checks, and records `rolled_back` (or `failed` if the rollback
-   itself cannot start).
+5. The service is restarted and `/api/auth/setup-status` is polled for 20 s.
+6. If it does not answer, the installer stops the service, restores
+   `homevault.previous` **and** `pre-update.db*`, keeps the failed build as
+   `homevault.failed`, starts again, re-checks, and records `rolled_back` (or
+   `failed` if the rollback itself cannot start).
 
-`sudo ./install.sh --rollback` remains the manual escape hatch. As before, the
-database is not restored by a binary rollback: migrations are append-only, so
-use the pre-migration snapshot named in the message.
+`sudo ./install.sh --rollback` remains the manual escape hatch and performs the
+same database restore (it reads `DATA_DIRECTORY` from the installed unit, so a
+custom `HV_DATA_DIR` is honoured). The failed build's migrations are therefore
+reverted with the binary; no downgrade of a newer schema is attempted.
 
 ### Operator commands
 

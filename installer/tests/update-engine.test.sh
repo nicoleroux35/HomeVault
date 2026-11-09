@@ -143,5 +143,27 @@ eq "result: history line is valid JSONL" "succeeded" \
     "$(python3 -c 'import json,sys; print(json.loads(open(sys.argv[1]).readline())["status"])' \
         "$WORK/data/updates/history.jsonl")"
 
+# --- pre-update database snapshot/restore (FIAB-03) -----------------------
+mkdir -p "$WORK/db/data"
+printf 'old-db\n' >"$WORK/db/data/homevault.db"
+printf 'old-wal\n' >"$WORK/db/data/homevault.db-wal"
+rc "database: snapshot succeeds" 0 hv_snapshot_database "$WORK/db"
+eq "database: main file copied" "old-db" \
+    "$(cat "$WORK/db/data/backups/pre-update.db")"
+eq "database: WAL copied" "old-wal" \
+    "$(cat "$WORK/db/data/backups/pre-update.db-wal")"
+
+printf 'new-db\n' >"$WORK/db/data/homevault.db"
+printf 'new-wal\n' >"$WORK/db/data/homevault.db-wal"
+printf 'new-shm\n' >"$WORK/db/data/homevault.db-shm"
+rc "database: restore succeeds" 0 hv_restore_database "$WORK/db"
+eq "database: main file restored" "old-db" \
+    "$(cat "$WORK/db/data/homevault.db")"
+eq "database: WAL restored" "old-wal" \
+    "$(cat "$WORK/db/data/homevault.db-wal")"
+eq "database: stale shm removed" "0" \
+    "$(test -e "$WORK/db/data/homevault.db-shm" && echo 1 || echo 0)"
+rc "database: restore without snapshot is a no-op" 0 hv_restore_database "$WORK/empty-db"
+
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
 [[ "$FAIL" -eq 0 ]]

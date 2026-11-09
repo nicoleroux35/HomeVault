@@ -130,6 +130,20 @@ profile.
 **Still to run:** the round-trip test and a live check against a repository with
 a truncated pack (badge Failed + `backup.jobs` notification).
 
+## 2026-11-09 — database rollback with the binary (FIAB-03, written, not run)
+
+> **No test was executed.** Static checks: `bash -n installer/install.sh`,
+> `bash -n installer/tests/update-engine.test.sh`.
+
+| Suite | Coverage |
+|---|---|
+| Installer (`installer/tests/update-engine.test.sh`) | `hv_snapshot_database` copies `homevault.db` + `-wal`; `hv_restore_database` puts the main file and WAL back, removes the stale `-shm`; restore without a snapshot is a safe no-op |
+| Update flow | the service is stopped before the snapshot; the automatic health-check rollback restores the binary **and** the database; `--rollback` reads `DATA_DIRECTORY` from the installed unit |
+
+**Still to run:** the installer suite and a live update whose new build migrates
+the schema then fails readiness, to prove the previous binary starts on the
+restored database.
+
 ## P1-28 — kernel stability + explicit monitoring choice — 2026-11-09 (not run)
 
 > **No Rust or E2E test was executed for this change.** Static checks passed:

@@ -269,11 +269,10 @@ fi
 # trap. `--purge` (only valid with `--uninstall`) also removes the data root and
 # the environment file, behind a typed confirmation.
 #
-# `--rollback` swaps back to `homevault.previous`, which every upgrade keeps.
-# It does NOT restore the database: migrations are append-only, so rolling the
-# binary back over a newer schema is refused at startup (see
-# `DbError::SchemaTooNew`). The message says so and points at
-# `data/backups/…pre-migration.db`.
+# `--rollback` swaps back to `homevault.previous`, which every upgrade keeps,
+# and restores the SQLite database snapshotted before that upgrade
+# (`data/backups/pre-update.db`). An update that already migrated the schema
+# would otherwise make the older binary refuse to start.
 #
 # `--dry-run` (any mode) prints what would happen and changes nothing.
 # ---------------------------------------------------------------------------
@@ -641,6 +640,46 @@ hv_rollback_binary() {
         return 1
     fi
     chmod 0755 -- "$current" 2>/dev/null || true
+    sync
+    return 0
+}
+
+# FIAB-03: keep the SQLite database from before an upgrade. The service must be
+# stopped first (the caller does), and `-wal`/`-shm` are copied with the main
+# file so the set is consistent. Stored under `data/backups/pre-update.db` so a
+# manual `--rollback` and the automatic one find the same copy.
+hv_snapshot_database() {
+    local data_dir="$1"
+    local src="$data_dir/data/homevault.db"
+    local dst="$data_dir/data/backups/pre-update.db"
+    [[ -f "$src" ]] || return 0
+    mkdir -p "$(dirname -- "$dst")" || return 1
+    cp -f -- "$src" "$dst" || return 1
+    local suffix
+    for suffix in -wal -shm; do
+        if [[ -f "$src$suffix" ]]; then
+            cp -f -- "$src$suffix" "$dst$suffix" || return 1
+        else
+            rm -f -- "$dst$suffix"
+        fi
+    done
+    sync
+    return 0
+}
+
+# Restores `pre-update.db` over the live database. Called only after the
+# service is stopped. SQLite recreates `-shm`; restoring `-wal` when it was
+# part of the snapshot keeps every committed transaction.
+hv_restore_database() {
+    local data_dir="$1"
+    local src="$data_dir/data/backups/pre-update.db"
+    local dst="$data_dir/data/homevault.db"
+    [[ -f "$src" ]] || return 0
+    cp -f -- "$src" "$dst" || return 1
+    rm -f -- "$dst-wal" "$dst-shm"
+    if [[ -f "$src-wal" ]]; then
+        cp -f -- "$src-wal" "$dst-wal" || return 1
+    fi
     sync
     return 0
 }
@@ -1087,19 +1126,27 @@ if [[ "$MODE" == "rollback" ]]; then
     run mv "$INSTALL_DIR_DEFAULT/homevault" "$INSTALL_DIR_DEFAULT/homevault.failed"
     run mv "$PREV" "$INSTALL_DIR_DEFAULT/homevault"
     run chmod +x "$INSTALL_DIR_DEFAULT/homevault"
+    # FIAB-03: the data directory may have been moved from the default.
+    ROLLBACK_DATA=$(sed -n 's/^Environment="DATA_DIRECTORY=\(.*\)"/\1/p' \
+        "$SERVICE_FILE_DEFAULT" 2>/dev/null | head -n 1)
+    [[ -n "$ROLLBACK_DATA" ]] || ROLLBACK_DATA="$DATA_DIR_DEFAULT"
+    if [[ "$DRY_RUN" -eq 0 ]]; then
+        if hv_restore_database "$ROLLBACK_DATA"; then
+            echo "  Database restored from $ROLLBACK_DATA/data/backups/pre-update.db"
+        else
+            echo "  Warning: could not restore the pre-update database; the older binary may refuse a newer schema."
+        fi
+    else
+        echo "  Would restore $ROLLBACK_DATA/data/backups/pre-update.db"
+    fi
     run systemctl start "$SERVICE_NAME_DEFAULT" 2>/dev/null || true
 
     cat <<'EOM'
 
-  The binary is rolled back. The DATABASE is not.
-  Migrations are append-only: if the newer build already migrated the database,
-  this older binary will refuse to start ("database was written by a newer
-  HomeVault"). In that case restore the snapshot taken before the upgrade:
-
-    systemctl stop homevault
-    cp /var/lib/homevault/data/backups/*pre-migration.db /var/lib/homevault/data/homevault.db
-    rm -f /var/lib/homevault/data/homevault.db-wal /var/lib/homevault/data/homevault.db-shm
-    systemctl start homevault
+  The binary and (when present) the pre-update database are restored.
+  If no database snapshot exists, the older binary may refuse a schema that
+  the failed build already migrated; in that case use Settings -> Database
+  snapshots or the pre-migration backup in data/backups/.
 EOM
     echo "✓ Done."
     exit 0
@@ -2542,13 +2589,20 @@ if [[ "$UPGRADE" -eq 1 && -n "$MANIFEST_VERSION" && -n "$CURRENT_VERSION" ]]; th
 fi
 
 if [[ "$UPGRADE" -eq 1 ]]; then
+    # FIAB-03: stop before copying the database (a live SQLite copy can be
+    # torn) and keep the pre-update set for the automatic and manual rollback.
+    systemctl stop "$SERVICE_NAME" >/dev/null 2>&1 || true
+    if ! hv_snapshot_database "$DATA_DIR"; then
+        warn "Could not snapshot the database before the update — a rollback would need the pre-migration backup"
+    fi
     if ! hv_swap_binary "$STAGE_DIR/homevault" "$INSTALL_DIR"; then
+        systemctl start "$SERVICE_NAME" >/dev/null 2>&1 || true
         rm -rf "$STAGE_DIR"
         [[ -n "$MANIFEST_WORK" ]] && rm -rf "$MANIFEST_WORK"
         err "Atomic swap failed — the running build was left untouched."
         exit 1
     fi
-    ok "New build swapped in atomically (previous build kept for rollback)"
+    ok "New build swapped in atomically (previous build + database kept for rollback)"
 else
     install -m 0755 "$STAGE_DIR/homevault" "$INSTALL_DIR/homevault"
     ok "Application installed to $INSTALL_DIR"
@@ -2934,6 +2988,11 @@ elif [[ "$UPGRADE" -eq 1 && -x "$INSTALL_DIR/homevault.previous" ]]; then
     warn "The new build did not answer within 20 s — rolling back automatically."
     systemctl stop "$SERVICE_NAME" >/dev/null 2>&1 || true
     if hv_rollback_binary "$INSTALL_DIR"; then
+        # FIAB-03: the previous binary may refuse a database already migrated
+        # by the failed build. Restore the pre-update set before starting it.
+        if ! hv_restore_database "$DATA_DIR"; then
+            warn "Could not restore the pre-update database; the previous build may refuse the newer schema."
+        fi
         systemctl start "$SERVICE_NAME" >/dev/null 2>&1 || true
         if hv_wait_healthy "http://127.0.0.1:${PORT}/api/auth/setup-status" 20; then
             HV_READY=1

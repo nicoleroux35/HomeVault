@@ -1178,3 +1178,28 @@ dans `TESTING.md`.
   succès), champs sérialisés dans l’API des dépôts.
 - Reste FIAB‑14 : test terrain avec un pack tronqué (le badge doit passer à
   Failed et la notification partir).
+
+---
+
+## 14. Rollback de mise à jour complet — 2026‑11‑09 (FIAB‑03)
+
+> DSM ne propose pas de retour arrière, mais HomeVault promet un rollback : il
+> ne restaurait que le binaire. Une nouvelle version qui migre SQLite puis
+> échoue au health check laissait l’ancien binaire refuser la base
+> (« database was written by a newer HomeVault »).
+
+- Avant le swap, l’installeur **arrête le service** et copie l’ensemble SQLite
+  (`homevault.db`, `-wal`, `-shm`) vers `data/backups/pre-update.db*`. Une
+  copie à chaud aurait pu être déchirée.
+- Le rollback automatique (health check en échec) restaure le binaire
+  `homevault.previous` **et** la base pré‑mise à jour avant de redémarrer.
+- `install.sh --rollback` fait de même ; il lit `DATA_DIRECTORY` depuis l’unité
+  installée, donc un `HV_DATA_DIR` personnalisé est respecté.
+- `hv_snapshot_database` / `hv_restore_database` sont des fonctions shell
+  testables ; la restauration supprime le `-shm` périmé et remet le `-wal`
+  capturé.
+- Tests installeur écrits, non exécutés : copie db/WAL, restauration après
+  modification, suppression du `-shm`, no‑op sans snapshot.
+- Reste FIAB‑03 : le test terrain d’une mise à jour qui migre puis échoue
+  (health check), et la taille/rotation de `pre-update.db*` si la base est
+  volumineuse.
