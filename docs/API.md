@@ -943,6 +943,8 @@ Representative endpoints:
 | POST | `/docker/catalog/{id}/proxy` | admin | toggle the per-app session-cookie auth gate — `{ auth_required, applied }` (`applied: false` = proxy not running, value saved for its next start; an unpersistable marker is an error) |
 | GET | `/docker/catalog/updates` · POST `/docker/catalog/{id}/update` | admin | registry-digest update detection (read-only) / `compose pull` + re-render + `up -d` |
 | POST | `/docker/catalog/update-all` | admin | sequential update queue over every pending update → `{updated[], failed[]}` |
+| GET/PUT | `/docker/updates/schedule` | admin | opt-in scheduled catalog updates: `enabled` (default false), `interval_hours` (6–168), last run/result/error, `docker_available` |
+| POST | `/docker/updates/run-now` | admin | one update pass now, same path as update-all → `{report, schedule}` |
 | GET/POST/DELETE | `/docker/stores` (+ `/{id}/sync`) | admin | community catalog git repos |
 | POST | `/docker/daemon/start` | admin | start the Docker daemon via systemd (**also enables it for boot persistence**) |
 | GET | `/docker/daemon/logs` | admin | last 100 lines of the daemon's journal, for diagnosing why it is down |

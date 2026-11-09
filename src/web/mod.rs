@@ -1244,6 +1244,17 @@ pub fn create_app(state: AppStateArc) -> Router {
             "/api/docker/catalog/update-all",
             post(handle_catalog_update_all),
         )
+        // P1: opt-in scheduled catalog updates. Off by default; the first
+        // tick after enabling only records a baseline.
+        .route(
+            "/api/docker/updates/schedule",
+            get(crate::handlers::docker_update_schedule::handle_get_schedule)
+                .put(crate::handlers::docker_update_schedule::handle_put_schedule),
+        )
+        .route(
+            "/api/docker/updates/run-now",
+            post(crate::handlers::docker_update_schedule::handle_run_now),
+        )
         .route(
             "/api/docker/catalog/{id}/update",
             post(handle_catalog_update),
@@ -2857,6 +2868,10 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         ransomware_watch_rx,
     ));
     tokio::spawn(crate::restic_scheduler::run_scheduler_loop(state.clone()));
+    // P1: opt-in Docker/catalog update schedule (disabled until configured).
+    tokio::spawn(crate::docker_update_scheduler::run_scheduler_loop(
+        state.clone(),
+    ));
     // Snapshots of HomeVault's own database (WAL mode: the `.db` file alone is
     // not restorable) plus the periodic WAL checkpoint that keeps `-wal` bounded.
     let scheduler_db = db.clone();

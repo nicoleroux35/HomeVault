@@ -122,6 +122,7 @@ justifie.
 | **P1-27** | Chaîne d'approvisionnement : images Docker par digest + signature du catalogue — **partiel assumé** (signature à finir ; pinning obligatoire rejeté) | P1 | M | Pas d'image/catalogue substitué |
 | **P1-28** | Stabilité système : `LimitNOFILE`, `sysctl`, `smartd`/`mdmonitor`, write cache + UPS — **partiel assumé** (avertissement installateur suffit ; carte UI rejetée) | P1 | S/M | Moins de coupures évitables |
 | **P1-29** | SMB WS-Discovery (découverte Windows) — livré 2026‑11‑08 | P1 | S | Découverte sans config |
+| **P1-30** | Mises à jour Docker planifiées/auto — livré 2026‑11‑09 | P1 | S/M | Hygiène de patch |
 | **P2-1** | SMB AD/Kerberos complet (winbind, realm, idmap, keytab) — **gelé au partiel** (config ADS + join/leave ; DC réel seulement si cible entreprise) | P2 | L | Entreprise Windows |
 | **P2-2** | NFSv4 + Kerberos (`sec=krb5`) — **gelé au partiel** (flavor + validation keytab ; KDC réel seulement si cible entreprise) | P2 | L | Entreprise Unix |
 | **P2-3** | Thin provisioning — **gelé au partiel** (zvols ZFS thin/thick ; overcommit/LVM rejetés) | P2 | L | Sur‑allocation |
@@ -1626,6 +1627,23 @@ optionnel ; `dependencies.rs` le liste. Tests : 6 unitaires
 (`tests/shares_integration.rs`), E2E Shares 4.9b — écrits, non exécutés.
 Docs : `docs/guides/shares.md`, `docs/API.md`, `SCREENS.md`, FeatureDoc
 `shares`.
+
+### [x] P1-30 — Mises à jour Docker planifiées/auto · S/M
+
+**Livré 2026‑11‑09.** `src/docker_update_scheduler.rs` : planificateur
+**opt‑in** (off par défaut) pour les apps du catalogue, jamais les conteneurs
+arbitraires. Réglage dans `data/docker_updates.json` (`interval_hours` 6–168,
+dernier résultat/erreur). Le premier tick après activation pose une
+**baseline** et attend un intervalle complet ; un run dû réutilise
+`update_all_pending` (le même chemin que « Tout mettre à jour ») et ne
+redémarre que les apps ayant réellement une mise à jour. Un échec avance quand
+même l'horloge et enregistre `last_error` (pas de martèlement toutes les
+5 min). API admin `GET/PUT /api/docker/updates/schedule` et
+`POST /api/docker/updates/run-now` ; divulgation repliée **Scheduled updates**
+dans l'onglet App Catalog. Tests : 5 unitaires, 3 d'intégration
+(`tests/docker_update_schedule_integration.rs`), E2E Docker 15.6 — écrits, non
+exécutés. Docs : `docs/guides/docker.md`, `docs/API.md`, `SCREENS.md`,
+FeatureDoc `docker`.
 
 ---
 

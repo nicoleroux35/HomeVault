@@ -422,7 +422,7 @@
     else if (tab === 'volumes') { loadVolumes(); loadDiskUsage(); }
     else if (tab === 'networks') loadNetworks();
     else if (tab === 'compose') loadProjects();
-    else if (tab === 'catalog') { loadCatalog(); loadStores(); loadCatalogUpdates(); }
+    else if (tab === 'catalog') { loadCatalog(); loadStores(); loadCatalogUpdates(); loadSchedule(); }
     else init();
   }
 
@@ -521,6 +521,25 @@
   let updatesChecking = $state(false);
   let updateBusyId = $state<string | null>(null);
 
+  // P1 — opt-in scheduled updates. Off by default; the first tick after
+  // enabling only records a baseline, so no container is restarted on a whim.
+  let schedule = $state<{
+    enabled: boolean;
+    interval_hours: number;
+    last_run_at: string | null;
+    last_result: string | null;
+    last_error: string | null;
+    docker_available: boolean;
+  }>({
+    enabled: false,
+    interval_hours: 24,
+    last_run_at: null,
+    last_result: null,
+    last_error: null,
+    docker_available: false,
+  });
+  let scheduleBusy = $state(false);
+
   async function loadCatalogUpdates() {
     updatesChecking = true;
     const res = await api.getDockerCatalogUpdates();
@@ -580,6 +599,37 @@
       await loadContainers();
     } else {
       setBanner('error', res.message || res.error || translate('docker.catalog_update_failed'));
+    }
+  }
+
+  async function loadSchedule() {
+    const res = await api.getDockerUpdateSchedule();
+    if (res.success && res.data) schedule = res.data;
+  }
+
+  async function saveSchedule() {
+    scheduleBusy = true;
+    const res = await api.saveDockerUpdateSchedule(schedule.enabled, schedule.interval_hours);
+    scheduleBusy = false;
+    if (res.success && res.data) {
+      schedule = res.data;
+    } else {
+      setBanner('error', res.message || res.error || translate('docker.schedule_save_failed'));
+      await loadSchedule();
+    }
+  }
+
+  async function runScheduledUpdateNow() {
+    scheduleBusy = true;
+    const res = await api.runDockerUpdateNow();
+    scheduleBusy = false;
+    if (res.success && res.data?.schedule) {
+      schedule = res.data.schedule;
+      setBanner('ok', translate('docker.schedule_done'));
+      await loadCatalogUpdates();
+      await loadContainers();
+    } else {
+      setBanner('error', res.message || res.error || translate('docker.schedule_run_failed'));
     }
   }
 
@@ -1862,6 +1912,60 @@
       </div>
       <button type="button" class="hv-btn hv-btn-secondary" aria-expanded={showStoresPanel} onclick={() => { showStoresPanel = !showStoresPanel; if (showStoresPanel) loadStores(); }}><IconPackage size={17} stroke={1.9} /> {$t('docker.stores_title')}</button>
     </div>
+    <!-- P1: advanced, opt-in scheduled updates, collapsed by default. -->
+    <details class="mx-3 mb-2 rounded-xl bg-[var(--hv-shell-card)] border border-[var(--hv-shell-border)]" data-testid="docker-schedule">
+      <summary class="cursor-pointer px-3 py-2 text-sm font-semibold text-[var(--hv-shell-text-strong)]">
+        {$t('docker.schedule_title')}
+      </summary>
+      <div class="px-3 pb-3 flex flex-col gap-2">
+        <label class="flex items-center gap-2 text-sm text-[var(--hv-shell-text)]">
+          <input
+            type="checkbox"
+            bind:checked={schedule.enabled}
+            onchange={saveSchedule}
+            disabled={!schedule.docker_available || scheduleBusy}
+          />
+          {$t('docker.schedule_enabled')}
+        </label>
+        <label class="flex items-center gap-2 text-sm text-[var(--hv-shell-text)]">
+          <span>{$t('docker.schedule_interval')}</span>
+          <select
+            class={textInput}
+            bind:value={schedule.interval_hours}
+            onchange={saveSchedule}
+            disabled={!schedule.enabled || scheduleBusy}
+          >
+            {#each [6, 12, 24, 48, 168] as hours}
+              <option value={hours}>{$t('docker.schedule_hours', { hours: String(hours) })}</option>
+            {/each}
+          </select>
+        </label>
+        <p class="m-0 text-xs text-[var(--hv-shell-text-2)]">{$t('docker.schedule_hint')}</p>
+        {#if !schedule.docker_available}
+          <p class="m-0 text-xs text-[var(--hv-warning)]" data-testid="docker-schedule-unavailable">{$t('docker.schedule_unavailable')}</p>
+        {/if}
+        {#if schedule.last_result}
+          <p class="m-0 text-xs text-[var(--hv-shell-text-2)]" data-testid="docker-schedule-last">
+            {$t('docker.schedule_last', { result: schedule.last_result })}
+          </p>
+        {/if}
+        {#if schedule.last_error}
+          <p class="m-0 text-xs text-[var(--hv-error)]" data-testid="docker-schedule-error">
+            {$t('docker.schedule_error', { error: schedule.last_error })}
+          </p>
+        {/if}
+        <div class="flex gap-2">
+          <button
+            class={actionBtn}
+            onclick={runScheduledUpdateNow}
+            disabled={scheduleBusy || !schedule.docker_available}
+            data-testid="docker-schedule-run"
+          >
+            {scheduleBusy ? $t('docker.schedule_running') : $t('docker.schedule_run_now')}
+          </button>
+        </div>
+      </div>
+    </details>
     {#if Object.keys(catalogUpdates).length > 0}
       <div class="flex items-center gap-2 mx-3 px-3 py-2 rounded-lg bg-[var(--hv-warning-bg)] text-[var(--hv-warning)] text-xs font-semibold"><IconDownload size={16} stroke={2} /> {$t('docker.catalog_updates_pending', { count: String(Object.keys(catalogUpdates).length) })}
         <button class={cn(actionBtn, 'ml-auto')} disabled={updateAllBusy} onclick={updateAllCatalogApps}>{updateAllBusy ? $t('docker.catalog_updating_all') : $t('docker.catalog_update_all')}</button>

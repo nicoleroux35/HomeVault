@@ -8,6 +8,19 @@ follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **Scheduled Docker/catalog updates (2026-11-09, P1).** The Docker catalog tab
+  gained an opt-in **Scheduled updates** disclosure. Off by default; the first
+  tick after enabling records a baseline and waits one interval, so no
+  container is restarted on a whim. A due run calls the same updater as "Update
+  all", checks for a pending image/package update first, and only recreates
+  apps that have one. A failed run advances the clock and records `last_error`
+  instead of retrying every five minutes. Admin API:
+  `GET/PUT /api/docker/updates/schedule`, `POST /api/docker/updates/run-now`.
+  Settings persist in `data/docker_updates.json` (interval 6–168 h). Tests:
+  5 unit in `src/docker_update_scheduler.rs`, 3 integration in
+  `tests/docker_update_schedule_integration.rs`, Docker E2E 15.6 (written, not
+  run).
+
 - **Windows network discovery (2026-11-08, P1).** The SMB card gained a
   **Windows network discovery** toggle (on by default). It is applied by a new
   `homevault-wsdd.service` running `wsdd2`, which advertises only the NetBIOS

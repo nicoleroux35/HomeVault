@@ -982,6 +982,28 @@ test.describe('15 — Catalog phase B', () => {
     expect(res.success).toBe(false);
     expect(String(res.message || res.error)).toContain('does not depend');
   });
+
+  test('15.6 — scheduled updates are opt-in and never run on mount', async ({ page }) => {
+    let runNowRequests = 0;
+    page.on('request', (request) => {
+      if (request.url().includes('/api/docker/updates/run-now')) runNowRequests++;
+    });
+
+    await gotoDocker(page, adminTokens);
+    await switchTab(page, 'catalog');
+    const section = win(page).locator('[data-testid="docker-schedule"]');
+    await expect(section).toBeVisible();
+    await section.locator('summary').click();
+    await expect(win(page).locator('[data-testid="docker-schedule-run"]')).toBeVisible();
+    await expect(section).toContainText(
+      /Scheduled updates|Mises à jour planifiées|Actualizaciones programadas|Geplante Updates/,
+    );
+
+    // Opening the catalog must never start an update (the schedule is off by
+    // default and the first tick after enabling only records a baseline).
+    await page.waitForTimeout(500);
+    expect(runNowRequests).toBe(0);
+  });
 });
 
 // ===========================================================================

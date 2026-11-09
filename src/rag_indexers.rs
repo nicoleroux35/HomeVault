@@ -440,6 +440,10 @@ RAID levels: RAID0 (stripe), RAID1 (mirror), RAID5 (parity), RAID6 (double parit
 - Change a container's memory, CPU and restart policy in place, without recreating it
 - Run a one-off command inside a container
 - Update a container to its newest image (pull, then recreate with the same settings)
+- App catalog: one-click install, per-app proxy and logs, update detection and
+  "update all"; an optional scheduled update (off by default) checks installed
+  apps for a pending image or package update, waits one interval after being
+  enabled, and never restarts a container that has no update
 - Edit a container's docker-compose.yml in place (Compose-managed containers), then save or save and redeploy
 - Image management: pull, build from a host folder, remove, view layers
 - Private registry sign-in and sign-out for pulling private images

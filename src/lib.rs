@@ -66,6 +66,7 @@ pub mod dependencies;
 pub mod directory;
 pub mod disk;
 pub mod docker;
+pub mod docker_update_scheduler;
 pub mod email;
 pub mod encryption;
 pub mod events;

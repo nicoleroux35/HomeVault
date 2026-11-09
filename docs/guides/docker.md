@@ -218,6 +218,28 @@ package-version check. `GET /docker/catalog/updates` + `POST
 notification engine runs `check_app_updates` every 6h. "Unknown" digest ⇒ "no
 update", never an error.
 
+### Scheduled updates (P1, 2026-11-09)
+
+`src/docker_update_scheduler.rs` is an **opt-in** scheduler for the catalog
+apps, never for arbitrary containers. Settings live in
+`data/docker_updates.json` (`enabled` off by default, `interval_hours` 6–168,
+last run/result/error) and are exposed by `GET/PUT /docker/updates/schedule`
+plus `POST /docker/updates/run-now` (admin).
+
+- The scheduler polls every five minutes. The **first tick after enabling
+  records a baseline** and waits one full interval, so flipping the switch
+  never restarts containers immediately (`plan_tick`, unit-tested).
+- A due run calls the same `update_all_pending` function as the admin "Update
+  all" action: it checks installed apps for a pending image/package update and
+  only then pulls and recreates that app. No update → no restart.
+- A failed run still advances `last_run_at`: a broken Docker daemon is reported
+  in `last_error` and the audit event, not retried every five minutes.
+- `run-now` is the explicit path; it uses the same updater and records the same
+  outcome.
+- The catalog tab shows a collapsed **Scheduled updates** disclosure (toggle,
+  interval, last result/error, Run now). Docker unavailable → the card says so
+  and the controls are disabled.
+
 ### Production hardening (2026-10-20)
 
 The module went from "manage containers" to a complete engine console. The

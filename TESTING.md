@@ -1,5 +1,18 @@
 # HomeVault — Test tracking
 
+## P1 scheduled Docker/catalog updates — 2026-11-09 (not run)
+
+> **Instruction followed: no test command was executed for this change.**
+> Static checks passed: `cargo check --lib`, `cargo check --tests`,
+> `cd frontend && npm run check` and `npm run build`.
+
+| Coverage | Added / changed |
+|---|---|
+| Unit (`src/docker_update_scheduler.rs`) | **+5** — disabled never runs; first enable sets a baseline; due/not-due at the boundary; interval bounds 6–168; the default is off and 24 h |
+| Integration (`tests/docker_update_schedule_integration.rs`) | **new suite, 3 tests** — admin gate + default off; PUT persists and rejects 5/169; `run-now` is admin-gated (the admin pass is not executed against real Docker) |
+| E2E (`tests/e2e/docker/docker.spec.ts`) | **+1** — 15.6 the Scheduled updates disclosure is visible, and opening the catalog never calls `run-now` |
+| Docs | `docs/guides/docker.md`, `docs/API.md`, `SCREENS.md`, `CHANGELOG.md`, RAG `docker` FeatureDoc, `HOMEVAULT_TASKLIST_A_FAIRE.md` (P1-30), `COMPARAISON_DSM_VS_HOMEVAULT.md` |
+
 ## P1 SMB WS-Discovery — 2026-11-08 (not run)
 
 > **Instruction followed: no test command was executed for this change.**

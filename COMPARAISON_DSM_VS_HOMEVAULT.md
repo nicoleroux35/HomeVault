@@ -283,6 +283,10 @@ PHP 8.1/Redis 4.0.
   sandboxé), champ `ws_discovery` de `SmbConfig`, `GET
   /api/shares/ws-discovery`, paquet optionnel `wsdd2` dans l'installeur
   (P1‑29)
+- **MAJ Docker planifiées** : `src/docker_update_scheduler.rs`
+  (`plan_tick`, baseline, `run_now`), `update_all_pending` partagé avec
+  « Tout mettre à jour », `GET/PUT /api/docker/updates/schedule` et
+  `POST /api/docker/updates/run-now` (P1‑30)
 - Catalogue : `catalog/*/homevault-app.toml` (15 apps)
 - Apps catalogue **non liées aux partages** : le compose ne binde que
   `/srv/apps/<app>` (`src/app_catalog/mod.rs:261-270`) — d'où le chantier
@@ -484,8 +488,25 @@ Journal — l'API les porte déjà.
 - Docs : `docs/guides/shares.md`, `docs/API.md`, `SCREENS.md`, FeatureDoc
   `shares`.
 
+**P1‑30 — mises à jour Docker planifiées/auto (livré).**
+
+- `src/docker_update_scheduler.rs` : planificateur **opt‑in** (off par défaut)
+  pour les apps du catalogue, jamais les conteneurs arbitraires. Réglage dans
+  `data/docker_updates.json` (`interval_hours` 6–168, dernier résultat/erreur).
+- Le premier tick après activation pose une **baseline** et attend un
+  intervalle complet ; un run dû réutilise `update_all_pending` (le même chemin
+  que « Tout mettre à jour ») et ne redémarre que les apps ayant réellement une
+  mise à jour. Un échec avance quand même l'horloge et enregistre `last_error`.
+- API admin `GET/PUT /api/docker/updates/schedule` et
+  `POST /api/docker/updates/run-now` ; divulgation repliée **Scheduled
+  updates** dans l'onglet App Catalog.
+- Tests écrits mais **non exécutés** : 5 unitaires, 3 d'intégration
+  (`tests/docker_update_schedule_integration.rs`), E2E Docker 15.6.
+- Docs : `docs/guides/docker.md`, `docs/API.md`, `SCREENS.md`, FeatureDoc
+  `docker`.
+
 **Reste sur P2‑9** : le test de reconstruction complète sur une VM jetable
 (boot, installation, restauration DB + configuration + données, vérification)
 et, si la cible le justifie, une image système équivalente à `md0`. Les autres
-P1 de l'ordre restent : MAJ Docker planifiées, unification des tâches
-planifiées, historique/alertes quotas, WireGuard UX.
+P1 de l'ordre restent : unification des tâches planifiées, historique/alertes
+quotas, WireGuard UX.

@@ -1161,6 +1161,19 @@ class ApiClient {
     return this.get<DockerAppUpdateStatus[]>('/docker/catalog/updates', { cache: false });
   }
 
+  /** P1 — opt-in scheduled catalog updates. */
+  async getDockerUpdateSchedule() {
+    return this.get('/docker/updates/schedule', { cache: false });
+  }
+
+  async saveDockerUpdateSchedule(enabled: boolean, intervalHours: number) {
+    return this.put('/docker/updates/schedule', { enabled, interval_hours: intervalHours });
+  }
+
+  async runDockerUpdateNow() {
+    return this.post('/docker/updates/run-now');
+  }
+
   /** The pre-install review: dependencies, settings, compatibility. */
   async getDockerInstallReview(id: string) {
     return this.get<DockerInstallReview>(`/docker/catalog/${encodeURIComponent(id)}/install-review`, { cache: false });

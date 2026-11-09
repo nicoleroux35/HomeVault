@@ -545,7 +545,7 @@ The screen refreshes on tab switch, on window focus and every 45 s
 
 ### App Catalog
 - Manifest-driven packages from the embedded store plus admin-added community stores (15 built-in: BookStack, FreshRSS, Gitea, Grafana, Home Assistant, Immich, Jellyfin, n8n, Navidrome, ownCloud, Paperless-ngx, Pi-hole, Uptime Kuma, Vaultwarden, Vikunja)
-- One-click install/uninstall with dependency, settings and compatibility review; per-app reverse proxy with optional auth gate; per-app logs; update detection and "update all"
+- One-click install/uninstall with dependency, settings and compatibility review; per-app reverse proxy with optional auth gate; per-app logs; update detection and "update all"; an opt-in **Scheduled updates** disclosure (interval 6–168 h, first run one interval after enabling, never a restart without an update, Run now)
 
 ### Compose
 - Compose projects: list with services and status, start/stop/restart/update-to-newest-images/deletion, editing of the compose file

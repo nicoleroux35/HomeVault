@@ -907,25 +907,24 @@ pub async fn handle_catalog_install_review(
     }
 }
 
-/// One-shot update queue for every installed app with a pending update
-/// ("update all"): runs the same `apply_update` path as the
-/// single-app endpoint sequentially and reports a per-app outcome, so one
-/// failure never aborts the rest of the queue.
-pub async fn handle_catalog_update_all(
-    State(state): State<Arc<AppState>>,
-    headers: HeaderMap,
-) -> Response {
-    let admin = match require_admin(&state, &headers).await {
-        Ok(u) => u,
-        Err(response) => return response,
-    };
-    let stores = enabled_stores(&state).await;
+/// Per-app outcome of an update-all pass.
+#[derive(Debug, Clone, Default, serde::Serialize)]
+pub struct CatalogUpdateReport {
+    pub updated: Vec<String>,
+    pub failed: Vec<serde_json::Value>,
+}
+
+/// Updates every installed catalog app with a pending update. Shared by the
+/// admin "update all" action and the scheduled updater (P1 Docker updates), so
+/// both paths behave identically and a failure never aborts the queue.
+pub(crate) async fn update_all_pending(
+    state: &Arc<AppState>,
+    actor: &str,
+) -> CatalogUpdateReport {
+    let stores = enabled_stores(state).await;
     let pending = crate::app_catalog::updates::check_installed_apps(&stores).await;
     if pending.is_empty() {
-        return ResponseHelper::json_success(serde_json::json!({
-            "updated": Vec::<String>::new(),
-            "failed": Vec::<String>::new(),
-        }));
+        return CatalogUpdateReport::default();
     }
     let job_id = crate::sse::PROGRESS_MANAGER.create_job(
         crate::sse::JobType::Custom("docker_update_all".to_string()),
@@ -985,13 +984,37 @@ pub async fn handle_catalog_update_all(
             &format!("{} updated, {} failed", updated.len(), failed.len()),
         );
     }
-    crate::events::log_event(format!(
-        "Admin '{}' ran update-all on catalog apps: {} updated, {} failed",
-        admin,
-        updated.len(),
-        failed.len()
-    ));
-    ResponseHelper::json_success(serde_json::json!({ "updated": updated, "failed": failed }))
+    if actor == "scheduler" {
+        crate::events::log_event(format!(
+            "Scheduled Docker update: {} updated, {} failed",
+            updated.len(),
+            failed.len()
+        ));
+    } else {
+        crate::events::log_event(format!(
+            "Admin '{}' ran update-all on catalog apps: {} updated, {} failed",
+            actor,
+            updated.len(),
+            failed.len()
+        ));
+    }
+    CatalogUpdateReport { updated, failed }
+}
+
+/// One-shot update queue for every installed app with a pending update
+/// ("update all"): runs the same `apply_update` path as the single-app
+/// endpoint sequentially and reports a per-app outcome, so one failure never
+/// aborts the rest of the queue.
+pub async fn handle_catalog_update_all(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Response {
+    let admin = match require_admin(&state, &headers).await {
+        Ok(u) => u,
+        Err(response) => return response,
+    };
+    let report = update_all_pending(&state, &admin).await;
+    ResponseHelper::json_success(report)
 }
 
 /// Tail an installed app's compose logs (per-app logs viewer).
