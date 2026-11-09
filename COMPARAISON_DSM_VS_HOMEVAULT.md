@@ -37,7 +37,7 @@ qu'elle listait sont **désormais livrés** et ne doivent plus être comptés :
 | ACL par partage, quotas par partage, Previous Versions, Time Machine, serveur rsync | ✅ livrés |
 | OpenAPI, DDNS 7 fournisseurs, SNMP v3 | ✅ livrés |
 | Table d'audit | ✅ **livrée le 2026‑11‑08** (P1‑18 : table, API, export, source Journal, rétention 90 j ; filtres structurés UI restants) |
-| Signature + atomicité de mise à jour | 🟡 **installeur livré le 2026‑11‑08** (P2‑8 partiel : déclenchement UI restant) |
+| Signature + atomicité de mise à jour | ✅ **installeur 2026‑11‑08 + Apply update dans Settings 2026‑11‑09** (P2‑8 ; reste la clé de production) |
 | Isolation d'exécution | 🟡 **installeur livré le 2026‑11‑08** (P2‑7 partiel : systemd durci + AppArmor opt‑in ; validation terrain/enforce restante) |
 | Restauration bare‑metal | 🟡 **drill non destructif livré le 2026‑11‑08** (P2‑9 partiel : snapshot DB + archive config + état backup vérifiés ; test de reconstruction VM restant) |
 
@@ -85,7 +85,7 @@ cas de désaccord avec le backlog, `HOMEVAULT_TASKLIST_A_FAIRE.md` §1bis gagne.
 | **Docker** | Container Manager | ⭐ / ✅ | Mises à jour planifiées/auto, graphiques ressources, compose (fait), registries privés (fait), exec/logs (fait) |
 | **Virtual Machines** | Virtual Machine Manager | ✅ / 🟡 | **Export/import d'archive (OVA) livré** (P2‑18) ; restent migration à chaud, HA, switches virtuels, passthrough USB/PCI. Clone, snapshots, VNC, cloud‑init : faits |
 | **Scheduled Tasks** | Task Scheduler | 🟡 | Seulement **4 types** (`command`, `snapshot`, `smart_test`, `power`). Ajouter backup, scrub, purge corbeille, Docker, notification, rsync, historique |
-| **Settings** | Control Panel | 🟡 | **MAJ signée + atomique + rollback absente** (seul un « update check » existe), portail de connexion personnalisé, options régionales, périphériques externes, LED/bip/LCM |
+| **Settings** | Control Panel | 🟡 | **MAJ signée + atomique + rollback livrée** (P2‑8, déclenchable depuis l'écran) ; restent portail de connexion personnalisé, options régionales, périphériques externes, LED/bip/LCM |
 | **Users** | Control Panel > Utilisateur & Groupe | ✅ | Groupes imbriqués, historique de mots de passe, verrouillage d'inactivité. Expiration, quotas, grants, managers délégués, sync Samba : faits |
 | **Groups** | Control Panel > Utilisateur & Groupe | ✅ | Groupes imbriqués, quotas de groupe |
 | **Directory sign-in** | Domaine/LDAP + SSO Server | 🟡 | CAS/Azure/Entra/WebSphere, **serveur LDAP/RADIUS**, fournisseur OAuth, SCIM. LDAP/AD/OIDC/SAML + mapping groupe→rôle : faits |
@@ -425,7 +425,10 @@ PHP 8.1/Redis 4.0.
   P2‑7) et `render_apparmor_profile` (opt‑in) ; score
   `systemd-analyze security` imprimé par l'installeur
 - **Signature/atomicité** : `hv_load_manifest`, `hv_swap_binary`,
-  `hv_rollback_binary` dans `installer/install.sh` (P2‑8)
+  `hv_rollback_binary` dans `installer/install.sh` (P2‑8) ; **déclenchement
+  UI** : `src/update_engine.rs` (canal, demande, moteur), `render_update_unit`
+  dans l'installeur, `src/handlers/update_apply.rs`
+  (`/api/settings/update/status|apply`), carte dans `Settings.svelte`
 - **Restauration** : `src/restore_drill.rs` (copie temporaire du snapshot DB,
   `PRAGMA integrity_check` en lecture seule, décodage de l'archive config,
   état du dernier job restic), `src/handlers/restore_drill.rs`
@@ -587,9 +590,27 @@ installeur).**
   `docs/API.md`, `docs/guides/settings.md` (tableau des endpoints), FeatureDoc
   `settings` dans `src/rag_indexers.rs`.
 
-**Reste sur P2‑8** : bouton *Apply update* dans Settings (le bouton actuel ne
-fait que vérifier), appel privilégié du moteur, et publication de la clé
-publique de production.
+**P2‑8 — moitié UI livrée le 2026‑11‑09.** Le canal de publication signé
+(`release_manifest`) se règle dans Settings et **Apply update** déclenche le
+moteur depuis l'interface :
+
+- le serveur ne remplace jamais son propre binaire : il écrit
+  `data/updates/request.json` (0600) puis lance l'unité root
+  `homevault-update`, dont l'`ExecStart` est l'argv **fixe**
+  `homevault --update-engine` ;
+- `KillMode=process` fait survivre l'unité au redémarrage qu'elle provoque, et
+  le moteur exécute l'installeur avec `HV_BOOTSTRAP=0` — la signature reste
+  vérifiée **avant** le premier téléchargement ;
+- `GET /settings/update/status` expose disponibilité, demande en attente,
+  dernier code de sortie et fin du journal ; l'écran les affiche et désactive
+  le bouton avec la raison quand il manque un canal ou le moteur ;
+- sudoers : uniquement `systemctl start homevault-update` (une unité fixe,
+  jamais une commande paramétrée) ; `stop`/`restart` non accordés ;
+- une installation `curl | bash` copie désormais l'installeur dans
+  `/opt/homevault/installer/install.sh`, donc le bouton existe aussi là.
+
+**Reste sur P2‑8** : publication de la clé publique de production et validation
+terrain sur un hôte réel.
 
 **P2‑7 — isolation d'exécution (partiel, côté installeur).**
 

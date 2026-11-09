@@ -301,6 +301,9 @@ an old client that still sends them is accepted and they are ignored. |
 | GET/PUT | `/settings/update` | auth / admin | update-check frequency |
 | GET | `/settings/version` | auth | current version + last cached check + `last_update` (`status`, `version`, `previous_version`, `message`, `finished_at`; `null` until the installer's signed/atomic engine ran) — never forces an outbound call |
 | POST | `/settings/version/check` | admin | "Check now" — the only path that forces the outbound update check |
+| GET | `/settings/update/status` | admin | can the update engine run (`available`), is a channel set (`configured`), is it `running`, the queued `request`, the last `exit` and the `log_tail`; `restarts_service: true` |
+| POST | `/settings/update/apply` | admin | `{confirm: "apply", manifest?, signature?, pubkey?}` — validates the channel (`https://` or an absolute path), queues `data/updates/request.json` and starts the fixed `homevault-update` unit. `400` for a bad manifest or a missing confirmation, `503` when the engine is not installed, `409`-style error when one is already running |
+| PUT | `/settings/update` | admin | `{check_frequency?, release_manifest?}` — the signed release channel the Apply button uses (empty clears it) |
 | GET | `/settings/export` | admin | JSON dump, stamped with `schema_version` (SMTP password redacted) |
 | POST | `/settings/import` | admin | JSON import — refused when `schema_version` is newer than this build or any field is invalid, naming the field |
 | POST | `/settings/reset` | admin | reset to defaults, including antivirus / anti-ransomware / disk spindown / DB-backup settings and `ups.conf`; a domain that failed is listed in `warnings` |

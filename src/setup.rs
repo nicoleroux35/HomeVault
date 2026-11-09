@@ -1066,6 +1066,14 @@ homevault ALL=(root) NOPASSWD: {tee} /etc/resolv.conf, {tee} /etc/netplan/99-hom
 # systemctl grants below.
 homevault ALL=(root) NOPASSWD: {systemctl} enable wg-quick@wg0, {systemctl} start wg-quick@wg0
 
+# Signed update engine (P2-8, UI half). "Apply update" only starts this one
+# unit: its ExecStart is the fixed argv `<install>/homevault --update-engine`,
+# which runs the installer engine against a manifest whose signature the
+# release key must verify. No parameter of the request is ever an argument of
+# a root command, and `stop`/`restart` are not granted — the unit ends by
+# itself.
+homevault ALL=(root) NOPASSWD: {systemctl} start homevault-update
+
 # WireGuard server config file itself — `/etc/wireguard` is chowned to
 # `homevault:homevault 0750` by `prepare_vpn_directories()` above so the
 # service account can write directly when it really is the process owner,
@@ -3065,6 +3073,28 @@ mod tests {
                 .any(|g| g.contains("--output-fields=__REALTIME_TIMESTAMP")),
             "the journalctl grant must pin the output fields"
         );
+    }
+
+    #[test]
+    fn test_update_engine_grant_starts_one_fixed_unit() {
+        // "Apply update" must never grant a parameterised root command. The
+        // only new privilege is starting the root-owned unit, whose ExecStart
+        // is a fixed argv and whose installer still verifies the signature.
+        let sudoers = SetupService::sudoers_body_for_tests();
+        assert!(
+            sudoers.contains("systemctl start homevault-update"),
+            "the update engine unit must be startable"
+        );
+        for forbidden in [
+            "systemctl stop homevault-update",
+            "systemctl restart homevault-update",
+            "homevault-update *",
+        ] {
+            assert!(
+                !sudoers.contains(forbidden),
+                "`{forbidden}` must not be granted"
+            );
+        }
     }
 
     #[test]

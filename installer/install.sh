@@ -872,6 +872,36 @@ profile homevault $INSTALL_DIR/homevault flags=($flags) {
 EOF
 }
 
+# Signed update engine unit (P2-8, UI half).
+#
+# Source unique, testable (`installer/tests/unit-hardening.test.sh` asserts the
+# fixed ExecStart and the restart-survival settings). The web handler can only
+# `systemctl start` this unit; the argv is fixed here and the engine still
+# refuses an unsigned manifest before touching anything.
+render_update_unit() {
+    local install_dir="${1:-$INSTALL_DIR}"
+    cat <<EOF
+[Unit]
+Description=HomeVault signed update engine (atomic swap with rollback)
+Documentation=file://$install_dir/installer/install.sh
+After=network-online.target
+Wants=network-online.target
+# No installer script means no engine: refuse rather than fail halfway.
+ConditionPathExists=$install_dir/installer/install.sh
+
+[Service]
+Type=oneshot
+# Fixed argv, root-owned, and the only thing the web handler may start.
+ExecStart=$install_dir/homevault --update-engine
+# A full download + swap takes minutes; this is the ceiling, not the target.
+TimeoutStartSec=3600
+# The engine restarts homevault.service in the middle of the swap; it must
+# outlive the process it replaces.
+KillMode=process
+Nice=10
+EOF
+}
+
 # Sourced by `installer/tests/*.test.sh`: stop here.
 if [[ "${HV_LIB_ONLY:-0}" == "1" ]]; then
     return 0 2>/dev/null || exit 0
@@ -2476,6 +2506,33 @@ if getent group docker >/dev/null 2>&1; then
 fi
 render_service_unit "$RUN_USER" "$RUN_GROUP" "$SERVICE_SUPP" "$RUN_HOME" > "$SERVICE_FILE"
 ok "System service unit written to $SERVICE_FILE"
+
+# Signed update engine (P2-8, UI half). Two pieces, both root-owned:
+#   * the installer itself is copied under INSTALL_DIR, because a
+#     `curl | bash` install otherwise leaves no script on disk — and the
+#     Settings button, the unit's ConditionPathExists and this copy must all
+#     agree on one path;
+#   * a oneshot unit whose ExecStart is the *fixed* argv `homevault
+#     --update-engine`. The web handler can only start this unit (one sudoers
+#     entry, no parameters); the engine reads data/updates/request.json and
+#     runs this script, which still refuses an unsigned manifest before
+#     touching anything.
+mkdir -p "$INSTALL_DIR/installer"
+if [[ -n "${HV_SELF:-}" && -f "${HV_SELF:-}" ]]; then
+    install -m 0755 -o root -g root "$HV_SELF" "$INSTALL_DIR/installer/install.sh" 2>/dev/null \
+        || cp -f "$HV_SELF" "$INSTALL_DIR/installer/install.sh" 2>/dev/null || true
+    if [[ -f "$INSTALL_DIR/installer/install.sh" ]]; then
+        ok "Update engine installed at $INSTALL_DIR/installer/install.sh"
+    else
+        warn "Could not copy the installer — the in-app update button stays disabled"
+    fi
+else
+    warn "Installer path unknown — the in-app update button stays disabled"
+fi
+
+render_update_unit "$INSTALL_DIR" > /etc/systemd/system/homevault-update.service
+chmod 0644 /etc/systemd/system/homevault-update.service
+ok "Update engine unit written to /etc/systemd/system/homevault-update.service"
 
 # Optional AppArmor confinement (P2-7). Opt-in: a wrong profile can block a
 # disk, network or Samba operation, so compliance is never claimed silently.

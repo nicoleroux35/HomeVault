@@ -691,6 +691,17 @@ pub fn create_app(state: AppStateArc) -> Router {
             "/api/settings/version/check",
             axum::routing::post(handle_check_version_now),
         )
+        // Settings - apply a signed update (P2-8, UI half). The handler only
+        // queues a request and starts a fixed systemd unit; the swap and its
+        // rollback stay in the installer engine.
+        .route(
+            "/api/settings/update/status",
+            get(crate::handlers::update_apply::handle_update_apply_status),
+        )
+        .route(
+            "/api/settings/update/apply",
+            post(crate::handlers::update_apply::handle_update_apply),
+        )
         // Settings - built-in HTTPS/TLS (admin-only; applies after a restart)
         .route(
             "/api/settings/tls",

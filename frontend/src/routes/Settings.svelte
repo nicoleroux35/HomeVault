@@ -188,6 +188,24 @@
   let loading = true;
   let testingEmail = false;
   let checkingUpdate = false;
+
+  // Signed update application (P2-8, UI half). The server queues a manifest and
+  // starts a fixed systemd unit; it restarts in the middle, so the screen
+  // polls the status instead of expecting the request to answer with the end.
+  // This component still uses legacy `$:` reactivity, so its state is plain
+  // `let` — mixing `$state` here is a compile error.
+  let applyStatus: {
+    available: boolean;
+    configured: boolean;
+    running: boolean;
+    current_version: string;
+    request: { manifest: string; actor: string | null; requested_at: string | null } | null;
+    exit: { status: string; exit_code: number | null; finished_at: string } | null;
+    log_tail: string;
+  } | null = null;
+  let applyingUpdate = false;
+  let applyError = '';
+  let showApplyLog = false;
   // ROADMAP 25.2: the host could not answer the start-on-boot probe, so the
   // switch must not pretend to know the current state. The alert says why.
   let autostartUnavailable = false;
@@ -396,7 +414,8 @@
       loadPower(),
       loadDbBackup(),
       loadRestoreDrill(),
-      loadTimezones()
+      loadTimezones(),
+      loadApplyStatus()
     ]);
     // After a save flushes the AI group, keep the display model in step.
     onGroupSaved('ai', () => {
@@ -455,7 +474,8 @@
           use_tls: data.email?.use_tls ?? true
         };
         draft.update = {
-          check_frequency: data.update?.check_frequency || 'weekly'
+          check_frequency: data.update?.check_frequency || 'weekly',
+          release_manifest: data.update?.release_manifest || ''
         };
         draft.notifications = {
           email: data.notifications?.email || '',
@@ -798,6 +818,39 @@
       notifySettings(translate('settings.test_failed'), 'error');
     }
     testingEmail = false;
+  }
+
+  async function loadApplyStatus() {
+    const res = await api.getUpdateApplyStatus();
+    if (res.success && res.data) applyStatus = res.data;
+  }
+
+  async function applyUpdate() {
+    applyError = '';
+    const confirmed = await dlg.ask(
+      translate('settings.apply_update_confirm', {
+        version: versionInfo.latest_version ?? versionInfo.current_version
+      })
+    );
+    if (!confirmed) return;
+    applyingUpdate = true;
+    const res = await api.applyUpdate({ confirm: 'apply' });
+    applyingUpdate = false;
+    if (!res.success) {
+      applyError = res.message || res.error || translate('settings.apply_update_failed');
+      return;
+    }
+    // The service is restarting under us: show the queued state, then poll.
+    await loadApplyStatus();
+    for (let i = 0; i < 60; i++) {
+      await new Promise((resolve) => setTimeout(resolve, 5000));
+      const status = await api.getUpdateApplyStatus();
+      if (status.success && status.data) {
+        applyStatus = status.data;
+        if (!status.data.running) break;
+      }
+    }
+    await handleCheckUpdate();
   }
 
   async function handleCheckUpdate() {
@@ -1464,6 +1517,19 @@
               {#each updateFrequencies as freq}<option value={freq.value}>{$t(`settings.update_${freq.value}`)}</option>{/each}
             </select>
           </div>
+          <div class={settingsRowStacked}>
+            <label class={settingsRowLabel} for="releaseManifest">{$t('settings.release_manifest')}</label>
+            <input
+              id="releaseManifest"
+              class={cn(settingsInput, 'max-w-[420px]')}
+              type="url"
+              bind:value={draft.update.release_manifest}
+              placeholder="https://releases.example.com/1.2.3/manifest.json"
+              aria-describedby="releaseManifestHint"
+              data-testid="settings-release-manifest"
+            />
+            <p class={settingsRowHint} id="releaseManifestHint">{$t('settings.release_manifest_hint')}</p>
+          </div>
           <div class="settings-version-box flex flex-col gap-0.5 py-3">
             <div class="settings-version-row flex justify-between text-sm py-1"><span class="text-[var(--hv-settings-label)]">{$t('settings.current_version')}</span><span class="font-semibold text-[var(--hv-settings-title)]">v{versionInfo.current_version}</span></div>
             {#if versionInfo.latest_version}
@@ -1480,10 +1546,47 @@
               </div>
             {/if}
             {#if !versionInfo.latest_version}<p data-testid="version-no-check-hint" class="m-0 mt-1 text-xs text-[var(--hv-settings-label)]">{$t('settings.update_auto_hint')}</p>{/if}
+            {#if applyStatus}
+              {#if applyStatus.running}
+                <div data-testid="settings-update-running" role="status" class="settings-version-row flex items-center gap-1.5 text-sm py-1 text-[var(--hv-warning)]">
+                  <span class="w-2 h-2 rounded-full bg-[var(--hv-warning)] animate-pulse"></span>
+                  <span>{$t('settings.update_applying')}</span>
+                </div>
+              {:else if applyStatus.exit}
+                <div data-testid="settings-update-exit" class="settings-version-row flex justify-between gap-3 text-sm py-1">
+                  <span class="text-[var(--hv-settings-label)]">{$t('settings.update_engine_result')}</span>
+                  <span class={cn('font-semibold text-right', applyStatus.exit.status === 'ok' ? 'text-[var(--hv-success)]' : 'text-[var(--hv-error)]')}>
+                    {$t(`settings.update_status_${applyStatus.exit.status === 'ok' ? 'succeeded' : 'failed'}`)}
+                  </span>
+                </div>
+              {/if}
+              {#if applyStatus.log_tail}
+                <button type="button" class="settings-link mt-1 text-xs text-[var(--hv-primary)] underline self-start" onclick={() => (showApplyLog = !showApplyLog)} aria-expanded={showApplyLog} data-testid="settings-update-log-toggle">
+                  {showApplyLog ? $t('settings.update_log_hide') : $t('settings.update_log_show')}
+                </button>
+                {#if showApplyLog}
+                  <pre data-testid="settings-update-log" class="m-0 mt-1 max-h-[220px] overflow-auto p-2 rounded-lg bg-[var(--hv-shell-border-soft)] border border-[var(--hv-shell-border)] text-micro font-[family-name:var(--hv-font-mono)] whitespace-pre-wrap">{applyStatus.log_tail}</pre>
+                {/if}
+              {/if}
+            {/if}
+            {#if applyError}
+              <p role="alert" data-testid="settings-update-error" class="m-0 mt-1 text-xs text-[var(--hv-error)]">{applyError}</p>
+            {/if}
             {#if versionInfo.error}<div class="settings-version-row flex items-center gap-1.5 text-xs text-[var(--hv-error)]"><IconAlertTriangle size={16} /> <span>{versionInfo.error}</span></div>{/if}
           </div>
           <div data-testid="settings-card-footer" class={settingsCardFooter}>
             <button class={cn(settingsBtn, settingsBtnGhost)} onclick={handleCheckUpdate} disabled={checkingUpdate}>{checkingUpdate ? $t('settings.checking') : $t('settings.check_for_updates')}</button>
+            <button
+              class={cn(settingsBtn, settingsBtnPrimary)}
+              onclick={applyUpdate}
+              disabled={applyingUpdate || !applyStatus?.available || !applyStatus?.configured || applyStatus?.running}
+              title={!applyStatus?.available
+                ? $t('settings.apply_update_unavailable')
+                : !applyStatus?.configured
+                  ? $t('settings.apply_update_unconfigured')
+                  : undefined}
+              data-testid="settings-apply-update"
+            >{applyingUpdate || applyStatus?.running ? $t('settings.update_applying') : $t('settings.apply_update')}</button>
           </div>
         </div>
         <!-- Phase D1: full-text content index, off by default. -->

@@ -112,6 +112,9 @@ pub struct PersistedEmail {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PersistedUpdate {
     pub check_frequency: Option<UpdateFrequency>,
+    /// Signed release manifest used by the "Apply update" button (P2-8).
+    #[serde(default)]
+    pub release_manifest: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -176,6 +179,10 @@ impl PersistedSettings {
     pub fn to_update(&self) -> UpdateSettings {
         UpdateSettings {
             check_frequency: self.update.as_ref().and_then(|u| u.check_frequency),
+            release_manifest: self
+                .update
+                .as_ref()
+                .and_then(|u| u.release_manifest.clone()),
         }
     }
 
@@ -253,6 +260,7 @@ impl SettingsPersistence {
             }),
             update: Some(PersistedUpdate {
                 check_frequency: update.check_frequency,
+                release_manifest: update.release_manifest.clone(),
             }),
             notifications: Some(PersistedNotifications {
                 email: notifications.email.clone(),
@@ -723,6 +731,7 @@ pub fn save_all_settings() {
             }),
             update: Some(PersistedUpdate {
                 check_frequency: update.check_frequency,
+                release_manifest: update.release_manifest.clone(),
             }),
             notifications: Some(PersistedNotifications {
                 email: notifications.email.clone(),

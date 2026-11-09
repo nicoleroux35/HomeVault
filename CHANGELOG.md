@@ -8,6 +8,31 @@ follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **Apply a signed update from Settings (2026-11-09, P2-8 UI half).** The
+  installer's signed/atomic engine is now reachable from the web UI instead of
+  a terminal:
+  - a **signed release channel** (`release_manifest`, validated: `https://` or
+    an absolute path) is saved with the other update settings;
+  - **Apply update** asks for confirmation (the dialog names the restart and the
+    automatic rollback), queues `data/updates/request.json` and starts the
+    root-owned `homevault-update` unit. The server never performs the swap: it
+    survives its own restart, and `KillMode=process` keeps the engine alive
+    across it;
+  - the unit's `ExecStart` is the fixed argv `homevault --update-engine`, which
+    runs the installer with `HV_BOOTSTRAP=0` (no terminal relaunch) and the
+    manifest in the environment — the signature is still verified before the
+    first download;
+  - `GET /api/settings/update/status` reports availability, the queued request,
+    the engine's last exit and its log tail; the screen offers the log, and
+    disables the button with the reason when there is no channel or no engine;
+  - the only new sudoers entry is `systemctl start homevault-update` — one fixed
+    unit, no parameterised root command. A `curl | bash` install now copies the
+    installer to `/opt/homevault/installer/install.sh` so the button works there
+    too.
+  Tests: 6 unit (channel/request validation), 3 integration (nothing is
+  applied), installer unit-render assertions and Settings E2E §30 (written, not
+  run).
+
 - **Calendars and contacts, self-hosted (2026-11-09, P2).** DSM's Calendar and
   Contacts apps land where §6 says they belong — the catalog, not a new
   subsystem: **Baïkal** (CalDAV + CardDAV, one container) is the 16th built-in

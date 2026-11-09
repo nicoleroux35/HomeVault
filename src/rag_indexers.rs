@@ -749,6 +749,12 @@ Security: protected-device blocklist prevents operating on the boot disk. Path t
 - Update: check for updates manually or on schedule; a system update verifies a
   signed release manifest, swaps the program atomically, keeps the previous
   version, and rolls back automatically if the new build does not become ready.
+  The same update can be applied from this screen: an administrator saves the
+  address of the signed release manifest, then presses Apply update. The button
+  states what happens (HomeVault restarts, and the previous version is restored
+  automatically if the new one does not come back), shows the engine's live
+  state and its log, and stays disabled with the reason when no release channel
+  or no update engine is installed.
   The last update result (applied, rolled back or failed) is shown on the screen
 - Outbound proxy: route internet calls (certificates, dynamic DNS, update
   checks, alerts, Web Push) through an HTTP or HTTPS proxy, with a bypass list

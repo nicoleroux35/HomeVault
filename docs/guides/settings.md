@@ -525,6 +525,55 @@ until every supported release is re-signed.
 manifest fields, archive digest/size, the smoke test, atomic swap, rollback and
 the result/history file. It is run by hand, not by the installer.
 
+### Apply from the web UI (2026-11-09)
+
+The *Apply update* button is the same engine, started from Settings instead of
+a terminal. The server never performs the swap — it queues a request and starts
+one root-owned systemd unit, because a service cannot replace and restart
+itself reliably.
+
+| Piece | Path | Owned by |
+|---|---|---|
+| Release channel | `release_manifest` in the update settings (https URL or absolute path) | the admin, from Settings |
+| Queued request | `data/updates/request.json` (0600) | HomeVault |
+| Engine unit | `/etc/systemd/system/homevault-update.service` | root (written by the installer) |
+| Installer script | `/opt/homevault/installer/install.sh` (a `curl \| bash` install copies itself there) | root |
+| Engine log | `data/updates/apply.log` (tail shown in the UI) | HomeVault |
+| Engine exit | `data/updates/engine-exit.json` | the engine |
+
+Flow:
+
+1. `POST /api/settings/update/apply` with `{confirm: "apply"}` validates the
+   channel (`https://` or an absolute path, no spaces), the optional signature
+   and key path, queues the request, then runs
+   `sudo systemctl start homevault-update`.
+2. The unit's `ExecStart` is the **fixed** argv
+   `/opt/homevault/homevault --update-engine`. `KillMode=process` makes it
+   survive the service restart it triggers; `ConditionPathExists` refuses to
+   start at all when the installer script is absent.
+3. The engine runs `bash /opt/homevault/installer/install.sh --yes --cli` with
+   `HV_BOOTSTRAP=0` (no terminal relaunch) and the manifest/signature/key in
+   the environment. The signature check still happens **before** the first
+   download, so a tampered request cannot replace a binary.
+4. The installer swaps atomically, restarts the service and rolls back on its
+   own if the new build does not answer — exactly as described above.
+5. `GET /api/settings/update/status` reports `available`, `configured`,
+   `running`, the queued request, the last engine exit and the log tail. The UI
+   polls it after the click, because the request that started the update dies
+   with the restart it caused.
+
+**Privilege scope.** The only new sudoers entry is
+`systemctl start homevault-update` — one fixed unit, never a parameterised
+command. The unit file is root-owned, its argv is fixed, and the engine deletes
+the request whatever the outcome (a broken release is not retried in a loop).
+`systemctl stop`/`restart` of the unit are **not** granted: it is a oneshot
+that ends by itself.
+
+**Refusals the screen states instead of hiding behind a failed click:** no
+release channel configured, the engine not installed (no unit or no script), an
+update already running, and a manifest that is not `https://` or an absolute
+path.
+
 ## System → Database snapshots (2026-10-17)
 
 The **System** category carries a "Database snapshots" card, below *Data

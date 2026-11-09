@@ -141,7 +141,7 @@ justifie.
 | **P2-5** | KMIP / coffre de clés — **rejeté pour la cible** (dépendance critique au boot) | P2 | XL | Clés externalisées |
 | **P2-6** | WORM par fichier — **rejeté pour la cible** (les snapshots immuables suffisent) | P2 | M/L | Immuabilité légale |
 | **P2-7** | Isolation d'exécution (systemd durci + profils AppArmor) — **priorité**, installeur livré 2026‑11‑08 (enforce/terrain restants) | P2 | L | Défense en profondeur |
-| **P2-8** | Mise à jour signée + atomique + rollback — **priorité**, installeur livré 2026‑11‑08 (UI restante) | P2 | L/XL | Intégrité de la chaîne |
+| **P2-8** | Mise à jour signée + atomique + rollback — livré 2026‑11‑09 (installeur 2026‑11‑08 + **Apply update** dans Settings) | P2 | L/XL | Intégrité de la chaîne |
 | **P2-9** | Réparation/restauration bare‑metal testée — **priorité**, drill non destructif livré 2026‑11‑08 (test VM restant) | P2 | L | Reprise après sinistre |
 | **P2-10** | Prédiction de panne disque par régression SMART (pas de ML) ✅ | P2 | M | Anticiper le remplacement |
 | **P2-11** | Compression/défragmentation Btrfs (hors dédup P2-4) ✅ | P2 | M | Espace et perf |
@@ -1922,8 +1922,26 @@ atomiquement (staging + smoke test `--version` + rename), conserve
 (sans root) et signature au `--package` via `HV_SIGNING_KEY`. Tests :
 `installer/tests/update-engine.test.sh` (non exécutés). Docs :
 `docs/guides/settings.md` → « System → Signed, atomic updates ».
-**Reste** : déclenchement depuis l'UI (le bouton « Check for Updates » ne fait
-que vérifier) et publication de la clé publique de production.
+**Livré 2026‑11‑09 (moitié UI).** Le canal de publication signé
+(`release_manifest`, validé `https://` ou chemin absolu) se règle dans
+Settings, et **Apply update** demande confirmation (le dialogue nomme le
+redémarrage et le rollback automatique), écrit la demande dans
+`data/updates/request.json` puis lance l'unité root `homevault-update`. Le
+serveur ne fait **jamais** le remplacement lui‑même : l'unité survit au
+redémarrage (`KillMode=process`), son `ExecStart` est l'argv fixe
+`homevault --update-engine`, et l'installeur vérifie toujours la signature
+avant le premier téléchargement. `GET /settings/update/status` expose la
+disponibilité, la demande en attente, le dernier code de sortie et la fin du
+journal ; l'écran les affiche et désactive le bouton avec la raison quand il
+manque un canal ou le moteur. Sudoers : uniquement
+`systemctl start homevault-update` (une unité fixe, aucune commande
+paramétrée). Une installation `curl | bash` copie désormais l'installeur dans
+`/opt/homevault/installer/install.sh`. Tests : 6 unitaires, 1 test de grants,
+7 assertions de rendu d'unité, 3 d'intégration, E2E Settings §30 — écrits, non
+exécutés.
+
+**Reste** : publication de la clé publique de production (dépôt de release) et
+validation terrain sur un hôte réel.
 
 ### [~] P2-9 — Réparation / restauration bare‑metal · L
 

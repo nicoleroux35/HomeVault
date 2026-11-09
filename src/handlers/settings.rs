@@ -501,12 +501,18 @@ pub fn validate_webhook_url(raw: &str) -> Result<String, String> {
 #[derive(Debug, Deserialize)]
 pub struct UpdateSettings {
     pub check_frequency: Option<UpdateFrequency>,
+    /// Signed release manifest the "Apply update" button hands to the update
+    /// engine (P2-8). Empty/absent = the button is disabled, which is the
+    /// honest state of an appliance with no release channel configured.
+    #[serde(default)]
+    pub release_manifest: Option<String>,
 }
 
 impl Default for UpdateSettings {
     fn default() -> Self {
         Self {
             check_frequency: Some(UpdateFrequency::default()),
+            release_manifest: None,
         }
     }
 }
@@ -1366,9 +1372,24 @@ pub async fn handle_update_settings_update(
         Err(_) => return ResponseHelper::json_unauthorized("Session invalid".to_string()),
     };
 
+    // The manifest is validated here; an invalid value is a 400 naming the
+    // rule, and the stored channel is left untouched.
+    let release_manifest = match req.release_manifest.as_deref() {
+        Some(raw) if raw.trim().is_empty() => None,
+        Some(raw) => match crate::update_engine::validate_manifest(raw) {
+            Ok(value) => Some(value),
+            Err(e) => return ResponseHelper::json_error(e),
+        },
+        None => None,
+    };
+    let manifest_provided = req.release_manifest.is_some();
+
     let mut settings = UPDATE_SETTINGS.write();
     if let Some(frequency) = &req.check_frequency {
         settings.check_frequency = Some(*frequency);
+    }
+    if manifest_provided {
+        settings.release_manifest = release_manifest;
     }
     drop(settings);
 
@@ -1399,6 +1420,7 @@ pub async fn handle_update_settings_get(
     let settings = UPDATE_SETTINGS.read();
     ResponseHelper::json_success(serde_json::json!({
         "check_frequency": settings.check_frequency,
+        "release_manifest": settings.release_manifest,
     }))
 }
 

@@ -1493,8 +1493,38 @@ class ApiClient {
 
   // Updates
 
-  async updateUpdateSettings(data: { check_frequency?: string }) {
+  async updateUpdateSettings(data: { check_frequency?: string; release_manifest?: string }) {
     return this.put('/settings/update', data);
+  }
+
+  // --- Signed update application (P2-8, UI half) ---------------------------
+
+  /**
+   * Whether the update engine can run, the queued request, the last engine
+   * exit and the tail of its log. Polled after an apply, because the server
+   * restarts in the middle of it.
+   */
+  async getUpdateApplyStatus() {
+    return this.get<{
+      available: boolean;
+      configured: boolean;
+      running: boolean;
+      current_version: string;
+      request: { manifest: string; actor: string | null; requested_at: string | null } | null;
+      exit: { status: string; exit_code: number | null; finished_at: string } | null;
+      log_tail: string;
+      restarts_service: boolean;
+    }>('/settings/update/status', { cache: false });
+  }
+
+  /** Queue a signed update and start the engine (admin). */
+  async applyUpdate(payload: {
+    manifest?: string;
+    signature?: string;
+    pubkey?: string;
+    confirm: string;
+  }) {
+    return this.post('/settings/update/apply', payload);
   }
 
   /** Read the version info. The server only contacts the update endpoint

@@ -89,6 +89,7 @@ use homevault::handlers::settings::{
     UPDATE_SETTINGS,
 };
 use homevault::handlers::terminal_pty::PtyManager;
+use homevault::handlers::update_apply::{handle_update_apply, handle_update_apply_status};
 use homevault::handlers::{auth::handle_login, AppState};
 use homevault::middleware::rate_limit::RateLimitState;
 use homevault::storage::{Database, WidgetRepository};
@@ -165,6 +166,11 @@ fn settings_router(state: Arc<AppState>) -> Router {
             "/api/settings/update",
             get(handle_update_settings_get).put(handle_update_settings_update),
         )
+        .route(
+            "/api/settings/update/status",
+            get(handle_update_apply_status),
+        )
+        .route("/api/settings/update/apply", post(handle_update_apply))
         .route(
             "/api/settings/language",
             get(handle_get_language).post(handle_set_language),
@@ -2004,4 +2010,182 @@ async fn autostart_update_records_a_successful_toggle() {
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["data"]["enabled"], json!(true));
     assert!(body["data"]["message"].is_string());
+}
+
+// ---------------------------------------------------------------------------
+// Signed update application (P2-8, UI half)
+//
+// No update is ever started here: the engine is not installed in the test
+// environment, and every case below is refused (or reported) before any
+// privileged call. The status endpoint only reads files and asks systemd
+// whether a unit is active.
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_update_apply_status_is_admin_only_and_honest() {
+    let (state, _tmp, _g) = setup_state().await;
+    create_test_user(&state, "admin", "pw012345", 2).await;
+    create_test_user(&state, "member", "pw012345", 1).await;
+    let mut r = settings_router(state);
+    let admin = login(&mut r, "admin", "pw012345").await;
+    let member = login(&mut r, "member", "pw012345").await;
+
+    let (status, _) = send(
+        &mut r,
+        Method::GET,
+        "/api/settings/update/status",
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+
+    let (status, body) = send(
+        &mut r,
+        Method::GET,
+        "/api/settings/update/status",
+        Some(&member),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+
+    let (status, body) = send(
+        &mut r,
+        Method::GET,
+        "/api/settings/update/status",
+        Some(&admin),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let data = &body["data"];
+    assert!(data["available"].is_boolean());
+    assert!(data["configured"].is_boolean());
+    assert!(data["running"].is_boolean());
+    assert_eq!(data["restarts_service"], json!(true));
+    assert!(data["current_version"]
+        .as_str()
+        .is_some_and(|v| !v.is_empty()));
+    // Nothing is queued on a fresh appliance.
+    assert!(data["request"].is_null(), "{body}");
+}
+
+#[tokio::test]
+async fn test_release_channel_is_validated_and_persisted() {
+    let (state, _tmp, _g) = setup_state().await;
+    create_test_user(&state, "admin", "pw012345", 2).await;
+    let mut r = settings_router(state);
+    let admin = login(&mut r, "admin", "pw012345").await;
+
+    // Plain http is refused: the installer would still verify the signature,
+    // but an unauthenticated channel can be swapped for a stale release.
+    for bad in [
+        "http://releases.example.com/manifest.json",
+        "file:///etc/passwd",
+        "releases.example.com/manifest.json",
+    ] {
+        let (status, body) = send(
+            &mut r,
+            Method::PUT,
+            "/api/settings/update",
+            Some(&admin),
+            Some(json!({ "release_manifest": bad })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{bad:?}: {body}");
+    }
+
+    let (status, body) = send(
+        &mut r,
+        Method::PUT,
+        "/api/settings/update",
+        Some(&admin),
+        Some(json!({ "release_manifest": "https://releases.example.com/hv/manifest.json" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    let (_, body) = send(
+        &mut r,
+        Method::GET,
+        "/api/settings/update",
+        Some(&admin),
+        None,
+    )
+    .await;
+    assert_eq!(
+        body["data"]["release_manifest"],
+        json!("https://releases.example.com/hv/manifest.json"),
+        "{body}"
+    );
+
+    // An empty value clears the channel (the button then says "not configured").
+    let (_, body) = send(
+        &mut r,
+        Method::PUT,
+        "/api/settings/update",
+        Some(&admin),
+        Some(json!({ "release_manifest": "" })),
+    )
+    .await;
+    assert_eq!(body["success"], json!(true), "{body}");
+    let (_, body) = send(
+        &mut r,
+        Method::GET,
+        "/api/settings/update",
+        Some(&admin),
+        None,
+    )
+    .await;
+    assert!(body["data"]["release_manifest"].is_null(), "{body}");
+}
+
+#[tokio::test]
+async fn test_apply_update_requires_confirmation_and_a_valid_channel() {
+    let (state, _tmp, _g) = setup_state().await;
+    create_test_user(&state, "admin", "pw012345", 2).await;
+    let mut r = settings_router(state);
+    let admin = login(&mut r, "admin", "pw012345").await;
+
+    // No confirmation: refused before anything else.
+    let (status, body) = send(
+        &mut r,
+        Method::POST,
+        "/api/settings/update/apply",
+        Some(&admin),
+        Some(json!({})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+
+    // An invalid manifest is a 400 even on a host without the engine.
+    let (status, body) = send(
+        &mut r,
+        Method::POST,
+        "/api/settings/update/apply",
+        Some(&admin),
+        Some(json!({ "confirm": "apply", "manifest": "http://example.com/m.json" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+
+    // A valid manifest with no saved channel and no engine installed: the
+    // answer names what is missing instead of pretending to update.
+    let (status, body) = send(
+        &mut r,
+        Method::POST,
+        "/api/settings/update/apply",
+        Some(&admin),
+        Some(json!({ "confirm": "apply" })),
+    )
+    .await;
+    assert!(
+        status == StatusCode::BAD_REQUEST || status == StatusCode::SERVICE_UNAVAILABLE,
+        "{status}: {body}"
+    );
+    assert!(
+        body["message"].as_str().is_some_and(|m| !m.is_empty()),
+        "{body}"
+    );
 }

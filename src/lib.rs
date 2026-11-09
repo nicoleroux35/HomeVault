@@ -152,5 +152,6 @@ pub mod web_push;
 pub mod webdav;
 pub mod zfs_cache;
 pub mod syncthing_versions;
+pub mod update_engine;
 pub mod vm_export;
 pub mod zvol;

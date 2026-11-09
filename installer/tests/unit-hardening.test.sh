@@ -91,6 +91,17 @@ has "apparmor: user homes writable" "$PROFILE" "/home/homevault/** rwkl"
 has "apparmor: includes base abstraction" "$PROFILE" "#include <abstractions/base>"
 lacks "apparmor: no unexpanded substitution" "$PROFILE" '$('
 
+# --- Update engine unit (P2-8, UI half) -----------------------------------
+UPDATE_UNIT=$(render_update_unit /opt/homevault)
+has "update unit: fixed ExecStart" "$UPDATE_UNIT" "ExecStart=/opt/homevault/homevault --update-engine"
+has "update unit: oneshot" "$UPDATE_UNIT" "Type=oneshot"
+has "update unit: needs the installer script" "$UPDATE_UNIT" "ConditionPathExists=/opt/homevault/installer/install.sh"
+has "update unit: survives the restart it causes" "$UPDATE_UNIT" "KillMode=process"
+has "update unit: bounded start" "$UPDATE_UNIT" "TimeoutStartSec=3600"
+# The argv is fixed: no parameter, no shell, no wildcard.
+lacks "update unit: no shell" "$UPDATE_UNIT" "/bin/sh"
+lacks "update unit: no unexpanded substitution" "$UPDATE_UNIT" '$('
+
 ENFORCE_PROFILE=$(HV_APPARMOR_ENFORCE=1 render_apparmor_profile)
 has "apparmor: enforce switch" "$ENFORCE_PROFILE" "flags=(enforce)"
 lacks "apparmor: enforce is not complain" "$ENFORCE_PROFILE" "flags=(complain)"

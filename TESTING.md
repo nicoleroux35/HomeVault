@@ -1,5 +1,23 @@
 # HomeVault — Test tracking
 
+## P2-8 UI half — apply a signed update from Settings — 2026-11-09 (not run)
+
+> **Instruction followed: no test command was executed for this change.**
+> Static checks passed: `cargo check --lib`, `cargo check --tests`,
+> `cd frontend && npm run check`, `npm run build` and `bash -n` on the
+> installer and its tests.
+> **No update is applied by any test**: the engine is not installed in the test
+> environment, and every case is refused before a privileged call.
+
+| Coverage | Added / changed |
+|---|---|
+| Unit (`src/update_engine.rs`) | **+5** — manifest validation (`https://`/absolute path only, spaces/`..` refused); signature and trust-anchor validation; request and engine-exit round-trip with forward-compatible defaults; log tail is bounded and a missing log is empty (not an error) |
+| Unit (`src/setup.rs`) | **+1** — the update grant is exactly `systemctl start homevault-update`; `stop`/`restart` and a wildcard are refused |
+| Installer (`installer/tests/unit-hardening.test.sh`) | **+7 assertions** — the rendered update unit has the fixed `ExecStart`, is `oneshot`, needs the installer script, survives the restart (`KillMode=process`), is time-bounded, and carries no shell or unexpanded substitution |
+| Integration (`tests/settings_core_integration.rs`) | **+3** — the status route is admin-only and honest on a fresh appliance; the release channel is validated (`http`/`file://`/bare host refused) and persisted, and empty clears it; apply refuses a missing confirmation and a bad manifest **before** the capability probe |
+| E2E (`tests/e2e/settings/settings.spec.ts`) | **+2** — §30.1 the channel field saves through the normal Save button; §30.2 the Apply button is enabled only with an engine and a channel, otherwise disabled with the reason, and the status route is admin-only |
+| Docs | `docs/guides/settings.md` (new "Apply from the web UI" section), `docs/API.md`, `SCREENS.md`, `CHANGELOG.md`, RAG `settings`, `HOMEVAULT_TASKLIST_A_FAIRE.md`, `COMPARAISON_DSM_VS_HOMEVAULT.md` |
+
 ## P2 Calendars/contacts in the catalog (Baïkal) — 2026-11-09 (not run)
 
 > **Instruction followed: no test command was executed for this change.**

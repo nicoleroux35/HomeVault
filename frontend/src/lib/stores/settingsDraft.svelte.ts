@@ -136,7 +136,7 @@ export interface DraftValues {
       token_set: boolean;
     };
   };
-  update: { check_frequency: string };
+  update: { check_frequency: string; release_manifest: string };
   // ROADMAP 26.2: `theme` and `density` were removed. Appearance now includes
   // only the wallpaper and the accent colour.
   appearance: { wallpaper: string; accent_color: string };
@@ -196,7 +196,7 @@ export const draft = $state<DraftValues>({
       token_set: false,
     },
   },
-  update: { check_frequency: 'weekly' },
+  update: { check_frequency: 'weekly', release_manifest: '' },
   appearance: { wallpaper: '', accent_color: '#1E62AE' },
   autostart: { enabled: false },
   ai: { model: '' },
@@ -466,7 +466,10 @@ async function saveGroup(group: SettingsGroup): Promise<void> {
       break;
     }
     case 'update': {
-      const res = await api.updateUpdateSettings({ check_frequency: draft.update.check_frequency });
+      const res = await api.updateUpdateSettings({
+        check_frequency: draft.update.check_frequency,
+        release_manifest: draft.update.release_manifest,
+      });
       if (!res.success) throw new Error(group);
       break;
     }

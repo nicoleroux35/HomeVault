@@ -3012,3 +3012,96 @@ test.describe('15 — Database snapshots', () => {
     await page.unroute('**/api/settings/backup/db');
   });
 });
+
+// ===========================================================================
+// 30 — Signed update: release channel and "Apply update" (P2-8, UI half)
+//
+// The engine is not installed in the test environment, so this suite only
+// proves the screen states the truth: the channel field exists and is saved,
+// and the button is disabled with the reason instead of failing later.
+// ===========================================================================
+test.describe('30 — Signed update', () => {
+  test('30.1 — the release channel field saves through the normal Save button', async ({ page }) => {
+    await gotoDesktop(page, adminTokens);
+    await openCategory(page, 'system');
+
+    const field = set(page).locator('[data-testid="settings-release-manifest"]');
+    await expect(field).toBeVisible({ timeout: 10_000 });
+    await expect(field).toHaveAttribute('type', 'url');
+
+    // An https channel is accepted by the server.
+    await field.fill('https://releases.example.com/hv/manifest.json');
+    await saveSettings(page);
+
+    const before = await page.evaluate(
+      async ({ token, csrf }) => {
+        const r = await fetch('/api/settings/update', {
+          headers: { 'x-session-token': token, 'x-csrf-token': csrf },
+        });
+        const body = await r.json();
+        return body.data?.release_manifest ?? null;
+      },
+      { token: adminTokens.token, csrf: adminTokens.csrf },
+    );
+    expect(before).toBe('https://releases.example.com/hv/manifest.json');
+
+    // Clearing it puts the button back to "not configured".
+    await field.fill('');
+    await saveSettings(page);
+    const after = await page.evaluate(
+      async ({ token, csrf }) => {
+        const r = await fetch('/api/settings/update', {
+          headers: { 'x-session-token': token, 'x-csrf-token': csrf },
+        });
+        const body = await r.json();
+        return body.data?.release_manifest ?? null;
+      },
+      { token: adminTokens.token, csrf: adminTokens.csrf },
+    );
+    expect(after).toBeNull();
+  });
+
+  test('30.2 — Apply update is offered only when the engine and a channel exist', async ({
+    page,
+  }) => {
+    await gotoDesktop(page, adminTokens);
+    await openCategory(page, 'system');
+
+    const button = set(page).locator('[data-testid="settings-apply-update"]');
+    await expect(button).toBeVisible({ timeout: 10_000 });
+
+    const status = await page.evaluate(
+      async ({ token, csrf }) => {
+        const r = await fetch('/api/settings/update/status', {
+          headers: { 'x-session-token': token, 'x-csrf-token': csrf },
+        });
+        return r.json();
+      },
+      { token: adminTokens.token, csrf: adminTokens.csrf },
+    );
+    expect(status.success).toBe(true);
+
+    const usable = status.data.available && status.data.configured;
+    if (usable) {
+      // A real appliance with a release channel: the button must be clickable
+      // (this suite never clicks it — it restarts the server).
+      await expect(button).toBeEnabled();
+    } else {
+      await expect(button).toBeDisabled();
+      const reason =
+        status.data.available
+          ? /release channel|canal|canal de publicación|Release-Kanal/i
+          : /engine|moteur|motor|Update-Engine/i;
+      await expect(button).toHaveAttribute('title', reason);
+      // And the status explains it rather than leaving a dead control.
+      expect(typeof status.data.current_version).toBe('string');
+    }
+
+    // The status endpoint is admin-only.
+    const anonymous = await page.evaluate(async () => {
+      const r = await fetch('/api/settings/update/status');
+      return r.status;
+    });
+    expect(anonymous).toBe(401);
+  });
+});

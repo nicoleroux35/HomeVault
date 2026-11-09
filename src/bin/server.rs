@@ -44,6 +44,18 @@ fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
         return Ok(());
     }
 
+    // Update engine (P2-8, UI half): the root-owned `homevault-update.service`
+    // runs exactly this argv. It reads `data/updates/request.json`, runs the
+    // installer engine with the signed manifest, and records the outcome. A
+    // failure exits non-zero so `systemctl status` tells the truth.
+    if std::env::args().nth(1).as_deref() == Some("--update-engine") {
+        if let Err(e) = homevault::update_engine::run_engine() {
+            eprintln!("Update engine: {e}");
+            std::process::exit(1);
+        }
+        return Ok(());
+    }
+
     let rt = tokio::runtime::Runtime::new()?;
     rt.block_on(async {
         // Propagate the failure instead of swallowing it: a refused start (for
