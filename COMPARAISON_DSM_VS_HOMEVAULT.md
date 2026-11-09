@@ -13,7 +13,7 @@
 
 | Champ | Valeur |
 |---|---|
-| Baseline HomeVault | `910a84f`, 09/11/2026 — plus les correctifs de vérification (§8) et le lot intégrité (§9) |
+| Baseline HomeVault | `910a84f`, 09/11/2026 — plus les correctifs §8 et les lots fiabilité §9–§14 |
 | Firmware DSM analysé | 7.4.1‑90080 (DS925+), image `/media/nicolas/500GB/Projets/DSM7/DSM_DS925+_90080` |
 | Périmètre | 30 apps intégrées du launcher + 16 apps du catalogue Docker |
 | Méthode | Vérification du code (`src/`, `frontend/`, `catalog/`), des guides `docs/guides/` et du backlog `HOMEVAULT_TASKLIST_A_FAIRE.md` |
@@ -1048,10 +1048,12 @@ dans `TESTING.md`.
 1. Exécuter la suite complète et corriger les échecs d’intégration éventuels
    (les deux branches ne s’étaient jamais rencontrées).
 2. P2‑9 : reconstruction bare‑metal sur VM (FIAB‑05).
-3. FIAB‑02 : watchdog systemd et superviseur des boucles **livrés** (§10) ;
-   reste le test terrain `kill -9`/`systemctl stop`. FIAB‑04 (DB/config hors
-   disque système) reste ouvert.
-4. Clé de production et AppArmor enforce (P2‑7/P2‑8).
+3. FIAB‑02 : watchdog et superviseur **livrés** (§10). FIAB‑04 : données
+   système déplaçables + avertissement **livrés** (§11) ; la preuve de reprise
+   hors machine reste FIAB‑05/P2‑9.
+4. FIAB‑10 (vitesse RAID, §12), FIAB‑14 (verdict restic, §13) et FIAB‑03
+   (rollback base, §14) sont livrés avec leurs tests écrits. Restent la clé de
+   production, AppArmor enforce et les tests terrain (P2‑7/P2‑8/FIAB‑01/05).
 
 ---
 
