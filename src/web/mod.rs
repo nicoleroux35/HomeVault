@@ -3468,6 +3468,12 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let addr = format!("0.0.0.0:{}", settings.port);
     let listener = tokio::net::TcpListener::bind(&addr).await?;
 
+    // FIAB-02: the unit runs with `WatchdogSec=30`. Tell systemd the listener
+    // is bound, then answer the watchdog from a dedicated task. Both calls are
+    // no-ops when HomeVault is started from a terminal (no NOTIFY_SOCKET).
+    crate::systemd_notify::ready();
+    crate::systemd_notify::spawn_heartbeat();
+
     // A single, glanceable summary instead of scattered log lines — this is
     // the one thing an admin watching the terminal actually wants to know:
     // is it up, where do I reach it, and what did it find on this host.

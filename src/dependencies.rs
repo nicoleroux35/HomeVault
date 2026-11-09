@@ -1867,6 +1867,9 @@ mod tests {
             "RestrictRealtime=true",
             "ProtectKernelLogs=true",
             "NoNewPrivileges=true",
+            // FIAB-02: systemd restarts a wedged process.
+            "WatchdogSec=30",
+            "NotifyAccess=main",
         ] {
             assert!(
                 unit.contains(&want),

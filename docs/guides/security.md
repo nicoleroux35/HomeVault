@@ -241,6 +241,21 @@ shipped block:
 | `ProtectKernelLogs=true` | `/dev/kmsg` and `syslog(2)` closed; journal files stay readable |
 | `NoNewPrivileges=true` | **root deployment only**; no child may gain privileges. Left off in the `homevault` deployment because `sudo` is its privilege path |
 
+### Watchdog (FIAB-02)
+
+The unit also carries `WatchdogSec=30` and `NotifyAccess=main`. After the TCP
+listener is bound, `src/systemd_notify.rs` sends `READY=1` and then
+`WATCHDOG=1` every 10 seconds over systemd's `NOTIFY_SOCKET` (a filesystem
+path or an abstract `@name` socket). Three missed heartbeats mean the Tokio
+runtime is blocked — not a slow backup — and systemd restarts the unit instead
+of leaving a process that holds the port but serves nothing. When HomeVault is
+started from a terminal there is no `NOTIFY_SOCKET`, so every notification is
+a no-op.
+
+The watchdog only covers the process as a whole. Supervising each detached
+background loop (restart with backoff, expose `scheduler: running/dead` in
+Health) remains the second half of FIAB-02.
+
 Deliberately **not** set, with the shipped feature that would break:
 
 | Directive | Why it is absent |

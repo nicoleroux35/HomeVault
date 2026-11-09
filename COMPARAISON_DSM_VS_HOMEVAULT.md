@@ -1051,3 +1051,29 @@ dans `TESTING.md`.
 3. FIAB‑02 (watchdog) et FIAB‑04 (DB/config hors disque système) — angles
    morts de disponibilité identifiés par la revue fiabilité.
 4. Clé de production et AppArmor enforce (P2‑7/P2‑8).
+
+---
+
+## 10. Watchdog applicatif — 2026‑11‑09 (FIAB‑02, moitié systemd)
+
+> Le lot fiabilité signalait l’absence de supervision : l’unité était
+> `Type=simple`, sans `WatchdogSec`, et un runtime bloqué gardait le port TCP
+> ouvert sans servir. La première moitié est livrée ; la supervision des
+> boucles de fond reste ouverte.
+
+- `src/systemd_notify.rs` : `ready()` (READY=1 + STATUS) et un heartbeat
+  `WATCHDOG=1` toutes les **10 s**, envoyé par un datagramme Unix sur
+  `NOTIFY_SOCKET` (chemin ou socket abstrait `@…`). Sans socket systemd,
+  chaque appel est un no‑op : un lancement à la main n’est pas affecté.
+- `installer/install.sh` (`render_service_unit`) ajoute `WatchdogSec=30` et
+  `NotifyAccess=main`. Trois ticks manqués = runtime bloqué, systemd redémarre
+  le service au lieu de laisser une appliance à moitié vivante.
+- `src/web/mod.rs` envoie `READY=1` **après** la liaison du listener, puis
+  démarre le heartbeat.
+- Tests écrits, non exécutés : format du datagramme, socket abstrait/chemin,
+  no‑op sans `NOTIFY_SOCKET`, livraison réelle sur un `UnixDatagram` de test,
+  et assertions d’installeur (`WatchdogSec`/`NotifyAccess`).
+- **Reste FIAB‑02** : envelopper les boucles `tokio::spawn` dans un
+  superviseur (handle conservé, relance avec backoff, état exposé dans Health)
+  — le watchdog systemd détecte un blocage global, pas la mort silencieuse
+  d’une seule boucle.

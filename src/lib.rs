@@ -38,6 +38,7 @@ pub mod storage;
 pub mod supply_chain;
 pub mod syslog_forward;
 pub mod system_stability;
+pub mod systemd_notify;
 pub mod vpn;
 pub mod web;
 pub mod wol;

@@ -56,6 +56,22 @@
 suites), the E2E specs for Shares/iSCSI/Tasks/Storage/Health, the two
 installer suites, and `npm run build`.
 
+## 2026-11-09 — systemd watchdog heartbeat (FIAB-02, written, not run)
+
+> **No test was executed.** Static checks: `cargo check --lib`,
+> `cargo check --tests`, `bash -n installer/install.sh` and
+> `bash -n installer/tests/unit-hardening.test.sh`.
+
+| Suite | Coverage |
+|---|---|
+| Unit (`src/systemd_notify.rs`) | newline-terminated `sd_notify` wire shape; pathname and abstract (`@name`) destinations; `notify`/`spawn_heartbeat` are no-ops without `NOTIFY_SOCKET`; a real `UnixDatagram` receives `WATCHDOG=1` and `READY=1` |
+| Unit (`src/dependencies.rs`) | the rendered unit contains `WatchdogSec=30` and `NotifyAccess=main` |
+| Installer (`installer/tests/unit-hardening.test.sh`) | +2 assertions for the watchdog directives in the root unit |
+
+**Still to run:** the unit tests above, the installer suite, and a live
+`systemctl stop`/`kill -9` on a host to prove the restart path. Supervision of
+the individual `tokio::spawn` loops remains open in FIAB-02.
+
 ## P1-28 — kernel stability + explicit monitoring choice — 2026-11-09 (not run)
 
 > **No Rust or E2E test was executed for this change.** Static checks passed:

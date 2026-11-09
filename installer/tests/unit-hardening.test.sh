@@ -65,6 +65,8 @@ has "hardening: personality locked" "$ROOT_UNIT" "LockPersonality=true"
 has "hardening: no realtime" "$ROOT_UNIT" "RestrictRealtime=true"
 has "hardening: kernel logs closed" "$ROOT_UNIT" "ProtectKernelLogs=true"
 has "hardening: root gets NNP" "$ROOT_UNIT" "NoNewPrivileges=true"
+has "watchdog: systemd restarts a wedged process" "$ROOT_UNIT" "WatchdogSec=30"
+has "watchdog: accepts the main PID heartbeat" "$ROOT_UNIT" "NotifyAccess=main"
 
 # --- unit: directives that would break shipped features stay absent -------
 lacks "not set: ProtectKernelTunables (VPN sysctl)" "$ROOT_UNIT" $'\nProtectKernelTunables='

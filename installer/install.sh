@@ -761,6 +761,11 @@ StartLimitBurst=5
 
 [Service]
 Type=simple
+# FIAB-02: systemd restarts a process that stops answering. The heartbeat is
+# sent by src/systemd_notify.rs every 10 s; three missed ticks (30 s) mean a
+# blocked runtime, not a slow backup.
+WatchdogSec=30
+NotifyAccess=main
 User=$run_user
 Group=$run_group
 $service_supp
