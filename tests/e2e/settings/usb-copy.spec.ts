@@ -61,6 +61,7 @@ function profile(overrides: Record<string, unknown> = {}) {
     destination_path: '/mnt/photos',
     verify_checksums: true,
     strategy: 'incremental',
+    versions_to_keep: 10,
     conflict: 'overwrite',
     auto_eject: false,
     enabled: true,
@@ -206,6 +207,7 @@ test.describe('USB one-touch copy', () => {
     await page.locator('[data-testid="usb-source"]').fill('/DCIM');
     await page.locator('[data-testid="usb-destination"]').fill('/mnt/photos');
     await page.locator('[data-testid="usb-strategy"]').selectOption('versioned');
+    await page.locator('[data-testid="usb-versions-to-keep"]').fill('5');
     await page.locator('[data-testid="usb-conflict"]').selectOption('rename');
     await page.locator('[data-testid="usb-save"]').click();
 
@@ -213,6 +215,7 @@ test.describe('USB one-touch copy', () => {
     expect(recorder.creates[0].name).toBe('Camera Photos');
     expect(recorder.creates[0].device_uuid).toBe('1234-5678');
     expect(recorder.creates[0].strategy).toBe('versioned');
+    expect(recorder.creates[0].versions_to_keep).toBe(5);
     expect(recorder.creates[0].conflict).toBe('rename');
     // The dialog closes and the notice confirms the save.
     await expect(page.locator('[data-testid="usb-name"]')).toBeHidden();

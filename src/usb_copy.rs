@@ -45,6 +45,34 @@ const POOL_PROBE_TIMEOUT: Duration = Duration::from_secs(10);
 const DEVICE_OP_TIMEOUT: Duration = Duration::from_secs(30);
 const COPY_BUFFER_SIZE: usize = 8 * 1024 * 1024; // 8MB buffer
 
+/// How many `.versions/<stamp>/` folders a versioned profile keeps by default
+/// (FIAB-26). Older snapshots are removed after a successful run.
+pub const DEFAULT_VERSIONS_TO_KEEP: u32 = 10;
+/// Upper bound accepted from the API, so a typo cannot turn the retention pass
+/// into a full-tree scan that never ends.
+pub const MAX_VERSIONS_TO_KEEP: u32 = 1_000;
+/// Directories visited by one retention pass. A normal destination has a few
+/// dozen; the bound keeps a hostile or accidentally huge tree from stalling
+/// the copy job.
+const MAX_PURGE_DIRECTORIES: usize = 10_000;
+
+/// Shape of a version folder: `YYYYMMDD-HHMMSS`, the stamp written by
+/// `version_existing`. Anything else under `.versions/` is left alone.
+fn is_version_stamp(name: &str) -> bool {
+    let bytes = name.as_bytes();
+    bytes.len() == 15
+        && bytes[8] == b'-'
+        && bytes
+            .iter()
+            .enumerate()
+            .all(|(index, byte)| index == 8 || byte.is_ascii_digit())
+}
+
+/// Default for `versions_to_keep` (FIAB-26).
+const fn default_versions_to_keep() -> u32 {
+    DEFAULT_VERSIONS_TO_KEEP
+}
+
 /// USB copy profile
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UsbCopyProfile {
@@ -76,6 +104,14 @@ pub struct UsbCopyProfile {
     /// What to do when a destination file already exists (FIAB-13).
     #[serde(default)]
     pub conflict: ConflictPolicy,
+
+    /// How many versioned snapshots to keep per folder (FIAB-26).
+    ///
+    /// `0` keeps every snapshot — the historical behaviour — so a profile can
+    /// opt out of the cleanup. Older profiles have no field and load with the
+    /// default.
+    #[serde(default = "default_versions_to_keep")]
+    pub versions_to_keep: u32,
 
     /// Whether to eject after successful copy
     pub auto_eject: bool,
@@ -295,6 +331,12 @@ impl UsbCopyService {
         // Validate destination path
         Self::validate_destination_path(&profile.destination_path)?;
 
+        if profile.versions_to_keep > MAX_VERSIONS_TO_KEEP {
+            return Err(format!(
+                "versions to keep must be 0-{MAX_VERSIONS_TO_KEEP} (0 keeps every version)"
+            ));
+        }
+
         Ok(())
     }
 
@@ -497,6 +539,13 @@ impl UsbCopyService {
         // its per-file verification happened inside the copy loop.
         if profile.verify_checksums && !matches!(strategy, CopyStrategy::PhotoImport) {
             Self::verify_copy(&source, &verify_root).await?;
+        }
+
+        // FIAB-26: bound the `.versions/` history once the copy is complete.
+        // Best-effort by design — a failed cleanup must never turn a verified
+        // copy into a failed run.
+        if matches!(strategy, CopyStrategy::Versioned) && profile.versions_to_keep > 0 {
+            Self::purge_versions(&destination, profile.versions_to_keep).await;
         }
 
         // Eject if requested
@@ -707,6 +756,75 @@ impl UsbCopyService {
             .map_err(|e| format!("failed to move the previous version: {e}"))
     }
 
+    /// Removes the oldest `.versions/<stamp>/` folders beyond `keep`.
+    ///
+    /// Only directories named like a timestamp are candidates, only
+    /// `.versions` folders under `root` are visited, and symlinks are never
+    /// followed — so a retention pass can never reach outside the destination
+    /// or delete a user's own folder. The directory walk is bounded so a
+    /// pathological tree cannot stall the copy job.
+    async fn purge_versions(root: &Path, keep: u32) {
+        if keep == 0 {
+            return;
+        }
+        let mut stack = vec![root.to_path_buf()];
+        let mut visited = 0usize;
+
+        while let Some(dir) = stack.pop() {
+            visited += 1;
+            if visited > MAX_PURGE_DIRECTORIES {
+                return;
+            }
+            let Ok(mut entries) = tokio::fs::read_dir(&dir).await else {
+                continue;
+            };
+            while let Ok(Some(entry)) = entries.next_entry().await {
+                let Ok(file_type) = entry.file_type().await else {
+                    continue;
+                };
+                // `file_type()` does not follow symlinks: a link to another
+                // tree is skipped instead of walked.
+                if !file_type.is_dir() {
+                    continue;
+                }
+                if entry.file_name() == ".versions" {
+                    Self::purge_one_versions_dir(&entry.path(), keep).await;
+                } else {
+                    stack.push(entry.path());
+                }
+            }
+        }
+    }
+
+    /// Applies the retention count to one `.versions/` folder.
+    async fn purge_one_versions_dir(dir: &Path, keep: u32) {
+        let Ok(mut entries) = tokio::fs::read_dir(dir).await else {
+            return;
+        };
+        let mut stamps: Vec<(String, PathBuf)> = Vec::new();
+        while let Ok(Some(entry)) = entries.next_entry().await {
+            let Ok(file_type) = entry.file_type().await else {
+                continue;
+            };
+            if !file_type.is_dir() {
+                continue;
+            }
+            let name = entry.file_name().to_string_lossy().to_string();
+            if is_version_stamp(&name) {
+                stamps.push((name, entry.path()));
+            }
+        }
+        if stamps.len() <= keep as usize {
+            return;
+        }
+        // The stamp sorts chronologically as text (`YYYYMMDD-HHMMSS`).
+        stamps.sort_by(|a, b| a.0.cmp(&b.0));
+        let excess = stamps.len() - keep as usize;
+        for (_, path) in stamps.into_iter().take(excess) {
+            let _ = tokio::fs::remove_dir_all(&path).await;
+        }
+    }
+
     /// `name (1).ext`, `name (2).ext`… bounded so a full folder cannot loop.
     async fn unique_destination(dst: &Path) -> PathBuf {
         let parent = dst.parent().unwrap_or(Path::new(""));
@@ -901,6 +1019,7 @@ mod tests {
             verify_checksums: false,
             strategy: CopyStrategy::Incremental,
             conflict: ConflictPolicy::Overwrite,
+            versions_to_keep: DEFAULT_VERSIONS_TO_KEEP,
             auto_eject: false,
             enabled: true,
             last_run: None,
@@ -924,6 +1043,7 @@ mod tests {
             verify_checksums: false,
             strategy: CopyStrategy::Incremental,
             conflict: ConflictPolicy::Overwrite,
+            versions_to_keep: DEFAULT_VERSIONS_TO_KEEP,
             auto_eject: false,
             enabled: true,
             last_run: None,
@@ -947,6 +1067,7 @@ mod tests {
             verify_checksums: false,
             strategy: CopyStrategy::Incremental,
             conflict: ConflictPolicy::Overwrite,
+            versions_to_keep: DEFAULT_VERSIONS_TO_KEEP,
             auto_eject: false,
             enabled: true,
             last_run: None,
@@ -1229,6 +1350,130 @@ mod tests {
             .expect("one version folder")
             .unwrap();
         assert_eq!(std::fs::read(stamp.path().join("a.txt")).unwrap(), b"old");
+    }
+
+    #[tokio::test]
+    async fn retention_keeps_only_the_newest_versions() {
+        let dir = tempfile::tempdir().unwrap();
+        let dst = dir.path().join("dst");
+        let versions = dst.join(".versions");
+        std::fs::create_dir_all(&versions).unwrap();
+        for stamp in [
+            "20260101-000000",
+            "20260102-000000",
+            "20260103-000000",
+            "20260104-000000",
+            "20260105-000000",
+        ] {
+            std::fs::create_dir_all(versions.join(stamp)).unwrap();
+            std::fs::write(versions.join(stamp).join("a.txt"), stamp).unwrap();
+        }
+        // Neither a loose file nor a folder that is not a stamp is a version.
+        std::fs::write(versions.join("notes.txt"), b"keep me").unwrap();
+        std::fs::create_dir_all(versions.join("manual")).unwrap();
+
+        UsbCopyService::purge_versions(&dst, 2).await;
+
+        let mut left: Vec<String> = std::fs::read_dir(&versions)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().to_string())
+            .collect();
+        left.sort();
+        assert_eq!(
+            left,
+            vec![
+                "20260104-000000".to_string(),
+                "20260105-000000".to_string(),
+                "manual".to_string(),
+                "notes.txt".to_string(),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn retention_zero_keeps_every_version() {
+        let dir = tempfile::tempdir().unwrap();
+        let versions = dir.path().join(".versions");
+        for stamp in ["20260101-000000", "20260102-000000"] {
+            std::fs::create_dir_all(versions.join(stamp)).unwrap();
+        }
+
+        UsbCopyService::purge_versions(dir.path(), 0).await;
+
+        assert_eq!(std::fs::read_dir(&versions).unwrap().count(), 2);
+    }
+
+    #[tokio::test]
+    async fn retention_ignores_lookalike_folders_outside_versions() {
+        let dir = tempfile::tempdir().unwrap();
+        let dst = dir.path().join("dst");
+        // A user's own timestamp-shaped folder must survive: only `.versions`
+        // folders are retention targets.
+        let user_folder = dst.join("20260101-000000");
+        std::fs::create_dir_all(&user_folder).unwrap();
+        std::fs::write(user_folder.join("keep.txt"), b"user data").unwrap();
+
+        let versions = dst.join(".versions");
+        for stamp in ["20260101-000000", "20260102-000000"] {
+            std::fs::create_dir_all(versions.join(stamp)).unwrap();
+        }
+
+        UsbCopyService::purge_versions(&dst, 1).await;
+
+        assert!(user_folder.join("keep.txt").exists());
+        assert_eq!(std::fs::read_dir(&versions).unwrap().count(), 1);
+    }
+
+    #[tokio::test]
+    async fn retention_walks_nested_versions_folders() {
+        let dir = tempfile::tempdir().unwrap();
+        let dst = dir.path().join("dst");
+        let nested = dst.join("DCIM").join(".versions");
+        for stamp in ["20260101-000000", "20260102-000000", "20260103-000000"] {
+            std::fs::create_dir_all(nested.join(stamp)).unwrap();
+        }
+
+        UsbCopyService::purge_versions(&dst, 1).await;
+
+        let left: Vec<String> = std::fs::read_dir(&nested)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().to_string())
+            .collect();
+        assert_eq!(left, vec!["20260103-000000".to_string()]);
+    }
+
+    #[test]
+    fn version_stamp_shape_is_enforced() {
+        assert!(is_version_stamp("20260101-000000"));
+        assert!(!is_version_stamp("20260101-00000"));
+        assert!(!is_version_stamp("20260101_000000"));
+        assert!(!is_version_stamp("manual"));
+        assert!(!is_version_stamp("abcdefgh-000000"));
+    }
+
+    #[test]
+    fn validate_profile_bounds_the_version_retention() {
+        let mut profile = UsbCopyProfile {
+            device_label: None,
+            id: "test".to_string(),
+            name: "Test".to_string(),
+            device_uuid: "1234-5678".to_string(),
+            source_path: "/".to_string(),
+            destination_path: "/mnt/test".to_string(),
+            verify_checksums: false,
+            strategy: CopyStrategy::Versioned,
+            conflict: ConflictPolicy::Overwrite,
+            versions_to_keep: MAX_VERSIONS_TO_KEEP + 1,
+            auto_eject: false,
+            enabled: true,
+            last_run: None,
+            last_status: None,
+        };
+        let error = UsbCopyService::validate_profile(&profile).expect_err("too many versions");
+        assert!(error.contains("versions to keep"), "{error}");
+
+        profile.versions_to_keep = 0;
+        UsbCopyService::validate_profile(&profile).expect("zero means keep every version");
     }
 
     #[tokio::test]

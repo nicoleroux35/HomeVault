@@ -1720,6 +1720,9 @@ usb_copy_strategy_versioned = "Versioniert (alte Kopie behalten)"
 usb_copy_strategy_photo_import = "Fotoimport (Jahr/Monat-Ordner)"
 usb_copy_conflict = "Wenn eine Datei bereits existiert"
 usb_copy_conflict_hint = "Überspringen behält die Kopie auf dem NAS; Umbenennen behält beide; Überschreiben ersetzt sie."
+usb_copy_versions_to_keep = "Aufzubewahrende vorherige Versionen"
+usb_copy_versions_to_keep_hint = "Ältere Kopien unter .versions werden nach jedem Lauf entfernt. 0 behält jede Version."
+usb_copy_versions_unlimited = "Alle Versionen"
 usb_copy_conflict_overwrite = "Überschreiben"
 usb_copy_conflict_skip = "Überspringen"
 usb_copy_conflict_rename = "Beide behalten (umbenennen)"
@@ -5100,6 +5103,7 @@ health_raid_arrays = "Integrität — RAID-Arrays"
 health_network_interfaces = "Integrität — Netzwerk"
 health_systemd_services = "Integrität — Dienste"
 health_temperatures = "Integrität — Temperaturen"
+health_background_loops = "Integrität — Hintergrundplaner"
 
 # ---------- Datenverkehrskontrolle (ROADMAP P3.2) ----------
 [traffic]

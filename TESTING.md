@@ -1,11 +1,43 @@
 # HomeVault — Test tracking
 
+## 2026-11-10 — verification run (executed)
+
+| Suite | Result |
+|---|---|
+| Rust unit (`cargo test --lib`) | **2 959 passed / 0 failed** |
+| Rust integration (`cargo test --tests --no-fail-fast`) | **108 suites, 1 644 passed / 0 failed** |
+| Installer `unit-hardening.test.sh` | **64 passed / 0 failed** |
+| Installer `update-engine.test.sh` | **43 passed / 0 failed** |
+| Installer `data-dir.test.sh` | **12 passed / 0 failed** |
+| Frontend `npm run check` | **0 errors / 0 warnings** |
+| Frontend `npm run build` | **OK** (105 precompressed files) |
+| E2E USB Copy (Firefox, isolated instance `:8097`) | **9 passed / 0 failed** |
+| `cargo fmt --check` | **0 diff** |
+
+**Documentation correction.** The 2026‑11‑09 row below reported “110 suites,
+4 580” for the integration run. That figure was the sum of **every** `test
+result` line, including the 2 939 unit tests (2 939 + 1 641 = 4 580) and the
+two non-integration targets (lib + `src/bin/server.rs`). The real integration
+total was **108 suites / 1 641 tests**. This run reports the two suites
+separately.
+
+**Defect found and fixed by this run.** `run_pipeline_timed` reported an
+upstream stage killed by `SIGPIPE` as `exited with -1` (and could fail a
+pipeline whose downstream stage had exited successfully). `SIGPIPE` is now
+ignored — it is the normal consequence of a downstream stage closing early —
+and any other signal is named (`killed by signal N`). Covered by
+`utils::process::tests::a_writer_stopped_by_sigpipe_does_not_fail_the_pipeline`.
+
+**Features covered.** FIAB‑26 version retention (+6 unit, +1 integration) and
+FIAB‑24 supervised-loop restart alerts (+2 unit), plus the USB/SIGPIPE tests
+above.
+
 ## 2026-11-09 — verification run (executed)
 
 | Suite | Result |
 |---|---|
 | Rust unit (`cargo test --lib`) | **2 939 passed / 0 failed** |
-| Rust integration (`cargo test --tests --no-fail-fast`) | **110 suites, 4 580 passed / 0 failed** |
+| Rust integration (`cargo test --tests --no-fail-fast`) | **108 suites, 1 641 passed / 0 failed** (see the correction above) |
 | Installer `unit-hardening.test.sh` | **57 passed / 0 failed** |
 | Installer `update-engine.test.sh` | **43 passed / 0 failed** |
 | Installer `data-dir.test.sh` | **12 passed / 0 failed** |
@@ -47,8 +79,9 @@ final green run:
 | AppArmor | behaviour | the installer compiles the profile with `apparmor_parser -Q` before replacing the loaded one when the parser supports `--skip-kernel-load`; a broken profile leaves the previous confinement in place |
 | Release trust anchor | behaviour | `HV_RELEASE_PUBKEY` given as a local PEM is installed at `/usr/local/lib/homevault/release-key.pem`; the catalog key now uses the same helper |
 
-Expected installer total after a run: `unit-hardening` **64/64**. Unit and
-integration totals are unchanged (2 950 / 4 582).
+Expected installer total after a run: `unit-hardening` **64/64**. The unit
+total is unchanged (**2 950**); integration is reported separately from now on
+(see the 2026‑11‑10 correction at the top).
 
 ## 2026-11-09 — failure-injection rehearsals (written, not run)
 
@@ -66,8 +99,8 @@ proof to collect (`docs/guides/failure-injection.md`).
 | Manual runbook | — | SMB durable handles, iSCSI `configfs` semantics, full SIGKILL+reboot scrub, `dm-flakey`/superblock corruption |
 | RAG | — | one `FeatureDoc` (`failure-injection`) + a `rag.md` Document Sources row; the every-guide/mapping test stays satisfied |
 
-Expected totals after a full run: unit **2 950**, integration **4 582** (110
-suites).
+Expected total after a full run: unit **2 950** (integration is counted
+separately; see the correction at the top).
 
 ## 2026-11-09 — USB copy modes and traceability (written, not run)
 

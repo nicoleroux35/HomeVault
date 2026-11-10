@@ -1,6 +1,8 @@
 //! Integration tests for USB one-touch copy
 
-use homevault::usb_copy::{ConflictPolicy, CopyStrategy, UsbCopyProfile, UsbCopyService};
+use homevault::usb_copy::{
+    ConflictPolicy, CopyStrategy, UsbCopyProfile, UsbCopyService, DEFAULT_VERSIONS_TO_KEEP,
+};
 
 #[tokio::test]
 async fn test_list_devices() {
@@ -34,6 +36,7 @@ fn test_validate_profile_valid() {
         verify_checksums: true,
         strategy: CopyStrategy::Incremental,
         conflict: ConflictPolicy::Overwrite,
+        versions_to_keep: DEFAULT_VERSIONS_TO_KEEP,
         auto_eject: true,
         enabled: true,
         last_run: None,
@@ -307,6 +310,7 @@ fn make_test_profile() -> UsbCopyProfile {
         verify_checksums: false,
         strategy: CopyStrategy::Incremental,
         conflict: ConflictPolicy::Overwrite,
+        versions_to_keep: DEFAULT_VERSIONS_TO_KEEP,
         auto_eject: false,
         enabled: true,
         last_run: None,
@@ -334,6 +338,22 @@ fn test_profile_defaults_keep_older_json_loadable() {
     let profile: UsbCopyProfile = serde_json::from_str(json).unwrap();
     assert_eq!(profile.strategy, CopyStrategy::Incremental);
     assert_eq!(profile.conflict, ConflictPolicy::Overwrite);
+    assert_eq!(profile.versions_to_keep, DEFAULT_VERSIONS_TO_KEEP);
+}
+
+#[test]
+fn test_version_retention_is_bounded_by_validation() {
+    let mut profile = make_test_profile();
+    profile.strategy = CopyStrategy::Versioned;
+    profile.versions_to_keep = 5;
+    assert!(UsbCopyService::validate_profile(&profile).is_ok());
+
+    profile.versions_to_keep = 0;
+    assert!(UsbCopyService::validate_profile(&profile).is_ok());
+
+    profile.versions_to_keep = 1_001;
+    let error = UsbCopyService::validate_profile(&profile).expect_err("over the ceiling");
+    assert!(error.contains("versions to keep"), "{error}");
 }
 
 #[test]

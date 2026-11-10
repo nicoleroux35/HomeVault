@@ -1013,8 +1013,9 @@ limits are re-checked on load and on each sign-in; a corrupt `directory.json`,
 - **Copy rules** — name, device (chosen from the attached devices, matched by
   UUID), source folder inside the device, destination folder on the appliance,
   copy mode (`incremental`, `mirror`, `versioned`, `photo_import`), what to do
-  when a file already exists (`overwrite`, `skip`, `rename`), per-rule "check
-  every copied file" and "eject when done", active flag
+  when a file already exists (`overwrite`, `skip`, `rename`), how many
+  previous versions to keep for `versioned` (0 = all), per-rule "check every
+  copied file" and "eject when done", active flag
 - **Copy now** per rule; an inactive rule cannot be run
 - **Attached devices** — label, size, UUID, mounted/not-mounted state and which
   rule each device matched

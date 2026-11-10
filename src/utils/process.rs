@@ -196,12 +196,8 @@ pub fn run_pipeline_timed(stages: &[Vec<String>], deadline: Duration) -> Result<
         loop {
             match child.try_wait() {
                 Ok(Some(status)) => {
-                    if !status.success() && failure.is_none() {
-                        failure = Some(format!(
-                            "{} exited with {}",
-                            program,
-                            status.code().unwrap_or(-1)
-                        ));
+                    if failure.is_none() {
+                        failure = describe_stage_failure(program, &status);
                     }
                     break;
                 }
@@ -250,6 +246,32 @@ pub fn run_pipeline_timed(stages: &[Vec<String>], deadline: Duration) -> Result<
         }
         None => Ok(()),
     }
+}
+
+/// Why a stage failed, or `None` when its status must not fail the pipeline.
+///
+/// A stage killed by `SIGPIPE` is the normal consequence of a later stage
+/// exiting early (`printf … | sh -c 'exit 3'`, `zfs send | head`). Reporting
+/// it blamed the writer — and printed `exited with -1` — instead of the real
+/// failure downstream, and made the pipeline test depend on scheduling.
+fn describe_stage_failure(program: &str, status: &std::process::ExitStatus) -> Option<String> {
+    if status.success() {
+        return None;
+    }
+    if let Some(code) = status.code() {
+        return Some(format!("{program} exited with {code}"));
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::ExitStatusExt;
+        let signal = status.signal().unwrap_or(0);
+        if signal == libc::SIGPIPE {
+            return None;
+        }
+        return Some(format!("{program} was killed by signal {signal}"));
+    }
+    #[cfg(not(unix))]
+    Some(format!("{program} exited with an unknown status"))
 }
 
 /// Kill one pipeline stage **and everything it forked**, then reap it.
@@ -566,6 +588,17 @@ mod tests {
             .expect_err("a non-zero exit must fail the pipeline");
         assert!(err.contains("exited with 3"), "{err}");
         assert!(err.contains("boom"), "stderr must reach the error: {err}");
+    }
+
+    #[test]
+    fn a_writer_stopped_by_sigpipe_does_not_fail_the_pipeline() {
+        // `head` closes its input after one line, so `yes` is killed by
+        // SIGPIPE. That is how a pipeline ends, not an error: blaming the
+        // writer produced "yes exited with -1" and made the real failure
+        // (when there is one) depend on scheduling.
+        let stages = vec![stage("yes", &[]), stage("head", &["-n", "1"])];
+        run_pipeline_timed(&stages, Duration::from_secs(5))
+            .expect("an upstream SIGPIPE is not a pipeline failure");
     }
 
     #[test]

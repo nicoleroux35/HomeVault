@@ -18,6 +18,11 @@ silencing existing installs. The webhook also gained a **sink format**
 can be pasted without a relay — the payload builder matches each service's
 expected shape.
 
+`health.background_loops` is raised by the scheduler supervisor when a
+supervised loop restarts three times within ten minutes (FIAB-24). One
+notification per episode, naming the loop and the reason; see
+[Health](./health.md#background-schedulers-fiab-02-2026-11-09).
+
 ## Backend
 
 - `src/notification_engine.rs::run_notification_loop` — background loop

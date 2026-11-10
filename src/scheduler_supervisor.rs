@@ -28,8 +28,8 @@
 
 use std::collections::BTreeMap;
 use std::future::Future;
-use std::sync::{Mutex, OnceLock};
-use std::time::Duration;
+use std::sync::{Arc, Mutex, OnceLock};
+use std::time::{Duration, Instant};
 
 use serde::Serialize;
 
@@ -40,6 +40,10 @@ pub const MAX_BACKOFF: Duration = Duration::from_secs(300);
 /// A loop that ran at least this long is considered healthy; the next stop
 /// starts from `MIN_BACKOFF` instead of the last backoff.
 pub const STABLE_AFTER: Duration = Duration::from_secs(60);
+/// Rolling window used to decide whether a loop is restarting in a loop.
+pub const RESTART_ALERT_WINDOW: Duration = Duration::from_secs(600);
+/// How many restarts inside `RESTART_ALERT_WINDOW` raise one notification.
+pub const RESTART_ALERT_THRESHOLD: usize = 3;
 
 /// What the Health screen and the API report for one loop.
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -52,6 +56,13 @@ pub struct SchedulerState {
     pub last_started: Option<String>,
     /// Why it stopped: `returned`, `panicked` or `cancelled`.
     pub last_error: Option<String>,
+    /// Restart timestamps inside the alert window (FIAB-24). Not part of the
+    /// API payload: the screen shows the cumulative `restarts` counter.
+    #[serde(skip)]
+    restart_times: Vec<Instant>,
+    /// True once this episode has raised its single notification.
+    #[serde(skip)]
+    restart_alerted: bool,
 }
 
 impl SchedulerState {
@@ -62,8 +73,56 @@ impl SchedulerState {
             restarts: 0,
             last_started: None,
             last_error: None,
+            restart_times: Vec::new(),
+            restart_alerted: false,
         }
     }
+}
+
+/// One notification per episode: records the restart and answers `true` when
+/// the threshold is crossed for the first time. A run that stayed up for
+/// `STABLE_AFTER` starts a new episode, so a loop that recovers and later
+/// fails again is reported again.
+pub fn note_restart(state: &mut SchedulerState, now: Instant, ran: Duration) -> bool {
+    if ran >= STABLE_AFTER {
+        state.restart_times.clear();
+        state.restart_alerted = false;
+    }
+    state
+        .restart_times
+        .retain(|at| now.saturating_duration_since(*at) <= RESTART_ALERT_WINDOW);
+    state.restart_times.push(now);
+    if !state.restart_alerted && state.restart_times.len() >= RESTART_ALERT_THRESHOLD {
+        state.restart_alerted = true;
+        true
+    } else {
+        false
+    }
+}
+
+/// Called once per restart episode, from the supervisor task.
+pub type RestartAlertHook = Arc<dyn Fn(SchedulerState) + Send + Sync>;
+
+/// Installed once by `web::run`, after `AppState` exists. Kept as a closure
+/// so this module never depends on the notification engine or the database.
+static ALERT_HOOK: OnceLock<Mutex<Option<RestartAlertHook>>> = OnceLock::new();
+
+/// Installs the sink that receives a restart episode. Calling it twice is a
+/// no-op: the first hook wins, which keeps startup deterministic.
+pub fn set_restart_alert_hook(hook: RestartAlertHook) {
+    let slot = ALERT_HOOK.get_or_init(|| Mutex::new(None));
+    let mut slot = slot.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    if slot.is_none() {
+        *slot = Some(hook);
+    }
+}
+
+fn alert_hook() -> Option<RestartAlertHook> {
+    ALERT_HOOK
+        .get()?
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .clone()
 }
 
 fn registry() -> &'static Mutex<BTreeMap<&'static str, SchedulerState>> {
@@ -108,14 +167,24 @@ fn mark_started(name: &'static str) {
     });
 }
 
-fn mark_stopped(name: &'static str, reason: &str, restart: bool) {
+fn mark_stopped(
+    name: &'static str,
+    reason: &str,
+    restart: bool,
+    ran: Duration,
+) -> Option<SchedulerState> {
+    let mut alert = None;
     with_state(name, |state| {
         state.running = false;
         state.last_error = Some(reason.to_string());
         if restart {
             state.restarts = state.restarts.saturating_add(1);
+            if note_restart(state, Instant::now(), ran) {
+                alert = Some(state.clone());
+            }
         }
     });
+    alert
 }
 
 /// Starts a supervised loop. The factory is called again after every stop, so
@@ -158,7 +227,11 @@ where
                 Err(e) if e.is_panic() => "panicked",
                 Err(_) => "cancelled",
             };
-            mark_stopped(name, reason, true);
+            if let Some(state) = mark_stopped(name, reason, true, ran) {
+                if let Some(hook) = alert_hook() {
+                    hook(state);
+                }
+            }
             tracing::error!(
                 scheduler = name,
                 reason,
@@ -191,6 +264,41 @@ mod tests {
             next_backoff(Duration::from_secs(80), STABLE_AFTER),
             MIN_BACKOFF
         );
+    }
+
+    #[test]
+    fn restart_episode_alerts_once_then_resets_after_a_stable_run() {
+        let mut state = SchedulerState::new("test-alert");
+        let now = Instant::now();
+
+        // Two quick restarts are below the threshold.
+        assert!(!note_restart(&mut state, now, Duration::ZERO));
+        assert!(!note_restart(&mut state, now, Duration::ZERO));
+        // The third one raises the single alert of this episode.
+        assert!(note_restart(&mut state, now, Duration::ZERO));
+        // Further restarts stay silent: one alert per episode.
+        assert!(!note_restart(&mut state, now, Duration::ZERO));
+
+        // A loop that stayed up for STABLE_AFTER opens a new episode.
+        assert!(!note_restart(&mut state, now, STABLE_AFTER));
+        assert!(!note_restart(&mut state, now, Duration::ZERO));
+        assert!(note_restart(&mut state, now, Duration::ZERO));
+    }
+
+    #[test]
+    fn restarts_outside_the_window_do_not_accumulate() {
+        let mut state = SchedulerState::new("test-window");
+        let start = Instant::now();
+        assert!(!note_restart(&mut state, start, Duration::ZERO));
+        assert!(!note_restart(
+            &mut state,
+            start + RESTART_ALERT_WINDOW / 2,
+            Duration::ZERO
+        ));
+        // The first restart is now older than the window: only the second one
+        // and the new one count, so the threshold is not reached.
+        let now = start + RESTART_ALERT_WINDOW + Duration::from_secs(1);
+        assert!(!note_restart(&mut state, now, Duration::ZERO));
     }
 
     #[tokio::test]

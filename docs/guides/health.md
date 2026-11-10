@@ -398,6 +398,15 @@ them would repeat a side effect.
 `last_started` and `last_error` for each loop; the Health screen shows the same
 in the **Background schedulers** card.
 
+**Restart alerts (FIAB-24).** A loop that restarts **three times within ten
+minutes** raises one notification (`health.background_loops`, category health,
+severity warning) naming the loop, its cumulative restart count and the last
+reason. The alert is per episode: further restarts stay silent until the loop
+has run for at least a minute, which opens a new episode. A loop that recovers
+on its own therefore does not page the household, and one that never recovers
+does not fill the journal. The event can be muted in Settings → Notifications
+like every other event.
+
 ## Weekly health report (P2-12, 2026-11-05)
 
 `src/health_report.rs` sends one aggregated notification per week

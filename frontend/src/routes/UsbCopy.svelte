@@ -79,6 +79,7 @@
       verify_checksums: true,
       strategy: 'incremental',
       conflict: 'overwrite',
+      versions_to_keep: 10,
       auto_eject: true,
       enabled: true,
       last_run: null,
@@ -247,6 +248,14 @@
                   <div>
                     <dt>{$t('settings.usb_copy_strategy')}</dt>
                     <dd>{$t(`settings.usb_copy_strategy_${profile.strategy}`)}</dd>
+                    {#if profile.strategy === 'versioned'}
+                      <dt>{$t('settings.usb_copy_versions_to_keep')}</dt>
+                      <dd>
+                        {profile.versions_to_keep === 0
+                          ? $t('settings.usb_copy_versions_unlimited')
+                          : profile.versions_to_keep}
+                      </dd>
+                    {/if}
                   </div>
                   <div>
                     <dt>{$t('settings.usb_copy_last_run')}</dt>
@@ -390,6 +399,22 @@
         </select>
         <p class="usb-hint">{$t('settings.usb_copy_strategy_hint')}</p>
       </div>
+
+      {#if editingProfile.strategy === 'versioned'}
+        <div class="usb-field">
+          <label for="usb-versions">{$t('settings.usb_copy_versions_to_keep')}</label>
+          <input
+            id="usb-versions"
+            type="number"
+            min="0"
+            max="1000"
+            step="1"
+            bind:value={editingProfile.versions_to_keep}
+            data-testid="usb-versions-to-keep"
+          />
+          <p class="usb-hint">{$t('settings.usb_copy_versions_to_keep_hint')}</p>
+        </div>
+      {/if}
 
       <div class="usb-field">
         <label for="usb-conflict">{$t('settings.usb_copy_conflict')}</label>

@@ -13,7 +13,7 @@
 
 | Champ | Valeur |
 |---|---|
-| Baseline HomeVault | `1d9b1bd`, 09/11/2026 — correctifs §8, lots fiabilité §9–§15, puis FIAB‑13/USB Copy §16, FIAB‑01 §17, FIAB‑11/12 §18 et FIAB‑05 partiel §19 |
+| Baseline HomeVault | `1d9b1bd`, 09/11/2026 — correctifs §8, lots fiabilité §9–§15, puis FIAB‑13/USB Copy §16, FIAB‑01 §17, FIAB‑11/12 §18, FIAB‑05 partiel §19, FIAB‑26/rotation USB §20, FIAB‑24/alerte boucles §10.4 et correctif SIGPIPE §21 (10/11/2026) |
 | Firmware DSM analysé | 7.4.1‑90080 (DS925+), image `/media/nicolas/500GB/Projets/DSM7/DSM_DS925+_90080` |
 | Périmètre | 30 apps intégrées du launcher + 16 apps du catalogue Docker |
 | Méthode | Vérification du code (`src/`, `frontend/`, `catalog/`), des guides `docs/guides/` et du backlog `HOMEVAULT_TASKLIST_A_FAIRE.md` |
@@ -71,7 +71,7 @@ cas de désaccord avec le backlog, `HOMEVAULT_TASKLIST_A_FAIRE.md` §1bis gagne.
 | **Explorer** | File Station | ⭐ / ✅ | **Emplacements réseau CIFS/NFS montés et parcourus** et **versions Btrfs dans Rewind** livrés (P1‑35) ; cloud via rclone ; restent les vignettes vidéo/PDF (P2 opt‑in), les ACL Windows et le transcodage |
 | **Shares** | Control Panel > Dossier partagé + Services de fichiers | 🟡 | ACL Windows non simulées (POSIX uniquement) ; validation réelle DC/keytab AD ; NFSv4 Kerberos à valider sur matériel. **WS‑Discovery livré** (P1‑29) ; SMB multicanal, chiffrement, Previous Versions, Time Machine, rsync, FTP jails : **faits** |
 | **Quotas** | Control Panel > Quota | ✅ / ⭐ | Parité solide (utilisateur, partage, transfert) **+ historique horaire et alerte à 90 %** (P1‑32, rétention 90 j) |
-| **USB Copy** | USB Copy | ✅ / ⭐ | **Modes de copie DSM livrés** (`incremental`, `mirror`, `versioned`, `photo_import`), **politique de conflit** (`overwrite`/`skip`/`rename`) et **traçabilité** dans l’historique des transferts (FIAB‑13, §16). Restent le déclenchement physique one‑touch et les règles multiples si le matériel le permet |
+| **USB Copy** | USB Copy | ✅ / ⭐ | **Modes de copie DSM livrés** (`incremental`, `mirror`, `versioned`, `photo_import`), **politique de conflit** (`overwrite`/`skip`/`rename`), **traçabilité** dans l’historique des transferts (FIAB‑13, §16) et **rotation des versions** (FIAB‑26, §20 : N versions par dossier, 0 = tout conserver). Restent le déclenchement physique one‑touch et les règles multiples si le matériel le permet |
 | **iSCSI** | SAN Manager | ✅ / 🟡 | **LUN fins ZFS avec snapshots et clones livrés** (P2‑17) ; restent Fibre Channel, multipath, VAAI. CHAP et apply‑now sont faits |
 | **Backup** | Hyper Backup | 🟡 | Pas d'image **bare‑metal/block‑level**, pas d'agent ABB (Windows/Linux/M365), pas de C2. Restic, dédup, chiffrement, rétention, `mount`, vérification : faits |
 | **Backup destination** | Hyper Backup Vault | ✅ | Ajouter multi‑protocole (rsync/WebDAV) et limite de bande passante par tenant |
@@ -543,6 +543,16 @@ PHP 8.1/Redis 4.0.
   `copy_recursive` dans `src/usb_copy.rs`, `TransferOperation::UsbCopy` dans
   `src/transfer_history.rs` et l’écriture d’une ligne par exécution dans
   `src/handlers/usb_copy.rs` — FIAB‑13, §16
+- **Rotation des versions USB** : `versions_to_keep`, `is_version_stamp`,
+  `purge_versions`/`purge_one_versions_dir` dans `src/usb_copy.rs`, champ dans
+  `frontend/src/routes/UsbCopy.svelte` et validation de profil — FIAB‑26, §20
+- **Alerte des ordonnanceurs** : `note_restart`, `set_restart_alert_hook`
+  et `RESTART_ALERT_THRESHOLD` dans `src/scheduler_supervisor.rs`, hook dans
+  `src/web/mod.rs`, événement `health.background_loops`
+  (`src/notification_events.rs`) — FIAB‑24, §10.4
+- **Pipeline sans `SIGPIPE` parasite** : `describe_stage_failure` dans
+  `src/utils/process.rs` (un amont tué par `SIGPIPE` n’est plus un échec ; les
+  autres signaux sont nommés) — §21
 - **Rehearsals d’injection de pannes** : guide
   `docs/guides/failure-injection.md`, test de crash atomique
   (`src/storage/atomic.rs`), dédoublonnage des défauts
@@ -1137,12 +1147,37 @@ réel, publication des clés de production, et les preuves manuelles de FIAB‑0
 
 ### 10.3 Vérification
 
-- Tests écrits, non exécutés : backoff (doublement, plafond, remise à zéro),
-  boucle qui retourne, boucle qui panique, datagramme réel, no‑op sans
-  `NOTIFY_SOCKET`, endpoint admin-only et présence d’une boucle enregistrée.
+- Tests **exécutés le 2026‑11‑10** : backoff (doublement, plafond, remise à
+  zéro), boucle qui retourne, boucle qui panique, ainsi que les deux tests de
+  l’alerte de redémarrage (§10.4).
 - Reste terrain : `kill -9` d’une boucle / `systemctl stop` sur un hôte réel,
   et le choix de politique de redémarrage par boucle si un cas particulier
   apparaît.
+
+### 10.4 Alerte de redémarrage en boucle (FIAB‑24, 2026‑11‑10)
+
+> Le superviseur exposait `restarts` et `last_error`, mais aucune notification
+> n’était levée : une boucle morte en boucle restait invisible tant que
+> l’admin n’ouvrait pas Health.
+
+- **Trois redémarrages en dix minutes** pour une même boucle déclenchent **une**
+  notification `health.background_loops` (gravité *warning*, catégorie
+  *health*), nommant la boucle, le nombre cumulé de redémarrages et la dernière
+  raison (`returned unexpectedly`, `panicked`, `cancelled`).
+- **Un seul message par épisode** : après l’alerte, les redémarrages suivants
+  restent silencieux. Une exécution saine de 60 s ouvre un nouvel épisode ; une
+  boucle qui se rétablit ne harcèle donc pas le foyer, et une boucle qui ne se
+  rétablit jamais ne remplit pas le journal.
+- **Aucune dépendance du superviseur à `AppState`** : `web::run` installe un
+  *hook* (`set_restart_alert_hook`) chargé de persister la notification ; le
+  superviseur se contente d’appeler la décision pure `note_restart`.
+- L’événement apparaît dans Settings → Notifications et peut être mis en
+  sourdine comme les autres. i18n en/fr/de/es.
+- Tests exécutés : deux unitaires (une alerte par épisode, remise à zéro après
+  course saine ; les redémarrages hors fenêtre ne s’accumulent pas), plus les
+  tests existants du superviseur.
+- Docs : `docs/guides/health.md` (§ Background schedulers),
+  `docs/guides/notifications.md`.
 
 ---
 
@@ -1254,7 +1289,7 @@ réel, publication des clés de production, et les preuves manuelles de FIAB‑0
 | Suite | Résultat |
 |---|---|
 | Unitaires Rust | **2 939 / 2 939** |
-| Intégration Rust (`--no-fail-fast`) | **110 suites, 4 580 / 4 580** |
+| Intégration Rust (`--no-fail-fast`) | **108 suites, 1 641 / 1 641** — le « 4 580 » qui figurait ici additionnait les 2 939 unitaires |
 | Installeur `unit-hardening` / `update-engine` / `data-dir` | **57 / 43 / 12**, 0 échec |
 | Frontend `npm run check` / `build` | **0 erreur, 0 warning** / build OK |
 | E2E Health + Storage + Backup (Firefox, 1 worker) | **125 passés, 4 ignorés, 0 échec** |
@@ -1275,6 +1310,24 @@ est un no‑op sur `sqlite::memory:`), message de quota délégué, grant du
 propriétaire pour les liens de partage, attente de 8 onglets Storage, modal
 « What’s new » fermé dans Backup, `Select` custom cliqué comme un bouton dans
 Tasks, options SMB/NFS mises à jour (4 selects, NFS 4.1).
+
+### 15.1 Run de vérification du 2026‑11‑10
+
+| Suite | Résultat |
+|---|---|
+| Unitaires Rust | **2 959 / 2 959** |
+| Intégration Rust (`--no-fail-fast`) | **108 suites, 1 644 / 1 644** |
+| Installeur `unit-hardening` / `update-engine` / `data-dir` | **64 / 43 / 12**, 0 échec |
+| Frontend `npm run check` / `build` | **0 erreur, 0 warning** / build OK (105 fichiers) |
+| E2E USB Copy (Firefox, instance isolée) | **9 / 9** |
+| `cargo fmt --check` | **0 diff** |
+
+**Défaut réel trouvé et corrigé** : `run_pipeline_timed` rapportait un étage
+amont tué par `SIGPIPE` comme `exited with -1`, et pouvait faire échouer un
+pipeline dont l’aval avait réussi (§21). Les trois échecs transitoires de
+`settings_core_integration` observés pendant ce run venaient d’une modification
+concurrente du dossier de travail, pas du code ; la suite a été rejouée verte
+après stabilisation.
 
 ---
 
@@ -1353,8 +1406,8 @@ le mode est rappelé sur la carte de la règle. i18n en/fr/de/es.
 
 - Le test terrain d’une copie réelle depuis une carte (montage `udisksctl`
   inclus) reste manuel : il demande un périphérique amovible.
-- La rotation des dossiers `.versions/` (purge au‑delà de N exécutions) n’est
-  pas encore exposée ; elle se décidera avec le quota de destination.
+- ~~La rotation des dossiers `.versions/` n’est pas encore exposée~~ :
+  **livrée le 2026‑11‑10** (FIAB‑26, §20).
 
 ---
 
@@ -1473,3 +1526,53 @@ données, de vérification et le total, plus chaque écart au runbook — ce son
 Reste la passe terrain sur VM jetable (installer, restaurer, réattacher,
 vérifier partages et comptes) : elle demande un hôte de test et n’a pas été
 exécutée ici.
+
+---
+
+## 20. Rotation des versions USB — 2026‑11‑10 (FIAB‑26)
+
+> Le §16.6 laissait un seul reste fonctionnel sur USB Copy : les dossiers
+> `.versions/` s’accumulaient sans borne. C’est fermé, sans nouveau moteur ni
+> nouveau démon.
+
+- **Réglage par règle** : `versions_to_keep` (défaut **10**, maximum 1 000,
+  `0` = tout conserver). Une règle écrite avant FIAB‑26 se recharge avec la
+  valeur par défaut.
+- **Portée volontairement étroite** : seuls les dossiers dont le nom est un
+  horodatage `AAAAMMJJ‑HHMMSS` sont candidats, seuls les `.versions` situés
+  sous la destination sont visités, et les liens symboliques ne sont jamais
+  suivis. Un fichier, un dossier `manual/` ou un dossier utilisateur qui
+  ressemble à un horodatage est laissé intact.
+- **Best‑effort** : la purge tourne après une copie vérifiée et ne peut pas
+  transformer un succès en échec. Le parcours est borné à 10 000 dossiers.
+- **UI** : champ numérique affiché pour le mode `versioned`, rappel sur la
+  carte de la règle (« Toutes les versions » quand la valeur est 0), i18n
+  en/fr/de/es.
+- **Validation** : `0…1 000` est vérifié par la même porte que le reste du
+  profil ; `1 001` est un `400` nommant le champ, jamais une valeur tronquée.
+- Tests écrits **et exécutés** : 6 unitaires (plus récentes conservées, 0 =
+  tout, dossiers ressemblants ignorés, `.versions` imbriqués parcourus, forme
+  de l’horodatage, borne de validation), 1 d’intégration (défaut rétrocompatible
+  + borne), E2E USB Copy **exécuté 9/9** (le champ est envoyé et relu).
+- Docs : `docs/guides/usb-copy.md`, `SCREENS.md`, FeatureDoc `usb-copy`.
+
+---
+
+## 21. Correctif `SIGPIPE` du pipeline de réplication — 2026‑11‑10
+
+> Trouvé par le run complet du 2026‑11‑10. Ce n’est pas une parité DSM : c’est
+> un défaut de robustesse dans le helper qui enchaîne `zfs send | [pv] | zfs
+> receive`, et dans tout pipeline qui termine par un étage à sortie anticipée.
+
+- **Symptôme** : quand l’étage aval sortait avant que l’amont ait fini
+  d’écrire, l’amont recevait `SIGPIPE` et le helper le rapportait comme
+  `exited with -1` — parfois au détriment de la **vraie** erreur aval, ce qui
+  rendait le diagnostic faux et le test dépendant de l’ordonnancement.
+- **Correction** : `describe_stage_failure` ignore `SIGPIPE` (conséquence
+  normale d’une fermeture aval), nomme un code de sortie réel
+  (`exited with N`) et nomme tout autre signal (`killed by signal N`). Un
+  pipeline dont l’aval réussit n’échoue donc plus à cause de son writer.
+- **Test** : `utils::process::tests::a_writer_stopped_by_sigpipe_does_not_fail_the_pipeline`
+  (`yes | head -n 1`), plus le test existant ré-aligné sur la vraie erreur.
+- Aucun changement d’API, aucun nouveau réglage : la correction est interne au
+  helper borné déjà utilisé par la réplication.

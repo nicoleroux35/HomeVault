@@ -3056,6 +3056,33 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         Err(e) => tracing::debug!("SMB config unavailable for WS-Discovery: {}", e),
     });
 
+    // FIAB-24: a loop that restarts repeatedly raises one notification per
+    // episode, so a dead scheduler is visible without opening Health. The
+    // supervisor stays free of AppState: it only invokes this closure.
+    crate::scheduler_supervisor::set_restart_alert_hook(std::sync::Arc::new({
+        let state = state.clone();
+        move |scheduler: crate::scheduler_supervisor::SchedulerState| {
+            let state = state.clone();
+            tokio::spawn(async move {
+                let reason = scheduler.last_error.as_deref().unwrap_or("unknown");
+                crate::notification_engine::notify(
+                    &state,
+                    "health.background_loops",
+                    "A background scheduler keeps restarting",
+                    &format!(
+                        "'{}' stopped {} times within 10 minutes (last reason: {}). \
+                         Some features may not run; open Health for details.",
+                        scheduler.name, scheduler.restarts, reason
+                    ),
+                    "warning",
+                    "health",
+                    "scheduler_supervisor",
+                )
+                .await;
+            });
+        }
+    }));
+
     // Background schedulers — supervised (FIAB-02): a loop that returns or
     // panics is recorded and restarted with exponential backoff instead of
     // disappearing while the process keeps serving. `GET

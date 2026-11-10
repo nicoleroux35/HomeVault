@@ -60,6 +60,8 @@ export interface UsbCopyProfile {
   strategy: 'incremental' | 'mirror' | 'versioned' | 'photo_import';
   /** FIAB-13 behaviour when the destination file exists. */
   conflict: 'overwrite' | 'skip' | 'rename';
+  /** FIAB-26 versioned snapshots kept per folder (0 = keep every version). */
+  versions_to_keep: number;
   auto_eject: boolean;
   enabled: boolean;
   last_run: string | null;

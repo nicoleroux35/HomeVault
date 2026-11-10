@@ -89,6 +89,26 @@ file under `incremental` is still skipped rather than duplicated, and `skip` or
 `rename` takes precedence over `versioned` (the old copy stays in place or is
 renamed, it is not hidden in `.versions`).
 
+### Version retention (FIAB-26)
+
+Every versioned profile also carries `versions_to_keep` (default **10**,
+maximum 1 000). After a successful run, the oldest `.versions/<stamp>/` folders
+are removed until only that many remain in each folder. The rules that keep
+this safe:
+
+- only directories whose name is a `YYYYMMDD-HHMMSS` stamp are candidates — a
+  loose file, a `manual/` folder or a user's own timestamp-shaped folder is
+  left alone;
+- only `.versions` folders inside the destination are visited, and symlinks are
+  never followed, so the pass cannot reach outside the destination;
+- the walk is bounded (10 000 directories), and **0 disables the cleanup** for
+  a profile that wants every version kept;
+- cleanup is best-effort: a failed removal never turns a verified copy into a
+  failed run.
+
+The value is validated by the same profile gate as the rest of the rule, so
+`1001` is a `400` naming the field rather than a silently clamped setting.
+
 ## Traceability
 
 Every run writes **one** `transfer_history` row (`operation = usb_copy`) with
@@ -115,8 +135,8 @@ changes between reboots.
 
 | Suite | What it covers |
 |-------|----------------|
-| `src/usb_copy.rs` (`#[cfg(test)]`) | profile validation, destination must be absolute, UUID matching, SHA-256 verification (identical tree, same-size different bytes, size mismatch, missing file, single-file source), file counting, incremental skip of an up-to-date file, mirror deletion of a stale file, versioned move into `.versions/<stamp>/`, photo-import `YYYY/MM` layout |
-| `tests/usb_copy_integration.rs` | device listing, the validation surface, legacy profile JSON loading with the FIAB-13 defaults, snake_case literals for every strategy/conflict |
+| `src/usb_copy.rs` (`#[cfg(test)]`) | profile validation, destination must be absolute, UUID matching, SHA-256 verification (identical tree, same-size different bytes, size mismatch, missing file, single-file source), file counting, incremental skip of an up-to-date file, mirror deletion of a stale file, versioned move into `.versions/<stamp>/`, photo-import `YYYY/MM` layout, version retention (newest N kept, 0 = keep all, lookalike folders ignored, nested `.versions` walked, stamp shape, retention bound) |
+| `tests/usb_copy_integration.rs` | device listing, the validation surface, legacy profile JSON loading with the FIAB-13/FIAB-26 defaults, snake_case literals for every strategy/conflict, retention bounds |
 | `tests/phase4_auth_integration.rs` | `401` without a session, `403` for a member on every mutation, admin never refused |
 | `frontend/src/routes/UsbCopy.svelte` | covered by `npm run check` |
 

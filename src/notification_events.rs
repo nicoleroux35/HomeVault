@@ -110,6 +110,11 @@ pub const EVENT_CATALOG: &[NotificationEvent] = &[
         group: "health",
         label_key: "notifications.events.health_temperatures",
     },
+    NotificationEvent {
+        id: "health.background_loops",
+        group: "health",
+        label_key: "notifications.events.health_background_loops",
+    },
 ];
 
 /// Webhook payload shape. `generic` is the historical HomeVault JSON;
