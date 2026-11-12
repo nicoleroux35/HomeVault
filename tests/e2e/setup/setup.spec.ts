@@ -84,18 +84,20 @@ async function gotoLogin(page: Page) {
 }
 
 async function ensureWizard(page: Page): Promise<boolean> {
+  // The wizard persists its step server-side (reboot-safe onboarding), so a
+  // previous test can leave it at step 3. Reset the counter before loading:
+  // clicking "Previous" is not reliable there because the footer button can
+  // legitimately be disabled while a verification request is in flight, and a
+  // resume that lands after the first render would race the test's clicks.
+  // The endpoint is exempt from the setup budget and needs no session.
+  await page.request
+    .put('/api/auth/setup/progress', { data: { step: 0, data: {} } })
+    .catch(() => undefined);
   await gotoLogin(page);
   if ((await detectState(page)) !== 'wizard') return false;
-  // The wizard is reboot-safe: a previous test's progress may have been
-  // persisted server-side, so it can resume at a later step. Rewind to the
-  // first step so every test starts from the same place.
-  const prevBtn = page.locator('[data-testid="setup-footer"] button.hv-btn-secondary');
-  for (let i = 0; i < 12; i++) {
-    if (await page.locator('[data-step="0"]').isVisible().catch(() => false)) break;
-    if (!(await prevBtn.isEnabled().catch(() => false))) break;
-    await prevBtn.click();
-    await page.waitForTimeout(80);
-  }
+  // Wait for the progress GET to settle so the asserted step cannot be
+  // overwritten by a late resume response.
+  await page.waitForTimeout(150);
   return true;
 }
 
@@ -260,8 +262,11 @@ test.describe('2 — Welcome screen', () => {
     await expect(icon).toBeVisible();
     const box = await icon.boundingBox();
     expect(box).not.toBeNull();
-    expect(box!.width).toBeGreaterThan(30);
-    expect(box!.height).toBeGreaterThan(30);
+    // v2 design: the welcome tile is the shared 28px icon square (was 40px
+    // before the design-system migration). The gate is "not collapsed", not a
+    // pixel-perfect legacy size.
+    expect(box!.width).toBeGreaterThanOrEqual(28);
+    expect(box!.height).toBeGreaterThanOrEqual(28);
   });
 
   test('2.5 — Previous button is disabled on step 0', async ({ page }) => {

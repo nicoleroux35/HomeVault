@@ -18,6 +18,32 @@ real-hardware VM suite and the nightly cargo-fuzz campaigns remain opt-in and
 were not run here (see the 2026-11-11 section and
 `docs/guides/hardware-testing.md`).
 
+### Release-candidate hardening (2026-11-12, later pass)
+
+| Check | Result |
+|---|---|
+| `tests/e2e/setup` (Firefox, fresh server) | **100 passed / 0 failed** — each test resets the persisted wizard step, so a late resume cannot race the first click |
+| Targeted `login` / `desktop` / `settings` / `widgets` / `design/ui-kit` | **532 passed / 10 skipped**; the 16 failures were triaged and fixed, and all **16 re-runs pass** |
+| `tests/remote_mounts_integration` | **7 passed** — validation runs before the helper probe, and an invalid edit no longer unmounts a live location |
+| Targeted integration (13 suites, DB + assets + contract) | **327 passed / 0 failed** (incl. `users`, `shares`, `explorer`, `restic`, `settings_core`, `spa_assets`, fuzz smoke, soak) |
+| Accessibility D2 (Firefox) | **33 passed** — no new axe violation after the sidebar count and network-toggle labels were fixed |
+| `cargo audit` | only the 2 documented warnings (`rustls-pemfile`, `lru`); RUSTSEC-2026-0459 is fixed by `libsqlite3-sys` 0.39.1 through `vendor/sqlx-sqlite` |
+| Visual regression | **96 snapshots regenerated** at 360 / 768 / 1280 after the v2 palette and dock changes |
+| `cargo test --lib` | **2 960 passed / 0 failed** |
+
+Also fixed: `build.rs` now lists every `static/` path as a rerun input, so a
+`cargo build` after `npm run build` can no longer embed the previous hashed
+chunks.
+
+Fixed in this pass: the setup-wizard resume race and its 28 px welcome tile;
+the phone dock keeps the v2 squircle; `rounded-full` normalisation in the
+control-corner gate; the login/wizard accent tint (#F5F9FF, 4.55:1) and logo
+gradient stop (#3275C4, 4.69:1); the vendored sheet's "Close" routed through
+`$t()`; the collapsed Settings rail exposes `aria-label`; Dynamic DNS refuses
+an invalid host name even while disabled; the Settings category helper works
+at 360 px; the signed-update and SMTP-OAuth2 fixtures use the real `admin`
+session and open Settings first.
+
 ## 2026-11-11 — quality gates added (executed)
 
 The ten missing gates from the test/CI audit are now implemented and were run

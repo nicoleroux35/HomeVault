@@ -1581,7 +1581,7 @@
             {#if versionInfo.error}<div class="settings-version-row flex items-center gap-1.5 text-xs text-[var(--hv-error)]"><IconAlertTriangle size={16} /> <span>{versionInfo.error}</span></div>{/if}
           </div>
           <div data-testid="settings-card-footer" class={settingsCardFooter}>
-            <button class={cn(settingsBtn, settingsBtnGhost)} onclick={handleCheckUpdate} disabled={checkingUpdate}>{checkingUpdate ? $t('settings.checking') : $t('settings.check_for_updates')}</button>
+            <button class={cn(settingsBtn, settingsBtnGhost)} onclick={handleCheckUpdate} disabled={checkingUpdate} data-testid="settings-check-update">{checkingUpdate ? $t('settings.checking') : $t('settings.check_for_updates')}</button>
             <button
               class={cn(settingsBtn, settingsBtnPrimary)}
               onclick={applyUpdate}

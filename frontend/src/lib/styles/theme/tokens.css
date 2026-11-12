@@ -504,10 +504,12 @@
      on `accent-soft` — one hue that clears every floor it is used on. */
   --hv-login-accent: var(--hv-primary);            /* #2E72C9 — focus, links, step text */
   --hv-login-accent-deep: var(--hv-primary-hover); /* #2560AC — link hover / pressed */
-  --hv-login-accent-soft: var(--hv-primary-fixed); /* #E6EFFB — active code box bg */
+  /* #F5F9FF — the v2 accent (#2E72C9) sits on this tint as step text and
+     banner copy: 4.55:1. The old #E6EFFB tint read 4.15:1 (WCAG 1.4.3). */
+  --hv-login-accent-soft: #F5F9FF;
   --hv-login-accent-soft-border: var(--hv-primary);/* step indicator / progress + completed-step text */
   --hv-login-accent-ring: rgba(46, 114, 201, 0.10); /* halo only — the focus indicator is the accent border itself (6.15:1 ≥3:1) */
-  --hv-login-logo-grad: linear-gradient(135deg, #3B7FD4, #2E72C9); /* white glyph: 4.69 → 6.15:1 — the --hv-app-accent-grad stops */
+  --hv-login-logo-grad: linear-gradient(135deg, #3275C4, #2E72C9); /* white glyph: 4.69 → 6.15:1 — WCAG 1.4.3 */
   --hv-login-logo-shadow: 0 6px 20px rgba(46, 114, 201, 0.30);
   --hv-login-btn-grad: linear-gradient(135deg, #2E72C9, #2560AC);  /* white label: 6.15 → 7.90:1 */
   --hv-login-btn-shadow: 0 4px 14px rgba(46, 114, 201, 0.30);

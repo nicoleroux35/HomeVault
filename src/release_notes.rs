@@ -50,7 +50,19 @@ pub fn current_version() -> &'static str {
 }
 
 /// All curated release notes, newest first.
-pub static RELEASE_NOTES: &[ReleaseNote] = &[ReleaseNote {
+pub static RELEASE_NOTES: &[ReleaseNote] = &[
+    ReleaseNote {
+        version: "1.1.0",
+        title: "Refreshed design, sharper icons & safer network locations",
+        highlights: &[
+            "A refreshed desktop and every app window on the v2 palette, spacing and radii.",
+            "Crisp Lucide icons throughout the shell, Settings and the app screens.",
+            "A rebuilt setup assistant with a persistent step indicator and a clearer verification step.",
+            "Network locations (SMB/NFS) validate the server and share before touching the host.",
+            "Accessibility and visual-regression gates now protect every screen.",
+        ],
+    },
+    ReleaseNote {
     version: "1.0.0",
     title: "Storage health, notification center & hardened app auth",
     highlights: &[

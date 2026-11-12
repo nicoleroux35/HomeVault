@@ -139,6 +139,7 @@
     style={rowStyle}
     data-testid={testId ?? dataTestId}
     title={tooltip}
+    aria-label={collapsed ? label : undefined}
     {role}
     aria-selected={ariaSelected}
     aria-current={!role && active ? 'page' : undefined}
@@ -295,7 +296,9 @@
 
   .hv-winsidebar-item.is-active .hv-winsidebar-item-count {
     background: color-mix(in srgb, var(--hv-primary) 15%, transparent);
-    color: var(--hv-primary);
+    /* The 600 stop on the two stacked primary tints read 3.41:1; the 800
+       stop clears 4.5:1 while keeping the badge on the same blue ramp. */
+    color: var(--hv-primary-800);
   }
 
   /* Active drag-over target — an inset primary ring over the row. */

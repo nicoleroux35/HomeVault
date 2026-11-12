@@ -2661,7 +2661,12 @@ test.describe('14 — Chrome geometry & material', () => {
       const corners = await win.evaluate(() => {
         const out: Record<string, string[]> = {};
         for (const el of Array.from(
-          document.querySelectorAll<HTMLElement>('button, [role="button"]'),
+          document.querySelectorAll<HTMLElement>(
+            // Checkboxes/switches/radios are controls with their own shape
+            // language (the shadcn primitives render them as <button
+            // role="checkbox|switch|radio">), not buttons.
+            'button:not([role="checkbox"]):not([role="switch"]):not([role="radio"]), [role="button"]',
+          ),
         )) {
           const r = getComputedStyle(el).borderTopLeftRadius;
           out[r] ??= [];
@@ -2678,8 +2683,12 @@ test.describe('14 — Chrome geometry & material', () => {
         return out;
       });
       for (const [radius, examples] of Object.entries(corners)) {
+        // `rounded-full` compiles to `calc(infinity * 1px)`, which Firefox
+        // reports as a huge px value rather than `50%`. Treat any radius at
+        // or above 1000px as the capsule/circle exception.
+        const allowed = ALLOWED.has(radius) || Number.parseFloat(radius) >= 1000;
         expect
-          .soft(ALLOWED.has(radius), `${appId}: unexpected button corner ${radius} on ${examples.join(' | ')}`)
+          .soft(allowed, `${appId}: unexpected button corner ${radius} on ${examples.join(' | ')}`)
           .toBe(true);
       }
       // The control corner must actually be the 12px token, not a coincidence.

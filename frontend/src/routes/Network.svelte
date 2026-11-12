@@ -745,7 +745,7 @@
                   </div>
                 </div>
                 <label class="relative inline-block w-11 h-6 cursor-pointer">
-                  <input type="checkbox" class="sr-only" checked={iface.status === 'up'} onchange={() => toggleInterfaceState(iface)} />
+                  <input type="checkbox" class="sr-only" checked={iface.status === 'up'} aria-label={iface.name} onchange={() => toggleInterfaceState(iface)} />
                   <span class={cn('block w-11 h-6 rounded-full transition-colors', iface.status === 'up' ? 'bg-[var(--hv-primary)]' : 'bg-[var(--hv-shell-border)]')}></span>
                   <span class={cn('absolute top-1 left-1 w-4 h-4 rounded-full bg-white transition-transform', iface.status === 'up' && 'translate-x-5')}></span>
                 </label>

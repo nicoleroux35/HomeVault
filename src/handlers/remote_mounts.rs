@@ -197,21 +197,22 @@ pub async fn handle_remote_mount_create(
         ));
     }
 
-    let kind = req
-        .kind
-        .as_deref()
-        .and_then(RemoteKind::parse)
-        .unwrap_or_default();
-    if !remote_mounts::kind_available(kind) {
-        return ResponseHelper::json_unavailable(format!(
-            "{} is not installed on this server",
-            kind.helper()
-        ));
-    }
-
     let password = req.password.clone().filter(|p| !p.is_empty());
     let mount_now = req.mount_now;
-    let mount = req.into_mount(name.clone(), None);
+    let mut mount = req.into_mount(name.clone(), None);
+    // Validate the request before the capability probe: an injected server,
+    // share or option is a `400` even when the protocol helper is absent
+    // (otherwise a host without `mount.cifs` answers `503` and hides the
+    // real input error).
+    if let Err(message) = remote_mounts::validate_fields(&mut mount) {
+        return ResponseHelper::json_error(message);
+    }
+    if !remote_mounts::kind_available(mount.kind) {
+        return ResponseHelper::json_unavailable(format!(
+            "{} is not installed on this server",
+            mount.kind.helper()
+        ));
+    }
 
     let result = tokio::task::spawn_blocking(move || {
         let view = remote_mounts::upsert(mount, password.as_deref())?;
@@ -265,6 +266,10 @@ pub async fn handle_remote_mount_update(
         let Some(previous) = previous else {
             return Err(format!("No network location named '{name}'"));
         };
+        // Validate the edited definition before touching a live mount: an
+        // invalid server/share/option must not unmount the working one.
+        let mut mount = req.into_mount(name.clone(), Some(&previous));
+        remote_mounts::validate_fields(&mut mount)?;
         // Apply the edit, then bring the new definition up: an option or
         // host change must not leave the old mount serving stale data.
         let was_mounted = remote_mounts::list()
@@ -273,7 +278,6 @@ pub async fn handle_remote_mount_update(
         if was_mounted {
             remote_mounts::unmount_one(&name)?;
         }
-        let mount = req.into_mount(name.clone(), Some(&previous));
         remote_mounts::upsert(mount, password.as_deref())?;
         if was_mounted || remount {
             remote_mounts::mount_one(&name)

@@ -284,6 +284,14 @@ pub fn validate_hostname(hostname: &str) -> Result<String, String> {
 /// may disable a half-configured entry and come back to it.
 pub fn validate_settings(s: &DdnsSettings) -> Result<(), String> {
     if !s.enabled {
+        // A disabled entry may be half-configured (the operator has to be able
+        // to switch it off and come back later), but a non-empty host name
+        // must still be a name the provider could publish: a bare URL or a
+        // `host:port` would otherwise be stored verbatim and resurface as a
+        // broken update target when the feature is re-enabled.
+        if !s.hostname.trim().is_empty() {
+            validate_hostname(&s.hostname)?;
+        }
         return Ok(());
     }
     let hostname = validate_hostname(&s.hostname)?;
@@ -881,6 +889,31 @@ mod tests {
             validate_settings(&s).is_ok(),
             "a disabled entry may be incomplete"
         );
+    }
+
+    #[test]
+    fn test_a_disabled_entry_still_refuses_an_invalid_hostname() {
+        // Disabling may leave the token/provider half-configured, but a value
+        // that can never be published (a URL, a port, a wildcard) is refused
+        // before it is stored.
+        for bad in [
+            "https://myhome.duckdns.org",
+            "myhome.duckdns.org:80",
+            "*.duckdns.org",
+        ] {
+            let s = DdnsSettings {
+                enabled: false,
+                hostname: bad.to_string(),
+                ..Default::default()
+            };
+            assert!(validate_settings(&s).is_err(), "{bad} must be refused");
+        }
+        let empty = DdnsSettings {
+            enabled: false,
+            hostname: String::new(),
+            ..Default::default()
+        };
+        assert!(validate_settings(&empty).is_ok());
     }
 
     #[test]

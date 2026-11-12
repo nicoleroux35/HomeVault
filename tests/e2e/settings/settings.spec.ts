@@ -215,9 +215,10 @@ function set(page: Page) {
  *  resilient to rail order/count changes. */
 async function openCategory(page: Page, cat: Category) {
   const label = GROUP_LABEL[GROUP_OF[cat]];
-  const item = set(page)
-    .locator('[data-testid="settings-nav-item"]')
-    .filter({ hasText: label });
+  // Below ~700px the rail collapses to an icon-only strip: the label is no
+  // longer a text node, but it is still the button's accessible name
+  // (`aria-label` in WindowSidebarItem). `getByRole` covers both widths.
+  const item = set(page).getByRole('button', { name: label }).first();
   await item.click();
   await expect(item).toHaveClass(/set-nav-active/);
   // give the {#if activeCategory} block a beat to mount
@@ -1276,7 +1277,7 @@ test.describe('8 — Updates', () => {
         (r) => r.url().includes('/api/settings/version/check'),
         { timeout: 15_000 },
       ),
-      set(page).locator('[data-testid="settings-card-footer"] .settings-btn').click(),
+      set(page).locator('[data-testid="settings-check-update"]').click(),
     ]);
     expect(resp.request().method()).toBe('POST');
   });
@@ -3019,7 +3020,7 @@ test.describe('15 — Database snapshots', () => {
 // ===========================================================================
 test.describe('30 — Signed update', () => {
   test('30.1 — the release channel field saves through the normal Save button', async ({ page }) => {
-    await gotoDesktop(page, adminTokens);
+    await openSettings(page, admin);
     await openCategory(page, 'system');
 
     const field = set(page).locator('[data-testid="settings-release-manifest"]');
@@ -3038,7 +3039,7 @@ test.describe('30 — Signed update', () => {
         const body = await r.json();
         return body.data?.release_manifest ?? null;
       },
-      { token: adminTokens.token, csrf: adminTokens.csrf },
+      { token: admin.token, csrf: admin.csrf },
     );
     expect(before).toBe('https://releases.example.com/hv/manifest.json');
 
@@ -3053,7 +3054,7 @@ test.describe('30 — Signed update', () => {
         const body = await r.json();
         return body.data?.release_manifest ?? null;
       },
-      { token: adminTokens.token, csrf: adminTokens.csrf },
+      { token: admin.token, csrf: admin.csrf },
     );
     expect(after).toBeNull();
   });
@@ -3061,7 +3062,7 @@ test.describe('30 — Signed update', () => {
   test('30.2 — Apply update is offered only when the engine and a channel exist', async ({
     page,
   }) => {
-    await gotoDesktop(page, adminTokens);
+    await openSettings(page, admin);
     await openCategory(page, 'system');
 
     const button = set(page).locator('[data-testid="settings-apply-update"]');
@@ -3074,7 +3075,7 @@ test.describe('30 — Signed update', () => {
         });
         return r.json();
       },
-      { token: adminTokens.token, csrf: adminTokens.csrf },
+      { token: admin.token, csrf: admin.csrf },
     );
     expect(status.success).toBe(true);
 
@@ -3113,7 +3114,7 @@ test.describe('30 — Signed update', () => {
 
 /** Delete any OAuth2 configuration through the API, then re-mount Settings. */
 async function resetEmailOAuth(page: Page) {
-  await gotoDesktop(page, adminTokens);
+  await openSettings(page, admin);
   await page.evaluate(
     async ({ token, csrf }) => {
       await fetch('/api/settings/email/oauth', {
@@ -3121,10 +3122,12 @@ async function resetEmailOAuth(page: Page) {
         headers: { 'x-session-token': token, 'x-csrf-token': csrf },
       });
     },
-    { token: adminTokens.token, csrf: adminTokens.csrf },
+    { token: admin.token, csrf: admin.csrf },
   );
   await page.reload({ waitUntil: 'domcontentloaded' });
   await page.waitForSelector('.hv-user-pill', { timeout: 20_000 });
+  // The reload drops the open-window state; reopen Settings for the caller.
+  await openSettings(page, admin);
 }
 
 async function openEmailOAuthCard(page: Page) {
@@ -3196,7 +3199,7 @@ test.describe('31 — SMTP OAuth2', () => {
         });
         return r.text();
       },
-      { token: adminTokens.token, csrf: adminTokens.csrf },
+      { token: admin.token, csrf: admin.csrf },
     );
     expect(status).toContain('"configured":true');
     expect(status).not.toContain('e2e-client-secret-value');
@@ -3252,7 +3255,7 @@ test.describe('31 — SMTP OAuth2', () => {
         });
         return { status: r.status, body: await r.text() };
       },
-      { token: adminTokens.token, csrf: adminTokens.csrf },
+      { token: admin.token, csrf: admin.csrf },
     );
     expect(started.status).toBe(200);
     expect(started.body).toContain('accounts.google.com');
@@ -3263,7 +3266,7 @@ test.describe('31 — SMTP OAuth2', () => {
   });
 
   test('31.5 — the status route is admin-only', async ({ page }) => {
-    await gotoDesktop(page, adminTokens);
+    await gotoDesktop(page, admin);
     const anonymous = await page.evaluate(async () => {
       const r = await fetch('/api/settings/email/oauth');
       return r.status;
@@ -3289,10 +3292,12 @@ test.describe('31 — SMTP OAuth2', () => {
     );
 
     await card.locator('[data-testid="email-oauth-disconnect"]').click();
-    const dialog = page.getByRole('dialog');
+    // The Settings window is itself `role="dialog"`; the confirmation is the
+    // shadcn dialog content, so scope to that surface.
+    const dialog = page.locator('[data-slot="dialog-content"]').last();
     await expect(dialog).toBeVisible();
     await expect(dialog.locator('[data-testid="confirm-dialog-message"]')).toContainText(/OAuth2/);
-    await dialog.getByRole('button').last().click();
+    await dialog.getByRole('button', { name: /Confirm|Confirmer|Bestätigen|Confirmar/i }).click();
 
     await expect(card.locator('[data-testid="email-oauth-notice"]')).toContainText(
       /disconnected/i,

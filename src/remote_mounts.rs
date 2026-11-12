@@ -769,7 +769,14 @@ pub fn list() -> Vec<RemoteMountView> {
 
 /// Add or replace one mount. The password is only written when given, so a
 /// later edit that leaves the field blank keeps the stored one.
-pub fn upsert(mut mount: RemoteMount, password: Option<&str>) -> Result<RemoteMountView, String> {
+/// Validate and normalise every field that can reach `mount`, without
+/// touching the host or the store.
+///
+/// The create handler calls this **before** probing the protocol helper, so a
+/// malformed request is always a `400` even on a host where
+/// `mount.cifs`/`mount.nfs` is absent. `upsert` calls it again before writing,
+/// so the invariant holds for every caller.
+pub fn validate_fields(mount: &mut RemoteMount) -> Result<(), String> {
     mount.name = validate_name(&mount.name)?;
     mount.server = validate_server(&mount.server)?;
     mount.source = validate_source(mount.kind, &mount.source)?;
@@ -782,6 +789,11 @@ pub fn upsert(mut mount: RemoteMount, password: Option<&str>) -> Result<RemoteMo
         mount.username = None;
         mount.domain = None;
     }
+    Ok(())
+}
+
+pub fn upsert(mut mount: RemoteMount, password: Option<&str>) -> Result<RemoteMountView, String> {
+    validate_fields(&mut mount)?;
     if mount.created_at.is_empty() {
         mount.created_at = chrono::Utc::now().to_rfc3339();
     }

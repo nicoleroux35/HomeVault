@@ -82,8 +82,10 @@ async function openSecurityCategory(page: Page, tokens: Tokens) {
   await page.waitForSelector('[data-testid="settings-page"]', { timeout: 15_000 });
   await page.locator('[data-testid="settings-nav-item"]').first().waitFor({ state: 'visible', timeout: 15_000 });
 
-  const securityItem = page.locator('[data-testid="settings-nav-item"]', {
-    hasText: /Security|Sécurité|Sicherheit|Seguridad/,
+  // The rail collapses to an icon-only strip below ~700px, so the label is no
+  // longer a text node; its accessible name (aria-label/title) still is.
+  const securityItem = page.getByRole('button', {
+    name: /Security|Sécurité|Sicherheit|Seguridad/,
   });
   await securityItem.first().click();
   await page.waitForSelector('[data-testid="ddns-status"]', { timeout: 15_000 });

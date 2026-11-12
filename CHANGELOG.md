@@ -4,7 +4,50 @@ All notable changes to HomeVault are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the versioning
 follows [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [1.1.0] - 2026-11-12
+
+### Security
+
+- **Bundled SQLite upgraded past RUSTSEC-2026-0459 (2026-11-12).**
+  `sqlx` 0.9.0's published `sqlx-sqlite` pinned `libsqlite3-sys <0.38.0`,
+  which bundles SQLite 3.53.2 and can disclose uninitialized page-cache
+  memory when a crafted database + `-wal` pair is opened. The local
+  `vendor/sqlx-sqlite` copy carries only the upstream dependency-range
+  widening (`<0.40.0`), so `libsqlite3-sys` resolves to 0.39.1 (SQLite
+  3.54.1). `cargo audit` now reports only the two documented warnings
+  (`rustls-pemfile` unmaintained, `lru` unsound) that the CI already ignores.
+
+### Fixed
+
+- **Network locations validate the request before probing the host
+  (2026-11-12).** A `POST /api/remote-mounts` with an injected server, share
+  or option now answers `400` even on a host where `mount.cifs`/`mount.nfs`
+  is absent; previously the capability probe ran first and returned `503`,
+  hiding the input error. `PUT` validates the edited definition before it
+  unmounts a live location, so an invalid edit can no longer leave a working
+  mount down. Covered by `tests/remote_mounts_integration.rs` (green on the
+  unprivileged CI user, which has no `mount.cifs`).
+
+- **Setup wizard E2E is resilient to the reboot-safe resume (2026-11-12).**
+  Every test resets `/api/auth/setup/progress` to step 0 before loading the
+  wizard and waits for the resume GET to settle; a late resume can no longer
+  race the first click. The welcome-tile gate follows the v2 28 px icon
+  square instead of the pre-migration 40 px. `setup.spec.ts` is 100/100 on
+  Firefox again.
+
+- **Gateway contrast floors and the phone dock shape (2026-11-12).** The
+  login/wizard accent tint is #F5F9FF (accent text 4.55:1, was 4.15:1) and
+  the logo gradient starts at #3275C4 (white 4.69:1, was 4.06:1). The phone
+  dock keeps the v2 16 px squircle instead of reintroducing a circle.
+
+- **The collapsed Settings rail stays named (2026-11-12).**
+  `WindowSidebarItem` exposes its label as `aria-label` when the rail is
+  icon-only, so a screen reader (and the E2E suite) can still open a category
+  at 360 px.
+
+- **Dynamic DNS refuses an invalid name while disabled (2026-11-12).** A bare
+  URL, a port or a wildcard is rejected even when the feature is off; a
+  half-configured but valid entry can still be disabled and resumed.
 
 ### Added
 
@@ -3152,5 +3195,6 @@ theme README was fixed.
 - SQLite migrations (`sqlx/`), installer (`installer/`), and reference
   documentation (`docs/`, `TESTING.md`, `ROADMAP.md`).
 
-[Unreleased]: https://github.com/nicoleroux35/HomeVault/compare/v1.0.0...HEAD
+[Unreleased]: https://github.com/nicoleroux35/HomeVault/compare/v1.1.0...HEAD
+[1.1.0]: https://github.com/nicoleroux35/HomeVault/releases/tag/v1.1.0
 [1.0.0]: https://github.com/nicoleroux35/HomeVault/releases/tag/v1.0.0

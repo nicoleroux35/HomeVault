@@ -1,6 +1,6 @@
 [package]
 name = "homevault"
-version = "1.0.0"
+version = "1.1.0"
 edition = "2021"
 authors = ["Nicolas Le Roux"]
 description = "Turn any small computer into a private NAS: a simple, reliable, robust home cloud, managed from a browser"
@@ -149,6 +149,15 @@ ipnetwork = "0.20"
 tempfile = "3.27"
 regex = "1.13"
 tower = { version = "0.5", features = ["util"] }
+
+[patch.crates-io]
+# sqlx 0.9.0's published sqlx-sqlite pins `libsqlite3-sys <0.38.0`, which
+# bundles SQLite 3.53.2 and is affected by RUSTSEC-2026-0459 (a crafted
+# database + `-wal` pair can disclose uninitialized page-cache memory).
+# Upstream already widened the range to `<0.40.0` on main; this local copy of
+# the 0.9.0 source carries only that dependency-range change until sqlx
+# publishes it. Remove the patch when sqlx 0.9.x/0.10 ships the widened range.
+sqlx-sqlite = { path = "vendor/sqlx-sqlite" }
 
 [profile.release]
 opt-level = 2

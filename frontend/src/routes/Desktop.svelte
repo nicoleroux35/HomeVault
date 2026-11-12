@@ -6821,7 +6821,8 @@
     .hv-dock-icon {
       width: 44px;
       height: 44px;
-      border-radius: 50%;
+      /* Keep the v2 squircle on the phone dock too; the tile only shrinks. */
+      border-radius: 16px;
     }
 
     .hv-dock-icon :global(svg) {
