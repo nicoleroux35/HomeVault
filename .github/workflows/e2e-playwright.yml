@@ -104,10 +104,10 @@ jobs:
           DATA_DIRECTORY=/tmp/hv-e2e-data PORT=8080 HOMEVAULT_E2E_LOGIN_IP_MAX_PER_HOUR=100000 ./target/debug/homevault > /tmp/hv-e2e.log 2>&1 &
           echo $! > /tmp/hv-e2e.pid
           for i in $(seq 1 60); do
-            curl -sf http://localhost:8080/api/health >/dev/null && break
+            curl -sf http://localhost:8080/api/auth/setup-status >/dev/null && break
             sleep 2
           done
-          curl -sf http://localhost:8080/api/health >/dev/null
+          curl -sf http://localhost:8080/api/auth/setup-status >/dev/null
           # Warm the cold debug build before the tight spec timeouts start.
           curl -sf http://localhost:8080/ -o /dev/null
           curl -sf http://localhost:8080/api/auth/setup-status -o /dev/null
@@ -130,7 +130,7 @@ jobs:
           DATA_DIRECTORY=/tmp/hv-e2e-data PORT=8080 HOMEVAULT_E2E_LOGIN_IP_MAX_PER_HOUR=100000 ./target/debug/homevault > /tmp/hv-e2e.log 2>&1 &
           echo $! > /tmp/hv-e2e.pid
           for i in $(seq 1 60); do
-            curl -sf http://localhost:8080/api/health >/dev/null && break
+            curl -sf http://localhost:8080/api/auth/setup-status >/dev/null && break
             sleep 2
           done
           # Every non-setup spec logs in as e2eadmin in beforeAll ("seed this
