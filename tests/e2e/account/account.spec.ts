@@ -43,6 +43,7 @@ import {
   type APIRequestContext,
 } from '@playwright/test';
 import { createHmac } from 'node:crypto';
+import { gotoDesktopReady } from '../desktopReady';
 
 // ---------------------------------------------------------------------------
 // Constants & low-level helpers
@@ -201,16 +202,7 @@ async function seedBrowser(page: Page, tokens: Tokens | null, lang?: string) {
 /** Land on the desktop with an authenticated session. */
 async function gotoDesktop(page: Page, tokens: Tokens, lang?: string) {
   await seedBrowser(page, tokens, lang);
-  await page.goto('/desktop');
-  await page.waitForSelector('.hv-user-pill', { timeout: 20_000 });
-  // Every account this suite creates is brand new, so the once-per-version
-  // "What's New" modal opens on its first desktop load and its overlay
-  // intercepts the user-menu click.
-  const whatsNew = page.locator('[data-testid="whats-new-modal"]');
-  if (await whatsNew.isVisible().catch(() => false)) {
-    await page.locator('[data-testid="whats-new-dismiss"]').click().catch(() => {});
-    await whatsNew.waitFor({ state: 'hidden', timeout: 5_000 }).catch(() => {});
-  }
+  await gotoDesktopReady(page);
 }
 
 /** Land on the desktop and open the "My Account" window. */

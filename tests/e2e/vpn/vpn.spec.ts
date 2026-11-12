@@ -681,6 +681,9 @@ test.describe('13 — Real device lifecycle (best-effort, always cleaned up)', (
   }) => {
     const name = `e2evpn${Date.now().toString(36)}`;
     let peerId: string | null = null;
+    // page.evaluate resolves a relative fetch against the current origin;
+    // open the VPN screen first (about:blank has no origin).
+    await gotoVpn(page, adminTokens);
 
     const createStatus: { status: number; id?: string } = await page.evaluate(
       async ({ token, csrf, name }) => {
@@ -704,7 +707,6 @@ test.describe('13 — Real device lifecycle (best-effort, always cleaned up)', (
     peerId = createStatus.id ?? null;
 
     try {
-      await gotoVpn(page, adminTokens);
       await expect(win(page).locator('[data-testid="vpn-card-name"]', { hasText: name })).toBeVisible({
         timeout: 10_000,
       });
@@ -729,6 +731,9 @@ test.describe('13 — Real device lifecycle (best-effort, always cleaned up)', (
     page,
   }) => {
     const name = `e2evpnovpn${Date.now().toString(36)}`;
+    // page.evaluate resolves a relative fetch against the current origin;
+    // open the VPN screen first (about:blank has no origin).
+    await gotoVpn(page, adminTokens);
 
     const createStatus = await page.evaluate(
       async ({ token, csrf, name }) => {
@@ -753,7 +758,6 @@ test.describe('13 — Real device lifecycle (best-effort, always cleaned up)', (
     }
 
     try {
-      await gotoVpn(page, adminTokens);
       const openvpnTab = page.getByRole('tab', { name: /OpenVPN/ });
       await openvpnTab.click();
       await expect(win(page).locator('[data-testid="vpn-card-name"]', { hasText: name })).toBeVisible({

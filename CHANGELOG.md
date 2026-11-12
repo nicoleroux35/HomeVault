@@ -4,6 +4,25 @@ All notable changes to HomeVault are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the versioning
 follows [Semantic Versioning](https://semver.org/).
 
+## [1.1.1] - 2026-11-12
+
+### Fixed
+
+- **The desktop widget layout is only written after a real edit.** A fresh
+  account no longer POSTs `/api/monitor-layout` on every desktop load, so
+  read-only screens (Health, Quotas, a first Settings mount) stay read-only,
+  and the Widgets switches/refresh select stage until Save.
+- **The Appearance category icon and the login gateway clear their contrast
+  floors.** The violet tile now uses a darker stop (3:1+ on its 9% tint) and
+  the gateway tint/logo gradient were retuned in 1.1.0.
+- **E2E hardening after the first full stage-B run:** the What's New overlay
+  is dismissed before clicking the user pill, the dock entrance animation is
+  awaited, modals are scoped to `[data-slot="dialog-content"]`, the Syncthing
+  mock now matches nested resource URLs, the login suite runs last so its
+  rate-limit tests cannot lock `e2eadmin` for the next specs, and the stale
+  8-character, 400-contract, VPN-relative-fetch and Explorer-listing
+  expectations were corrected.
+
 ## [1.1.0] - 2026-11-12
 
 ### Security
@@ -3195,6 +3214,7 @@ theme README was fixed.
 - SQLite migrations (`sqlx/`), installer (`installer/`), and reference
   documentation (`docs/`, `TESTING.md`, `ROADMAP.md`).
 
-[Unreleased]: https://github.com/nicoleroux35/HomeVault/compare/v1.1.0...HEAD
+[Unreleased]: https://github.com/nicoleroux35/HomeVault/compare/v1.1.1...HEAD
+[1.1.1]: https://github.com/nicoleroux35/HomeVault/releases/tag/v1.1.1
 [1.1.0]: https://github.com/nicoleroux35/HomeVault/releases/tag/v1.1.0
 [1.0.0]: https://github.com/nicoleroux35/HomeVault/releases/tag/v1.0.0

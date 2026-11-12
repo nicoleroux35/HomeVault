@@ -44,6 +44,7 @@
  */
 
 import { test, expect, type Page, type APIRequestContext } from '@playwright/test';
+import { dismissWhatsNew, waitForDockSettled } from '../desktopReady';
 
 const BASE = process.env.BASE_URL || 'http://localhost:8080';
 const ADMIN_USER = process.env.E2E_ADMIN_USER || 'e2eadmin';
@@ -96,7 +97,9 @@ async function seedBrowser(page: Page, tokens: Tokens | null, lang?: string) {
 async function gotoDesktop(page: Page, tokens: Tokens, lang?: string) {
   await seedBrowser(page, tokens, lang);
   await page.goto('/desktop', { waitUntil: 'domcontentloaded' });
+  await dismissWhatsNew(page);
   await page.waitForSelector('.hv-user-pill', { timeout: 20_000 });
+  await waitForDockSettled(page);
   await page
     .addStyleTag({
       content: '[class*="-monitor"]{display:none!important;pointer-events:none!important}',
@@ -602,7 +605,11 @@ test.describe('11 — Edge cases', () => {
     await win(page).locator('[data-testid="journal-apply"]').click();
     await page.waitForTimeout(1500);
     // Either entries load, or the empty / error state shows — never a blank crash.
-    await expect(win(page).locator('[data-testid="journal-list"]')).toBeVisible();
+    await expect(
+      win(page)
+        .locator('[data-testid="journal-list"], [data-testid="journal-empty"], [data-testid="journal-error"]')
+        .first(),
+    ).toBeVisible();
     await expect(win(page)).toBeVisible();
   });
 });

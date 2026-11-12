@@ -52,6 +52,15 @@ pub fn current_version() -> &'static str {
 /// All curated release notes, newest first.
 pub static RELEASE_NOTES: &[ReleaseNote] = &[
     ReleaseNote {
+        version: "1.1.1",
+        title: "Faster, quieter desktop & a green E2E harness",
+        highlights: &[
+            "The widget layout is only saved after an edit; read-only screens no longer write to the server.",
+            "The Appearance category icon and the login gateway now clear the WCAG contrast floors.",
+            "The setup/settings/first-login flows were hardened after the full E2E pass.",
+        ],
+    },
+    ReleaseNote {
         version: "1.1.0",
         title: "Refreshed design, sharper icons & safer network locations",
         highlights: &[

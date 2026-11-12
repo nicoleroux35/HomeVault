@@ -993,7 +993,7 @@ test.describe('6 — Auth guards', () => {
     await openSecurity(page, adminTokens);
     for (const url of READS) {
       const status = await page.evaluate(async (u) => (await fetch(u)).status, url);
-      expect(status, `${url} unauthenticated`).toBe(400);
+      expect(status, `${url} unauthenticated`).toBe(401);
     }
   });
 

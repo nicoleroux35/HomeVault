@@ -185,6 +185,11 @@ function escapeRe(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
+/** Force the Explorer's visibility fallback (the watcher can lag in tests). */
+async function revalidateListing(page: Page) {
+  await page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));
+}
+
 /** Open the "New folder" modal from the file-toolbar action. */
 async function openNewFolder(page: Page) {
   await page.getByRole('button', { name: /new folder|nouveau dossier/i }).first().click();
@@ -1305,7 +1310,7 @@ test.describe('15 — Explorer extras', () => {
     const body = 'the original line — inline-editor probe';
     await openWork(page);
     expect((await apiUpload(page, adminTokens, WORK, fname, body)).success).toBe(true);
-    // (No manual Refresh: the list re-lists via the live watcher.)
+    await revalidateListing(page);
 
     const row = win(page).locator('[data-testid="explorer-file-row"]').filter({ hasText: fname }).first();
     await expect(row).toBeVisible({ timeout: 10_000 });
@@ -1631,7 +1636,7 @@ test.describe('15 — Explorer extras', () => {
     const dirName = `sharehost${Date.now().toString(36)}`;
     await openWork(page);
     await apiPost(page, adminTokens, `/api/explorer/mkdir?path=${q(`${WORK}/${dirName}`)}`);
-    // (No manual Refresh: the list re-lists via the live watcher.)
+    await revalidateListing(page);
 
     const row = win(page)
       .locator('[data-testid="explorer-file-row"]:not([data-testid="explorer-file-header"])')
@@ -1664,7 +1669,7 @@ test.describe('16 — Share by link & editor close guard', () => {
     const fname = `${uniq('share_')}.txt`;
     const body = 'SHARED-PAYLOAD-7';
     expect((await apiUpload(page, adminTokens, WORK, fname, body)).success).toBe(true);
-    // (No manual Refresh: the list re-lists via the live watcher.)
+    await revalidateListing(page);
 
     const row = fileRow(page, fname);
     await expect(row).toBeVisible({ timeout: 10_000 });
@@ -1700,7 +1705,7 @@ test.describe('16 — Share by link & editor close guard', () => {
     await openWork(page);
     const fname = `${uniq('priv_')}.txt`;
     expect((await apiUpload(page, adminTokens, WORK, fname, 'private')).success).toBe(true);
-    // (No manual Refresh: the list re-lists via the live watcher.)
+    await revalidateListing(page);
 
     const row = fileRow(page, fname);
     await row.locator('[data-testid="explorer-row-share-link"]').click();
@@ -1755,6 +1760,7 @@ test.describe('16 — Share by link & editor close guard', () => {
     const fname = `${uniq('onetime_')}.txt`;
     const body = 'ONE-TIME-PAYLOAD';
     expect((await apiUpload(page, adminTokens, WORK, fname, body)).success).toBe(true);
+    await revalidateListing(page);
 
     const row = fileRow(page, fname);
     await expect(row).toBeVisible({ timeout: 10_000 });

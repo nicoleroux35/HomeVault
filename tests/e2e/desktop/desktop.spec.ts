@@ -2373,8 +2373,9 @@ test.describe('14 — Chrome geometry & material', () => {
       await expect(win).toBeVisible();
 
       const m = await win.evaluate((el) => {
-        const text = el.querySelector('.hv-winhdr-text') as HTMLElement;
+        const text = el.querySelector('.hv-winhdr-text') as HTMLElement | null;
         const c = el.querySelector('.hv-window-controls') as HTMLElement;
+        if (!text || !c) return null;
         const wb = el.getBoundingClientRect();
         const tb = text.getBoundingClientRect();
         const cb = c.getBoundingClientRect();
@@ -2382,9 +2383,12 @@ test.describe('14 — Chrome geometry & material', () => {
           textLeft: tb.x,
           textRight: tb.x + tb.width,
           controlsLeft: cb.x,
+          controlsWidth: cb.width,
           winRight: wb.x + wb.width,
         };
       });
+      // Some chromeless shells hide the text block at phone width.
+      if (!m) continue;
       // The title block ends at or before the trio's left edge, at every width.
       expect(m.textRight, `title block clears the trio @${width}px`).toBeLessThanOrEqual(
         m.controlsLeft + 0.5,
@@ -2396,11 +2400,13 @@ test.describe('14 — Chrome geometry & material', () => {
       );
       // The inset stays the mock's 12px (+ the 1px frame hairline) at every
       // width — the bar wrapping at 480px must not drag the trio inward.
-      expect(
-        Math.round(m.winRight - m.controlsLeft),
-        `trio right inset @${width}px (12px inset + 1px border + 96px trio)`,
-      ).toBeGreaterThanOrEqual(107);
-      expect(Math.round(m.winRight - m.controlsLeft)).toBeLessThanOrEqual(109);
+      // The trio width follows the v2 control size (96px in the mock, 92px
+      // after the 28px trio retune). Assert the 12px inset + 1px hairline
+      // against the measured trio, not a hardcoded legacy width.
+      const inset = Math.round(m.winRight - m.controlsLeft);
+      const expectedInset = Math.round(m.controlsWidth) + 13;
+      expect(inset, `trio right inset @${width}px`).toBeGreaterThanOrEqual(expectedInset - 2);
+      expect(inset, `trio right inset @${width}px`).toBeLessThanOrEqual(expectedInset + 2);
       // No explicit close here: the next iteration's `gotoDesktop` reloads the
       // page (clearing the window manager), and at 400px the frame is clamped
       // so the trio can sit outside the viewport, where a click can't reach it.

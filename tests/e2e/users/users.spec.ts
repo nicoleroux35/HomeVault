@@ -45,6 +45,7 @@ import {
   type Page,
   type APIRequestContext,
 } from '@playwright/test';
+import { gotoDesktopReady } from '../desktopReady';
 import { createHmac } from 'node:crypto';
 
 // ---------------------------------------------------------------------------
@@ -258,8 +259,7 @@ async function seedBrowser(page: Page, tokens: Tokens | null, lang?: string) {
 
 async function gotoDesktop(page: Page, tokens: Tokens, lang?: string) {
   await seedBrowser(page, tokens, lang);
-  await page.goto('/desktop');
-  await page.waitForSelector('.hv-user-pill', { timeout: 20_000 });
+  await gotoDesktopReady(page);
 }
 
 /**
@@ -537,11 +537,11 @@ test.describe('3 — Validation', () => {
     await expect(win(page).locator('#c-username')).toBeVisible();
   });
 
-  test('3.4 — a too-short password → "8 characters minimum."', async ({ page }) => {
+  test('3.4 — a too-short password → "12 characters minimum."', async ({ page }) => {
     await win(page).locator('#c-username').fill(uniq('val_'));
     await win(page).locator('#c-password').fill('short');
     await win(page).getByRole('button', { name: 'Create account' }).click();
-    await expect(win(page).locator('[data-testid="users-err"]')).toHaveText('8 characters minimum.');
+    await expect(win(page).locator('[data-testid="users-err"]')).toHaveText('12 characters minimum.');
   });
 
   test('3.5 — a duplicate username surfaces a server-side error', async ({ page }) => {
@@ -803,7 +803,7 @@ test.describe('5 — Profile / role / groups / quota / delete flows', () => {
     await win(page).locator('[data-testid="users-tile"]', { hasText: who.username }).click();
     await win(page).locator('#d-password').fill('short');
     await win(page).getByRole('button', { name: 'Change password' }).click();
-    await expect(win(page).locator('[data-testid="users-err"]')).toHaveText('8 characters minimum.');
+    await expect(win(page).locator('[data-testid="users-err"]')).toHaveText('12 characters minimum.');
   });
 
   test('5.7 — adding/removing group membership persists', async ({ page }) => {

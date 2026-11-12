@@ -59,6 +59,7 @@
  */
 
 import { test, expect, type Page, type APIRequestContext } from '@playwright/test';
+import { waitForDockSettled } from '../desktopReady';
 
 const BASE = process.env.BASE_URL || 'http://localhost:8080';
 const ADMIN_USER = process.env.E2E_ADMIN_USER || 'e2eadmin';
@@ -143,6 +144,7 @@ async function gotoDesktop(page: Page, tokens: Tokens, lang?: string) {
       content: '[class*="-monitor"]{display:none!important;pointer-events:none!important}',
     })
     .catch(() => {});
+  await waitForDockSettled(page);
 }
 
 /** Click the Applications launcher and open one app tile by its display name. */
@@ -892,7 +894,7 @@ test.describe('10 — Security', () => {
       const r = await fetch('/api/rescue/tools');
       return r.status;
     });
-    expect(status).toBe(400);
+    expect(status).toBe(401);
   });
 
   test('10.2 — the Rescue API rejects a tampered session token', async ({ page }) => {

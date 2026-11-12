@@ -275,13 +275,13 @@ async function installDaemonMock(page: Page, mock: DaemonMock) {
     return route.fulfill(json(success('removed')));
   };
 
-  await page.route('**/api/syncthing/folders*', handler('folders'));
-  await page.route('**/api/syncthing/devices*', handler('devices'));
+  await page.route('**/api/syncthing/folders**', handler('folders'));
+  await page.route('**/api/syncthing/devices**', handler('devices'));
 }
 
 /** The open dialog (bits-ui portals it to <body>). */
 function dialog(page: Page) {
-  return page.locator('[role="dialog"]');
+  return page.locator('[data-slot="dialog-content"]').last();
 }
 
 async function openTab(page: Page, label: RegExp) {

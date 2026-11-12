@@ -164,7 +164,7 @@ test('2.1 — Create a task through the modal', async ({ page }) => {
   await openTasks(page, adminTokens);
   await win(page).locator('[data-testid="tasks-new-btn"]').click();
 
-  const modal = page.locator('[role="dialog"]').filter({ has: page.locator('[data-testid="tasks-save-btn"]') }).first();
+  const modal = page.locator('[data-slot="dialog-content"]').filter({ has: page.locator('[data-testid="tasks-save-btn"]') }).first();
   await expect(modal).toBeVisible();
 
   const nameField = page.locator('input[maxlength="120"]').first();
@@ -191,7 +191,7 @@ test('2.2 — Create rejects a missing name with an inline error', async ({ page
   // The error text lives inside the modal (portal-rendered outside the
   // page root) — scope by the dialog, not by the page testid.
   await expect(
-    page.locator('[role="dialog"] [data-testid="tasks-form-error"]'),
+    page.locator('[data-slot="dialog-content"] [data-testid="tasks-form-error"]'),
   ).toBeVisible();
   // Close the modal so the next test starts clean.
   await page.keyboard.press('Escape');
@@ -250,14 +250,14 @@ test('3.5 — the type select offers a service trigger', async ({ page }) => {
   await openTasks(page, adminTokens);
   await win(page).locator('[data-testid="tasks-new-btn"]').click();
   const modal = page
-    .locator('[role="dialog"]')
+    .locator('[data-slot="dialog-content"]')
     .filter({ has: page.locator('[data-testid="tasks-save-btn"]') })
     .first();
   await expect(modal).toBeVisible();
 
   // The task-type control is the shared `Select` (a button, not a native
   // `select`); the first combobox in this modal is the timezone.
-  const typeSelect = modal.getByRole('button', { name: 'snapshot' }).first();
+  const typeSelect = modal.locator('[data-slot="select-trigger"]').first();
   await typeSelect.click();
   const option = page.getByRole('option', {
     name: /Trigger a service|Déclencher un service|Ejecutar un servicio|Dienst auslösen/,

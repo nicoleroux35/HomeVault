@@ -220,6 +220,9 @@ function createMonitorStore() {
   let hydrated = false
   let currentPositions: MonitorPositions = defaultPositions()
   let pushTimer: ReturnType<typeof setTimeout> | undefined
+  // Set while the store adopts a server copy: `set()` runs the subscriber
+  // synchronously, and that must not echo the adopted layout back as a write.
+  let suppressPush = false
 
   /** Every local edit stamps `savedAt`, which is what `syncFromServer` compares
    *  against before overwriting the store (last write wins). */
@@ -251,23 +254,26 @@ function createMonitorStore() {
         if (serverSavedAt < currentPositions.savedAt) {
           // This origin was edited more recently than the stored copy: keep
           // the local layout and publish it, instead of silently discarding
-          // the change on the next login (ROADMAP 15.3).
-          scheduleServerPush(username, currentPositions)
+          // the change on the next login (ROADMAP 15.3). Only a real edit
+          // (`savedAt > 0`) is published; a pristine default must never write.
+          if (currentPositions.savedAt > 0) {
+            scheduleServerPush(username, currentPositions)
+          }
           return
         }
         const d = defaultPositions()
+        suppressPush = true
         set({
           ...d,
           ...parsed,
           refreshMs: normalizeRefreshMs(parsed.refreshMs),
           savedAt: serverSavedAt,
         })
-      } else if (res.success) {
-        // No layout saved server-side yet for this account - push whatever
-        // this origin already has (fresh defaults or a pre-existing
-        // localStorage layout) so other origins converge on it too.
-        scheduleServerPush(username, currentPositions)
+        suppressPush = false
       }
+      // No server copy yet: keep the local layout but do not push the
+      // pristine defaults. A read-only screen (Health, Quotas, a first
+      // Settings mount) must stay read-only; the first user edit pushes.
     } catch {
       // Non-fatal: keep whatever localStorage/default already provided.
     }
@@ -275,7 +281,7 @@ function createMonitorStore() {
 
   subscribe((p) => {
     currentPositions = p
-    if (hydrated && currentUsername) {
+    if (hydrated && currentUsername && !suppressPush) {
       saveToStorage(currentUsername, p)
       scheduleServerPush(currentUsername, p)
     }

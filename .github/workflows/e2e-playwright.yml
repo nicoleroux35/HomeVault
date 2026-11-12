@@ -186,10 +186,14 @@ jobs:
         run: |
           E2E_DIRS=$(for d in tests/e2e/*/; do
             case "$d" in
-              tests/e2e/setup/|tests/e2e/design/|tests/e2e/compat/) ;;
+              tests/e2e/setup/|tests/e2e/design/|tests/e2e/compat/|tests/e2e/login/) ;;
               *) printf '%s ' "$d" ;;
             esac
           done)
+          # Login last: its deliberate wrong-password and rate-limit tests
+          # exhaust the per-IP limiter for a minute, which used to make the
+          # next specs' e2eadmin login fail in a wave.
+          E2E_DIRS="$E2E_DIRS tests/e2e/login/"
           npx playwright test $E2E_DIRS --workers=1 --reporter=html --retries=1
       # D2 — WCAG 2.2 AA (plus the existing typography and UI-kit guards).
       # The baseline freezes existing debt and fails on any new axe violation.

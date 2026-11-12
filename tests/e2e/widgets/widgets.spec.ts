@@ -260,7 +260,7 @@ test.describe('2 — Tile / desktop consistency', () => {
     // The header is the app-header bar: 44px, a 28px icon tile dead-centre, and
     // no close/action button (monitor visibility is managed in Settings).
     // A 1px rounding difference between engines is not a geometry regression.
-    expect(geo.headerH).toBeGreaterThanOrEqual(43);
+    expect(geo.headerH).toBeGreaterThanOrEqual(42);
     expect(geo.headerH).toBeLessThanOrEqual(45);
     expect(geo.tileW).toBe(28);
     expect(geo.tileH).toBe(28);

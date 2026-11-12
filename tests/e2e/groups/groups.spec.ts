@@ -43,6 +43,7 @@ import {
   type Page,
   type APIRequestContext,
 } from '@playwright/test';
+import { gotoDesktopReady } from '../desktopReady';
 
 // ---------------------------------------------------------------------------
 // Constants & low-level helpers
@@ -184,8 +185,7 @@ async function seedBrowser(page: Page, tokens: Tokens | null, lang?: string) {
 
 async function gotoDesktop(page: Page, tokens: Tokens, lang?: string) {
   await seedBrowser(page, tokens, lang);
-  await page.goto('/desktop');
-  await page.waitForSelector('.hv-user-pill', { timeout: 20_000 });
+  await gotoDesktopReady(page);
 }
 
 /**
@@ -522,7 +522,7 @@ test.describe('5 — Members / quota / delete flows', () => {
     await win(page).locator('[data-testid="groups-row"]', { hasText: groupName }).click();
     await win(page).locator('[data-testid="groups-user"]', { hasText: memberB.username }).click(); // add
     await win(page).locator('[data-testid="groups-user"]', { hasText: memberA.username }).click(); // remove
-    await win(page).getByRole('button', { name: 'Save', exact: true }).first().click();
+    await win(page).locator('[data-testid="groups-members-save"]').click();
     await expect(win(page).locator('[data-testid="groups-ok"]')).toHaveText('Members updated', { timeout: 8_000 });
 
     const grp = await ctx.get(`/api/groups/${encodeURIComponent(groupName)}`, { headers: adminHeaders });
@@ -534,7 +534,7 @@ test.describe('5 — Members / quota / delete flows', () => {
   test('5.4 — saving with no changes still succeeds', async ({ page }) => {
     await gotoGroups(page, adminTokens);
     await win(page).locator('[data-testid="groups-row"]', { hasText: groupName }).click();
-    await win(page).getByRole('button', { name: 'Save', exact: true }).first().click();
+    await win(page).locator('[data-testid="groups-members-save"]').click();
     await expect(win(page).locator('[data-testid="groups-ok"]')).toHaveText('Members updated', { timeout: 8_000 });
   });
 
@@ -542,7 +542,7 @@ test.describe('5 — Members / quota / delete flows', () => {
     await gotoGroups(page, adminTokens);
     await win(page).locator('[data-testid="groups-row"]', { hasText: groupName }).click();
     await win(page).locator('[data-testid="groups-user"]', { hasText: memberB.username }).click();
-    await win(page).getByRole('button', { name: 'Save', exact: true }).first().click();
+    await win(page).locator('[data-testid="groups-members-save"]').click();
     await expect(win(page).locator('[data-testid="groups-ok"]')).toBeVisible({ timeout: 8_000 });
     await expect(
       win(page).locator('[data-testid="groups-row"]', { hasText: groupName }).locator('[data-testid="groups-badge"]'),

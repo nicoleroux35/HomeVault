@@ -831,7 +831,8 @@ test.describe('11 — Export / import', () => {
     await expect(open).toBeEnabled({ timeout: 10_000 });
     await open.click();
 
-    const modal = page.locator('[data-testid="vm-export-modal"]');
+    const dialog = page.locator('[data-slot="dialog-content"]').last();
+    const modal = dialog.locator('[data-testid="vm-export-modal"]');
     await expect(modal).toBeVisible({ timeout: 10_000 });
 
     // Exactly one of "select a machine" or the export form is shown, and the
@@ -850,7 +851,7 @@ test.describe('11 — Export / import', () => {
       if ((await run.count()) > 0) await expect(run).toBeDisabled();
     }
 
-    await modal.getByRole('button', { name: /Close|Fermer|Cerrar|Schließen/i }).click();
+    await dialog.locator('[data-slot="dialog-close"]').click();
     await expect(modal).toBeHidden();
   });
 

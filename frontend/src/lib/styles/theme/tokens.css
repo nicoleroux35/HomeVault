@@ -540,7 +540,7 @@
      (`--hv-success` #167A4D = 5.14:1, `--hv-success-text` #12633F = 7.27:1)
      clears all three roles.
      ============================================ */
-  --hv-wizard-feature-violet: var(--hv-settings-cat-appearance); /* #8B5CF6 — the product's violet (Settings rail), 4.23:1 as a glyph */
+  --hv-wizard-feature-violet: var(--hv-settings-cat-appearance); /* the product's violet (Settings rail), 3:1+ as a glyph on its tint */
   --hv-wizard-feature-emerald: var(--hv-success);      /* #167A4D — 5.14:1, ≥3:1 as a glyph on its 8% tint */
   --hv-wizard-recovery-bg: var(--hv-shell-glass);     /* white paper — the wizard's own field material */
   --hv-wizard-recovery-border: var(--hv-warning);      /* #96601A — 5.02:1 on white, ≥3:1 as a boundary (1.4.11) */
@@ -629,7 +629,7 @@
   --hv-settings-cat-tint: 9%;
   --hv-settings-cat-general: #2E72C9;        /* v2 accent */
   --hv-settings-cat-security: #C0392B;       /* v2 error text */
-  --hv-settings-cat-appearance: #7C6CF0;     /* v2 violet */
+  --hv-settings-cat-appearance: #5B3FB5;     /* v2 violet, dark enough for a 3:1 glyph on its 9% tint */
   --hv-settings-cat-widgets: #6A45D6;        /* v2 violet text */
   --hv-settings-cat-notifications: #96601A;  /* amber-700 (was amber-500, 2.15:1) */
   --hv-settings-cat-ai: #0E7F92;             /* v2 info */

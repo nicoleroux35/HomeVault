@@ -1788,7 +1788,7 @@
       {/if}
       {#if activeCategory === 'system'}
         <div data-testid="settings-card-title" class={secLabel}></div>
-        <div data-testid="settings-card" class={settingsCard}>
+        <div data-testid="settings-card" data-system-info="true" class={settingsCard}>
           <div class="settings-info-row flex items-center justify-between gap-4 py-3 border-b-[1.45px] border-[var(--hv-settings-hairline)]">
             <span class={settingsRowLabel}>{$t('settings.server_address')}</span>
             <span class="text-sm font-semibold text-[var(--hv-settings-title-strong)]">{serverInfo.display_address || `${serverInfo.ip}:${serverInfo.port}`}</span>

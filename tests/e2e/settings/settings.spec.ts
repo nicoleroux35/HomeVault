@@ -218,7 +218,11 @@ async function openCategory(page: Page, cat: Category) {
   // Below ~700px the rail collapses to an icon-only strip: the label is no
   // longer a text node, but it is still the button's accessible name
   // (`aria-label` in WindowSidebarItem). `getByRole` covers both widths.
-  const item = set(page).getByRole('button', { name: label }).first();
+  const nav = set(page).locator('[data-testid="settings-nav-item"]');
+  const item = nav
+    .filter({ hasText: label })
+    .or(set(page).getByRole('button', { name: label }))
+    .first();
   await item.click();
   await expect(item).toHaveClass(/set-nav-active/);
   // give the {#if activeCategory} block a beat to mount
@@ -1460,7 +1464,9 @@ test.describe('10 — System Information', () => {
   test('10.1 — server address / platform / version rows render', async ({ page }) => {
     await openSettings(page, admin);
     await openCategory(page, 'system_info');
-    const rows = set(page).locator('.settings-info-row');
+    const rows = set(page)
+      .locator('[data-system-info]')
+      .locator('.settings-info-row');
     await expect(rows).toHaveCount(3);
     await expect(rows.nth(1)).toContainText(/Linux/);
     await expect(rows.nth(2)).toContainText(/HomeVault v\d/);

@@ -742,7 +742,7 @@
             </div>
             {#if errors.membersOk}<span data-testid="groups-ok" class="text-xs text-[var(--hv-success)]">{errors.membersOk}</span>{/if}
             {#if !prot}
-              <Button variant="primary" size="sm" fullWidth class="mt-3" onclick={saveMembers} disabled={submitting}>
+              <Button variant="primary" size="sm" fullWidth class="mt-3" onclick={saveMembers} disabled={submitting} data-testid="groups-members-save">
                 <IconCheck size={16} strokeWidth={2.2} /> {$t('common.save')}
               </Button>
             {/if}

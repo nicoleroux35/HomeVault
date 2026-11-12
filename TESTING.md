@@ -44,6 +44,29 @@ an invalid host name even while disabled; the Settings category helper works
 at 360 px; the signed-update and SMTP-OAuth2 fixtures use the real `admin`
 session and open Settings first.
 
+
+### Stage-B triage after the 1.1.0 release (2026-11-12)
+
+The first full stage B finished **3 178 passed / 102 failed / 19 flaky /
+404 skipped / 309 not run**. The failures were grouped by cause and closed:
+
+- **Product:** the monitor layout no longer POSTs pristine defaults on load
+  (Health/Quotas stay read-only; Settings 23.7/23.8 stage until Save), and the
+  Appearance category tile meets the 3:1 graphical floor.
+- **Harness:** the What's New overlay is dismissed before the user-pill click,
+  the dock entrance animation is awaited, modals are scoped to
+  `[data-slot="dialog-content"]`, the Syncthing mock matches nested resource
+  URLs, the login suite runs last (its limiter tests no longer lock
+  `e2eadmin` for the next specs), and the stale 8-character password, `400`
+  unauthenticated, VPN relative-fetch and Explorer listing expectations were
+  corrected.
+
+Targeted re-runs: the 49-test triage set went from 6 failures to 3 (then 0
+after the last three fixes), 7/7 for the read-only/contrast group, 11/13 then
+13/13 for dialogs/VM, and 3/3 for Explorer. The only local failures left are
+the `groupadd` paths, which need root and are covered by the CI runner. A
+fresh full stage B is still required to confirm the whole suite.
+
 ## 2026-11-11 — quality gates added (executed)
 
 The ten missing gates from the test/CI audit are now implemented and were run

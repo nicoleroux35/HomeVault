@@ -1,6 +1,6 @@
 [package]
 name = "homevault"
-version = "1.1.0"
+version = "1.1.1"
 edition = "2021"
 authors = ["Nicolas Le Roux"]
 description = "Turn any small computer into a private NAS: a simple, reliable, robust home cloud, managed from a browser"
