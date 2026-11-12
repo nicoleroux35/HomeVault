@@ -124,8 +124,20 @@ jobs:
         run: npx playwright test tests/e2e/setup --workers=1 --reporter=html --retries=1
       - name: Reset server + seed e2eadmin
         run: |
-          kill $(cat /tmp/hv-e2e.pid) || true
-          sleep 2
+          # Stage A's server created an admin in test 19.1. Wait for it to
+          # actually exit before starting the fresh one: if it still owns the
+          # port, the new process dies and the seed POST hits the configured
+          # server (403/400), which used to surface as a bare curl exit 22.
+          E2E_PID=$(cat /tmp/hv-e2e.pid 2>/dev/null || true)
+          if [ -n "$E2E_PID" ]; then
+            kill "$E2E_PID" 2>/dev/null || true
+            for i in $(seq 1 30); do
+              kill -0 "$E2E_PID" 2>/dev/null || break
+              sleep 1
+            done
+            kill -9 "$E2E_PID" 2>/dev/null || true
+          fi
+          sleep 1
           rm -rf /tmp/hv-e2e-data && mkdir -p /tmp/hv-e2e-data
           DATA_DIRECTORY=/tmp/hv-e2e-data PORT=8080 HOMEVAULT_E2E_LOGIN_IP_MAX_PER_HOUR=100000 ./target/debug/homevault > /tmp/hv-e2e.log 2>&1 &
           echo $! > /tmp/hv-e2e.pid
@@ -136,8 +148,10 @@ jobs:
           # Every non-setup spec logs in as e2eadmin in beforeAll ("seed this
           # account first") — the wizard is gone now, so seed via the API,
           # exactly like tests/setup_integration.rs does.
+          SEED=""
           for i in $(seq 1 15); do
-            SEED=$(curl -sf -X POST http://localhost:8080/api/auth/setup -H 'Content-Type: application/json' -d '{"username":"e2eadmin","password":"E2eSecret123","fullname":"E2E Admin"}') && break
+            SEED=$(curl -s -X POST http://localhost:8080/api/auth/setup -H 'Content-Type: application/json' -d '{"username":"e2eadmin","password":"E2eSecret123","fullname":"E2E Admin"}') || SEED=""
+            echo "$SEED" | grep -q '"success":true' && break
             sleep 2
           done
           echo "$SEED" | grep -q '"success":true'
