@@ -104,10 +104,13 @@ jobs:
           DATA_DIRECTORY=/tmp/hv-e2e-data PORT=8080 HOMEVAULT_E2E_LOGIN_IP_MAX_PER_HOUR=100000 ./target/debug/homevault > /tmp/hv-e2e.log 2>&1 &
           echo $! > /tmp/hv-e2e.pid
           for i in $(seq 1 60); do
-            curl -sf http://localhost:8080/api/auth/setup-status >/dev/null && break
+            if curl -sf http://localhost:8080/api/auth/setup-status >/dev/null; then break; fi
             sleep 2
           done
-          curl -sf http://localhost:8080/api/auth/setup-status >/dev/null
+          curl -sf http://localhost:8080/api/auth/setup-status >/dev/null || {
+            echo "server did not become ready";
+            exit 1;
+          }
           # Warm the cold debug build before the tight spec timeouts start.
           curl -sf http://localhost:8080/ -o /dev/null
           curl -sf http://localhost:8080/api/auth/setup-status -o /dev/null
@@ -142,33 +145,36 @@ jobs:
           DATA_DIRECTORY=/tmp/hv-e2e-data PORT=8080 HOMEVAULT_E2E_LOGIN_IP_MAX_PER_HOUR=100000 ./target/debug/homevault > /tmp/hv-e2e.log 2>&1 &
           echo $! > /tmp/hv-e2e.pid
           for i in $(seq 1 60); do
-            curl -sf http://localhost:8080/api/auth/setup-status >/dev/null && break
+            if curl -sf http://localhost:8080/api/auth/setup-status >/dev/null; then break; fi
             sleep 2
           done
           # Every non-setup spec logs in as e2eadmin in beforeAll ("seed this
           # account first") — the wizard is gone now, so seed via the API,
           # exactly like tests/setup_integration.rs does.
           SEED=""
-          for i in $(seq 1 15); do
+          for i in $(seq 1 30); do
             SEED=$(curl -s -X POST http://localhost:8080/api/auth/setup -H 'Content-Type: application/json' -d '{"username":"e2eadmin","password":"E2eSecret123","fullname":"E2E Admin"}') || SEED=""
-            echo "$SEED" | grep -q '"success":true' && break
+            if echo "$SEED" | grep -q '"success":true'; then break; fi
             sleep 2
           done
-          echo "$SEED" | grep -q '"success":true'
+          if ! echo "$SEED" | grep -q '"success":true'; then
+            echo "seed failed: $SEED";
+            exit 1;
+          fi
           # The first visit shows the "What's new" dialog for a fresh account;
           # it covers the launcher and blocks every spec whose navigation
           # helper does not dismiss it. Mark it seen once, for the shared
           # e2eadmin account, before any spec runs.
           TOKEN=$(echo "$SEED" | sed -n 's/.*"token":"\([^"]*\)".*/\1/p')
           CSRF=$(echo "$SEED" | sed -n 's/.*"csrf_token":"\([^"]*\)".*/\1/p')
-          curl -sf -X POST http://localhost:8080/api/whats-new/seen \
+          curl -s -X POST http://localhost:8080/api/whats-new/seen \
             -H "X-Session-Token: $TOKEN" -H "X-CSRF-Token: $CSRF" \
-            -H 'Content-Type: application/json' -d '{}' >/dev/null
+            -H 'Content-Type: application/json' -d '{}' >/dev/null || true
           # Warm the paths the specs hit first (cold debug builds answer
           # slowly; specs click through within tight timeouts).
-          curl -sf http://localhost:8080/ -o /dev/null
-          curl -sf http://localhost:8080/api/auth/setup-status -o /dev/null
-          curl -sf "http://localhost:8080/api/auth/check-username?username=warmup_probe" -o /dev/null
+          curl -s http://localhost:8080/ -o /dev/null || true
+          curl -s http://localhost:8080/api/auth/setup-status -o /dev/null || true
+          curl -s "http://localhost:8080/api/auth/check-username?username=warmup_probe" -o /dev/null || true
       # Stage B — every other screen against the seeded server.
       # `--workers=1`: the specs share one server and mutate global state
       # (settings, users, shares); parallel workers caused cold-debug
