@@ -19,7 +19,7 @@
   import { onMount } from 'svelte';
   import { api } from '$lib/services/api';
   import { t } from '$lib/stores/i18n';
-  import { IconClock, IconStarFilled } from '@tabler/icons-svelte';
+  import { IconClock, IconStarFilled } from '$lib/icons/lucide';
 
   /** Compact quick-access card: global favorites + recent locations.
    *  Self-sufficient (loads its own data); `onopen` navigates the host. */

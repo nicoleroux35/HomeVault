@@ -46,7 +46,7 @@
  *   4. FOCUS CONTRACT — focus moves into the dialog, is trapped (Tab cycles
  *      inside), and returns to the trigger on close (§7.1 of the design
  *      system: WCAG 2.2 AA, keyboard parity).
- *   5. ICON BOUNDARY — `@lucide/svelte` stays inside `components/ui/**`.
+ *   5. ICON BOUNDARY — Lucide is the product set; Tabler/Phosphor are gone.
  *
  * Requires a live server whose setup is complete, seeded with an admin
  * (defaults: e2eadmin / E2eSecret123, override with E2E_ADMIN_USER /
@@ -360,7 +360,7 @@ test.describe('3 — Focus contract', () => {
 // ---------------------------------------------------------------------------
 
 test.describe('4 — Icon boundary', () => {
-  test('4.1 — @lucide/svelte is imported only inside components/ui', async ({ page }) => {
+  test('4.1 — the product icon set is Lucide; no Tabler/Phosphor imports remain', async ({ page }) => {
     const srcDir = join(process.cwd(), 'frontend', 'src');
     const offenders: string[] = [];
     const walk = (dir: string) => {
@@ -373,17 +373,15 @@ test.describe('4 — Icon boundary', () => {
         if (!/\.(svelte|ts|js)$/.test(full)) continue;
         const src = readFileSync(full, 'utf8');
         // The rule targets *imports*, not mentions in comments/docblocks.
-        for (const m of src.matchAll(/^\s*import[^;]*from\s+['"]@lucide\/svelte['"]/gm)) {
-          if (!full.includes(`${'/'}components${'/'}ui${'/'}`)) {
-            offenders.push(full.slice(srcDir.length + 1) + `: ${m[0].trim()}`);
-          }
+        for (const m of src.matchAll(/^\s*import[^;]*from\s+['"](?:@tabler\/icons-svelte|@phosphor-icons\/web)['"]/gm)) {
+          offenders.push(full.slice(srcDir.length + 1) + `: ${m[0].trim()}`);
         }
       }
     };
     walk(srcDir);
     expect(
       offenders,
-      'the product icon set is @tabler/icons-svelte; @lucide/svelte is ui/** only',
+      'the product icon set is Lucide; Tabler/Phosphor are fully retired',
     ).toEqual([]);
     await page.close();
   });

@@ -1,0 +1,103 @@
+{
+  "login": [],
+  "desktop": [
+    "label-content-name-mismatch::.hv-notif-btn"
+  ],
+  "dashboard": [],
+  "storage": [],
+  "usb-copy": [],
+  "raid": [],
+  "explorer": [
+    "button-name::.px-2",
+    "label-content-name-mismatch::div[data-path=\"/bin.usr-is-merged\"]",
+    "label-content-name-mismatch::div[data-path=\"/boot\"]",
+    "label-content-name-mismatch::div[data-path=\"/cdrom\"]",
+    "label-content-name-mismatch::div[data-path=\"/dev\"]",
+    "label-content-name-mismatch::div[data-path=\"/etc\"]",
+    "nested-interactive::div[data-path=\"/bin\"]",
+    "nested-interactive::div[data-path=\"/bin.usr-is-merged\"]",
+    "nested-interactive::div[data-path=\"/boot\"]",
+    "nested-interactive::div[data-path=\"/cdrom\"]",
+    "nested-interactive::div[data-path=\"/dev\"]",
+    "nested-interactive::div[data-path=\"/etc\"]",
+    "nested-interactive::div[data-path=\"/home\"]",
+    "nested-interactive::div[data-path=\"/lib\"]",
+    "nested-interactive::div[data-path=\"/lib.usr-is-merged\"]",
+    "nested-interactive::div[data-path=\"/lib32\"]",
+    "nested-interactive::div[data-path=\"/lib64\"]",
+    "nested-interactive::div[data-path=\"/lost+found\"]",
+    "nested-interactive::div[data-path=\"/media\"]",
+    "nested-interactive::div[data-path=\"/mnt\"]",
+    "nested-interactive::div[data-path=\"/opt\"]",
+    "nested-interactive::div[data-path=\"/proc\"]",
+    "nested-interactive::div[data-path=\"/root\"]",
+    "nested-interactive::div[data-path=\"/run\"]",
+    "nested-interactive::div[data-path=\"/sbin\"]",
+    "nested-interactive::div[data-path=\"/sbin.usr-is-merged\"]",
+    "nested-interactive::div[data-path=\"/srv\"]",
+    "nested-interactive::div[data-path=\"/swapfile\"]",
+    "nested-interactive::div[data-path=\"/sys\"]",
+    "nested-interactive::div[data-path=\"/tmp\"]",
+    "nested-interactive::div[data-path=\"/usr\"]",
+    "nested-interactive::div[data-path=\"/var\"]"
+  ],
+  "docker": [
+    "color-contrast::.border-\\[var\\(--hv-primary\\)\\]\\/50"
+  ],
+  "network": [
+    "label::.overflow-hidden.rounded-2xl[data-testid=\"network-card\"]:nth-child(1) > .pt-4.px-4.gap-3 > .relative.inline-block.cursor-pointer > .sr-only[type=\"checkbox\"]",
+    "label::.overflow-hidden.rounded-2xl[data-testid=\"network-card\"]:nth-child(2) > .pt-4.px-4.gap-3 > .relative.inline-block.cursor-pointer > .sr-only[type=\"checkbox\"]",
+    "label::.overflow-hidden.rounded-2xl[data-testid=\"network-card\"]:nth-child(3) > .pt-4.px-4.gap-3 > .relative.inline-block.cursor-pointer > .sr-only[type=\"checkbox\"]"
+  ],
+  "vpn": [],
+  "backup": [],
+  "destinations": [],
+  "replication": [],
+  "traffic-control": [],
+  "iscsi": [
+    "scrollable-region-focusable::.\\@container"
+  ],
+  "directory": [],
+  "users": [
+    "color-contrast::.bg-\\[var\\(--hv-primary-selected-bg\\)\\]",
+    "color-contrast::.bg-\\[var\\(--hv-primary\\)\\]",
+    "color-contrast::.h-5"
+  ],
+  "groups": [],
+  "quotas": [
+    "color-contrast::.bg-\\[var\\(--hv-primary-selected-bg\\)\\]"
+  ],
+  "shares": [
+    "color-contrast::.bg-\\[var\\(--hv-primary-light\\)\\]"
+  ],
+  "rclone": [],
+  "syncthing": [],
+  "health": [],
+  "chat": [],
+  "downloader": [],
+  "rescue": [
+    "color-contrast::.bg-transparent"
+  ],
+  "widgets": [
+    "color-contrast::.group.relative.p-5:nth-child(1) > .px-3.py-1\\.5.rounded-\\[var\\(--hv-radius-default\\)\\]",
+    "color-contrast::.group.relative.p-5:nth-child(2) > .px-3.py-1\\.5.rounded-\\[var\\(--hv-radius-default\\)\\]",
+    "color-contrast::.group.relative.p-5:nth-child(3) > .px-3.py-1\\.5.rounded-\\[var\\(--hv-radius-default\\)\\]",
+    "color-contrast::.group.relative.p-5:nth-child(4) > .px-3.py-1\\.5.rounded-\\[var\\(--hv-radius-default\\)\\]",
+    "color-contrast::.group.relative.p-5:nth-child(5) > .px-3.py-1\\.5.rounded-\\[var\\(--hv-radius-default\\)\\]",
+    "color-contrast::.group.relative.p-5:nth-child(6) > .px-3.py-1\\.5.rounded-\\[var\\(--hv-radius-default\\)\\]",
+    "color-contrast::.group.relative.p-5:nth-child(7) > .px-3.py-1\\.5.rounded-\\[var\\(--hv-radius-default\\)\\]",
+    "color-contrast::.group.relative.p-5:nth-child(8) > .px-3.py-1\\.5.rounded-\\[var\\(--hv-radius-default\\)\\]",
+    "color-contrast::.group.relative.p-5:nth-child(9) > .px-3.py-1\\.5.rounded-\\[var\\(--hv-radius-default\\)\\]"
+  ],
+  "edit-widgets": [
+    "aria-required-children::.flex-wrap"
+  ],
+  "journal": [],
+  "virtual-machines": [],
+  "tasks": [],
+  "metrics": [
+    "color-contrast::.bg-\\[var\\(--hv-primary-selected-bg\\)\\]",
+    "scrollable-region-focusable::.\\@container"
+  ],
+  "settings": []
+}

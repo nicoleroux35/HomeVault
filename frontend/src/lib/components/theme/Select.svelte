@@ -36,7 +36,7 @@
   import SelectItem from '$lib/components/ui/select/select-item.svelte';
   import SelectGroup from '$lib/components/ui/select/select-group.svelte';
   import SelectGroupHeading from '$lib/components/ui/select/select-group-heading.svelte';
-  import { IconX } from '@tabler/icons-svelte';
+  import { IconX } from '$lib/icons/lucide';
   import { t } from '$lib/stores/i18n';
 
   type SelectOption = { value: string; label: string; disabled?: boolean; group?: string };
@@ -149,7 +149,7 @@
             }
           }}
         >
-          <IconX size={16} stroke={2} />
+          <IconX size={16} strokeWidth={1.8} />
         </span>
       {/if}
     </SelectTrigger>

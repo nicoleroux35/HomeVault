@@ -1,0 +1,177 @@
+{
+  "src/app.css": {
+    "raw-hex::#f1f3f5": 1,
+    "raw-hex::#2e72c9": 2,
+    "raw-hex::#1f2733": 1,
+    "raw-hex::#ffffff": 2,
+    "raw-hex::#f6f8fb": 1,
+    "raw-hex::#e3e8ef": 1,
+    "raw-hex::#c0392b": 2,
+    "raw-hex::#167a4d": 1,
+    "raw-hex::#96601a": 1,
+    "text-length-var::text-[length:": 1
+  },
+  "src/lib/components/NotificationCenter.svelte": {
+    "raw-hex::#fff": 1,
+    "dead-fallback::var(--hv-on-primary, #fff)": 1
+  },
+  "src/lib/components/app/StatCard.svelte": {
+    "arbitrary-radius::rounded-[9px]": 2
+  },
+  "src/lib/components/charts/DonutChart.svelte": {
+    "raw-hex::#2e72c9": 1
+  },
+  "src/lib/components/desktop/DesktopShortcuts.svelte": {
+    "raw-hex::#fff": 3
+  },
+  "src/lib/components/desktop/ShortcutAddDialog.svelte": {
+    "raw-hex::#fff": 1
+  },
+  "src/lib/components/health/SecurityAdvisorCard.svelte": {
+    "raw-hex::#e5e7eb": 1,
+    "arbitrary-radius::rounded-[9px]": 1,
+    "dead-fallback::var(--hv-border, #E5E7EB)": 1
+  },
+  "src/lib/components/settings/ContentIndexCard.svelte": {
+    "raw-hex::#b42318": 2,
+    "dead-fallback::var(--hv-danger, #b42318)": 2
+  },
+  "src/lib/components/settings/PushCard.svelte": {
+    "raw-hex::#b42318": 1,
+    "raw-hex::#067647": 1,
+    "dead-fallback::var(--hv-danger, #b42318)": 1,
+    "dead-fallback::var(--hv-success, #067647)": 1
+  },
+  "src/lib/components/settings/ReverseProxyCard.svelte": {
+    "raw-hex::#b42318": 4,
+    "raw-hex::#067647": 2,
+    "dead-fallback::var(--hv-danger, #b42318)": 4,
+    "dead-fallback::var(--hv-success, #067647)": 2
+  },
+  "src/lib/components/settings/SettingsSaveButton.svelte": {
+    "raw-hex::#2e72c9": 1,
+    "raw-hex::#4a90d9": 1
+  },
+  "src/lib/components/settings/UpnpCard.svelte": {
+    "raw-hex::#b42318": 1,
+    "dead-fallback::var(--hv-danger, #b42318)": 1
+  },
+  "src/lib/components/theme/Select.svelte": {
+    "raw-hex::#87929e": 1
+  },
+  "src/lib/components/ui/tabs/tabs-list.svelte": {
+    "arbitrary-spacing::p-[3px]": 1
+  },
+  "src/lib/components/vm/VmConsole.svelte": {
+    "raw-hex::#0b0e14": 3,
+    "raw-hex::#d7dae0": 3,
+    "raw-hex::#4d9fff": 1,
+    "raw-hex::#12161f": 2,
+    "raw-hex::#7d8694": 1,
+    "z-index-literal::z-index: 200": 1
+  },
+  "src/lib/components/vm/VmScreen.svelte": {
+    "raw-hex::#0b0e14": 3,
+    "raw-hex::#12161f": 2,
+    "raw-hex::#d7dae0": 2,
+    "raw-hex::#9aa4b2": 1,
+    "raw-hex::#7d8694": 2,
+    "z-index-literal::z-index: 200": 1
+  },
+  "src/lib/styles/app-layout.css": {
+    "raw-hex::#b91c1c": 1
+  },
+  "src/lib/styles/theme/base.css": {
+    "raw-hex::#000000": 2
+  },
+  "src/lib/styles/theme/components.css": {
+    "raw-hex::#87929e": 1
+  },
+  "src/routes/CloudSync.svelte": {
+    "arbitrary-radius::rounded-[9px]": 4
+  },
+  "src/routes/Dashboard.svelte": {
+    "arbitrary-radius::rounded-[9px]": 1
+  },
+  "src/routes/Desktop.svelte": {
+    "raw-hex::#2e72c9": 2,
+    "raw-hex::#6a45d6": 3,
+    "raw-hex::#c0392b": 1,
+    "raw-hex::#167a4d": 2,
+    "raw-hex::#2560ac": 1,
+    "raw-hex::#96601a": 1,
+    "raw-hex::#0e7f92": 1,
+    "raw-hex::#fff": 1,
+    "raw-hex::#e8edf6": 1,
+    "z-index-literal::z-index: 100000": 1,
+    "z-index-literal::z-index: 99999": 1
+  },
+  "src/routes/Docker.svelte": {
+    "arbitrary-radius::rounded-[9px]": 4
+  },
+  "src/routes/Explorer.svelte": {
+    "arbitrary-radius::rounded-[9px]": 1
+  },
+  "src/routes/Groups.svelte": {
+    "arbitrary-radius::rounded-[9px]": 1
+  },
+  "src/routes/Health.svelte": {
+    "arbitrary-radius::rounded-[9px]": 1
+  },
+  "src/routes/Login.svelte": {
+    "arbitrary-spacing::pt-[140px]": 1,
+    "arbitrary-spacing::pt-[116px]": 1
+  },
+  "src/routes/Metrics.svelte": {
+    "raw-hex::#167a4d": 2,
+    "dead-fallback::var(--hv-success, #167A4D)": 2
+  },
+  "src/routes/Network.svelte": {
+    "arbitrary-radius::rounded-[9px]": 6
+  },
+  "src/routes/Restic.svelte": {
+    "arbitrary-radius::rounded-[9px]": 1
+  },
+  "src/routes/Settings.svelte": {
+    "raw-hex::#2e72c9": 1
+  },
+  "src/routes/SetupWizard.svelte": {
+    "raw-hex::#f8fafc": 1
+  },
+  "src/routes/Shares.svelte": {
+    "raw-hex::#96601a": 1,
+    "dead-fallback::var(--hv-warning,#96601A)": 1
+  },
+  "src/routes/Storage.svelte": {
+    "raw-hex::#14b8a6": 1,
+    "raw-hex::#0f766e": 1,
+    "raw-hex::#f97316": 1,
+    "raw-hex::#c2410c": 1,
+    "arbitrary-radius::rounded-[9px]": 1
+  },
+  "src/routes/Terminal.svelte": {
+    "raw-hex::#ffffff": 3,
+    "raw-hex::#242424": 3,
+    "raw-hex::#c50f1f": 1,
+    "raw-hex::#107c10": 1,
+    "raw-hex::#a86a00": 1,
+    "raw-hex::#7c3aed": 1,
+    "raw-hex::#0e7490": 1,
+    "raw-hex::#424242": 1,
+    "raw-hex::#707070": 1,
+    "raw-hex::#a20e1a": 1,
+    "raw-hex::#0b5a0b": 1,
+    "raw-hex::#8f3703": 1,
+    "raw-hex::#115ea3": 1,
+    "raw-hex::#6d28d9": 1,
+    "raw-hex::#155e75": 1
+  },
+  "src/routes/VPN.svelte": {
+    "arbitrary-radius::rounded-[9px]": 3
+  },
+  "src/routes/VirtualMachines.svelte": {
+    "raw-hex::#fff8e1": 1,
+    "arbitrary-radius::rounded-[9px]": 3,
+    "dead-fallback::var(--hv-warning-bg,#fff8e1)": 1
+  }
+}

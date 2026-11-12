@@ -51,7 +51,7 @@
     IconAlertTriangle,
     IconCamera,
     IconCopy,
-  } from '@tabler/icons-svelte';
+  } from '$lib/icons/lucide';
 
   interface Capabilities {
     kernel_available: boolean;
@@ -710,7 +710,7 @@
 
 <PageLayout title={$t('iscsi.title')} data-testid="iscsi-page">
   {#snippet icon()}
-    <IconServer stroke={1.8} />
+    <IconServer strokeWidth={1.8} />
   {/snippet}
 
   {#snippet toolbarRight()}
@@ -721,7 +721,7 @@
         disabled={busy !== null || !usable}
         onclick={applyNow}
       >
-        <IconRefresh size={16} stroke={2} /> {$t('iscsi.apply_now')}
+        <IconRefresh size={16} strokeWidth={1.8} /> {$t('iscsi.apply_now')}
       </Button>
     </div>
   {/snippet}
@@ -752,11 +752,11 @@
         )}
       >
         {#if !usable || lastApply?.failed}
-          <IconAlertTriangle size={20} stroke={2} class="flex-none text-[var(--hv-warning)]" aria-hidden="true" />
+          <IconAlertTriangle size={20} strokeWidth={1.8} class="flex-none text-[var(--hv-warning)]" aria-hidden="true" />
         {:else if settings.enabled && !liveState.pending}
-          <IconCheck size={20} stroke={2} class="flex-none text-[var(--hv-success)]" aria-hidden="true" />
+          <IconCheck size={20} strokeWidth={1.8} class="flex-none text-[var(--hv-success)]" aria-hidden="true" />
         {:else}
-          <IconInfoCircle size={20} stroke={2} class="flex-none text-[var(--hv-shell-text-2)]" aria-hidden="true" />
+          <IconInfoCircle size={20} strokeWidth={1.8} class="flex-none text-[var(--hv-shell-text-2)]" aria-hidden="true" />
         {/if}
         <div class="flex flex-col gap-1 min-w-0">
           {#if !usable}
@@ -838,7 +838,7 @@
         >
           {#snippet actions()}
             <Button variant="secondary" size="sm" data-testid="iscsi-add-backstore" onclick={openNewStore}>
-              <IconPlus size={15} stroke={2} /> {$t('iscsi.add_disk')}
+              <IconPlus size={15} strokeWidth={1.8} /> {$t('iscsi.add_disk')}
             </Button>
           {/snippet}
           <div class="flex flex-col gap-2">
@@ -886,7 +886,7 @@
                         aria-label={$t('iscsi.snapshots_named', { name: store.name })}
                         data-testid="iscsi-backstore-snapshots-{store.id}"
                         onclick={() => openSnapshots(store)}
-                      ><IconCamera size={16} stroke={1.8} /></button>
+                      ><IconCamera size={16} strokeWidth={1.8} /></button>
                     {/if}
                     <button
                       type="button"
@@ -894,14 +894,14 @@
                       aria-label={$t('iscsi.edit_disk_named', { name: store.name })}
                       data-testid="iscsi-backstore-edit-{store.id}"
                       onclick={() => openEditStore(store)}
-                    ><IconPencil size={16} stroke={1.8} /></button>
+                    ><IconPencil size={16} strokeWidth={1.8} /></button>
                     <button
                       type="button"
                       class={cn(iconBtn, 'hover:bg-[var(--hv-error-bg)] hover:text-[var(--hv-error)]')}
                       aria-label={$t('iscsi.delete_disk_named', { name: store.name })}
                       data-testid="iscsi-backstore-delete-{store.id}"
                       onclick={() => askDeleteStore(store)}
-                    ><IconTrash size={16} stroke={1.8} /></button>
+                    ><IconTrash size={16} strokeWidth={1.8} /></button>
                   </div>
                 </div>
               {/each}
@@ -916,7 +916,7 @@
         >
           {#snippet actions()}
             <Button variant="secondary" size="sm" data-testid="iscsi-add-target" onclick={openNewTarget}>
-              <IconPlus size={15} stroke={2} /> {$t('iscsi.add_target')}
+              <IconPlus size={15} strokeWidth={1.8} /> {$t('iscsi.add_target')}
             </Button>
           {/snippet}
           <div class="flex flex-col gap-2">
@@ -953,14 +953,14 @@
                       aria-label={$t('iscsi.edit_target_named', { iqn: target.iqn })}
                       data-testid="iscsi-target-edit-{target.id}"
                       onclick={() => openEditTarget(target)}
-                    ><IconPencil size={16} stroke={1.8} /></button>
+                    ><IconPencil size={16} strokeWidth={1.8} /></button>
                     <button
                       type="button"
                       class={cn(iconBtn, 'hover:bg-[var(--hv-error-bg)] hover:text-[var(--hv-error)]')}
                       aria-label={$t('iscsi.delete_target_named', { iqn: target.iqn })}
                       data-testid="iscsi-target-delete-{target.id}"
                       onclick={() => askDeleteTarget(target)}
-                    ><IconTrash size={16} stroke={1.8} /></button>
+                    ><IconTrash size={16} strokeWidth={1.8} /></button>
                   </div>
                 </div>
               {/each}
@@ -994,7 +994,7 @@
   onclose={closeStore}
 >
   {#snippet icon()}
-    <IconDatabase size={20} stroke={1.9} />
+    <IconDatabase size={20} strokeWidth={1.8} />
   {/snippet}
   <div class="flex flex-col gap-4 p-1" data-testid="iscsi-backstore-modal">
     {#if storeError}
@@ -1109,7 +1109,7 @@
         disabled={busy !== null}
         onclick={saveStore}
       >
-        <IconCheck size={16} stroke={2} /> {$t('common.save')}
+        <IconCheck size={16} strokeWidth={1.8} /> {$t('common.save')}
       </Button>
     </div>
   {/snippet}
@@ -1145,7 +1145,7 @@
           onclick={createSnapshot}
           disabled={snapshotBusy || !snapshotName.trim()}
           data-testid="iscsi-snapshot-create"
-        ><IconCamera size={15} stroke={2} /> {$t('iscsi.snapshot_create')}</Button>
+        ><IconCamera size={15} strokeWidth={1.8} /> {$t('iscsi.snapshot_create')}</Button>
       </div>
 
       {#if snapshotList.length === 0}
@@ -1165,7 +1165,7 @@
                   onclick={() => cloneSnapshot(snapshot)}
                   disabled={snapshotBusy || !cloneName.trim()}
                   data-testid={`iscsi-snapshot-clone-${snapshot.short_name}`}
-                ><IconCopy size={14} stroke={2} /> {$t('iscsi.snapshot_clone')}</Button>
+                ><IconCopy size={14} strokeWidth={1.8} /> {$t('iscsi.snapshot_clone')}</Button>
                 <button
                   type="button"
                   class={cn(iconBtn, 'hover:bg-[var(--hv-error-bg)] hover:text-[var(--hv-error)]')}
@@ -1173,7 +1173,7 @@
                   onclick={() => deleteSnapshot(snapshot)}
                   disabled={snapshotBusy}
                   data-testid={`iscsi-snapshot-delete-${snapshot.short_name}`}
-                ><IconTrash size={15} stroke={1.8} /></button>
+                ><IconTrash size={15} strokeWidth={1.8} /></button>
               </div>
             </div>
           {/each}
@@ -1201,7 +1201,7 @@
   onclose={closeDeleteStore}
 >
   {#snippet icon()}
-    <IconTrash size={20} stroke={1.9} />
+    <IconTrash size={20} strokeWidth={1.8} />
   {/snippet}
   <div class="flex flex-col gap-3 p-1" data-testid="iscsi-delete-store-modal">
     {#if deleteStore}
@@ -1247,7 +1247,7 @@
         }
         onclick={confirmDeleteStore}
       >
-        <IconTrash size={16} stroke={2} /> {$t('common.delete')}
+        <IconTrash size={16} strokeWidth={1.8} /> {$t('common.delete')}
       </Button>
     </div>
   {/snippet}
@@ -1261,7 +1261,7 @@
   onclose={closeTarget}
 >
   {#snippet icon()}
-    <IconServer size={20} stroke={1.9} />
+    <IconServer size={20} strokeWidth={1.8} />
   {/snippet}
   <div class="flex flex-col gap-5 p-1" data-testid="iscsi-target-modal">
     {#if targetError}
@@ -1295,7 +1295,7 @@
       <div class="flex items-center justify-between gap-2">
         <span class={fieldLabel}>{$t('iscsi.portals_title')}</span>
         <Button variant="secondary" size="sm" data-testid="iscsi-portal-add" onclick={addPortal}>
-          <IconPlus size={15} stroke={2} /> {$t('iscsi.add')}
+          <IconPlus size={15} strokeWidth={1.8} /> {$t('iscsi.add')}
         </Button>
       </div>
       <p class={hint}>{$t('iscsi.portals_hint')}</p>
@@ -1328,7 +1328,7 @@
             aria-label={$t('iscsi.portal_remove')}
             data-testid="iscsi-portal-remove-{index}"
             onclick={() => removePortal(index)}
-          ><IconTrash size={16} stroke={1.8} /></button>
+          ><IconTrash size={16} strokeWidth={1.8} /></button>
         </div>
       {/each}
     </div>
@@ -1344,7 +1344,7 @@
           disabled={backstores.length === 0}
           onclick={addLun}
         >
-          <IconPlus size={15} stroke={2} /> {$t('iscsi.add')}
+          <IconPlus size={15} strokeWidth={1.8} /> {$t('iscsi.add')}
         </Button>
       </div>
       <p class={hint}>{$t('iscsi.luns_hint')}</p>
@@ -1371,7 +1371,7 @@
             aria-label={$t('iscsi.lun_remove')}
             data-testid="iscsi-lun-remove-{index}"
             onclick={() => removeLun(index)}
-          ><IconTrash size={16} stroke={1.8} /></button>
+          ><IconTrash size={16} strokeWidth={1.8} /></button>
         </div>
       {/each}
     </div>
@@ -1381,7 +1381,7 @@
       <div class="flex items-center justify-between gap-2">
         <span class={fieldLabel}>{$t('iscsi.acls_title')}</span>
         <Button variant="secondary" size="sm" data-testid="iscsi-acl-add" onclick={addAcl}>
-          <IconPlus size={15} stroke={2} /> {$t('iscsi.add')}
+          <IconPlus size={15} strokeWidth={1.8} /> {$t('iscsi.add')}
         </Button>
       </div>
       <p class={hint}>{$t('iscsi.acls_hint')}</p>
@@ -1407,7 +1407,7 @@
               aria-label={$t('iscsi.acl_remove')}
               data-testid="iscsi-acl-remove-{index}"
               onclick={() => removeAcl(index)}
-            ><IconTrash size={16} stroke={1.8} /></button>
+            ><IconTrash size={16} strokeWidth={1.8} /></button>
           </div>
           <div class="grid gap-3 sm:grid-cols-2">
             <label class="flex flex-col gap-1.5">
@@ -1447,7 +1447,7 @@
         disabled={busy !== null}
         onclick={saveTarget}
       >
-        <IconCheck size={16} stroke={2} /> {$t('common.save')}
+        <IconCheck size={16} strokeWidth={1.8} /> {$t('common.save')}
       </Button>
     </div>
   {/snippet}

@@ -1,7 +1,7 @@
 # HomeVault Design System
 
 The **single source of truth** for the HomeVault visual language. The product
-has exactly one design identity — "HomeVault Appliance" (2026-09-12) — which
+has exactly one design identity — "HomeVault Appliance v2" (2026-11-10) — which
 replaces every earlier skin ("Fluent Paper", "Frosted Glass Modernism", "Clean
 Paper & Slate"). Nothing in the codebase may reference another framework's
 design language (Fluent, Material, …) as an authority: tokens, components and
@@ -12,6 +12,16 @@ its **non-colour** rules (spacing, corners, elevation, type metrics,
 breakpoints; see §2.2). That spec is not published with the repository: the
 adopted values live in `tokens.css` and are documented here. Its colour palette
 is not adopted.
+
+> **v2 refresh (2026-11-10).** The product now follows
+> `Nouveau_design/DESIGN.md` (extracted from the four `*-v2.svg` screens; the
+> reference set has since grown — `homevault-raid-v2.svg` draws the RAID
+> wizard's three steps on three screens in the same language): accent
+> `#2E72C9`, white cards with `#E3E8EF` hairlines on a `#F6F8FB` canvas,
+> 20px containers, 9–16px squircle icon pills, and the blue/indigo/cyan
+> wallpaper with a 32px dot grid. The rules below are updated to those values;
+> the palette stays single-accent and text colours keep their WCAG floors
+> (the design's vivid status hues are darkened where they carry text).
 
 > Superseded specs: `DESIGN stich.md` at the repo root described the earlier
 > "Frosted Glass Modernism" direction (`#2E72C9`, translucent blur surfaces). It
@@ -34,7 +44,7 @@ console** (reference mood: the approved appliance-console mocks). It is:
   Ship one light theme and be excellent at it rather than a half-tested
   second palette; never add a `dark:` variant.
 - **One brand accent** — a single professional blue ("HomeVault Blue"
-  `#1E62AE`) reserved for interactive elements, links, focus rings and
+  `#2E72C9`) reserved for interactive elements, links, focus rings and
   selection. Every app icon tile keeps its own gradient (see
   [App icon gradients](#6-app-icon-gradients)) but the *chrome* is monochrome
   blue-on-grey.
@@ -42,12 +52,12 @@ console** (reference mood: the approved appliance-console mocks). It is:
   forms, live metrics). Compact type, tight rows, generous touch targets
   (≥44px).
 - **Precise** — three corner families (badges 8px, controls 12px, containers
-  18px) plus the capsule/pill for tags, never a decorative 20–28px hero
+  20px) plus the capsule/pill for tags, never a decorative 24–28px hero
   curve, restrained motion, no decorative effects.
 - **Apple-derived, appliance-owned** — the *non-colour* half of the language
   (spacing rhythm, corner ladder, elevation, weights, leading, tracking,
   layout breakpoints) is ported from an Apple-style reference (§2.2 below). Its colour palette is deliberately **not** adopted: one
-  accent (`#1E62AE`) and the cool blue-grey ink ramp stay the only colour
+  accent (`#2E72C9`) and the cool blue-grey ink ramp stay the only colour
   authority in the product.
 
 ## 2. Tokens — the single source of truth
@@ -273,23 +283,23 @@ Notes that bind the table:
 
 | Role | Token | Value |
 |---|---|---|
-| Brand (base) | `--hv-primary` | `#1E62AE` |
-| Brand hover | `--hv-primary-hover` | `#18508D` |
-| Brand pressed | `--hv-primary-active` | `#0E2F54` |
+| Brand (base) | `--hv-primary` | `#2E72C9` |
+| Brand hover | `--hv-primary-hover` | `#2560AC` |
+| Brand pressed | `--hv-primary-active` | `#1C4C8C` |
 | Ink (primary text) | `--hv-text-primary` / `--hv-shell-text-strong` | `#1F2733` |
 | Ink (secondary) | `--hv-text-secondary` / `--hv-shell-text-2` | `#454F5B` |
-| Ink (muted) | `--hv-text-tertiary` / `--hv-shell-text` | `#69747F` |
-| Placeholder | `--hv-shell-text-3` | `#909AA6` |
+| Ink (muted) | `--hv-text-tertiary` / `--hv-shell-text` | `#64707F` |
+| Muted body / placeholder | `--hv-shell-text-3` | `#64707F` |
 | Canvas (window surface) | `--hv-window-bg` (frame) / `--hv-shell-glass` | `#FFFFFF` |
-| Card surface | `--hv-shell-card` / `--hv-surface-container-low` | `#F7F8FA` |
-| Fill (toolbar/chip) | `--hv-shell-fill` / `--hv-surface-container` | `#EFF1F4` |
-| Hairline soft | `--hv-shell-border-soft` | `#EDF0F4` |
-| Hairline | `--hv-shell-border` / `--hv-border` | `#DCE1E7` |
-| Hairline strong (outline) | `--hv-shell-border-strong` / `--hv-border-hover` | `#B9C2CC` |
-| Success | `--hv-success` | `#1E7E34` |
-| Warning | `--hv-warning` | `#B45309` |
-| Error | `--hv-error` | `#C22B21` |
-| Info | `--hv-info` | `= --hv-primary` |
+| Card surface | `--hv-shell-card` / `--hv-surface-container-low` | `#F6F8FB` |
+| Fill (toolbar/chip) | `--hv-shell-fill` / `--hv-surface-container` | `#F3F6FA` |
+| Hairline soft | `--hv-shell-border-soft` | `#EEF1F6` |
+| Hairline | `--hv-shell-border` / `--hv-border` | `#E3E8EF` |
+| Hairline strong (outline) | `--hv-shell-border-strong` / `--hv-border-hover` | `#8792A2` |
+| Success | `--hv-success` | `#167A4D` |
+| Warning | `--hv-warning` | `#96601A` |
+| Error | `--hv-error` | `#C0392B` |
+| Info | `--hv-info` | `#0E7F92` |
 
 ### 3.1 Interaction states
 
@@ -298,7 +308,7 @@ The four interaction states are tokens, never ad-hoc fills:
 - `--hv-subtle-hover` / `--hv-subtle-pressed` — transparent icon/text buttons.
 - `--hv-card-hover` / `--hv-card-pressed` — cards.
 - `--hv-stroke-hover` / `--hv-stroke-pressed` — outlined controls.
-- Focus ring: brand glow `--hv-focus-ring` — a **2px solid `#1E62AE` ring
+- Focus ring: brand glow `--hv-focus-ring` — a **2px solid `#2E72C9` ring
   (≈4.4:1 on white) + a 4px halo**, not the old 10%-alpha-only glow
   (≈1.1:1, failed WCAG 2.4.7 / 1.4.11). A component that suppresses its
   outline (`outline: none` on `:focus-visible`) must keep the box-shadow
@@ -308,10 +318,11 @@ The four interaction states are tokens, never ad-hoc fills:
 
 **Three families, one value each (2026-10-19).** The corner ladder follows
 the reference §4, keeping the appliance's
-one-number-per-role discipline: a corner either belongs to a *badge* (an
+one-number-per-role discipline: the v2 refresh (2026-11-10) keeps it and
+moves the container stop to 20px; a corner either belongs to a *badge* (an
 inline, non-interactive marker: **8px**), to a *control* (something you
 click: **12px**), or to a *container* (a surface that holds things:
-**18px**) — or it is a capsule/pill. This is enforced on **every button of
+**20px**) — or it is a capsule/pill. This is enforced on **every button of
 every screen**: `desktop.spec.ts` `14.12` walks the whole app registry and
 fails any `<button>` / `[role="button"]` whose computed corner is not the
 control stop, a circle or a capsule (see the four exceptions below).
@@ -323,9 +334,9 @@ component it came from: a window next to a popover looked like two different
 products, and a button next to the input it submits did not line up. Both
 families are now a single number — every button, input, select, chip and row
 takes **12px** (the reference's `--apple-radius-card-sm`), every container
-**18px** (`--apple-radius-card`), every non-control badge **8px**
+**20px** (`--hv-radius-2xl`), every non-control badge **8px**
 (`--apple-radius-badge`) — so the vendored shadcn `rounded-md`,
-`rounded-lg`, `rounded-xl`/`rounded-2xl` and every hand-written
+`rounded-lg`, `rounded-2xl` and every hand-written
 `var(--hv-radius-control)` all resolve to one of them, whatever the button's
 size.
 
@@ -336,13 +347,13 @@ size.
 | `--hv-radius-default` | 12px | **THE control stop** — inputs, buttons, selects, chips, rows |
 | `--hv-radius-md` | 12px | alias of the control stop (keeps `rounded-md` resolving) |
 | `--hv-radius-lg` | 12px | alias of the control stop (keeps `rounded-lg` resolving) |
-| `--hv-radius-xl` | 18px | **the surface stop** (alias) |
-| `--hv-radius-2xl` | 18px | **THE surface stop** — windows, widgets, modals, drawers, popovers, cards |
-| `--hv-radius-3xl` | 18px | compat alias of `--hv-radius-2xl` |
-| `--hv-radius-4xl` | 18px | compat alias of `--hv-radius-2xl` (chrome panels) |
+| `--hv-radius-xl` | 18px | large-surface compatibility alias (control-adjacent) |
+| `--hv-radius-2xl` | 20px | **THE surface stop** — windows, widgets, modals, drawers, popovers, cards |
+| `--hv-radius-3xl` | 20px | compat alias of `--hv-radius-2xl` |
+| `--hv-radius-4xl` | 20px | compat alias of `--hv-radius-2xl` (chrome panels) |
 | `--hv-radius-pill` | 980px | **the tag stop** — filter/severity/category chips (`--apple-radius-button`) |
 | `--hv-radius-full` | 9999px | true capsules and circular icon buttons |
-| `--hv-radius-card` | 18px | semantic card corner (aliases the surface stop) |
+| `--hv-radius-card` | 20px | semantic card corner (aliases the surface stop) |
 | `--hv-radius-control` | 12px | interactive control corner (aliases `--hv-radius-default`) |
 
 Retune the surface stop on `--hv-radius-2xl`, the control stop on
@@ -357,7 +368,7 @@ these takes 12px):
 
 | Case | Corner | Why |
 |---|---|---|
-| Circular controls (dock tiles, power-sheet tiles, topbar buttons, window trio, avatars) | `50%` | a *shape*, not a corner |
+| Circular controls (power-sheet tiles, topbar buttons, window trio, avatars) | `50%` | a *shape*, not a corner |
 | Capsule chips / pills (launcher categories, filter + severity chips, the user pill) | `9999px` | same — `.hv-pill` / `rounded-pill` names the tag stop |
 | Table / list rows with hairline separators (Explorer file list, Journal log) | `0` | the separators define the row; rounding it would notch every hairline |
 | Children of a segmented control | `0` | the group clips them (`overflow: hidden`) |
@@ -385,24 +396,26 @@ stop mapping the shell and the gateway share:
 
 | Element | Stop |
 |---|---|
-| App window, tablet-maximized window | `--hv-window-radius` (18px, aliased by `--hv-window-border-radius`) |
+| App window, tablet-maximized window | `--hv-window-radius` (20px, aliased by `--hv-window-border-radius`) |
 | Maximized window on desktop / edge-to-edge phone | `0` (intentional) |
-| Launchpad icon tiles | `50%` (circle, like the dock tile) |
+| Launchpad icon tiles | `16px` squircle (like the dock tile) |
 | Power action sheet (Shut Down / Restart / Log Out) — circular tiles with the label underneath, `--hv-dock-item-size` diameter | `50%` (the tile) / `--hv-radius-control` (the button) |
-| Topbar pill **and** dock pill — capsules, ends are exact semicircles (the full radius clamps to half the pill height); topbar buttons + dock icon tiles — perfect uniform circles | `--hv-radius-full` / `50%` |
-| Topbar popovers, power dialog, activity panel | `--hv-radius-4xl` (18px — the surface stop) |
-| Desktop widget/monitor panels, in-window cards, modals, drawers, folder pickers | `--hv-radius-card`/`--hv-radius-2xl` (18px) |
+| Topbar pill **and** dock pill — capsules, ends are exact semicircles (the full radius clamps to half the pill height); topbar buttons are circles, dock icon tiles are 16px squircles | `--hv-radius-full` / `50%` / `16px` |
+| Topbar popovers, power dialog, activity panel | `--hv-radius-4xl` (20px — the surface stop) |
+| Desktop widget/monitor panels, in-window cards, modals, drawers, folder pickers | `--hv-radius-card`/`--hv-radius-2xl` (20px) |
 | Inputs, buttons, selects, list rows, chips (non-pill) | `--hv-radius-control`/`--hv-radius-md` (12px) |
 | Status badges, key caps, non-control micro surfaces (`.hv-badge`) | `--hv-radius-badge`/`--hv-radius-sm` (8px) |
 | Filter / severity / category chips, user pill | `--hv-radius-pill` / `--hv-radius-full` |
-| Window header icon tile — **perfect circle**, like the dock tiles / topbar buttons | `--hv-winhdr-icon-radius` (`50%`) |
-| Window control trio (min / max / close) — **perfect circles**, like the dock tiles / topbar buttons | `--hv-winctrl-radius` (`50%`) |
+| Window header icon tile — **10px app-tile squircle** (v2) | `--hv-winhdr-icon-radius` (`10px`) |
+| Window control trio (min / max / close) — **perfect circles**, like the topbar buttons | `--hv-winctrl-radius` (`50%`) |
 | Pills, dots, status chips, avatars, spinners | `--hv-radius-full` / `50%` |
 
-Login and SetupWizard are Tailwind-on-tokens: card `rounded-2xl` (18px — the
+Login and SetupWizard are Tailwind-on-tokens: card `rounded-2xl` (20px — the
 surface stop), fields/buttons `rounded-md` (12px — the control stop, so the
-field and the button under it line up), inner cards `rounded-xl` (18px). They
-use no radius outside this map.
+field and the button under it line up), inner cards/panels `rounded-lg` (12px —
+the sub-card stop, so a panel nested in the card never repeats the card's own
+20px corner; the v2 reference draws sub-cards at 12–14px). They use no radius
+outside this map.
 
 ## 4. Component architecture — one library, three layers
 
@@ -412,44 +425,34 @@ per-app.**
 | Layer | Location | Contents |
 |---|---|---|
 | Primitives | `lib/components/theme/` | `Button`, `Input`, `Select`, `Toggle`, `Checkbox`, `Radio`, `Alert`, `Badge`, `Spinner`, `Modal`, `Toast`, `Drawer`, `Icon`, `UserAvatar`, `PathField`/`FolderPicker`/`PathPickerField`/`FloatingPathPicker`. Barrel export via `index.ts`. |
-| Framework | `lib/components/ui/` | shadcn-svelte generated components — **exactly 11 on disk**: `alert`, `badge`, `button`, `checkbox`, `dialog`, `input`, `radio-group`, `select`, `sonner`, `spinner`, `switch`. The theme primitives delegate to these. Import individual modules, never a barrel. See *What is actually vendored* below before assuming another component exists. |
+| Framework | `lib/components/ui/` | shadcn-svelte generated components — **exactly 25 on disk**: `alert`, `avatar`, `badge`, `button`, `card`, `checkbox`, `dialog`, `dropdown-menu`, `input`, `popover`, `progress`, `radio-group`, `scroll-area`, `select`, `separator`, `sheet`, `skeleton`, `slider`, `sonner`, `spinner`, `switch`, `table`, `tabs`, `textarea`, `tooltip`. The theme primitives delegate to these. Import individual modules, never a barrel. See *What is actually vendored* below before assuming another component exists. |
 | Charts | `lib/components/charts/` | LayerChart (Svelte 5 / d3) wrappers themed with `--hv-*` tokens: `DonutChart`, `BarsChart`, `TrendLineChart`. Barrel export via `index.ts`. |
 | Page composites | `lib/components/app/` | `PageLayout`, `StatCard`, `DataTable`, `SectionCard`, `EmptyState`, `FormRow` — the shared page anatomy that kills per-app reinvention. |
 | Desktop shell | `lib/components/desktop/` | `WindowFrame`, `WindowHeader`, `WindowSidebar`, `WindowToolbar`, `WindowFooter`, `HvLaunchpad`. |
 
-#### What is actually vendored — the list is 11, not 30
+#### What is actually vendored — the list is 25, not 30
 
-The table above used to advertise ~30 generated components (`accordion`,
-`calendar`, `collapsible`, `command`, `context-menu`, `date-picker`,
-`dropdown-menu`, `input-group`, `pagination`, `popover`, `progress`,
-`scroll-area`, `separator`, `skeleton`, `slider`, `tabs`, `textarea`, `toggle`,
-`toggle-group`, `tooltip` …). **None of the 19 extra ones exists in the tree,
-and none is imported anywhere** — `grep -rl 'components/ui/<name>' frontend/src`
-returns 0 for every one of them. The doc described an intention, not the code:
-the same class of false invariant as ROADMAP X.4. The directory is the truth:
+The table above used to advertise ~30 generated components while only 11 were
+on disk. **The v2 refresh installed a common baseline (2026-11-10).** To
+reproduce the new mock without hand-rolling each pattern again, the registry
+now includes `card`, `tabs`, `tooltip`, `dropdown-menu`, `popover`, `progress`,
+`separator`, `sheet`, `scroll-area`, `slider`, `textarea`, `table`, `avatar`
+and `skeleton` alongside the original eleven primitives. Screens may adopt
+them incrementally; the token bridge in `app.css` keeps them on HomeVault
+colours, radii and type. `sheet` is the generic overlay — `theme/Drawer`
+stays the product entry point. The directory is the truth:
 
 ```
 $ ls frontend/src/lib/components/ui/
-alert  badge  button  checkbox  dialog  input
-radio-group  select  sonner  spinner  switch
+alert  avatar  badge  button  card  checkbox  dialog  dropdown-menu
+input  popover  progress  radio-group  scroll-area  select  separator
+sheet  skeleton  slider  sonner  spinner  switch  table  tabs  textarea
+tooltip
 ```
 
-**Do not generate the missing ones speculatively.** Every pattern they would
-cover is already solved in the tree, and a second implementation would be dead
-weight to maintain — and a per-app skin, which this section forbids:
-
-| Would-be shadcn component | What the tree actually uses |
-|---|---|
-| `progress` | a plain `role="progressbar"` bar — `routes/Quotas.svelte`, `routes/Users.svelte`, `routes/Desktop.svelte`, `components/backup/BackupProgressIsland.svelte` |
-| `skeleton` | the tokenised `.hv-skeleton` / `.hv-skeleton-text` / `-rect` / `-circle` utilities (`base.css` + `utilities.css`, `--hv-skeleton-bg` / `--hv-skeleton-shimmer`) — used by `components/app/DataTable.svelte` (its `loadingRows`), `routes/Docker.svelte`, `routes/Journal.svelte`, `routes/Explorer.svelte` and `routes/Storage.svelte` |
-| `tooltip` | the native `title` attribute and the `aria-label`-only icon buttons of §7.1 (no custom tooltip layer exists) |
-| `textarea` | the native `<textarea>` styled by `base.css` (7 screens: Chat, CloudSync, Restic, Docker, Settings, Explorer, Shares) |
-| `separator` | the hairline tokens `--hv-shell-border-soft` / `border-t` inside `DataTable` and `SectionCard` |
-| `accordion`, `collapsible` | the native `<details>` — `routes/VirtualMachines.svelte` (the resize form). It is the only one: elsewhere, secondary content is a `Modal` rather than an inline disclosure |
-| `calendar`, `date-picker` | **nothing needs one yet** — no `<input type="date">`/`datetime-local` and no date-picker exists anywhere in the tree. Ship dates as text or via the server's own scheduling form until a screen genuinely requires calendar entry |
-| `tabs`, `popover`, `dropdown-menu` | the desktop shell's own `WindowSidebar` / `WindowHeader`, plus the two `position: fixed` card popovers of the Docker screen |
-| `slider` | numeric `<input type="number">` and the range fields of the Settings cards |
-| `command`, `pagination`, `scroll-area`, `context-menu`, `input-group`, `toggle`, `toggle-group` | unused concepts — the launcher has its own search, `DataTable` paginates server-side, scrolling is native, and `Toggle` is a `theme/` **primitive**, not a shadcn component |
+The following remain **not** installed because their first genuine caller does
+not exist yet: `accordion`, `calendar`, `date-picker`, `command`,
+`context-menu`, `input-group`, `pagination`, `toggle`, `toggle-group`.
 
 **The rule for the future.** Generate a shadcn component *the day a screen
 needs it* — `npx shadcn-svelte@latest add <name>` (`components.json` is wired:
@@ -457,11 +460,12 @@ style `vega`, `tailwind.css: src/app.css`, base colour `neutral`) — and add it
 to the list above in the same change. A component that exists without a caller
 is a bug in this document, not an asset.
 
-**Icon libraries — the boundary is enforced.** `@tabler/icons-svelte` is the
-product's set; `@lucide/svelte` is allowed **only** inside `components/ui/**`
-(the generated primitives import it, see §4.6/§721 of the icon rules). Verified
-by grep: zero `@lucide/svelte` imports outside `ui/`. `@phosphor-icons/web`
-feeds the generated sprite (`npm run icons:generate`).
+**Icon library — Lucide, one set.** `@lucide/svelte` is the product's one icon
+family (v2 design: outline, stroke 1.8). App code imports the stable aliases
+from `lib/icons/lucide.ts`; `components/ui/**` imports Lucide directly, as
+before. `@tabler/icons-svelte` and `@phosphor-icons/web` were removed on
+2026-11-10 together with the sprite pipeline — E2E `ui-kit.spec.ts` 4.1 fails on
+any reappearance.
 
 ### 4.1 Page anatomy (PageLayout)
 
@@ -526,10 +530,10 @@ hand-rolls a control into the bar. A page-level action belongs under the header,
 where it can't push the title off the bar's centre line or collide with the
 control trio's reserve. The icon tile and the trio are both
 `--hv-winctrl-size` (28px) on one shared vertical axis, so the bar renders at
-exactly `--hv-winhdr-h` (44px). Both are **perfect circles**
-(`--hv-winhdr-icon-radius` and `--hv-winctrl-radius` are `50%`, the
-dock/topbar shape language) — the whole window chrome speaks one shape, and a
-labelled button inside the chrome still takes `--hv-radius-control` (8px).
+exactly `--hv-winhdr-h` (44px). The app tile is a **10px squircle**
+(`--hv-winhdr-icon-radius`, the v2 app-tile shape) while the trio stays a
+**perfect circle** (`--hv-winctrl-radius: 50%`, the topbar shape language); a
+labelled button inside the chrome still takes `--hv-radius-control` (12px).
 `tabsLabel` / `sidebarLabel` (accessible
 names) are not subtitles and stay.
 
@@ -757,15 +761,13 @@ accessible name (`aria-label` from an i18n key) and, below 44px, the shared
 Every glyph has exactly one sanctioned source, chosen by the layer it
 renders in:
 
-- **App code (routes, `app/`, `desktop/`, `settings/`) → the shared
-  sprite.** Render it with `theme/Icon.svelte` (`<Icon name="…">`), which
-  resolves the name through `getIcon` in `lib/icons/mapping-unified.ts`
-  (tabler first, phosphor fallback) and draws it via `<use href="#icon-id">`
-  against the sprite sheet. This is the default for new code; existing
-  route-local `@tabler/icons-svelte` imports draw the same tabler family
-  and stay as they are.
-- **`components/ui/**` (shadcn primitives) → `@lucide/svelte`, only there.**
-  Lucide never leaves that directory; app code must not import it.
+- **App code (routes, `app/`, `desktop/`, `settings/`) → Lucide.** Import the
+  stable `Icon*` alias from `lib/icons/lucide.ts`, or render a data-driven
+  name with `theme/Icon.svelte` (`<Icon name="…">`), which resolves through
+  `lib/icons/lucide-registry.ts`. Default stroke is 1.8; pass
+  `strokeWidth={…}` only for documented emphasis.
+- **`components/ui/**` (shadcn primitives) → `@lucide/svelte` directly**, the
+  same underlying family.
 - **Inline `<svg>` → artwork only** — wallpapers, orbs and decorative
   scenes (Dashboard, Desktop, SetupWizard, Login) — never a functional
   glyph on a control.
@@ -777,7 +779,7 @@ above. Whichever source you use, the accessible name lives on the *control*
 ## 5. Desktop shell
 
 - Floating topbar pill + dock, both `--hv-shell-glass` opaque with the chrome
-  material pair — `--hv-chrome-surface-border` (slate-300) + 
+  material pair — `--hv-chrome-surface-border` (`#E3E8EF`) +
   `--hv-chrome-surface-shadow`. No backdrop blur, ever: a dark photo wallpaper
   must not wash the ink out of the chrome (E2E `14.3`).
 - **Each pill owns its height** — and since the 2026-10-18 height pass both
@@ -787,31 +789,30 @@ above. Whichever source you use, the accessible name lives on the *control*
   what makes `--hv-chrome-topbar-keepout` / `--hv-chrome-dock-keepout` exact.
   Everything anchored to the dock (`.hv-activity-panel`, the ≤900px maximized
   inset) derives from the **dock's** band.
-- Window corners: `--hv-window-radius` (18px, the surface stop). Maximized
+- Window corners: `--hv-window-radius` (20px, the surface stop). Maximized
   windows hide the
   topbar; on ≤900px they inset above the dock.
 - **The app window is the "AppWindow" mock (2026-09-14, Figma "Sans titre"
   node `3:76`)** — the exact spec lives in `desktop.md` → *In-window anatomy*.
-  In one line: an opaque white frame in a **slate-300** hairline
-  (`--hv-window-border` `#CBD5E1`, deliberately darker than the `--hv-shell-*`
-  card hairline) under the mock's own two-layer shadow, a constant **44px**
-  header bar, and the amber / blue / red control trio **inline in that bar** at
+  In one line: an opaque white frame in a **#E3E8EF** hairline
+  (`--hv-window-border`, the same hairline family as every card) under the v2
+  two-layer window shadow, a constant **44px** header bar, and the control trio
+  **inline in that bar** at
   28px — no longer 48px circles floating over the content (they are 28px
   **circles** again since 2026-10-18: `--hv-winctrl-radius: 50%`, like the dock
   tiles and topbar buttons).
-- **Chrome is Figma-inspired (approved gateway mocks) (2026-09-13, deepened 2026-09-14):** window
-  controls are traffic lights (`--hv-winctrl-*`: amber minimize, blue
-  maximize, red close) instead of neutral circles, on the mock's own stops
-  (`#FFB900` / `#2B7FFF` / `#FF6467` — **not** the semantic
-  `--hv-warning`/`--hv-primary`/`--hv-error`); the dock running indicator
+- **Chrome follows the v2 desktop (2026-11-10):** window controls are neutral
+  grey circles with the close in soft red (`--hv-winctrl-*`); the dock running
+  indicator
   is a full-width bar in the app's solid hue (`--hv-app-<id>-c`,
   `.hv-dock-dot` + `--dock-c`), which must stay the dark stop of that app's
   `--hv-app-<id>-grad` (E2E `14.2`); topbar buttons are flat **circles**
   (`--hv-chrome-topbar-btn-size`: 56px, 0.775 × the pill)
   on the pill — icon-only at every width, no tile / border / shadow, hover
   `--hv-subtle-hover`, `border-radius: 50%` — and
-  the profile avatar is a 36px circle (32px on the phone). Dock tiles are
-  56px **perfect circles** (`border-radius: 50%`, uniform across apps; 44px on
+  the profile avatar is a 36px circle (32px on the phone). A second capsule,
+  the brand pill, carries the product mark + subtitle at top-left. Dock tiles
+  are 56px **16px squircles** (`border-radius: 16px`, uniform across apps; 44px on
   phone) — the
   diameter is 0.775 × the 72px dock bar, the proportion measured on the
   approved reference dock — inside
@@ -886,7 +887,7 @@ dock tile, the in-window `WindowHeader` icon and the Launchpad tile — never a
 flat color, never a bespoke accent. A new app gets its own token (+ a dock
 class if it is pinned, and a `--hv-app-<id>-c` running-dot colour). 
 `--hv-app-accent-grad` remains the generic fallback and is deliberately **not**
-an app colour — it is tied to `--hv-primary` (#1E62AE) and must stay off the
+an app colour — it is tied to `--hv-primary` (#2E72C9) and must stay off the
 app ladder.
 
 The set is aligned on a Tailwind **500 → 700** ladder (light → dark stop), so
@@ -919,7 +920,7 @@ carry a page-scoped indigo/violet/pink "gateway" identity from an earlier
 mock; every value now **derives from the Appliance palette** the desktop
 shell, the dock/topbar chrome and every in-window app already use:
 
-- one accent — `--hv-login-accent` **is** `--hv-primary` (#1E62AE), and
+- one accent — `--hv-login-accent` **is** `--hv-primary` (#2E72C9), and
   `--hv-login-accent-soft-border` is the same hue (no second accent, no
   ladder);
 - one canvas — `--hv-login-bg-gradient` **is** `--hv-desktop-bg`, the
@@ -940,7 +941,7 @@ contrast floors hold everywhere: accent 6.15:1 on white and 4.99:1 on
 
 - `frontend/src/routes/Login.svelte` is pure **Tailwind-on-tokens** (no scoped
   `<style>`), built from the shared `Button`/`Toggle`/`Modal` (shadcn-svelte /
-  Melt UI) components + native inputs kept for autofill. The primary CTA uses
+  Bits UI) components + native inputs kept for autofill. The primary CTA uses
   the theme `Button` with `bg-[image:var(--hv-login-btn-grad)]!` — and so does
   every other primary button on the screen (recovery, retry, modal footer), so
   one screen has one button treatment.
@@ -976,8 +977,8 @@ CTA (`--hv-wizard-create-grad`). Its text runs on the **Appliance ink ramp**
 (`--hv-wizard-text-heading/title/label/soft/body` → `--hv-shell-text-*`) —
 since 2026-10-17 the wizard no longer drifts a step lighter than the rest of
 the product — and its fields are **white** with a hairline shadow (unlike the
-login's `#F7F8FA` fields). Error borders/text use `--hv-wizard-error`
-(= `--hv-error`, #C22B21) and update live (username invalid → red / valid →
+login's `#F6F8FB` fields). Error borders/text use `--hv-wizard-error`
+(= `--hv-error`, #C0392B) and update live (username invalid → red / valid →
 brand blue, confirm mismatch → red / match → green).
 
 **2026-10-17 — the emerald family was replaced by the Appliance success ramp.**
@@ -986,7 +987,7 @@ failed WCAG 1.4.3 / 1.4.11 in every role they carried ink: 2.54:1 as the
 welcome feature glyph, 2.28:1 as the strength label and behind the white
 check circles, and 2.54 → 3.77:1 under the white "create account" label.
 `--hv-wizard-feature-emerald` / `-success` / `-success-strong` /
-`-create-grad` now alias `--hv-success` (#1E7E34, 5.14:1) and
+`-create-grad` now alias `--hv-success` (#167A4D, 5.14:1) and
 `--hv-success-text` (#166428, 7.27:1). The amber recovery box became white
 paper with a 2px `--hv-warning` border, its copy on `--hv-warning-text` /
 `--hv-warning`, and only the code chip keeps a tint (`--hv-warning-light`,
@@ -1019,6 +1020,18 @@ would otherwise override), gradients as `bg-[image:var(--hv-…)]!`.
   classes (`.hv-welcome-title`, `.hv-feature`, `.hv-password-strength`,
   `.hv-req-list`, `.hv-summary-item/value`, `.hv-2fa-box`, `.hv-recovery-box`,
   …). The recovery step is exercised inline by test 19.1 before 2FA.
+- **v2 conformance (2026-11-10).** The wizard now follows
+  `Nouveau_design/DESIGN.md` on the points where it still drifted: the welcome
+  feature tiles are **28px icon pills** (`rounded-badge`, 16px Lucide glyph on
+  an 8 % tint of its semantic hue — the reference's §6.1 base block, not a
+  40px tile); every panel nested in the card (2FA, summary, recovery, 2FA
+  summary, feature cards) uses `rounded-lg` 12px instead of repeating the
+  card's 20px corner; the "Administrateur" badge uses the outline
+  `IconShieldCheck` rather than a filled decorative star path (the reference
+  bans decorative glyphs, §5); the avatar loader scrim is
+  `--hv-modal-backdrop` and the recovery acknowledgement checkbox is
+  `accent-[var(--hv-primary)]` (a control takes the accent, not the warning
+  hue).
 
 ### 6.3 The Settings screen (2026-09-14, Figma `Sans titre` node `16-6187`)
 
@@ -1028,7 +1041,7 @@ Appliance palette with it. Everything it declares lives under
 `--hv-settings-*` in `tokens.css`; no other screen reads those tokens.
 
 - **Greys are the Tailwind v4 slate ramp** (`#F8FAFC` canvas, `#F1F5F9`
-  hairline, `#E2E8F0` border/track-off, `#64748B` micro-label, `#314158` row,
+  hairline, `#E3E8EF` border/track-off, `#64748B` micro-label, `#314158` row,
   `#1D293D` title, `#0F172B` active title) and the **eight category accents
   are Tailwind v4 hues**, so every value is traceable to the frame instead of
   invented — four still the mock's \*-500 step, four (widgets, notifications,
@@ -1145,10 +1158,10 @@ Appliance palette with it. Everything it declares lives under
    interactive on hover only (everything must be reachable by tap and by
    keyboard focus). A screen ships only when it works with a mouse *and* a
    finger. See §6.3 and `CLAUDE.md` → design system.
-8. **One icon family per layer, no text glyphs (§4.4).** App code uses the
-   shared sprite `<Icon>` (tabler-first), `@lucide/svelte` stays inside
-   `components/ui/**`, inline `<svg>` is artwork only, and `✓`/`✕`/`★`
-   typed as text is never an icon.
+8. **One icon family, no text glyphs (§4.4).** App code uses Lucide through
+   `$lib/icons/lucide` (or `<Icon>` for data-driven names), `components/ui/**`
+   imports `@lucide/svelte` directly, inline `<svg>` is artwork only, and
+   `✓`/`✕`/`★` typed as text is never an icon.
 9. **Non-colour craft follows the Apple reference (§2.2); colour does not.**
    Spacing rhythm, the 8/12/18 corner ladder, elevation, weights, leading,
    tracking and the 734/1068/1440 breakpoints come from that spec. Its
@@ -1172,7 +1185,7 @@ These are correctness rules, enforced by review and by the E2E
   bumps raw `button`/`a`/`input`/`select` to 44px under
   `@media (any-pointer: coarse)` — deliberately `any-pointer`, so a hybrid
   touch-laptop (fine primary pointer) still gets the 44px floor.
-- **Focus always visible.** `--hv-focus-ring` is a 2px solid `#1E62AE` ring
+- **Focus always visible.** `--hv-focus-ring` is a 2px solid `#2E72C9` ring
   + 4px halo (≈4.4:1 on white), not a translucent glow. Never write
   `outline: none` in a `:focus-visible` rule without also keeping the ring
   (`box-shadow: var(--hv-focus-ring)`). Inputs show border-primary + ring.
@@ -1192,7 +1205,7 @@ These are correctness rules, enforced by review and by the E2E
   #64748B, `--hv-shell-border-strong` #87929E, badge bg #DC2626, wizard/timer
   hues).
   A new page-scoped palette must be contrast-checked before landing.
-  The accent counts both as text and as fill: its shipped default `#1E62AE`
+  The accent counts both as text and as fill: its shipped default `#2E72C9`
   clears 4.5:1 behind white text *and* as text on `--hv-surface` and the
   `--hv-primary-*` tints — the retired default `#4a90d9` did neither
   (≤3.34:1) and is still rewritten server-side by
@@ -1206,7 +1219,7 @@ These are correctness rules, enforced by review and by the E2E
   glyph). The Settings rail's eight category accents clear 3:1 in **both**
   tile states (full-colour glyph on the 9% tint at rest, white glyph on the
   solid active — §6.3), and the gateway ladder renders ≥4.5:1 wherever it
-  carries text (`accent` `#1E62AE`, 4.99:1 on `accent-soft`, both gradient
+  carries text (`accent` `#2E72C9`, 4.99:1 on `accent-soft`, both gradient
   stops ≥4.69:1 under white) — the wizard's own emerald family did not and was
   replaced by the Appliance success ramp on 2026-10-17 (§6.2). Runtime guards:
   `groups.spec.ts`

@@ -27,8 +27,14 @@ screenshot when its chrome moves.
   catalog apps, see [Apps Center](./apps-center.md#dynamic-docker-apps)).
 - Window chrome: `frontend/src/lib/components/desktop/WindowFrame.svelte`
   (drag/resize; content is cached so it does not reload during drag/resize).
-- Top bar (the floating pill) and dock are markup + CSS **inside**
+- Top bar (the floating pills) and dock are markup + CSS **inside**
   `Desktop.svelte` (the old `HvTopBar.svelte`/`HvDock.svelte` files are gone).
+  Since the v2 refresh there are **two** top capsules: the brand pill
+  (`.hv-brandbar`, top-left: gradient app mark + "HomeVault" + dashboard/host
+  subtitle + status dot) and the control pill (`.hv-menubar`, top-right). The
+  brand pill shares the control pill's material, capsule silhouette and
+  fullscreen/idle transitions; below 900px it steps aside so the controls keep
+  the top band.
   The launcher overlay is `frontend/src/lib/components/desktop/HvLaunchpad.svelte`
   (full-screen scrim + tile grid — see *Launcher* below).
   A shared motion vocabulary (`--hv-chrome-*`) lives in `tokens.css`. Both the
@@ -71,7 +77,7 @@ screenshot when its chrome moves.
   (`calc((var(--hv-chrome-topbar-h) - var(--hv-chrome-topbar-btn-size)) / 2)`
   = 8px) so the end controls sit **concentric** with the pill's arcs instead
   of drifting the moment the height token changes — the dock does the same
-  with its 56px circular tiles (8px of padding against a 56px tile inside a
+  with its 56px squircle tiles (8px of padding against a 56px tile inside a
   72px bar, so the arcs hug the tiles). E2E `8.5` asserts
   `computed radius >= height / 2` on both pills at 400/768/1440px.
 - **Dock tile pitch — `--hv-chrome-dock-gap` (10px).** `.hv-dock-container`'s
@@ -95,7 +101,7 @@ screenshot when its chrome moves.
   E2E `14.1` pins the JS mirror; `8.6` and the activity-taskbar test pin the
   geometry.
 - **The chrome material is its own token pair** — `--hv-chrome-surface-border`
-  (slate-300) and `--hv-chrome-surface-shadow` — consumed by the pill, the
+  (`#E3E8EF`) and `--hv-chrome-surface-shadow` — consumed by the pill, the
   dock and every panel hanging off the pill (`.hv-topbar-panel`, so a popover
   can't mismatch the pill it is anchored to). This is deliberate rather than a
   retune of `--hv-shell-border`: the shell hairline is consumed by every
@@ -113,7 +119,7 @@ screenshot when its chrome moves.
 - **Topbar buttons are icon-only CIRCLES (2026-10-18).** This is the third
   shape they have worn: 44×44 squares, then icon + label chips from 901px up
   (2026-09-14), and now circles at every width — the same shape language as
-  the dock's circular app tiles, inside the new capsule pill. Their diameter
+  the dock's squircle app tiles, inside the capsule pill. Their diameter
   is `--hv-chrome-topbar-btn-size` (**56px**, 0.775 × the 72px pill — the dock
   tile's own ratio; 44px on the phone's 56px pill), and both the pill's
   horizontal padding and the glyph size are derived from it
@@ -215,15 +221,15 @@ screenshot when its chrome moves.
   `--hv-chrome-dock-h` box (32px at 64px, 26px at the phone's 52px) — both
   ends are **exact semicircles**, so the silhouette is a wide, compact
   stadium with **no visible corner anywhere**. The topbar pill deliberately
-  keeps its own `--hv-radius-2xl` (**18px**, the surface stop — the capsule's
+  keeps its own `--hv-radius-2xl` (**20px**, the surface stop — the capsule's
   `--hv-radius-full` is a shape, not a corner value): the two chrome siblings
   no longer share a radius, and re-locking the old equality (E2E 8.5
   pre-2026-10-18) would flatten the capsule back into a rounded rectangle.
-- Dock tiles are 56px **perfect circles** (`border-radius: 50%` on the square
-  tile — a px radius would silently square it back on resize), one uniform
-  size for every app (44px on the phone), echoing the capsule's circular
-  ends. The diameter is `--hv-dock-item-size`, set from the approved reference
-  dock's own proportions (its tiles are 158px in a 204px bar → **0.775 × the
+- Dock tiles are 56px **16px squircles** (`border-radius: 16px` on the square
+  tile — the v2 app-tile shape), one uniform size for every app (44px on the
+  phone). The diameter is `--hv-dock-item-size`, set from the approved
+  reference dock's own proportions (its tiles are 158px in a 204px bar →
+  **0.775 × the
   bar height**), and the glyph inside is 0.5 × the tile (28px). The vertical
   padding is derived, `(bar − tile) / 2` = 8px; the horizontal padding stays
   10px and the pitch is 10px — the hover-lift floor (56 × 0.18 / 2 = 5.04px a
@@ -503,8 +509,8 @@ are its authored numbers, cross-checked pixel-by-pixel against a 2× PNG
 export; E2E `14.5`–`14.8` pin them.
 
 - **Frame:** fill `--hv-window-bg` (`#FFFFFF`, **opaque** — a dark wallpaper
-  must not show through), a 1px `--hv-window-border` (`#CBD5E1`, slate-300)
-  hairline, `--hv-window-radius` (**18px** — the product's single surface
+  must not show through), a 1px `--hv-window-border` (`#E3E8EF`)
+  hairline, `--hv-window-radius` (**20px** — the product's single surface
   corner, shared with the monitor widgets, modals, drawers and popovers; the
   mock's taller 16px stop was retired on 2026-10-18 and the stop moved 12 → 18px
   with the Apple-derived reference §4 on 2026-10-19, so a window and a widget read as the
@@ -532,9 +538,8 @@ export; E2E `14.5`–`14.8` pin them.
   `14.6` failed the first time it ran.
 - **Icon tile:** `--hv-winhdr-icon-size` (**= `var(--hv-winctrl-size)`, 28px**
   — see the standardization section below; it was 24px before 2026-09-14),
-  `--hv-winhdr-icon-radius` **`50%` — a perfect circle** (2026-10-18, the dock
-  tiles' / topbar buttons' shape language; it was an 8px rounded square before,
-  and `50%` rather than a px stop is what keeps it round if the size moves), the
+  `--hv-winhdr-icon-radius` **`10px` — the v2 app-tile squircle** (the trio
+  beside it stays circular), the
   app's own `--hv-app-<id>-grad` (never
   flat — see the one-colour-per-app rule in `CLAUDE.md`), white glyph
   **clamped to 16px by CSS**. The glyph size is *not* a prop: a route's icon
@@ -543,21 +548,20 @@ export; E2E `14.5`–`14.8` pin them.
   width/height attribute `<Icon>` writes from it (a stylesheet beats a
   presentation attribute). `stroke` is the exception — no rule overrides
   `stroke-width`, so it stays explicit.
-- **Title:** 14px / 600 on a 20px line, `--hv-winhdr-title` (`#314158`).
+- **Title:** 14px / 600 on a 20px line, `--hv-winhdr-title` (`#1F2733`).
   This is `--hv-text-md`, the compact chrome step — the bar is only 44px, so
   the old 16px `--hv-font-size-*` content step no longer fits it.
 - **Control trio (min / max / close):** `--hv-winctrl-size` **28px**,
-  `--hv-winctrl-radius` **`50%` — a perfect circle** (2026-10-18, the dock
-  tiles' / topbar buttons' shape language; it was an 8px rounded square
-  before), `--hv-winctrl-gap` **6px**, flat fills
-  `--hv-winctrl-min` `#FFB900` / `--hv-winctrl-max` `#2B7FFF` /
-  `--hv-winctrl-close` `#FF6467` (each with a `-hover` step) and the mock's
-  own 14×14 white glyphs, at `stroke-width: 1.458` (the SVG's own value — it
-  is what makes the glyphs read the mock's weight at 14px). **These are the
-  mock's literal stops, not the semantic tokens**: `#FFB900` and `#FF6467`
-  are brighter than `--hv-warning`/`--hv-error` by design, so do not
-  "harmonise" them back. The trio is the only round *control* in the window
-  chrome; a labelled button still takes `--hv-radius-control` (12px).
+  `--hv-winctrl-radius` **`50%` — a perfect circle** (matching the topbar
+  buttons; the app tile beside it is a 10px squircle), `--hv-winctrl-gap` **6px**, flat fills
+  `--hv-winctrl-min` / `--hv-winctrl-max` (`#F3F6FA` neutral grey) and
+  `--hv-winctrl-close` (`#FDECEA` soft red, `#C0392B` glyph) with their
+  `-hover` steps, and their own 14×14 glyphs at `stroke-width: 1.458` (the
+  SVG's own value — it is what makes the glyphs read the mock's weight at
+  14px). These are the **v2 chrome skin**, not the semantic status tokens:
+  the close is a soft-red surface with a red glyph, never a saturated
+  `--hv-error` fill behind white. The trio is the only round *control* in the
+  window chrome; a labelled button still takes `--hv-radius-control` (12px).
 
 ### Where the trio lives — and the reserve that protects the title
 
@@ -636,11 +640,16 @@ Every app renders its own `<WindowHeader>` (directly or through
 `PageLayout`), and `WindowFrame.svelte` keeps a `OWN_HEADER_APPS` `Set` of
 those app ids so it skips its own fallback header for them. **A new app must
 be added to that set** — an app left out gets both bars stacked, and the
-fallback's is blank (its `win.icon` sprite name has no glyph). `quotas` was
+fallback's is blank (its `win.icon` name has no mapped glyph). `quotas` was
 missed on 2026-09-14 and shipped that duplicate until E2E `14.9` (one
-`.hv-winhdr` per window, across a registry sample) caught it. The frame's
-fallback header is now the same shape as every app's — icon + title only — so
-it too renders at exactly the mock's 44px.
+`.hv-winhdr` per window, across a registry sample) caught it. The v2
+standardization pass (2026-11-10) found **nine more** app ids missing from the
+set — `destinations`, `directory`, `edit-widgets`, `iscsi`, `metrics`,
+`replication`, `tasks`, `traffic-control`, `usb-copy` — so those windows had
+been stacking the frame's fallback bar above their own header; all are now in
+the set, and E2E `14.11`/`14.12` walk the full 33-app registry. The frame's
+fallback header is the same shape as every app's — icon + title only — so it
+too renders at exactly the 44px bar.
 
 ### Header standardization (2026-09-14)
 
@@ -652,9 +661,9 @@ else. One control row, everything on one shared vertical centre line:
 - The icon tile is `--hv-winhdr-icon-size`, defined as `var(--hv-winctrl-size)`
   — deliberately the **same 28px** as each of the trio's buttons, so the app
   glyph and the window controls read as one control row — and it is a
-  **perfect circle** (`--hv-winhdr-icon-radius: 50%`, 2026-10-18: same shape as
-  the dock tiles and topbar buttons). The trio follows the same circle rule
-  (`--hv-winctrl-radius: 50%`), so the whole window chrome speaks one shape.
+  **10px squircle** (`--hv-winhdr-icon-radius: 10px`, the v2 app-tile shape).
+  The trio stays circular (`--hv-winctrl-radius: 50%`), matching the topbar
+  buttons; its v2 skin is two neutral grey circles plus a soft-red close.
 - The tile's glyph is **clamped to 16px by `.hv-winhdr-icon :global(svg)`**,
   which is the single owner of that size. The `size={26}` every route's icon
   snippet used to pass was therefore inert, and passing it *at all* was a
@@ -731,14 +740,14 @@ anatomy, enforced by the trailing `FLOATING WIDGET PANELS` override block in
 `Desktop.svelte` (one rule for all 11 — never style a panel's surface
 individually):
 
-- Surface: white card, 1px hairline, **18px** floating-card corner
+- Surface: white card, 1px hairline, **20px** floating-card corner
   (`--hv-radius-card`, the same stop as in-window cards — not a control
   radius), layered shadow. Widths use the shared `--hv-monitor-w-compact`
   (280px) / `--hv-monitor-w` (300px) / `--hv-monitor-w-wide` (320px) token
   set. `WidgetHeader.svelte` owns the 44px drag bar (`--hv-widget-header-h`,
-  matching the in-window app header): a 28px accent icon tile
-  (`--hv-winhdr-icon-size`, a **perfect circle** — `--hv-winhdr-icon-radius:
-  50%`, same as the app header) + a 14px semibold title — **no close/action
+  matching the in-window app header): a 28px tinted icon pill
+  (`--hv-winhdr-icon-size`, a **9px squircle** tinted with 12% of the widget's
+  own accent and carrying that accent as its glyph colour) + a 14px semibold title — **no close/action
   button** (2026-09-15: monitor visibility is managed from Settings > Widgets,
   so the bar is icon + title only). The tile follows the in-window header's
   contract to the letter: white glyph **clamped to 16px by
@@ -771,13 +780,13 @@ individually):
 - Windows are opened from the launchpad; the Terminal, Settings, and Chat also have
   fixed top-bar action buttons in `frontend/src/routes/Desktop.svelte`.
 - **Appliance theme (2026-09-12, replaces Fluent Paper):** bespoke tokens —
-  brand accent `--hv-primary` `#1E62AE` (hover `#18508D` / pressed `#0E2F54`),
+  brand accent `--hv-primary` `#2E72C9` (hover `#2560AC` / pressed `#1C4C8C`),
   opaque `--hv-shell-*` surfaces (no blur, so a dark photo wallpaper never
   washes out ink text), layered shadows, 1px hairlines. Floating chrome radii
   are appliance-tight (pills full, 44px+ controls 16, compact 8–12, window
-  controls are the AppWindow mock's traffic lights — `--hv-winctrl-*`, 28px
-  perfect circles (`50%`, like the dock tiles and topbar buttons) —
-  and the topbar buttons are flat chips on the pill, no tile,
+  controls are 28px neutral-grey circles with a soft-red close —
+  `--hv-winctrl-*`), the v2 dock/app/settings icon tiles are 9–16px
+  squircles, and the topbar buttons are flat circles on the pill, no tile,
   tooltips 4). Full palette + the governance rules live in
   `docs/guides/design-system.md`; the per-token values are in `tokens.css`
   itself. The

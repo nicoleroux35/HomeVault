@@ -21,7 +21,7 @@
   import { FitAddon } from '@xterm/addon-fit';
   import { WebLinksAddon } from '@xterm/addon-web-links';
   import '@xterm/xterm/css/xterm.css';
-  import { IconTerminal as TerminalIcon, IconDeviceDesktop, IconPlus, IconX } from '@tabler/icons-svelte';
+  import { IconTerminal as TerminalIcon, IconDeviceDesktop, IconPlus, IconX } from '$lib/icons/lucide';
   import { cn } from '$lib/utils.js';
   import WindowHeader from '$lib/components/desktop/WindowHeader.svelte';
   import { api } from '$lib/services/api';
@@ -619,7 +619,7 @@
 <div class="h-full w-full flex flex-col bg-[var(--hv-shell-glass)] overflow-hidden" data-testid="terminal-page">
   <WindowHeader title={$t('terminal.title')} accent="var(--hv-app-terminal-grad)">
     {#snippet icon()}
-      <TerminalIcon stroke={1.8} />
+      <TerminalIcon strokeWidth={1.8} />
     {/snippet}
   </WindowHeader>
 
@@ -649,21 +649,21 @@
         <span data-testid="terminal-tab-title" class="truncate max-w-[120px]">{tab.title}</span>
         {#if tabs.length > 1}
           <span data-testid="terminal-tab-close" class="grid place-items-center w-7 h-7 hv-ic rounded border-none bg-transparent text-[var(--hv-shell-text-2)] cursor-pointer hover:text-[var(--hv-error)]" role="button" tabindex="0" aria-label={$t('terminal.close_tab')} onclick={(e) => { e.stopPropagation(); closeTab(tab.id); }} onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); e.stopPropagation(); closeTab(tab.id); } }}>
-            <IconX size={14} stroke={2.4} />
+            <IconX size={14} strokeWidth={2.4} />
           </span>
         {/if}
       </button>
     {/each}
     {#if tabs.length < MAX_TABS}
       <button data-testid="terminal-tab-add" class="grid place-items-center w-8 h-8 rounded-lg border-none bg-transparent text-[var(--hv-shell-text-2)] cursor-pointer hover:text-[var(--hv-shell-text-strong)] hv-ic" onclick={addTab} aria-label={$t('terminal.new_tab')} title={$t('terminal.new_tab')}>
-        <IconPlus size={20} stroke={2.2} />
+        <IconPlus size={20} strokeWidth={2.2} />
       </button>
     {/if}
   </div>
 
   <div data-testid="terminal-infobar" class="flex items-center gap-2 px-3 h-8 bg-[var(--hv-shell-border-soft)] border-b border-[var(--hv-shell-border)] text-c-xs text-[var(--hv-shell-text-2)]">
     <span data-testid="terminal-info-user" class="inline-flex items-center gap-1 font-semibold text-[var(--hv-shell-text-strong)]">
-      <IconDeviceDesktop size={17} stroke={1.8} />
+      <IconDeviceDesktop size={17} strokeWidth={1.8} />
       {username}@{hostname}
     </span>
     <span class="hv-info-sep w-px h-3 bg-[var(--hv-shell-border)]"></span>

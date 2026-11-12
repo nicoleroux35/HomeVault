@@ -295,7 +295,7 @@ first — a refusal writes nothing):**
   `{"type":"default"}` → `hv-01`). Always stored as the bare
   `/wallpapers/hv-NN.webp` URL.
 - `accent_color` — `#rgb`, `#rrggbb` or `#rrggbbaa` (the legacy `#4a90d9` is
-  rewritten to `#1E62AE`).
+  rewritten to `#2E72C9`).
 
 A refusal is `400` with `{"success": false, "message": "wallpaper: '…' is not
 one of the 44 bundled wallpapers (…)"}` — the message starts with the field

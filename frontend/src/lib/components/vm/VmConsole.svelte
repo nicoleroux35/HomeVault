@@ -27,7 +27,7 @@
   import { Terminal } from '@xterm/xterm';
   import { FitAddon } from '@xterm/addon-fit';
   import '@xterm/xterm/css/xterm.css';
-  import { IconX, IconRefresh } from '@tabler/icons-svelte';
+  import { IconX, IconRefresh } from '$lib/icons/lucide';
   import { t, translate } from '$lib/stores/i18n';
 
   interface Props {
@@ -165,9 +165,9 @@
       </div>
       <div class="con-actions">
         {#if status === 'closed' || status === 'error'}
-          <button class="con-btn" onclick={reconnect}><IconRefresh size={16} stroke={2} /> {$t('vm.console_reconnect')}</button>
+          <button class="con-btn" onclick={reconnect}><IconRefresh size={16} strokeWidth={1.8} /> {$t('vm.console_reconnect')}</button>
         {/if}
-        <button class="con-btn con-btn-close" onclick={onClose} aria-label={$t('common.close')}><IconX size={18} stroke={2} /></button>
+        <button class="con-btn con-btn-close" onclick={onClose} aria-label={$t('common.close')}><IconX size={18} strokeWidth={1.8} /></button>
       </div>
     </header>
     <div class="con-term" bind:this={host}></div>

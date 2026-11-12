@@ -32,7 +32,7 @@
   import WindowHeader from '$lib/components/desktop/WindowHeader.svelte';
   import PathField from '$lib/components/theme/PathField.svelte';
   import FolderPicker from '$lib/components/theme/FolderPicker.svelte';
-  import { IconActivity, IconArchive, IconCalendarClock, IconCircleCheck, IconClock, IconDatabase, IconFileText, IconFolder, IconFolderOpen, IconServer, IconLoader, IconLock, IconPlus, IconSearch, IconShield, IconTrash, IconX } from '@tabler/icons-svelte';
+  import { IconActivity, IconArchive, IconCalendarClock, IconCircleCheck, IconClock, IconDatabase, IconFileText, IconFolder, IconFolderOpen, IconServer, IconLoader, IconLock, IconPlus, IconSearch, IconShield, IconTrash, IconX } from '$lib/icons/lucide';
   import BackupProgressIsland from '$lib/components/backup/BackupProgressIsland.svelte';
   import { trackJob } from '$lib/stores/backupJobs.svelte';
 
@@ -859,7 +859,7 @@
   tabsLabel={$t('restic.subtitle')}
 >
   {#snippet icon()}
-    <IconServer stroke={1.8} />
+    <IconServer strokeWidth={1.8} />
   {/snippet}
   <!-- Page-level actions: a WindowToolbar row under the header, never inside
        it (the header bar is icon + title + window controls only). -->
@@ -872,7 +872,7 @@
   {#snippet toolbarRight()}
     {#if resticAvailable && activeView === 'repos'}
       <Button variant="primary" data-testid="restic-add-repo" onclick={handleAddRepo}>
-        <IconPlus size={16} stroke={2} />
+        <IconPlus size={16} strokeWidth={1.8} />
         <span>{$t('restic.add_repository')}</span>
       </Button>
     {:else if resticAvailable && activeView === 'repo-detail' && selectedRepo}
@@ -905,7 +905,7 @@
     {#if !resticAvailable}
 
       <EmptyState data-testid="restic-empty" title={$t('restic.not_installed_title')} description={$t('restic.not_installed_desc')}>
-        {#snippet iconSnippet()}<IconServer size={32} stroke={1.8} />{/snippet}
+        {#snippet iconSnippet()}<IconServer size={32} strokeWidth={1.8} />{/snippet}
         {#snippet action()}
           <div class="flex flex-col gap-1.5">
             <code class="px-3 py-1.5 rounded-lg bg-[var(--hv-shell-border-soft)] border border-[var(--hv-shell-border)] text-xs font-[family-name:var(--hv-font-mono)]">sudo apt install restic  # Debian/Ubuntu</code>
@@ -935,15 +935,15 @@
 
       {#if repos.length === 0}
         <EmptyState data-testid="restic-empty" title={$t('restic.no_repos_title')} description={$t('restic.no_repos_desc')}>
-          {#snippet iconSnippet()}<IconArchive size={32} stroke={1.8} />{/snippet}
+          {#snippet iconSnippet()}<IconArchive size={32} strokeWidth={1.8} />{/snippet}
           {#snippet action()}<Button variant="primary" data-testid="restic-btn-primary" onclick={() => activeView = 'create-repo'}><IconPlus size={15} /> <span>{$t('restic.add_repository')}</span></Button>{/snippet}
         </EmptyState>
       {:else}
         <div class="grid gap-4 [grid-template-columns:repeat(auto-fill,minmax(300px,1fr))]">
           {#each repos as repo}
-            <div data-testid="restic-repo-card" class="rounded-lg bg-[var(--hv-shell-card)] border border-[var(--hv-shell-border)] shadow-[var(--hv-shell-shadow-card)] overflow-hidden cursor-pointer hover:border-[var(--hv-shell-border-strong)]" onclick={() => selectRepo(repo)} onkeydown={(e) => activateOnEnterOrSpace(e, () => selectRepo(repo))} tabindex="0" role="button">
+            <div data-testid="restic-repo-card" class="rounded-lg bg-card border border-border shadow-[var(--hv-shell-shadow-card)] overflow-hidden cursor-pointer hover:border-[var(--hv-shell-border-strong)]" onclick={() => selectRepo(repo)} onkeydown={(e) => activateOnEnterOrSpace(e, () => selectRepo(repo))} tabindex="0" role="button">
               <div class="flex items-center gap-3 px-4 pt-4">
-                <span class="grid place-items-center w-11 h-11 rounded-xl flex-none bg-[var(--hv-primary-light)] text-[var(--hv-primary)]"><IconServer size={20} /></span>
+                <span class="grid place-items-center w-8 h-8 rounded-[9px] flex-none bg-[var(--hv-primary-light)] text-[var(--hv-primary)]"><IconServer size={20} /></span>
                 <div class="flex-1 min-w-0">
                   <div data-testid="restic-repo-name" class="text-sm font-bold text-[var(--hv-shell-text-strong)] truncate">{repo.name}</div>
                   <code class="text-c-xs text-[var(--hv-shell-text-2)] font-[family-name:var(--hv-font-mono)] truncate block">{repo.repository}</code>
@@ -1035,7 +1035,7 @@
           <div data-testid="restic-loading" class="flex items-center justify-center gap-3 py-12 text-[var(--hv-shell-text)]"><Spinner /> <span>{$t('restic.loading_snapshots')}</span></div>
         {:else if snapshots.length === 0}
           <EmptyState data-testid="restic-empty" title={$t('restic.no_snapshots_title')} description={$t('restic.no_snapshots_desc')}>
-            {#snippet iconSnippet()}<IconDatabase size={32} stroke={1.8} />{/snippet}
+            {#snippet iconSnippet()}<IconDatabase size={32} strokeWidth={1.8} />{/snippet}
             {#snippet action()}<Button variant="primary" onclick={() => showCreateBackupModal = true}>{$t('restic.run_backup')}</Button>{/snippet}
           </EmptyState>
         {:else}
@@ -1063,7 +1063,7 @@
           <div data-testid="restic-loading" class="flex items-center justify-center gap-3 py-12 text-[var(--hv-shell-text)]"><Spinner /> <span>{$t('restic.loading_jobs')}</span></div>
         {:else if backupJobs.length === 0}
           <EmptyState data-testid="restic-empty" title={$t('restic.no_jobs_title')} description={$t('restic.no_jobs_desc')}>
-            {#snippet iconSnippet()}<IconFileText size={32} stroke={1.8} />{/snippet}
+            {#snippet iconSnippet()}<IconFileText size={32} strokeWidth={1.8} />{/snippet}
           </EmptyState>
         {:else}
           <SectionCard class="overflow-x-auto">
@@ -1094,7 +1094,7 @@
           <div class="flex justify-end mb-3"><Button variant="primary" data-testid="restic-btn-primary" onclick={openScheduleModal}><IconPlus size={15} /> <span>{$t('restic.new_schedule')}</span></Button></div>
           {#if schedules.length === 0}
             <EmptyState data-testid="restic-empty" title={$t('restic.no_schedules_title')} description={$t('restic.no_schedules_desc')}>
-              {#snippet iconSnippet()}<IconCalendarClock size={32} stroke={1.8} />{/snippet}
+              {#snippet iconSnippet()}<IconCalendarClock size={32} strokeWidth={1.8} />{/snippet}
             </EmptyState>
           {:else}
             <SectionCard class="overflow-x-auto">

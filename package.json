@@ -7,7 +7,15 @@
     "type": "git",
     "url": "https://github.com/nicoleroux35/HomeVault.git"
   },
+  "scripts": {
+    "test:a11y": "playwright test tests/e2e/design/a11y.spec.ts",
+    "test:visual": "playwright test --config=playwright.visual.config.ts",
+    "test:compat": "playwright test --config=playwright.compat.config.ts",
+    "test:fuzz-smoke": "cargo test --test fuzz_smoke",
+    "test:soak": "cargo test --test soak_integration"
+  },
   "devDependencies": {
+    "@axe-core/playwright": "^4.14.0",
     "@playwright/test": "^1.64.1"
   }
 }

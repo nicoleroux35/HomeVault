@@ -26,7 +26,7 @@
   import { createConfirmState } from '$lib/utils/confirmDialog.svelte';
   import { notifyError, notifySuccess } from '$lib/utils/notify';
   import { cn } from '$lib/utils.js';
-  import { IconPlus, IconRefresh, IconTrash, IconShield, IconDatabase } from '@tabler/icons-svelte';
+  import { IconPlus, IconRefresh, IconTrash, IconShield, IconDatabase } from '$lib/icons/lucide';
 
   interface Tenant {
     id: number;
@@ -77,7 +77,7 @@
   const field = 'flex flex-col gap-1.5';
   const fieldLabel = 'text-c-label font-semibold text-[var(--hv-shell-text-strong)]';
   const inp = 'w-full h-11 px-3 border border-[var(--hv-shell-border-strong)] rounded-lg bg-[var(--hv-shell-border-soft)] text-c-base text-[var(--hv-shell-text-strong)] outline-none focus:border-[var(--hv-primary)]';
-  const card = 'flex flex-col gap-4 p-5 rounded-2xl bg-[var(--hv-shell-card)] border border-[var(--hv-shell-border)]';
+  const card = 'flex flex-col gap-4 p-5 rounded-2xl bg-card border border-border';
 
   onMount(load);
 
@@ -252,7 +252,7 @@
 
 <PageLayout title={$t('destinations.title')} data-testid="destinations-page">
   {#snippet icon()}
-    <IconDatabase stroke={1.8} />
+    <IconDatabase strokeWidth={1.8} />
   {/snippet}
 
   {#if loading}
@@ -312,7 +312,7 @@
             <p class="m-0 mt-1 text-c-base text-[var(--hv-shell-text)] leading-relaxed">{$t('destinations.tenants_desc')}</p>
           </div>
           <Button variant="primary" onclick={openCreate}>
-            <IconPlus size={16} stroke={2} /> {$t('destinations.add_tenant')}
+            <IconPlus size={16} strokeWidth={1.8} /> {$t('destinations.add_tenant')}
           </Button>
         </div>
 
@@ -334,7 +334,7 @@
                       aria-label={$t('destinations.copy_url')}
                       data-testid="destinations-copy"
                       onclick={() => copy(tenant.repository_url, 'destinations.copy_url')}
-                    ><IconRefresh size={17} stroke={1.8} /></button>
+                    ><IconRefresh size={17} strokeWidth={1.8} /></button>
                     <button
                       type="button"
                       class="grid place-items-center w-9 h-9 flex-none rounded-lg border-none bg-transparent text-[var(--hv-shell-text-2)] cursor-pointer hover:bg-[var(--hv-subtle-hover)] hover:text-[var(--hv-shell-text-strong)] hv-ic"
@@ -342,14 +342,14 @@
                       data-testid="destinations-rotate"
                       disabled={rotateBusy === tenant.id}
                       onclick={() => rotate(tenant)}
-                    ><IconShield size={17} stroke={1.8} /></button>
+                    ><IconShield size={17} strokeWidth={1.8} /></button>
                     <button
                       type="button"
                       class="grid place-items-center w-9 h-9 flex-none rounded-lg border-none bg-transparent text-[var(--hv-shell-text-2)] cursor-pointer hover:bg-[var(--hv-error-bg)] hover:text-[var(--hv-error)] hv-ic"
                       aria-label={$t('tasks.delete', { name: tenant.name })}
                       data-testid="destinations-delete"
                       onclick={() => removeTenant(tenant)}
-                    ><IconTrash size={17} stroke={1.8} /></button>
+                    ><IconTrash size={17} strokeWidth={1.8} /></button>
                   </div>
                 </div>
 
@@ -424,7 +424,7 @@
 <!-- New tenant -->
 <Modal open={showCreate} title={$t('destinations.add_tenant')} size="md" onclose={() => (showCreate = false)}>
   {#snippet icon()}
-    <IconPlus size={22} stroke={2} />
+    <IconPlus size={22} strokeWidth={1.8} />
   {/snippet}
   {#snippet children()}
     <div class="flex flex-col gap-4">
@@ -453,7 +453,7 @@
 <!-- Secrets are shown once -->
 <Modal open={!!secretReveal} title={$t('destinations.secrets_title')} size="md" onclose={() => (secretReveal = null)}>
   {#snippet icon()}
-    <IconShield size={22} stroke={1.9} />
+    <IconShield size={22} strokeWidth={1.8} />
   {/snippet}
   {#snippet children()}
     {#if secretReveal}

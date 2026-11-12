@@ -26,7 +26,7 @@
     IconInbox,
     IconLink,
     IconTrash,
-  } from '@tabler/icons-svelte';
+  } from '$lib/icons/lucide';
 
   interface FileRequest {
     id: number;

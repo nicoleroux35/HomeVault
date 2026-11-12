@@ -34,7 +34,7 @@
     IconServer,
     IconShieldCheck,
     IconX
-  } from '@tabler/icons-svelte';
+  } from '$lib/icons/lucide';
 
   interface AvailableDevice {
     name: string;
@@ -358,7 +358,7 @@
   data-testid="raid-page"
 >
   {#snippet icon()}
-    <IconDatabase stroke={1.8} />
+    <IconDatabase strokeWidth={1.8} />
   {/snippet}
 
   {#if justCreated}
@@ -566,7 +566,7 @@
                         <span class="w-1.5 h-1.5 rounded-full bg-[var(--hv-success)] flex-none"></span>{$t('raid.manager.available')}
                       </span>
                       {#if smartWarnDevices(device)}
-                        <span class={cn('inline-flex items-center gap-1 text-micro font-semibold whitespace-nowrap', smartWarnDevices(device) === 'failed' ? 'text-[var(--hv-danger-text)]' : 'text-[var(--hv-warning-text)]')}>
+                        <span class={cn('inline-flex items-center gap-1 text-micro font-semibold whitespace-nowrap', smartWarnDevices(device) === 'failed' ? 'text-[var(--hv-error-text)]' : 'text-[var(--hv-warning-text)]')}>
                           <IconAlertTriangle size={12} class="flex-none" />
                           {smartWarnDevices(device) === 'failed' ? $t('raid.manager.smart_failed') : $t('raid.manager.smart_unknown')}
                         </span>

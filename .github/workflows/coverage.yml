@@ -1,0 +1,59 @@
+# Coverage — measured, not assumed.
+#
+# Runs weekly (and on demand) because instrumenting the whole crate is far
+# slower than the per-push unit gate. Two reports are produced:
+#   - frontend/lcov.info  (Vitest + v8, ratchet thresholds)
+#   - target/coverage/lcov.info (cargo-llvm-cov, lib tests)
+#
+# Raise `HV_COVERAGE_MIN_LINES` as the number improves; never lower it.
+name: coverage
+on:
+  schedule:
+    - cron: "17 3 * * 1"
+  workflow_dispatch:
+
+concurrency:
+  group: coverage-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  coverage:
+    name: Rust + frontend coverage
+    runs-on: ubuntu-latest
+    env:
+      CARGO_PROFILE_DEV_DEBUG: "0"
+      CARGO_PROFILE_TEST_DEBUG: "0"
+      HV_COVERAGE_MIN_LINES: "45"
+    steps:
+      - uses: actions/checkout@v7
+      - name: Free runner disk space
+        run: |
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL
+          df -h /
+      - name: Install Rust toolchain
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup component add llvm-tools-preview
+          cargo install cargo-llvm-cov --locked
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Install frontend
+        run: cd frontend && npm ci
+      - name: Frontend coverage
+        run: cd frontend && npm run test:coverage
+      - name: Backend coverage (lib)
+        run: cargo llvm-cov --lib --lcov --output-path target/coverage/lcov.info --fail-under-lines "$HV_COVERAGE_MIN_LINES"
+      - name: Backend coverage summary
+        run: cargo llvm-cov report --summary-only
+      - name: Upload coverage reports
+        uses: actions/upload-artifact@v7
+        with:
+          name: coverage
+          path: |
+            frontend/coverage/
+            target/coverage/
+          retention-days: 30

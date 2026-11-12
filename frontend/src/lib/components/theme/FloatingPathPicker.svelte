@@ -11,7 +11,7 @@
        and returns the chosen path without blocking the rest of the UI.
 
      Dependencies:
-       - svelte (>= 5), @tabler/icons-svelte, $lib/services/api
+       - svelte (>= 5), $lib/icons/lucide, $lib/services/api
 
      Usage:
        Opened by PathPickerField; see the in-code doc for the full contract.
@@ -25,7 +25,7 @@
     IconArrowUp, IconLoader, IconShieldCheckered, IconUsb, IconCloud,
     IconNetwork, IconDeviceDesktop, IconLayoutGrid, IconLayoutList,
     IconGripVertical, IconX, IconFile as FileIcon,
-  } from '@tabler/icons-svelte';
+  } from '$lib/icons/lucide';
 
   /**
    * Non-modal, draggable folder/file picker.

@@ -18,7 +18,7 @@
 <script lang="ts">
   import type { SearchableItem } from '$lib/stores/search';
   import Icon from '$lib/components/theme/Icon.svelte';
-  import { IconTag } from '@tabler/icons-svelte';
+  import { IconTag } from '$lib/icons/lucide';
   import { t } from '$lib/stores/i18n';
 
   let {

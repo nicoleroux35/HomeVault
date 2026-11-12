@@ -28,7 +28,7 @@
   import { SectionCard, ConfirmDialog } from '$lib/components/app';
   import { createConfirmState } from '$lib/utils/confirmDialog.svelte';
   import { cn } from '$lib/utils.js';
-  import { IconFingerprint, IconTrash, IconPencil } from '@tabler/icons-svelte';
+  import { IconFingerprint, IconTrash, IconPencil } from '$lib/icons/lucide';
 
   interface Passkey {
     credential_id: string;
@@ -148,7 +148,7 @@
 <SectionCard data-testid="account-card" class="col-span-2 w-full @max-[880px]:col-span-1">
   {#snippet titleSnippet()}
     <div data-testid="account-card-title" class="flex items-center gap-2 text-c-card-title font-semibold text-[var(--hv-shell-text-strong)]">
-      <IconFingerprint size={17} stroke={2} class="text-[var(--hv-primary)]" /> {$t('account.section_passkeys')}
+      <IconFingerprint size={17} strokeWidth={1.8} class="text-[var(--hv-primary)]" /> {$t('account.section_passkeys')}
     </div>
   {/snippet}
 
@@ -172,13 +172,13 @@
       {#each passkeys as passkey (passkey.credential_id)}
         <li data-testid="passkey-row" class="flex items-center gap-3 px-3 py-2.5 rounded-xl bg-[var(--hv-shell-border-soft)] border border-[var(--hv-shell-border)]">
           <span class="flex-none grid place-items-center w-11 h-11 rounded-lg bg-[var(--hv-shell-border)] text-[var(--hv-shell-text-2)]">
-            <IconFingerprint size={20} stroke={1.9} />
+            <IconFingerprint size={20} strokeWidth={1.8} />
           </span>
           <div class="flex-1 min-w-0">
             {#if renaming === passkey.credential_id}
               <form class="flex items-center gap-2" onsubmit={(e) => { e.preventDefault(); rename(passkey); }}>
                 <input
-                  class="flex-1 min-w-0 px-2 py-1 rounded-md border border-[var(--hv-shell-border)] bg-[var(--hv-shell-tile)] text-sm text-[var(--hv-shell-text-strong)]"
+                  class="flex-1 min-w-0 px-2 py-1 rounded-md border border-[var(--hv-shell-border)] bg-[var(--hv-shell-glass)] text-sm text-[var(--hv-shell-text-strong)]"
                   bind:value={renameLabel}
                   aria-label={$t('account.passkeys_rename')}
                   maxlength="64"
@@ -206,7 +206,7 @@
             disabled={busy}
             aria-label={$t('account.passkeys_rename')}
           >
-            <IconPencil size={16} stroke={2} />
+            <IconPencil size={16} strokeWidth={1.8} />
           </button>
           <button
             data-testid="passkey-revoke"
@@ -219,7 +219,7 @@
             disabled={busy}
             aria-label={$t('account.passkeys_revoke_title')}
           >
-            <IconTrash size={16} stroke={2} />
+            <IconTrash size={16} strokeWidth={1.8} />
           </button>
         </li>
       {/each}
@@ -229,7 +229,7 @@
   {#if canRunCeremony}
     <div class="flex flex-wrap items-center gap-2.5 mt-4">
       <input
-        class="flex-1 min-w-40 px-3 py-2 rounded-lg border border-[var(--hv-shell-border)] bg-[var(--hv-shell-tile)] text-sm text-[var(--hv-shell-text-strong)]"
+        class="flex-1 min-w-40 px-3 py-2 rounded-lg border border-[var(--hv-shell-border)] bg-[var(--hv-shell-glass)] text-sm text-[var(--hv-shell-text-strong)]"
         placeholder={$t('account.passkeys_label_placeholder')}
         aria-label={$t('account.passkeys_label_placeholder')}
         bind:value={newLabel}

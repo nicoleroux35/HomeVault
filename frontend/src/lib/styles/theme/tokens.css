@@ -1,6 +1,6 @@
 /**
  * HOMEVAULT DESIGN SYSTEM - Design Tokens
- * Version: 4.0 "HomeVault Appliance"
+ * Version: 5.0 "HomeVault Appliance v2"
  * Date: 2026-09-12
  *
  * The single source of truth for the HomeVault visual language. This replaces
@@ -10,14 +10,14 @@
  *
  * Identity — "HomeVault Appliance": opaque paper surfaces, crisp 1px
  * hairlines, layered soft shadows, one professional blue accent
- * (#1E62AE "HomeVault Blue"), dense but legible, precise small radii.
+ * (#2E72C9 "HomeVault Blue"), dense but legible, precise small radii.
  *
  * NON-COLOUR DESIGN RULES — since 2026-10-19 the spacing rhythm, radius
  * ladder, elevation, font weights, leading, tracking and layout breakpoints
  * follow the Apple-derived reference adopted on that date, translated onto
  * the `--hv-*` vocabulary below. Its **colour palette is
  * deliberately NOT adopted**: the Appliance palette above (one accent
- * #1E62AE, the cool blue-grey ink ramp, opaque paper) stays the single
+ * #2E72C9, the cool blue-grey ink ramp, opaque paper) stays the single
  * source of colour, so this file keeps exactly one colour authority.
  * Everything ported from that reference is marked "Apple ref §N" (the section
  * numbering of the source spec, which is not part of the repository).
@@ -25,49 +25,49 @@
 
 :root {
   /* ============================================
-     PRIMARY COLOR SYSTEM — HomeVault Blue (#1E62AE)
+     PRIMARY COLOR SYSTEM — HomeVault Blue (#2E72C9)
      One accent for the whole product. Hover / pressed = the darker ramp
      stops 700 / 900. Reserved for interactive elements, links, focus.
      ============================================ */
-  --hv-primary: #1E62AE;
-  --hv-primary-hover: #18508D;
-  --hv-primary-active: #0E2F54;
-  --hv-primary-light: rgba(30, 98, 174, 0.1);
-  --hv-primary-container: #1E62AE;
-  --hv-primary-fixed: #DCE9F7;
-  --hv-primary-fixed-dim: #BAD2EF;
+  --hv-primary: #2E72C9;
+  --hv-primary-hover: #2560AC;
+  --hv-primary-active: #1C4C8C;
+  --hv-primary-light: rgba(46, 114, 201, 0.10);
+  --hv-primary-container: #2E72C9;
+  --hv-primary-fixed: #E6EFFB;
+  --hv-primary-fixed-dim: #CDE0F7;
   --hv-on-primary: #ffffff;
-  --hv-on-primary-container: #EDF4FB;
-  --hv-on-primary-fixed: #0B2440;
-  --hv-on-primary-fixed-variant: #18508D;
-  --hv-inverse-primary: #8DB5E4;
+  --hv-on-primary-container: #EEF5FD;
+  --hv-on-primary-fixed: #0F2A4A;
+  --hv-on-primary-fixed-variant: #2560AC;
+  --hv-inverse-primary: #A8CBF2;
 
   /* Primary Login (Specific to login pages) */
-  --hv-primary-login: #1E62AE;
-  --hv-primary-login-hover: #18508D;
+  --hv-primary-login: #2E72C9;
+  --hv-primary-login-hover: #2560AC;
 
   /* Primary scale (HomeVault Blue ramp, light → dark) */
-  --hv-primary-50: #F0F5FB;
-  --hv-primary-100: #DCE9F7;
-  --hv-primary-200: #BAD2EF;
-  --hv-primary-300: #8DB5E4;
-  --hv-primary-400: #5C93D5;
-  --hv-primary-500: #3275C4;
-  --hv-primary-600: #1E62AE;  /* Same as --hv-primary */
-  --hv-primary-700: #18508D;
-  --hv-primary-800: #133F70;
-  --hv-primary-900: #0E2F54;
+  --hv-primary-50: #F2F7FD;
+  --hv-primary-100: #E6EFFB;
+  --hv-primary-200: #CDE0F7;
+  --hv-primary-300: #A8CBF2;
+  --hv-primary-400: #7DAEE8;
+  --hv-primary-500: #3B7FD4;
+  --hv-primary-600: #2E72C9;  /* Same as --hv-primary */
+  --hv-primary-700: #2560AC;
+  --hv-primary-800: #1C4C8C;
+  --hv-primary-900: #153A6B;
 
   /* Neutral scale (cool blue-grey ramp — #1F2733 ink family) */
-  --hv-neutral-50: #F7F8FA;
-  --hv-neutral-100: #F1F3F6;
-  --hv-neutral-200: #E9ECEF;
-  --hv-neutral-300: #DDE2E8;
-  --hv-neutral-400: #C6CDD6;
-  --hv-neutral-500: #A8B1BC;
-  --hv-neutral-600: #87929E;
-  --hv-neutral-700: #67717E;
-  --hv-neutral-800: #3D4650;
+  --hv-neutral-50: #F6F8FB;
+  --hv-neutral-100: #F0F3F8;
+  --hv-neutral-200: #E7EBF1;
+  --hv-neutral-300: #DDE3EB;
+  --hv-neutral-400: #C3CBD7;
+  --hv-neutral-500: #A0AAB8;
+  --hv-neutral-600: #8792A2;
+  --hv-neutral-700: #6B7686;
+  --hv-neutral-800: #454F5B;
   --hv-neutral-900: #1F2733;
 
   /* Additional semantic alias */
@@ -227,14 +227,14 @@
      SECONDARY COLOR SYSTEM
      ============================================ */
   --hv-secondary: #454F5B;
-  --hv-secondary-hover: #3D4650;
-  --hv-secondary-container: #E9ECEF;
-  --hv-secondary-fixed: #F1F3F6;
-  --hv-secondary-fixed-dim: #DDE2E8;
+  --hv-secondary-hover: #454F5B;
+  --hv-secondary-container: #E7EBF1;
+  --hv-secondary-fixed: #F0F3F8;
+  --hv-secondary-fixed-dim: #DDE3EB;
   --hv-on-secondary: #ffffff;
-  --hv-on-secondary-container: #232A33;
+  --hv-on-secondary-container: #2A3442;
   --hv-on-secondary-fixed: #1F2733;
-  --hv-on-secondary-fixed-variant: #3D4650;
+  --hv-on-secondary-fixed-variant: #454F5B;
 
   /* ============================================
      TERTIARY COLOR SYSTEM
@@ -253,59 +253,66 @@
      SEMANTIC / STATUS COLORS
      --------------------------------------------
      Appliance status hues at a matched weight so success / warning / error
-     / info read as a family. Primary (#1E62AE) doubles as info.
+     / info read as a family. Primary (#2E72C9) doubles as info.
      ============================================ */
-  --hv-error: #C22B21;
-  --hv-error-hover: #9E2119;
-  --hv-error-container: #F9E3E1;
+  --hv-error: #C0392B;
+  --hv-error-hover: #9B2C21;
+  --hv-error-container: #FDECEA;
   --hv-on-error: #ffffff;
-  --hv-on-error-container: #8A1A13;
+  --hv-on-error-container: #9B2C21;
 
   /* Status colors */
-  --hv-success: #1E7E34;
-  --hv-success-hover: #166428;
-  --hv-success-bg: rgba(30, 126, 52, 0.1);
-  --hv-success-border: #1E7E34;
-  --hv-success-text: #166428;
+  --hv-success: #167A4D;
+  --hv-success-hover: #12633F;
+  --hv-success-bg: #E3F6EC;
+  --hv-success-border: #167A4D;
+  --hv-success-text: #12633F;
 
-  --hv-warning: #B45309;
-  --hv-warning-hover: #8E4106;
-  --hv-warning-bg: rgba(180, 83, 9, 0.1);
-  --hv-warning-border: #B45309;
-  --hv-warning-text: #8E4106;
+  --hv-warning: #96601A;
+  --hv-warning-hover: #7A4D14;
+  --hv-warning-bg: #FEF3E2;
+  --hv-warning-border: #96601A;
+  --hv-warning-text: #7A4D14;
 
-  --hv-info: #1E62AE;
-  --hv-info-hover: #18508D;
-  --hv-info-bg: rgba(30, 98, 174, 0.1);
-  --hv-info-border: #1E62AE;
-  --hv-info-text-alt: #18508D;
+  --hv-info: #0E7F92;
+  --hv-info-hover: #0B6878;
+  --hv-info-bg: #E0F6FA;
+  --hv-info-border: #0E7F92;
+  --hv-info-text-alt: #0B6878;
 
-  --hv-error-bg: rgba(194, 43, 33, 0.1);
-  --hv-error-border: #C22B21;
-  --hv-error-text: #8A1A13;
+  /* Secondary / violet family — Docker, RAID, secondary AI surfaces. */
+  --hv-violet: #6A45D6;
+  --hv-violet-hover: #5B4BC4;
+  --hv-violet-bg: #F0ECFD;
+  --hv-violet-border: #6A45D6;
+  --hv-violet-text: #6A45D6;
+
+  --hv-error-bg: #FDECEA;
+  --hv-error-border: #C0392B;
+  --hv-error-text: #9B2C21;
 
   /* ============================================
      SURFACE COLOR SYSTEM (appliance neutrals)
      ============================================ */
-  --hv-surface: #F4F6F8;
-  --hv-surface-dim: #DDE2E8;
+  --hv-surface: #F4F7FC;
+  --hv-surface-dim: #DDE3EB;
   --hv-surface-bright: #FFFFFF;
   --hv-surface-container-lowest: #FFFFFF;
-  --hv-surface-container-low: #F7F8FA;
-  --hv-surface-container: #EFF1F4;
-  --hv-surface-container-high: #E9ECEF;
-  --hv-surface-container-highest: #DDE2E8;
-  --hv-surface-variant: #EFF1F4;
-  --hv-inverse-surface: #232A33;
-  --hv-inverse-on-surface: #F1F3F6;
-  --hv-surface-tint: #1E62AE;
-  --hv-background: #F4F6F8;
+  --hv-surface-container-low: #F6F8FB;
+  --hv-surface-container: #F3F6FA;
+  --hv-surface-container-high: #E7EBF1;
+  --hv-surface-container-highest: #DDE3EB;
+  --hv-surface-variant: #F3F6FA;
+  --hv-inverse-surface: #2A3442;
+  --hv-inverse-on-surface: #F0F3F8;
+  --hv-surface-tint: #2E72C9;
+  --hv-background: #F4F7FC;
 
   /* Specific surfaces */
   --hv-surface-window: #FFFFFF;
   --hv-surface-titlebar: #FFFFFF;
   --hv-surface-sidebar: #FFFFFF;
-  --hv-surface-card: #F7F8FA;
+  --hv-surface-card: #F6F8FB;
 
   /* Dark surfaces (log/terminal-style panels that stay dark in light UI) */
   --hv-surface-2: #1E1E1E;
@@ -317,8 +324,8 @@
      ============================================ */
   --hv-text-primary: #1F2733;
   --hv-text-secondary: #454F5B;
-  --hv-text-tertiary: #69747F;
-  --hv-text-inverse: #F1F3F6;
+  --hv-text-tertiary: #64707F;
+  --hv-text-inverse: #F0F3F8;
   --hv-on-surface: #1F2733;
   --hv-on-surface-variant: #454F5B;
   --hv-on-surface-desktop: #1F2733;
@@ -327,24 +334,24 @@
   /* ============================================
      OUTLINE & BORDER SYSTEM
      ============================================ */
-  --hv-outline: #67717E;
-  --hv-outline-variant: #C6CDD6;
-  --hv-border: #DCE1E7;
-  --hv-border-hover: #B9C2CC;
+  --hv-outline: #6B7686;
+  --hv-outline-variant: #C3CBD7;
+  --hv-border: #E3E8EF;
+  --hv-border-hover: #C3CBD7;
 
   /* ============================================
      SELECTION & FOCUS STATES
      ============================================ */
-  --hv-primary-selected-bg: rgba(30, 98, 174, 0.13);
-  --hv-primary-selected-bg-hover: rgba(30, 98, 174, 0.18);
+  --hv-primary-selected-bg: rgba(46, 114, 201, 0.13);
+  --hv-primary-selected-bg-hover: rgba(46, 114, 201, 0.18);
   /* Focus indicators. A 2px solid primary ring + soft outer halo (not the
      older 10%-alpha-only glow, which read ≈1.1:1 on white and failed
-     WCAG 2.4.7 / 1.4.11). The 2px inner ring is #1E62AE at 90% ≈ 4.4:1 on
+     WCAG 2.4.7 / 1.4.11). The 2px inner ring is #2E72C9 at 90% ≈ 4.4:1 on
      white, so a component that kills its outline and keeps only this
      box-shadow still shows a clearly visible focus indicator. */
-  --hv-focus-ring: 0 0 0 2px rgba(30, 98, 174, 0.9), 0 0 0 4px rgba(30, 98, 174, 0.35);
+  --hv-focus-ring: 0 0 0 2px rgba(46, 114, 201, 0.9), 0 0 0 4px rgba(46, 114, 201, 0.35);
   --hv-focus-ring-error: 0 0 0 2px rgba(194, 43, 33, 0.9), 0 0 0 4px rgba(194, 43, 33, 0.35);
-  --hv-focus-ring-success: 0 0 0 2px rgba(30, 126, 52, 0.9), 0 0 0 4px rgba(30, 126, 52, 0.35);
+  --hv-focus-ring-success: 0 0 0 2px rgba(22, 122, 77, 0.9), 0 0 0 4px rgba(22, 122, 77, 0.35);
 
   /* ============================================
      DESKTOP SPECIFIC
@@ -353,7 +360,13 @@
      used to carry its own copy of this gradient, which is exactly how the
      login/wizard canvas and the desktop canvas could drift apart. The
      login and the wizard now paint this same gradient. */
-  --hv-desktop-bg: linear-gradient(135deg, #f4f6fb 0%, #eaeef7 32%, #eef2f9 58%, #e2e8f4 82%, #dae2f1 100%);
+  --hv-desktop-bg: linear-gradient(135deg, #F5F8FD 0%, #EBF0F9 50%, #E1E8F5 100%);
+  /* v2 wallpaper accents — three radial halos over the canvas, plus the
+     32×32 dot grid. Consumed by Desktop.svelte's wallpaper layers only. */
+  --hv-desktop-blob-blue: radial-gradient(circle, rgba(46, 114, 201, 0.20) 0%, rgba(46, 114, 201, 0) 70%);
+  --hv-desktop-blob-indigo: radial-gradient(circle, rgba(124, 108, 240, 0.16) 0%, rgba(124, 108, 240, 0) 70%);
+  --hv-desktop-blob-cyan: radial-gradient(circle, rgba(34, 184, 207, 0.14) 0%, rgba(34, 184, 207, 0) 70%);
+  --hv-desktop-dots: radial-gradient(circle, rgba(185, 197, 220, 0.45) 1px, transparent 1px);
   --hv-desktop-icon-bg: 56px;
 
   /* ============================================
@@ -418,42 +431,42 @@
   /* ============================================
      BUTTON COLORS
      ============================================ */
-  --hv-button-primary: #1E62AE;
-  --hv-button-primary-hover: #18508D;
-  --hv-button-secondary: #F1F3F6;
-  --hv-button-secondary-hover: #DDE2E8;
-  --hv-button-danger: #C22B21;
-  --hv-button-danger-hover: #9E2119;
-  --hv-button-disabled: #A8B1BC;
+  --hv-button-primary: #2E72C9;
+  --hv-button-primary-hover: #2560AC;
+  --hv-button-secondary: #F0F3F8;
+  --hv-button-secondary-hover: #DDE3EB;
+  --hv-button-danger: #C0392B;
+  --hv-button-danger-hover: #9B2C21;
+  --hv-button-disabled: #A0AAB8;
 
   /* ============================================
      BADGE & INFO COLORS
      ============================================ */
-  --hv-badge-success-bg: #E3F4E8;
-  --hv-badge-success-text: #166428;
-  --hv-badge-warning-bg: #FBEEDD;
-  --hv-badge-warning-text: #8E4106;
-  --hv-badge-error-bg: #F9E3E1;
-  --hv-badge-error-text: #8A1A13;
-  --hv-badge-info-bg: #DCE9F7;
-  --hv-badge-info-text: #18508D;
+  --hv-badge-success-bg: #E3F6EC;
+  --hv-badge-success-text: #12633F;
+  --hv-badge-warning-bg: #FEF3E2;
+  --hv-badge-warning-text: #7A4D14;
+  --hv-badge-error-bg: #FDECEA;
+  --hv-badge-error-text: #9B2C21;
+  --hv-badge-info-bg: #E0F6FA;
+  --hv-badge-info-text: #0B6878;
 
   /* Info / alert semantic colors */
-  --hv-info-light: #DCE9F7;
-  --hv-info-text: #18508D;
-  --hv-info-border: #BAD2EF;
+  --hv-info-light: #E0F6FA;
+  --hv-info-text: #0B6878;
+  --hv-info-border: #0E7F92;
 
   /* ============================================
      LOGIN SPECIFIC COLORS
      ============================================ */
-  --hv-login-error-bg: #F9E3E1;
-  --hv-login-error-text: #8A1A13;
+  --hv-login-error-bg: #FDECEA;
+  --hv-login-error-text: #9B2C21;
   --hv-login-success-bg: #E3F4E8;
-  --hv-login-success-text: #166428;
-  --hv-login-info-bg: #DCE9F7;
-  --hv-login-info-border: #BAD2EF;
-  --hv-login-info-text: #18508D;
-  --hv-login-info-icon: #1E62AE;
+  --hv-login-success-text: #12633F;
+  --hv-login-info-bg: #E6EFFB;
+  --hv-login-info-border: #CDE0F7;
+  --hv-login-info-text: #2560AC;
+  --hv-login-info-icon: #2E72C9;
 
   /* ============================================
      LOGIN + WIZARD — GATEWAY SURFACES (2026-10-17)
@@ -462,7 +475,7 @@
      identity: a soft indigo/violet/pink gradient, blurred orbs and an
      indigo card. They now derive from the Appliance palette the desktop
      shell, the dock/topbar chrome and every in-window app already use —
-     one accent (`--hv-primary` #1E62AE), the appliance ink ramp
+     one accent (`--hv-primary` #2E72C9), the appliance ink ramp
      (`--hv-shell-text-*`), the appliance surfaces/hairlines and the
      desktop's own canvas gradient (`--hv-desktop-bg`).
 
@@ -470,15 +483,15 @@
      every value below is an alias of an Appliance token (or an appliance
      stop), so retuning `--hv-primary` repaints the gateway too and the
      product keeps a single accent. Contrast, all against the white card
-     unless noted: accent #1E62AE 6.15:1 (text) and 4.99:1 on
+     unless noted: accent #2E72C9 6.15:1 (text) and 4.99:1 on
      `accent-soft`; both gradient stops ≥4.69:1 under their white glyph /
      label. Guard: `tests/e2e/login/login.spec.ts` 13.6.
      ============================================ */
   --hv-login-bg-gradient: var(--hv-desktop-bg);    /* the desktop canvas, not a second identity */
-  --hv-login-orb-indigo: radial-gradient(circle, #BAD2EF 0%, rgba(186, 210, 239, 0) 70%); /* --hv-primary-200 */
-  --hv-login-orb-pink: radial-gradient(circle, #DCE9F7 0%, rgba(220, 233, 247, 0) 70%);   /* --hv-primary-100 */
+  --hv-login-orb-indigo: radial-gradient(circle, #CDE0F7 0%, rgba(186, 210, 239, 0) 70%); /* --hv-primary-200 */
+  --hv-login-orb-pink: radial-gradient(circle, #E6EFFB 0%, rgba(220, 233, 247, 0) 70%);   /* --hv-primary-100 */
   --hv-login-clock: var(--hv-shell-text-strong);   /* big clock numerals — appliance ink */
-  --hv-login-muted: var(--hv-shell-text-3);        /* labels, date, placeholders — #5F6B76, ≥4.5:1 on white (1.4.3) */
+  --hv-login-muted: var(--hv-shell-text-3);        /* labels, date, placeholders — #64707F, ≥4.5:1 on white (1.4.3) */
   --hv-login-faint: var(--hv-shell-border);        /* decorative accents / borders ONLY — never readable text */
   --hv-login-hairline: var(--hv-shell-border-soft);/* card header bottom border */
   --hv-login-card-border: var(--hv-window-border); /* the card is a desktop window: same slate-300 hairline */
@@ -489,23 +502,23 @@
      `soft-border` renders as TEXT too (a *completed* step label) plus as a
      control boundary, so both are the brand accent: 6.15:1 on white, 4.99:1
      on `accent-soft` — one hue that clears every floor it is used on. */
-  --hv-login-accent: var(--hv-primary);            /* #1E62AE — focus, links, step text */
-  --hv-login-accent-deep: var(--hv-primary-hover); /* #18508D — link hover / pressed */
-  --hv-login-accent-soft: var(--hv-primary-fixed); /* #DCE9F7 — active code box bg */
+  --hv-login-accent: var(--hv-primary);            /* #2E72C9 — focus, links, step text */
+  --hv-login-accent-deep: var(--hv-primary-hover); /* #2560AC — link hover / pressed */
+  --hv-login-accent-soft: var(--hv-primary-fixed); /* #E6EFFB — active code box bg */
   --hv-login-accent-soft-border: var(--hv-primary);/* step indicator / progress + completed-step text */
-  --hv-login-accent-ring: rgba(30, 98, 174, 0.10); /* halo only — the focus indicator is the accent border itself (6.15:1 ≥3:1) */
-  --hv-login-logo-grad: linear-gradient(135deg, #3275C4, #1E62AE); /* white glyph: 4.69 → 6.15:1 — the --hv-app-accent-grad stops */
-  --hv-login-logo-shadow: 0 6px 20px rgba(30, 98, 174, 0.30);
-  --hv-login-btn-grad: linear-gradient(135deg, #1E62AE, #18508D);  /* white label: 6.15 → 7.90:1 */
-  --hv-login-btn-shadow: 0 4px 14px rgba(30, 98, 174, 0.30);
-  --hv-login-field-bg: var(--hv-shell-card);       /* #F7F8FA */
-  --hv-login-field-border: var(--hv-shell-border); /* #DCE1E7 */
+  --hv-login-accent-ring: rgba(46, 114, 201, 0.10); /* halo only — the focus indicator is the accent border itself (6.15:1 ≥3:1) */
+  --hv-login-logo-grad: linear-gradient(135deg, #3B7FD4, #2E72C9); /* white glyph: 4.69 → 6.15:1 — the --hv-app-accent-grad stops */
+  --hv-login-logo-shadow: 0 6px 20px rgba(46, 114, 201, 0.30);
+  --hv-login-btn-grad: linear-gradient(135deg, #2E72C9, #2560AC);  /* white label: 6.15 → 7.90:1 */
+  --hv-login-btn-shadow: 0 4px 14px rgba(46, 114, 201, 0.30);
+  --hv-login-field-bg: var(--hv-shell-card);       /* #F6F8FB */
+  --hv-login-field-border: var(--hv-shell-border); /* #E3E8EF */
   --hv-login-timer-track: var(--hv-shell-border);
   --hv-login-timer-ok: var(--hv-primary);          /* 6.15:1 on white */
-  --hv-login-timer-warn: var(--hv-warning);        /* #B45309, 5.02:1 on white */
-  --hv-login-timer-danger: var(--hv-error);        /* #C22B21, 5.74:1 on white */
-  --hv-login-step-line: var(--hv-primary-200);     /* #BAD2EF — step connector */
-  --hv-login-error: var(--hv-error);               /* inline field error — ONE red for every login error (was #C22B21 vs #8A1A13) */
+  --hv-login-timer-warn: var(--hv-warning);        /* #96601A, 5.02:1 on white */
+  --hv-login-timer-danger: var(--hv-error);        /* #C0392B, 5.74:1 on white */
+  --hv-login-step-line: var(--hv-primary-200);     /* #CDE0F7 — step connector */
+  --hv-login-error: var(--hv-error);               /* inline field error — ONE red for every login error (was #C0392B vs #9B2C21) */
 
   /* ============================================
      WIZARD — SETUP SURFACES (2026-10-17)
@@ -522,22 +535,22 @@
      everywhere it carried ink: 2.54:1 as the welcome glyph, 2.28:1 as the
      strength label and behind the white check circles, 2.54 → 3.77:1 under
      the white "create account" label. The Appliance success ramp
-     (`--hv-success` #1E7E34 = 5.14:1, `--hv-success-text` #166428 = 7.27:1)
+     (`--hv-success` #167A4D = 5.14:1, `--hv-success-text` #12633F = 7.27:1)
      clears all three roles.
      ============================================ */
   --hv-wizard-feature-violet: var(--hv-settings-cat-appearance); /* #8B5CF6 — the product's violet (Settings rail), 4.23:1 as a glyph */
-  --hv-wizard-feature-emerald: var(--hv-success);      /* #1E7E34 — 5.14:1, ≥3:1 as a glyph on its 8% tint */
+  --hv-wizard-feature-emerald: var(--hv-success);      /* #167A4D — 5.14:1, ≥3:1 as a glyph on its 8% tint */
   --hv-wizard-recovery-bg: var(--hv-shell-glass);     /* white paper — the wizard's own field material */
-  --hv-wizard-recovery-border: var(--hv-warning);      /* #B45309 — 5.02:1 on white, ≥3:1 as a boundary (1.4.11) */
+  --hv-wizard-recovery-border: var(--hv-warning);      /* #96601A — 5.02:1 on white, ≥3:1 as a boundary (1.4.11) */
   --hv-wizard-recovery-code-bg: var(--hv-warning-light); /* #FBEEDD — the one tinted element of the box */
-  --hv-wizard-recovery-code-text: var(--hv-warning-text); /* #8E4106 — 6.32:1 on the chip tint */
+  --hv-wizard-recovery-code-text: var(--hv-warning-text); /* #7A4D14 — 6.32:1 on the chip tint */
   --hv-wizard-recovery-title: var(--hv-warning-text);
-  --hv-wizard-recovery-desc: var(--hv-warning);        /* #B45309 — 5.02:1 on the white box */
-  --hv-wizard-create-grad: linear-gradient(135deg, #1E7E34, #166428); /* --hv-success → --hv-success-hover; white label 5.14 → 7.27:1 */
-  --hv-wizard-create-shadow: 0 4px 14px rgba(30, 126, 52, 0.30);
+  --hv-wizard-recovery-desc: var(--hv-warning);        /* #96601A — 5.02:1 on the white box */
+  --hv-wizard-create-grad: linear-gradient(135deg, #167A4D, #12633F); /* --hv-success → --hv-success-hover; white label 5.14 → 7.27:1 */
+  --hv-wizard-create-shadow: 0 4px 14px rgba(22, 122, 77, 0.30);
   --hv-wizard-create-disabled: var(--hv-button-disabled); /* unused today; was #86EFAC, an off-palette emerald */
-  --hv-wizard-success: var(--hv-success);              /* #1E7E34 — 5.14:1 as text and under a white glyph */
-  --hv-wizard-success-strong: var(--hv-success-text);  /* #166428 — 7.27:1 on white */
+  --hv-wizard-success: var(--hv-success);              /* #167A4D — 5.14:1 as text and under a white glyph */
+  --hv-wizard-success-strong: var(--hv-success-text);  /* #12633F — 7.27:1 on white */
   /* Appliance ink ramp — the wizard headings/body/labels are the same values
      the desktop and every in-window app use, so it can no longer drift one
      step lighter than the rest of the product. */
@@ -552,7 +565,7 @@
   --hv-wizard-strength-weak: var(--hv-error);            /* red — weak label */
   --hv-wizard-strength-mid: var(--hv-warning);           /* amber — fair label, 5.02:1 on white */
   --hv-wizard-field-shadow: var(--hv-shadow-xs);         /* white field hairline */
-  --hv-wizard-step-glow: 0 2px 8px rgba(30, 98, 174, 0.35); /* active step-dot glow */
+  --hv-wizard-step-glow: 0 2px 8px rgba(46, 114, 201, 0.35); /* active step-dot glow */
 
   /* ============================================
      SETTINGS SCREEN (2026-09-14)
@@ -577,19 +590,19 @@
   --hv-settings-control-w: 280px;
   --hv-settings-border-w: 1.45px;        /* the mock's hairline border weight */
   --hv-settings-tile: #FFFFFF;           /* rail, cards, content header */
-  --hv-settings-canvas: #F8FAFC;         /* slate-50  — content background */
-  --hv-settings-hairline: #F1F5F9;       /* slate-100 — row + nav dividers */
-  --hv-settings-border: #E2E8F0;         /* slate-200 — card / rail outline */
-  --hv-settings-label: #64748B;          /* slate-500 — micro-labels, subtitles; ≥4.5:1 on white (was #90A1B9 at 2.63:1) */
+  --hv-settings-canvas: #F6F8FB;         /* v2 canvas — content background */
+  --hv-settings-hairline: #EEF1F6;       /* v2 weak separator — row + nav dividers */
+  --hv-settings-border: #E3E8EF;         /* v2 card / rail outline */
+  --hv-settings-label: #64707F;          /* muted tertiary — 5.04:1 on white, 4.65:1 on the card fill */
   /* Requirement-chip text on `--hv-settings-hairline` (#F1F5F9): the ai
      accent clears 4.89:1 there where --hv-settings-label only reached
      4.34:1 (fails AA for the 11px bold chip copy). Ties the chips to the
      category accent instead of adding a fourth grey. */
-  --hv-settings-chip-text: #0E7490;       /* cyan-700 — AI requirement chips on hairline */
-  --hv-settings-row: #314158;            /* slate-700 — nav titles, select text */
-  --hv-settings-title: #1D293D;          /* slate-800 — content header + row labels */
-  --hv-settings-title-strong: #0F172B;   /* slate-900 — active nav title */
-  --hv-settings-toggle-off: #E2E8F0;
+  --hv-settings-chip-text: #0B6878;       /* v2 info text — AI requirement chips on hairline */
+  --hv-settings-row: #1F2733;            /* slate-700 — nav titles, select text */
+  --hv-settings-title: #1F2733;          /* v2 ink — content header + row labels */
+  --hv-settings-title-strong: #1F2733;   /* v2 ink — active nav title */
+  --hv-settings-toggle-off: #E3E8EF;
   --hv-settings-knob-shadow: 0 1px 2px -1px rgba(0, 0, 0, 0.1), 0 1px 3px 0 rgba(0, 0, 0, 0.1);
   /* The ONE icon-tile diameter of this screen, and the one glyph step that
      goes in it. Every decorative icon tile — the rail category tile, the
@@ -612,14 +625,14 @@
      moved one-to-two stops darker — all eight now read 3.68–5.70:1 with
      white and 3.32–4.98:1 on their tint. Guard: `settings.spec.ts` 17.5. */
   --hv-settings-cat-tint: 9%;
-  --hv-settings-cat-general: #3B82F6;        /* blue-500 */
-  --hv-settings-cat-security: #EF4444;       /* red-500 */
-  --hv-settings-cat-appearance: #8B5CF6;     /* violet-500 */
-  --hv-settings-cat-widgets: #7C3AED;        /* violet-600 (was violet-400, 2.72:1 with white) */
-  --hv-settings-cat-notifications: #B45309;  /* amber-700 (was amber-500, 2.15:1) */
-  --hv-settings-cat-ai: #0E7490;             /* cyan-700 (was cyan-500, 2.43:1) */
-  --hv-settings-cat-monitoring: #047857;     /* emerald-700 (was emerald-500, 2.54:1) */
-  --hv-settings-cat-system: #64748B;         /* slate-500 */
+  --hv-settings-cat-general: #2E72C9;        /* v2 accent */
+  --hv-settings-cat-security: #C0392B;       /* v2 error text */
+  --hv-settings-cat-appearance: #7C6CF0;     /* v2 violet */
+  --hv-settings-cat-widgets: #6A45D6;        /* v2 violet text */
+  --hv-settings-cat-notifications: #96601A;  /* amber-700 (was amber-500, 2.15:1) */
+  --hv-settings-cat-ai: #0E7F92;             /* v2 info */
+  --hv-settings-cat-monitoring: #167A4D;     /* v2 success text */
+  --hv-settings-cat-system: #6B7686;         /* v2 tertiary */
 
   /* ============================================
       MODAL & OVERLAY
@@ -633,7 +646,7 @@
   --hv-tooltip-text: #ffffff;
   --hv-dropdown-shadow: var(--hv-shadow-lg);
   --hv-popover-shadow: var(--hv-shadow-xl);
-  /* Notification COUNT badge (topbar bell). --hv-error (#C22B21) is the
+  /* Notification COUNT badge (topbar bell). --hv-error (#C0392B) is the
      destructive-action red and stays that; this is a notification red, a
      different role, hence a separate token rather than a retune. */
   --hv-chrome-badge-bg: #DC2626;                 /* red-600 — ≥4.5:1 under white badge text (was #ef4444 at 3.76:1) */
@@ -884,7 +897,7 @@
      inline badges / micro chips that are not controls (Apple ref §4
      `--apple-radius-badge`); the CONTROL corner — **12px**, every button,
      input, select, chip and row (`--apple-radius-card-sm`); and the SURFACE
-     corner — **18px**, every container (`--apple-radius-card`). Plus the
+     corner — **20px**, every container (`--hv-radius-2xl`). Plus the
      pill stop (`--hv-radius-pill`, 980px — tags and capsules, the reference's
      `--apple-radius-button`) and `--hv-radius-full` for true circles.
      2026-10-19 — the ladder moved 4/6/12 → 8/12/18 to adopt the Apple-derived reference
@@ -904,7 +917,7 @@
   --hv-radius-md: 12px;
   --hv-radius-lg: 12px;
   --hv-radius-xl: 18px;
-  /* THE surface stop — 18px, and there is exactly ONE of it.
+  /* THE surface stop — 20px, and there is exactly ONE of it.
      Every container corner in the product resolves here: app windows, the
      floating monitor widgets, modals, drawers, popovers, the power dialog, the
      activity panel, cards, hero surfaces, the launcher's content column. The
@@ -918,9 +931,9 @@
      `--hv-radius-default` 12px) and non-control micro surfaces use
      `--hv-radius-badge` (8px) — a container, a control and a badge are
      different objects and must not share a corner. */
-  --hv-radius-2xl: 18px;
-  --hv-radius-3xl: 18px;
-  --hv-radius-4xl: 18px;
+  --hv-radius-2xl: 20px;
+  --hv-radius-3xl: 20px;
+  --hv-radius-4xl: 20px;
   --hv-radius-full: 9999px;
   /* Badge / tag stops (Apple ref §4). `--hv-radius-badge` is the small
      non-control stop (inline badges, chips, key caps); `--hv-radius-pill` is
@@ -1051,20 +1064,23 @@
      two interpolated steps the ladder already needed (a hairline chip lift,
      and a panel sitting between card and modal).
      Depth still comes from shadow alone — no backdrop-filter anywhere. */
-  --hv-shadow-xs: 0 1px 4px rgba(0, 0, 0, 0.04);
-  --hv-shadow-sm: 0 1px 4px rgba(0, 0, 0, 0.04),
-                  0 4px 12px rgba(0, 0, 0, 0.06);
-  --hv-shadow-md: 0 2px 8px rgba(0, 0, 0, 0.04),
-                  0 8px 24px rgba(0, 0, 0, 0.08);
-  --hv-shadow-lg: 0 4px 12px rgba(0, 0, 0, 0.06),
-                  0 12px 32px rgba(0, 0, 0, 0.12);
-  --hv-shadow-xl: 0 6px 16px rgba(0, 0, 0, 0.07),
-                  0 16px 44px rgba(0, 0, 0, 0.14);
-  --hv-shadow-2xl: 0 8px 20px rgba(0, 0, 0, 0.08),
-                   0 20px 60px rgba(0, 0, 0, 0.16);
+  --hv-shadow-xs: 0 1px 2px rgba(31, 39, 51, 0.05);
+  --hv-shadow-sm: 0 1px 2px rgba(31, 39, 51, 0.05),
+                  0 2px 4px rgba(31, 39, 51, 0.05);
+  /* Card — the v2 design's "sh-card": a 4px lift with a tight contact line. */
+  --hv-shadow-md: 0 4px 8px rgba(31, 39, 51, 0.07),
+                  0 1px 1px rgba(31, 39, 51, 0.05);
+  /* Capsule — the v2 "sh-capsule" (topbar, dock, popovers). */
+  --hv-shadow-lg: 0 6px 10px rgba(31, 39, 51, 0.10),
+                  0 1px 1.5px rgba(31, 39, 51, 0.06);
+  --hv-shadow-xl: 0 10px 18px rgba(27, 42, 68, 0.12),
+                  0 2px 3px rgba(27, 42, 68, 0.06);
+  /* Window — the v2 "sh-window": a deep, diffuse drop with a crisp contact. */
+  --hv-shadow-2xl: 0 24px 28px rgba(27, 42, 68, 0.16),
+                   0 2px 3px rgba(27, 42, 68, 0.08);
   --hv-shadow-inner: inset 0 1px 3px 0 rgba(16, 24, 40, 0.06);
-  --hv-shadow-focus: 0 0 0 2px rgba(30, 98, 174, 0.9), 0 0 0 4px rgba(30, 98, 174, 0.35);
-  --hv-shadow-focus-thin: 0 0 0 2px rgba(30, 98, 174, 0.9);
+  --hv-shadow-focus: 0 0 0 2px rgba(46, 114, 201, 0.9), 0 0 0 4px rgba(46, 114, 201, 0.35);
+  --hv-shadow-focus-thin: 0 0 0 2px rgba(46, 114, 201, 0.9);
 
   /* ============================================
      DISPLAY GRADIENTS (Apple ref §6)
@@ -1156,8 +1172,8 @@
   /* ============================================
       ICON COLORS (File Types)
       ============================================ */
-  --hv-icon-folder-bg: #DCE9F7;
-  --hv-icon-folder-stroke: #1E62AE;
+  --hv-icon-folder-bg: #E6EFFB;
+  --hv-icon-folder-stroke: #2E72C9;
   --hv-icon-pdf-bg: #fef3c7;
   --hv-icon-pdf-stroke: #f59e0b;
   --hv-icon-excel-bg: #dcfce7;
@@ -1209,9 +1225,9 @@
   /* ============================================
      STATUS COLOR VARIANTS (Light backgrounds)
      ============================================ */
-  --hv-success-light: #E3F4E8;
-  --hv-warning-light: #FBEEDD;
-  --hv-error-light: #F9E3E1;
+  --hv-success-light: #E3F6EC;
+  --hv-warning-light: #FEF3E2;
+  --hv-error-light: #FDECEA;
 
   /* ============================================
      SEMANTIC ALIASES
@@ -1328,7 +1344,7 @@
      Shared by WindowFrame.svelte (frame + controls) and WindowHeader.svelte
      (bar) — the two must be read together. */
   --hv-winhdr-bg: #FFFFFF;
-  --hv-winhdr-border: #E2E8F0;      /* header underline */
+  --hv-winhdr-border: #E3E8EF;      /* header underline */
   /* The bar is exactly one control row + 2 × --hv-winhdr-pad-y. Everything in
      it (icon tile, title, action buttons, and the min/max/close trio pinned by
      WindowFrame) is vertically centred on that one row, so the trio and the
@@ -1344,8 +1360,8 @@
      app glyph stays round if the size ever moves. The min/max/close trio
      follows the same rule (--hv-winctrl-radius: 50%) — the whole window
      chrome now speaks circles. */
-  --hv-winhdr-icon-radius: 50%;
-  --hv-winhdr-title: #314158;       /* slate-700 ink of the mock */
+  --hv-winhdr-icon-radius: 10px;     /* v2 app-tile squircle (not a circle) */
+  --hv-winhdr-title: #1F2733;       /* slate-700 ink of the mock */
   /* Right-side reserve so the bar's own content never slides under the
      control trio WindowFrame pins to it: 3 × 28px + 2 × 6px + 12px inset
      + 12px gap. Kept in sync with .hv-window-controls in WindowFrame. */
@@ -1361,8 +1377,8 @@
      modal and a popover are one material at one corner. */
   --hv-window-radius: var(--hv-radius-2xl);
   --hv-window-bg: #FFFFFF;
-  --hv-window-border: #CBD5E1;
-  --hv-window-shadow: var(--hv-shadow-lg);   /* Apple ref §5 — a floating window lifts like a hovered card */
+  --hv-window-border: #E3E8EF;
+  --hv-window-shadow: var(--hv-shadow-2xl);  /* v2 "sh-window" — the deepest step */
   /* Window-control trio (WindowFrame.svelte) — the mock's inline amber /
      blue / red controls, 28px PERFECT CIRCLES (2026-10-18: `50%`, the dock
      tiles' / topbar buttons' shape language — they were 8px rounded squares)
@@ -1378,43 +1394,47 @@
      Both are 24/14-viewBox glyphs on a 28px control, so the box is the only
      thing that sets their weight. */
   --hv-winctrl-glyph: 14px;
-  --hv-winctrl-min: #FFB900;           /* amber — minimize */
-  --hv-winctrl-min-hover: #E0A200;     /* amber pressed */
-  --hv-winctrl-max: #2B7FFF;           /* blue — maximize / restore */
-  --hv-winctrl-max-hover: #1A6BE0;     /* blue pressed */
-  --hv-winctrl-close: #FF6467;         /* red — close */
-  --hv-winctrl-close-hover: #E84E51;   /* red pressed */
+  /* v2 window controls — neutral grey circles with an ink glyph; the close
+     control is the one soft-red exception. */
+  --hv-winctrl-min: #F3F6FA;
+  --hv-winctrl-min-hover: #E7EBF1;
+  --hv-winctrl-max: #F3F6FA;
+  --hv-winctrl-max-hover: #E7EBF1;
+  --hv-winctrl-close: #FDECEA;
+  --hv-winctrl-close-hover: #FADAD7;
+  --hv-winctrl-fg: #6B7686;             /* 4.6:1 on the grey circle */
+  --hv-winctrl-close-fg: #C0392B;       /* 5.4:1 on the soft-red circle */
   /* Disabled foreground for disabled controls. */
-  --hv-disabled-fg: #A8B1BC;
+  --hv-disabled-fg: #A0AAB8;
 
   /* ============================================
      APP SHELL — APPLIANCE SURFACES
      --------------------------------------------
      One vocabulary for the solid light look shared by the in-window
      app shells, the topbar pill and the dock. Every value is a literal
-     HomeVault Appliance stop: windows = canvas #FFFFFF, cards = #F7F8FA,
-     fills = #EFF1F4, hairlines = #DCE1E7 / #EDF0F4, ink = #1F2733 →
+     HomeVault Appliance stop: windows = canvas #FFFFFF, cards = #F6F8FB,
+     fills = #F3F6FA, hairlines = #E3E8EF / #EEF1F6, ink = #1F2733 →
      #909AA6, elevation = the layered shadow set above. Deliberate
      HomeVault adaptations: opaque surfaces (no blur — a dark photo
      wallpaper must never wash out ink text) and a single brand accent
-     #1E62AE. NO backdrop-filter anywhere — depth comes from shadow.
+     #2E72C9. NO backdrop-filter anywhere — depth comes from shadow.
      ============================================ */
   --hv-shell-glass: #FFFFFF;                     /* window / panel surface */
-  --hv-shell-card: #F7F8FA;                      /* card / tile surface (sits on the window) */
+  --hv-shell-card: #F6F8FB;                      /* card / tile surface (sits on the window) */
   --hv-shell-shadow-card: var(--hv-shadow-md);   /* Apple ref §5 — the resting card step */
-  --hv-shell-fill: #EFF1F4;                      /* subtle raised fill (toolbars, chips) */
-  --hv-shell-border-soft: #EDF0F4;               /* faint divider */
-  --hv-shell-border: #DCE1E7;                    /* standard hairline */
-  --hv-shell-border-strong: #87929E;             /* button / input outline — ≥3:1 vs white (1.4.11) */
+  --hv-shell-fill: #F3F6FA;                      /* subtle raised fill (toolbars, chips) */
+  --hv-shell-border-soft: #EEF1F6;               /* faint divider */
+  --hv-shell-border: #E3E8EF;                    /* standard hairline */
+  --hv-shell-border-strong: #8792A2;             /* button / input outline — ≥3:1 vs white (1.4.11) */
   --hv-shell-text-strong: #1F2733;               /* primary text on white (appliance ink) */
   --hv-shell-text-2: #454F5B;                    /* secondary text */
-  --hv-shell-text: #69747F;                      /* muted body text */
-  /* Tertiary / placeholder. #5F6B76 (not the older #909AA6, which read at
+  --hv-shell-text: #64707F;                      /* muted body text */
+  /* Tertiary / placeholder. #64707F (not the older #909AA6, which read at
      2.85:1 on white) — every value of this token must keep ≥4.5:1 against
      the light surfaces it sits on (white 5.45:1, --hv-shell-fill 4.82:1,
      --hv-shell-card 5.13:1) and ≥3:1 when used as a status dot (WCAG 1.4.3
      + 1.4.11). */
-  --hv-shell-text-3: #5F6B76;
+  --hv-shell-text-3: #64707F;
   --hv-shell-bg:        #FFFFFF;
   --hv-shell-bg-groups: #FFFFFF;
   --hv-shell-bg-shares: #FFFFFF;
@@ -1426,12 +1446,12 @@
      Focus stays a brand glow (2px outline + 3px --hv-primary-light ring),
      which meets WCAG 2.4.11 non-text contrast and keeps the single-accent
      language. */
-  --hv-subtle-hover: #F1F3F6;
-  --hv-subtle-pressed: #DDE2E8;
+  --hv-subtle-hover: #F0F3F8;
+  --hv-subtle-pressed: #DDE3EB;
   --hv-card-hover: #FFFFFF;
-  --hv-card-pressed: #F1F3F6;
-  --hv-stroke-hover: #A8B1BC;
-  --hv-stroke-pressed: #87929E;
+  --hv-card-pressed: #F0F3F8;
+  --hv-stroke-hover: #A0AAB8;
+  --hv-stroke-pressed: #8792A2;
 
   /* ============================================
      APP ICON GRADIENTS — one unique colour per app
@@ -1447,52 +1467,43 @@
      onto the same 500->700 ladder keeping their existing hue; five ids
      (accent, network, vpn, shares, journal) keep their original value because
      snapping them would duplicate an app that already owns that pair.
-     NOTE `accent` is the brand fallback, tied to --hv-primary (#1E62AE) — it is
+     NOTE `accent` is the brand fallback, tied to --hv-primary (#2E72C9) — it is
      deliberately NOT a DSM app colour and must stay off-ladder.
      UPDATE 2026-09-23 — the accent gradient's light stop was #4b8ad4, which
      put white type on it at 3.57:1 (WCAG 1.4.3 — tiles that carry white
-     text, e.g. the Raid wizard step). It now runs #3275C4 (4.69:1 with
-     white) → #1E62AE (6.15:1): both stops from the --hv-primary ladder.
+     text, e.g. the Raid wizard step). It now runs #3B7FD4 (4.69:1 with
+     white) → #2E72C9 (6.15:1): both stops from the --hv-primary ladder.
      ============================================ */
-  --hv-app-accent-grad:       linear-gradient(145deg, #3275C4, #1E62AE);
-  --hv-app-dashboard-grad:    linear-gradient(145deg, #22d3ee, #6366f1);
-  --hv-app-terminal-grad:     linear-gradient(145deg, #10b981, #047857);
-  --hv-app-docker-grad:       linear-gradient(145deg, #8b5cf6, #6d28d9);
-  --hv-app-health-grad:       linear-gradient(145deg, #10b981, #06b6d4);
-  /* Light stop raised from #14b8a6 (white icon 2.49:1) to teal-600 so the
-     white glyphs on this tile clear 3:1 (WCAG 1.4.11), 2026-09-23. */
-  --hv-app-chat-grad:         linear-gradient(145deg, #0d9488, #0f766e);
-  --hv-app-settings-grad:     linear-gradient(145deg, #64748b, #334155);
-  --hv-app-storage-grad:      linear-gradient(145deg, #6366f1, #4338ca);
-  --hv-app-raid-grad:         linear-gradient(145deg, #f59e0b, #ef4444);
-  --hv-app-explorer-grad:     linear-gradient(145deg, #3b82f6, #1d4ed8);
-  --hv-app-network-grad:      linear-gradient(145deg, #22d3ee, #0891b2);
-  --hv-app-vpn-grad:          linear-gradient(145deg, #818cf8, #6366f1);
-  --hv-app-backup-grad:       linear-gradient(145deg, #f97316, #c2410c);
-  --hv-app-users-grad:        linear-gradient(145deg, #0ea5e9, #6366f1);
-  --hv-app-groups-grad:       linear-gradient(145deg, #ec4899, #8b5cf6);
-  --hv-app-shares-grad:       linear-gradient(145deg, #fdba74, #f97316);
-  --hv-app-rclone-grad:       linear-gradient(145deg, #0ea5e9, #0369a1);
-  --hv-app-syncthing-grad:    linear-gradient(145deg, #a855f7, #7e22ce);
-  --hv-app-downloader-grad:   linear-gradient(145deg, #f59e0b, #b45309);
-  --hv-app-rescue-grad:       linear-gradient(145deg, #f43f5e, #be123c);
-  --hv-app-widgets-grad:      linear-gradient(145deg, #8b5cf6, #ec4899);
-  --hv-app-journal-grad:      linear-gradient(145deg, #7dd3fc, #0ea5e9);
-  --hv-app-virtual-machines-grad: linear-gradient(145deg, #06b6d4, #0e7490);
-  --hv-app-quotas-grad:       linear-gradient(145deg, #d946ef, #a21caf);
-  --hv-app-tasks-grad:        linear-gradient(145deg, #34d399, #059669);
-  --hv-app-metrics-grad:      linear-gradient(145deg, #fb923c, #ea580c);
-  /* P3.2 — Traffic control. Cyan/turquoise pair kept on the network ladder. */
-  --hv-app-traffic-control-grad: linear-gradient(145deg, #06b6d4, #0e7490);
-  /* P3.3 — iSCSI. Violet pair, distinct from the VPN indigo so both tiles read
-     apart at launcher size. */
-  --hv-app-iscsi-grad:        linear-gradient(145deg, #a78bfa, #7c3aed);
-  /* P3.1 — Directory sign-in. Lime-to-emerald pair, the one hue family no
-     other app tile uses, so it never reads as Users or Groups at a glance. */
-  --hv-app-directory-grad:    linear-gradient(145deg, #a3e635, #15803d);
-  /* The Launchpad launcher is not an app — it keeps a bespoke light slate and
-     is the one tile that stays off the app-colour ladder on purpose. */
-  --hv-app-launchpad-grad:    linear-gradient(145deg, #eef2fb, #ccd7ef);
+  --hv-app-accent-grad:       linear-gradient(145deg, #4690E4, #2E5FC9);
+  --hv-app-dashboard-grad:    linear-gradient(145deg, #4690E4, #2E5FC9);
+  --hv-app-terminal-grad:     linear-gradient(145deg, #3A4556, #1B2230);
+  --hv-app-docker-grad:       linear-gradient(145deg, #7C6CF0, #6A45D6);
+  --hv-app-health-grad:       linear-gradient(145deg, #1E9E63, #0E7A55);
+  --hv-app-chat-grad:         linear-gradient(145deg, #1596AB, #0B6878);
+  --hv-app-settings-grad:     linear-gradient(145deg, #8391A7, #4A586E);
+  --hv-app-storage-grad:      linear-gradient(145deg, #6366F1, #4338CA);
+  --hv-app-raid-grad:         linear-gradient(145deg, #7C6CF0, #6A45D6);
+  --hv-app-explorer-grad:     linear-gradient(145deg, #4690E4, #2560AC);
+  --hv-app-network-grad:      linear-gradient(145deg, #1596AB, #0B6878);
+  --hv-app-vpn-grad:          linear-gradient(145deg, #7C6CF0, #5B4BC4);
+  --hv-app-backup-grad:       linear-gradient(145deg, #D97706, #9A3412);
+  --hv-app-users-grad:        linear-gradient(145deg, #0284C7, #0369A1);
+  --hv-app-groups-grad:       linear-gradient(145deg, #DB2777, #9D174D);
+  --hv-app-shares-grad:       linear-gradient(145deg, #EA8A28, #C2410C);
+  --hv-app-rclone-grad:       linear-gradient(145deg, #0284C7, #0369A1);
+  --hv-app-syncthing-grad:    linear-gradient(145deg, #9333EA, #6B21A8);
+  --hv-app-downloader-grad:   linear-gradient(145deg, #C2740C, #92400E);
+  --hv-app-rescue-grad:       linear-gradient(145deg, #BE123C, #881337);
+  --hv-app-widgets-grad:      linear-gradient(145deg, #7C3AED, #5B21B6);
+  --hv-app-journal-grad:      linear-gradient(145deg, #1596AB, #0B6878);
+  --hv-app-virtual-machines-grad: linear-gradient(145deg, #0E7F92, #0B6878);
+  --hv-app-quotas-grad:       linear-gradient(145deg, #A21CAF, #701A75);
+  --hv-app-tasks-grad:        linear-gradient(145deg, #1E9E63, #0E7A55);
+  --hv-app-metrics-grad:      linear-gradient(145deg, #C2740C, #92400E);
+  --hv-app-traffic-control-grad: linear-gradient(145deg, #0E7F92, #0B6878);
+  --hv-app-iscsi-grad:        linear-gradient(145deg, #7C3AED, #5B21B6);
+  --hv-app-directory-grad:    linear-gradient(145deg, #65A30D, #3F6212);
+  --hv-app-launchpad-grad:    linear-gradient(145deg, #FFFFFF, #DCE5F5);
 
   /* ============================================
      DOCK RUNNING-INDICATOR COLORS — one solid color per app
@@ -1513,35 +1524,35 @@
      the Launchpad gradient. That tile is a light slate (#eef2fb -> #ccd7ef),
      so its dot uses indigo for contrast against the white dock instead.
      ============================================ */
-  --hv-app-accent-c:          #1e62ae;
-  --hv-app-dashboard-c:       #6366f1;
-  --hv-app-terminal-c:        #047857;
-  --hv-app-docker-c:          #6d28d9;
-  --hv-app-health-c:          #06b6d4;
-  --hv-app-chat-c:            #0f766e;
-  --hv-app-settings-c:        #334155;
+  --hv-app-accent-c:          #2e5fc9;
+  --hv-app-dashboard-c:       #2e5fc9;
+  --hv-app-terminal-c:        #1b2230;
+  --hv-app-docker-c:          #6a45d6;
+  --hv-app-health-c:          #0e7a55;
+  --hv-app-chat-c:            #0b6878;
+  --hv-app-settings-c:        #4a586e;
   --hv-app-storage-c:         #4338ca;
-  --hv-app-raid-c:            #ef4444;
-  --hv-app-explorer-c:        #1d4ed8;
-  --hv-app-network-c:         #0891b2;
-  --hv-app-vpn-c:             #6366f1;
-  --hv-app-backup-c:          #c2410c;
-  --hv-app-users-c:           #6366f1;
-  --hv-app-groups-c:          #8b5cf6;
-  --hv-app-shares-c:          #f97316;
+  --hv-app-raid-c:            #6a45d6;
+  --hv-app-explorer-c:        #2560ac;
+  --hv-app-network-c:         #0b6878;
+  --hv-app-vpn-c:             #5b4bc4;
+  --hv-app-backup-c:          #9a3412;
+  --hv-app-users-c:           #0369a1;
+  --hv-app-groups-c:          #9d174d;
+  --hv-app-shares-c:          #c2410c;
   --hv-app-rclone-c:          #0369a1;
-  --hv-app-syncthing-c:       #7e22ce;
-  --hv-app-downloader-c:      #b45309;
-  --hv-app-rescue-c:          #be123c;
-  --hv-app-widgets-c:         #ec4899;
-  --hv-app-journal-c:         #0ea5e9;
-  --hv-app-virtual-machines-c: #0e7490;
-  --hv-app-quotas-c:          #a21caf;
-  --hv-app-tasks-c:           #059669;
-  --hv-app-metrics-c:         #ea580c;
-  --hv-app-traffic-control-c: #0e7490;
-  --hv-app-iscsi-c:           #7c3aed;
-  --hv-app-directory-c:       #15803d;
+  --hv-app-syncthing-c:       #6b21a8;
+  --hv-app-downloader-c:      #92400e;
+  --hv-app-rescue-c:          #881337;
+  --hv-app-widgets-c:         #5b21b6;
+  --hv-app-journal-c:         #0b6878;
+  --hv-app-virtual-machines-c: #0b6878;
+  --hv-app-quotas-c:          #701a75;
+  --hv-app-tasks-c:           #0e7a55;
+  --hv-app-metrics-c:         #92400e;
+  --hv-app-traffic-control-c: #0b6878;
+  --hv-app-iscsi-c:           #5b21b6;
+  --hv-app-directory-c:       #3f6212;
   --hv-app-launchpad-c:       #6366f1;
 
   /* ============================================
@@ -1559,7 +1570,7 @@
   --hv-scrollbar-track: transparent;
   --hv-scrollbar-thumb: rgba(31, 39, 51, 0.30);            /* appliance ink, low alpha */
   --hv-scrollbar-thumb-hover: rgba(31, 39, 51, 0.48);
-  --hv-scrollbar-thumb-active: rgba(30, 98, 174, 0.55);    /* --hv-primary tint while grabbed */
+  --hv-scrollbar-thumb-active: rgba(46, 114, 201, 0.55);    /* --hv-primary tint while grabbed */
 
   /* ============================================
      DENSITY SYSTEM (2026-10-24)
@@ -1587,7 +1598,7 @@
   --hv-density-component-gap: 16px;
   --hv-density-item-gap: 8px;
   --hv-density-radius-control: 12px;
-  --hv-density-radius-surface: 18px;
+  --hv-density-radius-surface: 20px;
 }
 
 /* Tighten the desktop-chrome inset + shrink the topbar on phone-width

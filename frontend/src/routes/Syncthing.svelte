@@ -23,7 +23,7 @@
   import { PageLayout, StatCard, EmptyState } from '$lib/components/app';
   import { cn } from '$lib/utils.js';
   import WindowHeader from '$lib/components/desktop/WindowHeader.svelte';
-  import { IconRefresh, IconPlayerPause, IconPlayerPlay, IconFolder, IconDeviceMobile, IconServer, IconCircleCheck, IconAlertCircle, IconClock, IconActivity, IconPlus, IconTrash, IconHistory, IconArrowBackUp } from '@tabler/icons-svelte';
+  import { IconRefresh, IconPlayerPause, IconPlayerPlay, IconFolder, IconDeviceMobile, IconServer, IconCircleCheck, IconAlertCircle, IconClock, IconActivity, IconPlus, IconTrash, IconHistory, IconArrowBackUp } from '$lib/icons/lucide';
 
   // ---------------------------------------------------------------------------
   // Types
@@ -531,7 +531,7 @@
   footerMode="status"
 >
   {#snippet icon()}
-    <IconFolder stroke={1.8} />
+    <IconFolder strokeWidth={1.8} />
   {/snippet}
   <!-- Page-level action: a WindowToolbar row under the header, never inside
        it (the header bar is icon + title + window controls only). -->
@@ -568,7 +568,7 @@
          fault (a key that cannot be sent) is explained by the banner above;
          claiming "install Syncthing" there would be a lie. -->
     <EmptyState data-testid="syncthing-empty" title={$t('syncthing.not_available_title')} description={$t('syncthing.not_available_desc')}>
-      {#snippet iconSnippet()}<IconAlertCircle size={32} stroke={1.8} />{/snippet}
+      {#snippet iconSnippet()}<IconAlertCircle size={32} strokeWidth={1.8} />{/snippet}
     </EmptyState>
   {:else if status.available}
     <div data-testid="syncthing-stats" class="grid grid-cols-2 @min-[880px]:grid-cols-4 gap-3 mb-5">
@@ -588,12 +588,12 @@
 
     {#if activeTab === 'overview'}
       <div class="flex flex-col gap-4">
-        <div data-testid="syncthing-card" class="px-5 py-4 rounded-2xl bg-[var(--hv-shell-card)] border border-[var(--hv-shell-border)] shadow-[var(--hv-shell-shadow-card)]">
+        <div data-testid="syncthing-card" class="px-5 py-4 rounded-2xl bg-card border border-border shadow-[var(--hv-shell-shadow-card)]">
           <div class="flex items-center gap-2 mb-2"><span class="grid place-items-center w-9 h-9 rounded-lg bg-[var(--hv-primary-light)] text-[var(--hv-primary)]"><IconServer size={18} /></span><span class="text-sm font-semibold text-[var(--hv-shell-text-strong)]">{$t('syncthing.device_id_title')}</span></div>
           <code class="block text-sm font-[family-name:var(--hv-font-mono)] text-[var(--hv-shell-text-strong)] break-all">{status.my_id || $t('syncthing.unknown')}</code>
         </div>
 
-        <div data-testid="syncthing-card" class="px-5 py-4 rounded-2xl bg-[var(--hv-shell-card)] border border-[var(--hv-shell-border)] shadow-[var(--hv-shell-shadow-card)]">
+        <div data-testid="syncthing-card" class="px-5 py-4 rounded-2xl bg-card border border-border shadow-[var(--hv-shell-shadow-card)]">
           <div class="flex items-center gap-2 mb-2"><span class="grid place-items-center w-9 h-9 rounded-lg bg-[var(--hv-primary-light)] text-[var(--hv-primary)]"><IconFolder size={18} /></span><span class="text-sm font-semibold text-[var(--hv-shell-text-strong)]">{$t('syncthing.sync_status_title')}</span></div>
           <div>
             <div class="flex items-center justify-between text-xs text-[var(--hv-shell-text-2)]">
@@ -604,7 +604,7 @@
           </div>
         </div>
 
-        <div data-testid="syncthing-card" class="px-5 py-4 rounded-2xl bg-[var(--hv-shell-card)] border border-[var(--hv-shell-border)] shadow-[var(--hv-shell-shadow-card)]">
+        <div data-testid="syncthing-card" class="px-5 py-4 rounded-2xl bg-card border border-border shadow-[var(--hv-shell-shadow-card)]">
           <div class="flex items-center gap-2 mb-2"><span class="grid place-items-center w-9 h-9 rounded-lg bg-[var(--hv-primary-light)] text-[var(--hv-primary)]"><IconFolder size={18} /></span><span class="flex-1 text-sm font-semibold text-[var(--hv-shell-text-strong)]">{$t('syncthing.stat_folders')}</span><span class={badge}>{translate('syncthing.folders_synced_badge', { synced: String(syncedFolders), total: String(folders.length) })}</span></div>
           <div class="flex flex-col gap-2">
             {#each folders as folder}
@@ -697,7 +697,7 @@
 
       {#if activeTab === 'devices' && selectedDevice}
         <div data-testid="syncthing-detail-pane" class="flex-1 min-w-0 min-h-0 overflow-y-auto px-5">
-          <div class="rounded-2xl bg-[var(--hv-shell-card)] border border-[var(--hv-shell-border)] shadow-[var(--hv-shell-shadow-card)] overflow-hidden">
+          <div class="rounded-2xl bg-card border border-border shadow-[var(--hv-shell-shadow-card)] overflow-hidden">
             <div class="flex items-center gap-3 px-4 pt-4">
               <span class={cn('grid place-items-center w-11 h-11 rounded-full flex-none', selectedDevice.connected ? 'bg-[var(--hv-success-bg)] text-[var(--hv-success)]' : selectedDevice.paused ? 'bg-[var(--hv-warning-bg)] text-[var(--hv-warning)]' : 'bg-[var(--hv-shell-border-soft)] text-[var(--hv-shell-text-2)]')}><IconDeviceMobile size={22} /></span>
               <div class="flex-1 min-w-0">
@@ -725,7 +725,7 @@
         </div>
       {:else if activeTab === 'folders' && selectedFolder}
         <div data-testid="syncthing-detail-pane" class="flex-1 min-w-0 min-h-0 overflow-y-auto px-5">
-          <div class="rounded-2xl bg-[var(--hv-shell-card)] border border-[var(--hv-shell-border)] shadow-[var(--hv-shell-shadow-card)] overflow-hidden">
+          <div class="rounded-2xl bg-card border border-border shadow-[var(--hv-shell-shadow-card)] overflow-hidden">
             <div class="flex items-center gap-3 px-4 pt-4">
               <span class="grid place-items-center w-11 h-11 rounded-lg flex-none bg-[var(--hv-primary-light)] text-[var(--hv-primary)]"><IconFolder size={22} /></span>
               <div class="flex-1 min-w-0">
@@ -789,7 +789,7 @@
   size="md"
   onclose={() => { showFolderModal = false; formError = null; }}
 >
-  {#snippet icon()}<IconFolder size={22} stroke={1.8} />{/snippet}
+  {#snippet icon()}<IconFolder size={22} strokeWidth={1.8} />{/snippet}
   {#snippet children()}
     <div class="flex flex-col gap-4">
       {#if formError}
@@ -888,7 +888,7 @@
   size="md"
   onclose={() => { showDeviceModal = false; formError = null; }}
 >
-  {#snippet icon()}<IconDeviceMobile size={22} stroke={1.8} />{/snippet}
+  {#snippet icon()}<IconDeviceMobile size={22} strokeWidth={1.8} />{/snippet}
   {#snippet children()}
     <div class="flex flex-col gap-4">
       {#if formError}
@@ -948,7 +948,7 @@
   size="md"
   onclose={() => (removeTarget = null)}
 >
-  {#snippet icon()}<IconTrash size={22} stroke={1.8} />{/snippet}
+  {#snippet icon()}<IconTrash size={22} strokeWidth={1.8} />{/snippet}
   {#snippet children()}
     <p data-testid="syncthing-remove-desc" class="text-sm text-[var(--hv-shell-text)]">
       {removeTarget?.kind === 'folder'
@@ -972,7 +972,7 @@
   size="md"
   onclose={() => (versionsOpen = false)}
 >
-  {#snippet icon()}<IconHistory size={22} stroke={1.75} />{/snippet}
+  {#snippet icon()}<IconHistory size={22} strokeWidth={1.8} />{/snippet}
   {#snippet children()}
     <div class="flex flex-col gap-3" data-testid="syncthing-versions">
       <p class="m-0 text-c-label text-[var(--hv-shell-text-2)]">{$t('syncthing.versions_hint')}</p>
@@ -1032,7 +1032,7 @@
         {:else}
           <div class="flex flex-col gap-1.5" data-testid="syncthing-versions-list">
             {#each versions as version (version.file + version.version_time)}
-              <div class="flex items-start justify-between gap-2 flex-wrap px-3 py-2 rounded-lg bg-[var(--hv-shell-card)] border border-[var(--hv-shell-border)]">
+              <div class="flex items-start justify-between gap-2 flex-wrap px-3 py-2 rounded-lg bg-card border border-border">
                 <div class="flex flex-col gap-0.5 min-w-0">
                   <span class="text-c-sm font-semibold text-[var(--hv-shell-text-strong)] break-all">{version.file}</span>
                   <span class="text-c-xs text-[var(--hv-shell-text-2)]">{version.version_time}{version.size != null ? ` · ${formatBytes(version.size)}` : ''}</span>

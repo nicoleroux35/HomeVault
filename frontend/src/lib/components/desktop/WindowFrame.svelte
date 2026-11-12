@@ -380,7 +380,7 @@
      <WindowHeader> component (icon tile + title, optional tab row /
      action button / extra cluster, [data-hv-drag]). WindowFrame must NOT also
      stack its own <WindowHeader> on top for these apps, or the app shows a
-     blank duplicate header (the extra one's `win.icon` sprite name has no
+     blank duplicate header (the extra one's `win.icon` name has no
      glyph). The set is kept explicit so a future app that genuinely wants the
      frame-provided header can opt back in by being left out of it.
      `quotas` was added on 2026-09-14 and missed here, so it shipped a stacked
@@ -390,6 +390,11 @@
     'terminal', 'chat', 'docker', 'dashboard', 'users', 'groups', 'shares', 'account', 'settings',
     'explorer', 'backup', 'health', 'network', 'vpn', 'rescue', 'downloader', 'rclone',
     'storage', 'raid', 'journal', 'syncthing', 'widgets', 'virtual-machines', 'quotas',
+    // Every app route built on PageLayout/WindowHeader owns its bar. These
+    // nine were added after the original set was written and had been drawing
+    // a second, duplicated chrome header above their own one.
+    'destinations', 'directory', 'edit-widgets', 'iscsi', 'metrics', 'replication',
+    'tasks', 'traffic-control', 'usb-copy',
   ]);
   $: ownHeader = OWN_HEADER_APPS.has(win.appId);
 
@@ -647,7 +652,7 @@
     border: none;
     border-radius: var(--hv-winctrl-radius);
     background: var(--hv-winctrl-max);
-    color: var(--hv-on-primary);
+    color: var(--hv-winctrl-fg);
     cursor: pointer;
     transition: background 150ms ease, transform 150ms ease;
   }
@@ -680,7 +685,8 @@
     height: var(--hv-winctrl-glyph);
   }
 
-  /* Control colours — amber (minimize) / blue (maximize) / red (close). */
+  /* v2 control colours — three neutral grey circles with an ink glyph; the
+     close control is the one soft-red exception. */
   .hv-cl-btn-min {
     background: var(--hv-winctrl-min);
   }
@@ -695,6 +701,7 @@
 
   .hv-cl-btn-close {
     background: var(--hv-winctrl-close);
+    color: var(--hv-winctrl-close-fg);
   }
 
   .hv-cl-btn-close:hover {

@@ -37,6 +37,12 @@ jobs:
           node --version && npm --version
       - name: Install
         run: npm ci
+      - name: Unit + component tests (Vitest)
+        run: npm test
+      - name: Coverage ratchet (Vitest + v8)
+        run: npm run test:coverage
+      - name: i18n + design-token lint
+        run: npm run lint:ui
       - name: Type-check (svelte-check + tsc)
         run: npm run check
       - name: Production build

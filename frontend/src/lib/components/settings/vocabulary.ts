@@ -58,7 +58,7 @@ export const secLabelFirst = secLabel;
  *  `mt-3` their caller passes here — two rules owning one gap would land on
  *  an off-scale 28px and make the two cases disagree by 4px. */
 export const settingsCard =
-  'shrink-0 rounded-xl bg-[var(--hv-settings-tile)] border-[1.45px] border-[var(--hv-settings-border)] px-4';
+  'shrink-0 rounded-2xl bg-[var(--hv-settings-tile)] border-[1.45px] border-[var(--hv-settings-border)] px-4';
 
 /** One row: label on the left, control on the right, hairline between.
 
@@ -147,7 +147,7 @@ export const settingsBtnDanger =
 /** The green confirmation skin of the rail-footer Save button (2026-09-23).
  *  It mirrors the two skins above on purpose — one skin per button state, and
  *  never two `bg-` utilities on the same element (the stylesheet order, not
- *  the class order, would pick the winner). White on `--hv-success` (#1E7E34)
+ *  the class order, would pick the winner). White on `--hv-success` (#167A4D)
  *  is 5.14:1 ✓ for WCAG 1.4.3; the hover step goes darker, never lighter. */
 export const settingsBtnSuccess =
   'settings-btn-success border-none bg-[var(--hv-success)] text-[var(--hv-on-primary)] hover:bg-[var(--hv-success-hover)]';
@@ -160,7 +160,7 @@ export const settingsBtnSuccess =
  *  `settingsCardIcon` on 2026-10-19, which also no longer had a caller once the
  *  sub-card headers lost their tile. */
 export const settingsIconTile =
-  'settings-icon-tile grid place-items-center w-[var(--hv-settings-icon-tile)] h-[var(--hv-settings-icon-tile)] rounded-full flex-none';
+  'settings-icon-tile grid place-items-center w-[var(--hv-settings-icon-tile)] h-[var(--hv-settings-icon-tile)] rounded-[9px] flex-none';
 
 /* The category accents, for the sub-cards. A sub-card is rendered from inside
    a category branch of Settings.svelte, so it cannot read `activeCat.accent`

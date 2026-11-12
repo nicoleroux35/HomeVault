@@ -25,7 +25,7 @@
   import { api } from '$lib/services/api';
   import { focusTrap } from '$lib/utils/focusTrap';
   import SearchResults from './SearchResults.svelte';
-  import { IconSearch } from '@tabler/icons-svelte';
+  import { IconSearch } from '$lib/icons/lucide';
   import { t } from '$lib/stores/i18n';
   import type { FileHit } from '$lib/stores/fileProvider';
 
@@ -195,7 +195,7 @@
   >
     <div class="search-container" role="presentation" onclick={(e)=>{e.stopPropagation();}}>
       <div class="search-input-wrapper">
-        <IconSearch size={24} stroke={2} class="search-icon" />
+        <IconSearch size={24} strokeWidth={1.8} class="search-icon" />
         <input
           bind:this={inputRef}
           data-focus-return
@@ -293,7 +293,7 @@
     gap: var(--hv-space-2);
     padding: var(--hv-space-2) 20px;
     color: var(--hv-shell-text-2);
-    font-size: var(--hv-text-body);
+    font-size: var(--hv-text-base);
   }
 
   .search-tag-filter select {
@@ -302,7 +302,7 @@
     border: 1px solid var(--hv-shell-border);
     border-radius: var(--hv-radius-control);
     padding: 0 var(--hv-space-3);
-    color: var(--hv-shell-text-1);
+    color: var(--hv-shell-text-strong);
     background: var(--hv-shell-card);
   }
 

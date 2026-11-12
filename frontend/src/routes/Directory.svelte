@@ -58,7 +58,7 @@
     IconInfoCircle,
     IconAlertTriangle,
     IconRefresh,
-  } from '@tabler/icons-svelte';
+  } from '$lib/icons/lucide';
 
   interface GroupRole {
     group: string;
@@ -814,13 +814,13 @@
 
 <PageLayout title={translate('directory.title')} data-testid="directory-page">
   {#snippet icon()}
-    <IconUsers stroke={1.8} />
+    <IconUsers strokeWidth={1.8} />
   {/snippet}
 
   {#snippet toolbarRight()}
     <div class="flex items-center gap-2">
       <Button variant="secondary" data-testid="directory-reload" disabled={busy !== null} onclick={refreshAll}>
-        <IconRefresh size={16} stroke={2} /> {translate('common.refresh')}
+        <IconRefresh size={16} strokeWidth={1.8} /> {translate('common.refresh')}
       </Button>
       <Button
         variant="primary"
@@ -833,7 +833,7 @@
         disabled={busy !== null}
         onclick={tab === 'directory' ? save : tab === 'oidc' ? saveOidc : saveSaml}
       >
-        <IconCheck size={16} stroke={2} /> {translate('common.save')}
+        <IconCheck size={16} strokeWidth={1.8} /> {translate('common.save')}
       </Button>
     </div>
   {/snippet}
@@ -916,11 +916,11 @@
           )}
         >
           {#if status.problem}
-            <IconAlertTriangle size={20} stroke={2} class="flex-none text-[var(--hv-warning)]" aria-hidden="true" />
+            <IconAlertTriangle size={20} strokeWidth={1.8} class="flex-none text-[var(--hv-warning)]" aria-hidden="true" />
           {:else if settings.enabled && status.usable}
-            <IconCheck size={20} stroke={2} class="flex-none text-[var(--hv-success)]" aria-hidden="true" />
+            <IconCheck size={20} strokeWidth={1.8} class="flex-none text-[var(--hv-success)]" aria-hidden="true" />
           {:else}
-            <IconInfoCircle size={20} stroke={2} class="flex-none text-[var(--hv-shell-text-2)]" aria-hidden="true" />
+            <IconInfoCircle size={20} strokeWidth={1.8} class="flex-none text-[var(--hv-shell-text-2)]" aria-hidden="true" />
           {/if}
           <div class="flex flex-col gap-1 min-w-0">
             {#if status.problem}
@@ -946,7 +946,7 @@
               class:text-[var(--hv-danger)]={breakGlass.local_admins === 0}
               class:text-[var(--hv-shell-text-2)]={breakGlass.local_admins > 0}
             >
-              <IconKey size={14} stroke={2} aria-hidden="true" />
+              <IconKey size={14} strokeWidth={1.8} aria-hidden="true" />
               {breakGlass.local_admins > 0
                 ? translate('directory.break_glass', { count: String(breakGlass.local_admins) })
                 : translate('directory.break_glass_none')}
@@ -1121,7 +1121,7 @@
                 disabled={testing !== null || busy !== null}
                 onclick={() => test('service')}
               >
-                <IconPlugConnected size={16} stroke={2} /> {translate('directory.test_service')}
+                <IconPlugConnected size={16} strokeWidth={1.8} /> {translate('directory.test_service')}
               </Button>
             </div>
 
@@ -1156,7 +1156,7 @@
                 disabled={testing !== null || busy !== null || testUsername.trim() === ''}
                 onclick={() => test('signin')}
               >
-                <IconKey size={16} stroke={2} /> {translate('directory.test_signin')}
+                <IconKey size={16} strokeWidth={1.8} /> {translate('directory.test_signin')}
               </Button>
             </div>
 
@@ -1344,13 +1344,13 @@
                       })}
                       data-testid="directory-mapping-remove-{index}"
                       onclick={() => removeMapping(index)}
-                    ><IconTrash size={16} stroke={1.8} /></button>
+                    ><IconTrash size={16} strokeWidth={1.8} /></button>
                   </div>
                 {/each}
               {/if}
               <div>
                 <Button variant="secondary" size="sm" data-testid="directory-add-mapping" onclick={addMapping}>
-                  <IconPlus size={15} stroke={2} /> {translate('directory.mapping_add')}
+                  <IconPlus size={15} strokeWidth={1.8} /> {translate('directory.mapping_add')}
                 </Button>
               </div>
               <p class={hint}>{translate('directory.mapping_hint')}</p>
@@ -1375,11 +1375,11 @@
           )}
         >
           {#if oidcStatus.problem}
-            <IconAlertTriangle size={20} stroke={2} class="flex-none text-[var(--hv-warning)]" aria-hidden="true" />
+            <IconAlertTriangle size={20} strokeWidth={1.8} class="flex-none text-[var(--hv-warning)]" aria-hidden="true" />
           {:else if oidc.enabled && oidcStatus.usable}
-            <IconCheck size={20} stroke={2} class="flex-none text-[var(--hv-success)]" aria-hidden="true" />
+            <IconCheck size={20} strokeWidth={1.8} class="flex-none text-[var(--hv-success)]" aria-hidden="true" />
           {:else}
-            <IconInfoCircle size={20} stroke={2} class="flex-none text-[var(--hv-shell-text-2)]" aria-hidden="true" />
+            <IconInfoCircle size={20} strokeWidth={1.8} class="flex-none text-[var(--hv-shell-text-2)]" aria-hidden="true" />
           {/if}
           <div class="flex flex-col gap-1 min-w-0">
             {#if oidcStatus.problem}
@@ -1405,7 +1405,7 @@
               class:text-[var(--hv-danger)]={oidcLocalAdmins === 0}
               class:text-[var(--hv-shell-text-2)]={oidcLocalAdmins > 0}
             >
-              <IconKey size={14} stroke={2} aria-hidden="true" />
+              <IconKey size={14} strokeWidth={1.8} aria-hidden="true" />
               {oidcLocalAdmins > 0
                 ? translate('oidc.break_glass', { count: String(oidcLocalAdmins) })
                 : translate('directory.break_glass_none')}
@@ -1619,7 +1619,7 @@
                 disabled={oidcTesting || busy !== null}
                 onclick={testOidc}
               >
-                <IconPlugConnected size={16} stroke={2} /> {translate('oidc.test_button')}
+                <IconPlugConnected size={16} strokeWidth={1.8} /> {translate('oidc.test_button')}
               </Button>
             </div>
             {#if oidcTestResult}
@@ -1696,13 +1696,13 @@
                       })}
                       data-testid="oidc-mapping-remove-{index}"
                       onclick={() => removeOidcMapping(index)}
-                    ><IconTrash size={16} stroke={1.8} /></button>
+                    ><IconTrash size={16} strokeWidth={1.8} /></button>
                   </div>
                 {/each}
               {/if}
               <div>
                 <Button variant="secondary" size="sm" data-testid="oidc-add-mapping" onclick={addOidcMapping}>
-                  <IconPlus size={15} stroke={2} /> {translate('directory.mapping_add')}
+                  <IconPlus size={15} strokeWidth={1.8} /> {translate('directory.mapping_add')}
                 </Button>
               </div>
               <p class={hint}>{translate('oidc.mapping_hint')}</p>
@@ -1728,9 +1728,9 @@
         >
           <span class="flex-none mt-0.5">
             {#if samlStatus.problem || (saml.enabled && !samlStatus.usable)}
-              <IconAlertTriangle size={18} stroke={1.8} />
+              <IconAlertTriangle size={18} strokeWidth={1.8} />
             {:else}
-              <IconInfoCircle size={18} stroke={1.8} />
+              <IconInfoCircle size={18} strokeWidth={1.8} />
             {/if}
           </span>
           <div class="flex flex-col gap-1 min-w-0">
@@ -1817,7 +1817,7 @@
               </Button>
               {#if samlImported}
                 <Button variant="primary" data-testid="saml-apply-import" onclick={applyImported}>
-                  <IconCheck size={15} stroke={2} /> {translate('saml.apply_import')}
+                  <IconCheck size={15} strokeWidth={1.8} /> {translate('saml.apply_import')}
                 </Button>
               {/if}
             </div>
@@ -1971,13 +1971,13 @@
                     data-testid={`saml-mapping-remove-${index}`}
                     onclick={() => removeSamlMapping(index)}
                   >
-                    <IconTrash size={16} stroke={1.8} />
+                    <IconTrash size={16} strokeWidth={1.8} />
                   </button>
                 </div>
               {/each}
               <div>
                 <Button variant="secondary" size="sm" data-testid="saml-add-mapping" onclick={addSamlMapping}>
-                  <IconPlus size={15} stroke={2} /> {translate('directory.mapping_add')}
+                  <IconPlus size={15} strokeWidth={1.8} /> {translate('directory.mapping_add')}
                 </Button>
               </div>
               <p class={hint}>{translate('saml.mapping_hint')}</p>
@@ -1993,7 +1993,7 @@
           <div class="flex flex-col gap-3">
             <div class="flex items-center gap-2 flex-wrap">
               <Button variant="secondary" data-testid="saml-show-metadata" onclick={loadSpMetadata}>
-                <IconRefresh size={15} stroke={1.8} /> {translate('saml.sp_metadata_button')}
+                <IconRefresh size={15} strokeWidth={1.8} /> {translate('saml.sp_metadata_button')}
               </Button>
               {#if samlSpMetadata}
                 <Button variant="secondary" data-testid="saml-copy-metadata" onclick={copySpMetadata}>
@@ -2095,7 +2095,7 @@
                     data-testid="directory-identity-forget-{identity.id}"
                     disabled={busy !== null}
                     onclick={() => forget(identity)}
-                  ><IconTrash size={16} stroke={1.8} /></button>
+                  ><IconTrash size={16} strokeWidth={1.8} /></button>
                 </div>
               </div>
             {/each}

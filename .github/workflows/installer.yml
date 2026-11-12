@@ -1,0 +1,39 @@
+# Installer, upgrade and rollback gates.
+#
+# The shell suites existed but were never wired into CI. They source
+# `installer/install.sh` with `HV_LIB_ONLY=1`, need no root and no network,
+# and together cover: process isolation, systemd units, sysctl, the signed
+# update engine, the data-directory choice and a full upgrade→failed
+# readiness→rollback sequence with the database.
+name: installer
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: installer-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  shell-suites:
+    name: Installer shell suites
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install shell dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends bash coreutils openssl python3 curl
+      - name: Syntax check
+        run: |
+          bash -n installer/install.sh
+          for f in installer/tests/*.test.sh; do bash -n "$f"; done
+      - name: Unit hardening (process isolation, units, sysctl)
+        run: bash installer/tests/unit-hardening.test.sh
+      - name: Signed update engine
+        run: bash installer/tests/update-engine.test.sh
+      - name: Data-directory selection
+        run: bash installer/tests/data-dir.test.sh
+      - name: Upgrade → failed readiness → rollback
+        run: bash installer/tests/upgrade-rollback.test.sh

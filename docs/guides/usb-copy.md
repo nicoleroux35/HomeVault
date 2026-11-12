@@ -11,7 +11,9 @@ devices. Creating, editing, deleting a rule and starting a copy are
 ## Where it lives
 
 - **Screen:** desktop app **USB Copy** → `frontend/src/routes/UsbCopy.svelte`
-  (Storage category).
+  (Storage category). It uses the standard v2 window shell — `PageLayout`
+  (title + icon + window controls), page actions in the `WindowToolbar`, and
+  `SectionCard` for the rules/devices panels — like every other app window.
 - **Backend:** `src/usb_copy.rs` (device discovery, profile validation, copy
   engine, checksum verification, eject) and `src/handlers/usb_copy.rs` (HTTP
   surface).

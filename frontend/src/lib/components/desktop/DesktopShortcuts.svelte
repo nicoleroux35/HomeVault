@@ -32,7 +32,7 @@
    */
   import { t } from '$lib/stores/i18n';
   import { shortcutsStore, type Shortcut } from '$lib/stores/shortcuts';
-  import { IconTrash } from '@tabler/icons-svelte';
+  import { IconTrash } from '$lib/icons/lucide';
 
   function openShortcut(s: Shortcut) {
     window.open(s.url, '_blank', 'noopener,noreferrer');
@@ -76,7 +76,7 @@
         aria-label={$t('shortcuts.remove', { title: s.title })}
         onclick={() => shortcutsStore.remove(s.id)}
       >
-        <IconTrash size={14} stroke={2} />
+        <IconTrash size={14} strokeWidth={1.8} />
       </button>
     </div>
   {/each}
@@ -85,13 +85,18 @@
 
 <style>
   .hv-shortcuts {
+    /* v2 desktop shortcuts: a right-hand column of white squircle tiles with
+       the label in ink under each one (the old white-on-wallpaper column only
+       worked over a dark photo). */
     position: absolute;
     top: 120px;
-    left: 20px;
+    right: 24px;
+    left: auto;
     z-index: 1;
     display: flex;
     flex-direction: column;
-    gap: 8px;
+    align-items: center;
+    gap: 16px;
     max-width: 120px;
   }
   .hv-shortcut {
@@ -99,23 +104,19 @@
     display: flex;
     align-items: center;
     gap: 8px;
-    padding: 6px 8px;
+    padding: 0;
     border: 0;
-    border-radius: var(--hv-radius-lg);
+    border-radius: 16px;
     background: transparent;
-    color: #fff;
+    color: var(--hv-shell-text-strong);
     cursor: pointer;
     text-align: left;
-  }
-  .hv-shortcut:hover,
-  .hv-shortcut:focus-within {
-    background: rgba(0, 0, 0, 0.35);
   }
   .hv-shortcut-open {
     display: flex;
     flex-direction: column;
     align-items: center;
-    gap: 4px;
+    gap: 6px;
     width: 100%;
     min-height: 44px;
     border: 0;
@@ -130,32 +131,42 @@
     border-radius: var(--hv-radius-md);
   }
   .hv-shortcut-icon {
-    width: 32px;
-    height: 32px;
-    border-radius: var(--hv-radius-md);
+    width: 60px;
+    height: 60px;
+    border-radius: 16px;
     object-fit: cover;
     background: #fff;
+    border: 1px solid var(--hv-shell-border);
+    box-shadow: var(--hv-shadow-md);
   }
   .hv-shortcut-fallback {
     display: grid;
     place-items: center;
-    width: 32px;
-    height: 32px;
-    border-radius: var(--hv-radius-md);
-    background: var(--hv-primary);
-    color: #fff;
+    width: 60px;
+    height: 60px;
+    border-radius: 16px;
+    background: #fff;
+    border: 1px solid var(--hv-shell-border);
+    box-shadow: var(--hv-shadow-md);
+    color: var(--hv-primary);
+    font-size: 20px;
     font-weight: 700;
   }
   .hv-shortcut-icon + .hv-shortcut-fallback {
     display: none;
   }
+  .hv-shortcut-open:hover .hv-shortcut-icon,
+  .hv-shortcut-open:hover .hv-shortcut-fallback {
+    box-shadow: var(--hv-shadow-lg);
+  }
   .hv-shortcut-label {
-    max-width: 100px;
+    max-width: 104px;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
-    font-size: 11px;
-    text-shadow: 0 1px 3px rgba(0, 0, 0, 0.8);
+    font-size: var(--hv-text-xs);
+    font-weight: var(--hv-font-weight-medium);
+    color: var(--hv-shell-text-2);
   }
   .hv-shortcut-remove {
     position: absolute;

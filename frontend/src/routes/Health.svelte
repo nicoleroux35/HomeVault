@@ -22,7 +22,7 @@
   import { onAppVisible } from '$lib/utils/autoRevalidate';
   import { Spinner, Button } from '$lib/components/theme';
   import { PageLayout, EmptyState } from '$lib/components/app';
-  import { IconHeart, IconActivity, IconHeartbeat } from '@tabler/icons-svelte';
+  import { IconHeart, IconActivity, IconHeartbeat } from '$lib/icons/lucide';
   import SecurityAdvisorCard from '$lib/components/health/SecurityAdvisorCard.svelte';
   import { isAdmin } from '$lib/stores/auth';
 
@@ -225,7 +225,7 @@
   data-testid="health-page"
 >
   {#snippet icon()}
-    <IconHeart stroke={1.8} />
+    <IconHeart strokeWidth={1.8} />
   {/snippet}
 
   <!-- Security Advisor (QW-10): admin-only, because the report names accounts,
@@ -248,7 +248,7 @@
       data-testid="health-error"
     >
       {#snippet iconSnippet()}
-        <IconHeartbeat size={26} stroke={1.8} />
+        <IconHeartbeat size={26} strokeWidth={1.8} />
       {/snippet}
       {#snippet action()}
         <!-- Explicit retry (an error-recovery action, allowed under the
@@ -270,7 +270,7 @@
       data-testid="health-empty"
     >
       {#snippet iconSnippet()}
-        <IconHeartbeat size={26} stroke={1.8} />
+        <IconHeartbeat size={26} strokeWidth={1.8} />
       {/snippet}
     </EmptyState>
   {:else}
@@ -279,7 +279,7 @@
          It is a real reading, not decoration, so it belongs to the page body. -->
     <div
       data-testid="health-overall"
-      class="flex items-center gap-2.5 mb-5 px-4 py-3 rounded-xl border border-border bg-card shadow-[var(--hv-shell-shadow-card)]"
+      class="flex items-center gap-2.5 mb-5 px-4 py-3 rounded-2xl border border-border bg-card shadow-[var(--hv-shell-shadow-card)]"
     >
       <span
         class="h-2.5 w-2.5 rounded-full flex-none"
@@ -304,11 +304,11 @@
       {#each checks as check}
         <article
           data-testid="health-card"
-          class="rounded-xl bg-card border border-border shadow-[var(--hv-shell-shadow-card)] p-5 transition-shadow hover:shadow-md"
+          class="rounded-2xl bg-card border border-border shadow-[var(--hv-shell-shadow-card)] p-5 transition-shadow hover:shadow-md"
         >
           <div class="flex items-center gap-3 mb-4">
             <span
-              class="grid place-items-center w-11 h-11 rounded-xl flex-none"
+              class="grid place-items-center w-8 h-8 rounded-[9px] flex-none"
               style="background: {getStatusColor(check.status)}15; color: {getStatusColor(check.status)}"
             >
               <IconActivity size={20} />
@@ -329,7 +329,7 @@
 
     <div
       data-testid="health-disk-health"
-      class="mt-5 rounded-xl bg-card border border-border shadow-[var(--hv-shell-shadow-card)] p-5"
+      class="mt-5 rounded-2xl bg-card border border-border shadow-[var(--hv-shell-shadow-card)] p-5"
     >
       <div class="flex items-center justify-between gap-3 flex-wrap mb-3">
         <div>
@@ -371,7 +371,7 @@
 
     <div
       data-testid="health-prediction"
-      class="mt-5 rounded-xl bg-card border border-border shadow-[var(--hv-shell-shadow-card)] p-5"
+      class="mt-5 rounded-2xl bg-card border border-border shadow-[var(--hv-shell-shadow-card)] p-5"
     >
       <div class="mb-3">
         <h2 class="m-0 text-c-md font-semibold text-foreground">{$t('health.disk_health_prediction_title')}</h2>
@@ -409,7 +409,7 @@
 
     <div
       data-testid="health-schedulers"
-      class="mt-5 rounded-xl bg-card border border-border shadow-[var(--hv-shell-shadow-card)] p-5"
+      class="mt-5 rounded-2xl bg-card border border-border shadow-[var(--hv-shell-shadow-card)] p-5"
     >
       <div class="mb-3">
         <h2 class="m-0 text-c-md font-semibold text-foreground">{$t('health.schedulers_title')}</h2>

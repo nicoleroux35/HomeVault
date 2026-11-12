@@ -25,7 +25,7 @@
   import { SectionCard, ConfirmDialog } from '$lib/components/app';
   import { createConfirmState } from '$lib/utils/confirmDialog.svelte';
   import { cn } from '$lib/utils.js';
-  import { IconDeviceDesktop, IconTrash, IconShieldCheckered } from '@tabler/icons-svelte';
+  import { IconDeviceDesktop, IconTrash, IconShieldCheckered } from '$lib/icons/lucide';
 
   interface Device {
     id: string;
@@ -106,7 +106,7 @@
 <SectionCard data-testid="account-card" class="col-span-2 w-full @max-[880px]:col-span-1">
   {#snippet titleSnippet()}
     <div data-testid="account-card-title" class="flex items-center gap-2 text-c-card-title font-semibold text-[var(--hv-shell-text-strong)]">
-      <IconShieldCheckered size={17} stroke={2} class="text-[var(--hv-primary)]" /> {$t('account.section_devices')}
+      <IconShieldCheckered size={17} strokeWidth={1.8} class="text-[var(--hv-primary)]" /> {$t('account.section_devices')}
     </div>
   {/snippet}
 
@@ -126,7 +126,7 @@
       {#each devices as device (device.id)}
         <li data-testid="device-row" class="flex items-center gap-3 px-3 py-2.5 rounded-xl bg-[var(--hv-shell-border-soft)] border border-[var(--hv-shell-border)]">
           <span class="flex-none grid place-items-center w-11 h-11 rounded-lg bg-[var(--hv-shell-border)] text-[var(--hv-shell-text-2)]">
-            <IconDeviceDesktop size={20} stroke={1.9} />
+            <IconDeviceDesktop size={20} strokeWidth={1.8} />
           </span>
           <div class="flex-1 min-w-0">
             <strong class="block text-sm text-[var(--hv-shell-text-strong)] truncate">{device.label}</strong>
@@ -145,7 +145,7 @@
             disabled={busy}
             aria-label={$t('account.devices_revoke_title')}
           >
-            <IconTrash size={16} stroke={2} />
+            <IconTrash size={16} strokeWidth={1.8} />
           </button>
         </li>
       {/each}

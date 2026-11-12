@@ -28,20 +28,20 @@
  * Every stop is a background for WHITE initials, so each must clear
  * WCAG 1.4.3 (≥4.5:1 against #ffffff):
  *
- *   #1E62AE 6.15 · #3275C4 4.69 · #1E7E34 5.14
- *   #B45309 5.02 · #0e7490 5.36 · #7C3AED 5.70
+ *   #2E72C9 4.81 · #2560AC 6.16 · #167A4D 5.35
+ *   #96601A 5.27 · #0E7F92 4.70 · #6A45D6 6.11
  *
  * The retired stops #4B8AD4 (3.57:1) and #8b5cf6 (4.23:1) failed that
  * floor. Never add a stop below 4.5:1 with white — the regression guard is
  * `tests/e2e/groups/groups.spec.ts` → 16.1.
  */
 export const AVATAR_COLORS = [
-  '#1E62AE',
-  '#3275C4',
-  '#1E7E34',
-  '#B45309',
-  '#0e7490',
-  '#7C3AED',
+  '#2E72C9',
+  '#2560AC',
+  '#167A4D',
+  '#96601A',
+  '#0E7F92',
+  '#6A45D6',
 ] as const;
 
 /** Deterministic palette pick: the same name yields the same colour in both apps. */

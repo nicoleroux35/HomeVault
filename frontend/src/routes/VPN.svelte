@@ -26,7 +26,7 @@
   import { createConfirmState } from '$lib/utils/confirmDialog.svelte';
   import { cn } from '$lib/utils.js';
   import WindowHeader from '$lib/components/desktop/WindowHeader.svelte';
-  import { IconShield, IconPlus, IconPower, IconDeviceMobile, IconTrash, IconUpload, IconDownload, IconLoader, IconCheck, IconCopy } from '@tabler/icons-svelte';
+  import { IconShield, IconPlus, IconPower, IconDeviceMobile, IconTrash, IconUpload, IconDownload, IconLoader, IconCheck, IconCopy } from '$lib/icons/lucide';
 
   // ---------------------------------------------------------------------------
   // Types
@@ -660,7 +660,7 @@
   bind:activeTab
 >
   {#snippet icon()}
-    <IconShield stroke={1.8} />
+    <IconShield strokeWidth={1.8} />
   {/snippet}
   <!-- Page-level actions: a WindowToolbar row under the header, never inside
        it (the header bar is icon + title + window controls only). -->
@@ -696,7 +696,7 @@
     </div>
   {:else if !capabilities?.wireguard && !capabilities?.openvpn}
     <EmptyState data-testid="vpn-empty-title" title={$t('vpn.no_support_title')} description={$t('vpn.no_support_desc')}>
-      {#snippet iconSnippet()}<IconShield size={32} stroke={1.8} />{/snippet}
+      {#snippet iconSnippet()}<IconShield size={32} strokeWidth={1.8} />{/snippet}
     </EmptyState>
   {:else}
     <div class="grid grid-cols-2 @min-[880px]:grid-cols-4 gap-3 mb-5">
@@ -718,7 +718,7 @@
       <!-- Public endpoint: manual override, then DDNS, then the detected IP. -->
       <div
         data-testid="vpn-endpoint-card"
-        class="px-4 py-3 rounded-xl bg-[var(--hv-shell-card)] border border-[var(--hv-shell-border)] mb-4"
+        class="px-4 py-3 rounded-lg bg-card border border-border mb-4"
       >
         <div class="flex items-center gap-3 flex-wrap">
           <span class={detailLabel}>{$t('vpn.server_endpoint')}</span>
@@ -747,7 +747,7 @@
       </div>
 
       {#if wgServer}
-        <div class="flex items-center gap-3 flex-wrap px-4 py-3 rounded-xl bg-[var(--hv-shell-card)] border border-[var(--hv-shell-border)] mb-4">
+        <div class="flex items-center gap-3 flex-wrap px-4 py-3 rounded-lg bg-card border border-border mb-4">
           <span class="flex items-center gap-2 text-sm font-semibold text-[var(--hv-shell-text-strong)]">
             <span class={cn('w-2.5 h-2.5 rounded-full', wgServer.running ? 'bg-[var(--hv-success)]' : 'bg-[var(--hv-shell-text-3)]')}></span>
             {wgServer.running ? $t('vpn.server_running') : $t('vpn.server_stopped')}
@@ -760,16 +760,16 @@
 
       {#if wgPeers.length === 0}
         <EmptyState data-testid="vpn-empty-title" title={$t('vpn.no_wg_title')} description={$t('vpn.no_wg_desc')}>
-          {#snippet iconSnippet()}<IconDeviceMobile size={32} stroke={1.8} />{/snippet}
+          {#snippet iconSnippet()}<IconDeviceMobile size={32} strokeWidth={1.8} />{/snippet}
           {#snippet action()}<Button variant="primary" data-testid="vpn-btn" onclick={() => { showWireGuardModal = true; }}><IconPlus size={16} /> <span>{$t('vpn.new_wireguard')}</span></Button>{/snippet}
         </EmptyState>
       {:else}
         <div class="grid gap-4 [grid-template-columns:repeat(auto-fill,minmax(280px,1fr))]">
           {#each wgPeers as peer (peer.id)}
-            <div data-testid="vpn-card" class="rounded-2xl bg-[var(--hv-shell-card)] border border-[var(--hv-shell-border)] shadow-[var(--hv-shell-shadow-card)] overflow-hidden">
+            <div data-testid="vpn-card" class="rounded-2xl bg-card border border-border shadow-[var(--hv-shell-shadow-card)] overflow-hidden">
               <div class="flex items-center justify-between gap-3 px-4 pt-4">
                 <div class="flex items-center gap-3 min-w-0">
-                  <span class="grid place-items-center w-11 h-11 rounded-xl flex-none bg-[var(--hv-primary-light)] text-[var(--hv-primary)]"><IconDeviceMobile size={20} /></span>
+                  <span class="grid place-items-center w-8 h-8 rounded-[9px] flex-none bg-[var(--hv-primary-light)] text-[var(--hv-primary)]"><IconDeviceMobile size={20} /></span>
                   <div class="min-w-0">
                     <div data-testid="vpn-card-name" class="text-sm font-bold text-[var(--hv-shell-text-strong)] truncate">{peer.name}</div>
                     <div class="text-xs text-[var(--hv-shell-text-2)]">WireGuard</div>
@@ -796,16 +796,16 @@
     {:else if activeTab === 'wireguard-client'}
       {#if wgClients.length === 0}
         <EmptyState data-testid="vpn-client-empty-title" title={$t('vpn.no_wg_client_title')} description={$t('vpn.no_wg_client_desc')}>
-          {#snippet iconSnippet()}<IconShield size={32} stroke={1.8} />{/snippet}
+          {#snippet iconSnippet()}<IconShield size={32} strokeWidth={1.8} />{/snippet}
           {#snippet action()}<Button variant="primary" data-testid="vpn-import-client-btn" onclick={() => { showWgClientModal = true; }}><IconPlus size={16} /> <span>{$t('vpn.new_wg_client')}</span></Button>{/snippet}
         </EmptyState>
       {:else}
         <div class="grid gap-4 [grid-template-columns:repeat(auto-fill,minmax(300px,1fr))]">
           {#each wgClients as client (client.id)}
-            <div data-testid="vpn-client-card" class="rounded-2xl bg-[var(--hv-shell-card)] border border-[var(--hv-shell-border)] shadow-[var(--hv-shell-shadow-card)] overflow-hidden">
+            <div data-testid="vpn-client-card" class="rounded-2xl bg-card border border-border shadow-[var(--hv-shell-shadow-card)] overflow-hidden">
               <div class="flex items-center justify-between gap-3 px-4 pt-4">
                 <div class="flex items-center gap-3 min-w-0">
-                  <span class="grid place-items-center w-11 h-11 rounded-xl flex-none bg-[var(--hv-primary-light)] text-[var(--hv-primary)]"><IconShield size={20} /></span>
+                  <span class="grid place-items-center w-8 h-8 rounded-[9px] flex-none bg-[var(--hv-primary-light)] text-[var(--hv-primary)]"><IconShield size={20} /></span>
                   <div class="min-w-0">
                     <div data-testid="vpn-client-name" class="text-sm font-bold text-[var(--hv-shell-text-strong)] truncate">{client.name}</div>
                     <div class="text-xs text-[var(--hv-shell-text-2)]">WireGuard · {client.interface}</div>
@@ -844,16 +844,16 @@
     {:else if activeTab === 'openvpn'}
       {#if openvpnConnections.length === 0}
         <EmptyState data-testid="vpn-empty-title" title={$t('vpn.no_ovpn_title')} description={$t('vpn.no_ovpn_desc')}>
-          {#snippet iconSnippet()}<IconShield size={32} stroke={1.8} />{/snippet}
+          {#snippet iconSnippet()}<IconShield size={32} strokeWidth={1.8} />{/snippet}
           {#snippet action()}<Button variant="primary" data-testid="vpn-btn" onclick={() => { showOpenVPNModal = true; }}><IconPlus size={16} /> <span>{$t('vpn.new_connection')}</span></Button>{/snippet}
         </EmptyState>
       {:else}
         <div class="grid gap-4 [grid-template-columns:repeat(auto-fill,minmax(280px,1fr))]">
           {#each openvpnConnections as conn}
-            <div data-testid="vpn-card" class="rounded-2xl bg-[var(--hv-shell-card)] border border-[var(--hv-shell-border)] shadow-[var(--hv-shell-shadow-card)] overflow-hidden">
+            <div data-testid="vpn-card" class="rounded-2xl bg-card border border-border shadow-[var(--hv-shell-shadow-card)] overflow-hidden">
               <div class="flex items-center justify-between gap-3 px-4 pt-4">
                 <div class="flex items-center gap-3 min-w-0">
-                  <span class="grid place-items-center w-11 h-11 rounded-xl flex-none bg-[var(--hv-warning-bg)] text-[var(--hv-warning)]"><IconShield size={20} /></span>
+                  <span class="grid place-items-center w-8 h-8 rounded-[9px] flex-none bg-[var(--hv-warning-bg)] text-[var(--hv-warning)]"><IconShield size={20} /></span>
                   <div class="min-w-0">
                     <div data-testid="vpn-card-name" class="text-sm font-bold text-[var(--hv-shell-text-strong)] truncate">{conn.name}</div>
                     <div class="text-xs text-[var(--hv-shell-text-2)]">OpenVPN</div>

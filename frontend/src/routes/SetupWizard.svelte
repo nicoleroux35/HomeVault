@@ -23,7 +23,7 @@
   import { api } from '$lib/services/api';
   import { onMount, onDestroy, tick } from 'svelte';
   import { authStore } from '$lib/stores/auth';
-  import { IconAlertTriangle, IconCheck, IconChevronLeft, IconChevronRight, IconEye, IconEyeOff, IconLoader, IconLock, IconRefresh, IconShield, IconShieldCheckered, IconUser, IconUserCheck } from '@tabler/icons-svelte';
+  import { IconAlertTriangle, IconCheck, IconChevronLeft, IconChevronRight, IconEye, IconEyeOff, IconLoader, IconLock, IconRefresh, IconShield, IconShieldCheck, IconShieldCheckered, IconUser, IconUserCheck } from '$lib/icons/lucide';
   import { translations, languageStore } from '$lib/stores/i18n';
   import { Button, Alert, Spinner, Switch } from '$lib/components/theme';
   import { cn } from '$lib/utils.js';
@@ -919,7 +919,7 @@
                           : 'border-[1.5px] border-[var(--hv-login-field-border)] bg-[var(--hv-wizard-track)] text-[var(--hv-login-muted)]',
                     )}
                   >
-                    {#if i < currentStep}<IconCheck size={13} stroke={3} />{:else}<span class="text-xs font-semibold">{i + 1}</span>{/if}
+                    {#if i < currentStep}<IconCheck size={13} strokeWidth={3} />{:else}<span class="text-xs font-semibold">{i + 1}</span>{/if}
                   </div>
                   <span
                     data-testid="setup-stepper-label"
@@ -986,9 +986,9 @@
               <p class="hv-welcome-text m-0 mt-1 text-sm leading-relaxed text-[var(--hv-wizard-text-body)]">{t('setup.welcome.message2')}</p>
               <div class="mt-8 grid gap-4 text-left">
                 {#each welcomeFeatures as feature}
-                  <div class="hv-feature flex items-center gap-4 rounded-xl border border-[var(--hv-login-field-border)] bg-white p-4">
-                    <div class="hv-welcome-icon grid h-10 w-10 shrink-0 place-items-center rounded-xl" style="background: color-mix(in oklch, {feature.color} 8%, white); color: {feature.color}">
-                      <svelte:component this={feature.icon} size={20} stroke={1.8} />
+                  <div class="hv-feature flex items-center gap-4 rounded-lg border border-[var(--hv-login-field-border)] bg-white p-4">
+                    <div class="hv-welcome-icon grid h-7 w-7 shrink-0 place-items-center rounded-badge" style="background: color-mix(in oklch, {feature.color} 8%, white); color: {feature.color}">
+                      <svelte:component this={feature.icon} size={16} strokeWidth={1.8} />
                     </div>
                     <div class="min-w-0 flex-1">
                       <p class="hv-feature-title m-0 text-sm font-semibold leading-snug text-[var(--hv-wizard-text-title)]">{feature.title}</p>
@@ -1014,19 +1014,19 @@
                   {#if avatarPreview}
                     <img data-testid="setup-avatar-preview" class="h-full w-full object-cover" src={avatarPreview} alt={t('setup.avatar.preview_alt')} width="96" height="96" />
                   {:else}
-                    <div data-testid="setup-avatar-placeholder" class="grid h-full w-full place-items-center bg-[var(--hv-login-field-bg)] text-[var(--hv-wizard-text-body)]" aria-hidden="true"><IconUser size={36} stroke={2} /></div>
+                    <div data-testid="setup-avatar-placeholder" class="grid h-full w-full place-items-center bg-[var(--hv-login-field-bg)] text-[var(--hv-wizard-text-body)]" aria-hidden="true"><IconUser size={36} strokeWidth={1.8} /></div>
                   {/if}
                   {#if avatarLoading}
-                    <div class="absolute inset-0 grid place-items-center rounded-2xl bg-black/30 text-white"><IconLoader size={20} stroke={2} /></div>
+                    <div class="absolute inset-0 grid place-items-center rounded-2xl bg-[var(--hv-modal-backdrop)] text-white"><IconLoader size={20} strokeWidth={1.8} /></div>
                   {/if}
                 </div>
-                <Button variant="secondary" data-testid="setup-avatar-regen" onclick={regenerateAvatar} disabled={avatarLoading} class="h-9! border-[var(--hv-login-accent-soft-border)]! text-[var(--hv-login-accent)]! hover:bg-[var(--hv-login-accent-soft)]!"><IconRefresh size={16} stroke={2} /> {t('setup.avatar.regenerate')}</Button>
+                <Button variant="secondary" data-testid="setup-avatar-regen" onclick={regenerateAvatar} disabled={avatarLoading} class="h-9! border-[var(--hv-login-accent-soft-border)]! text-[var(--hv-login-accent)]! hover:bg-[var(--hv-login-accent-soft)]!"><IconRefresh size={16} strokeWidth={1.8} /> {t('setup.avatar.regenerate')}</Button>
               </div>
 
               <div class="mt-6">
                 <label for="username" class="mb-1.5 block text-c-label font-medium text-[var(--hv-wizard-text-label)]">{t('setup.username.label')} <span class="text-[var(--hv-wizard-error)]">*</span></label>
                 <div class={cn(fieldWrapperClass, username && !usernameFormatValid ? 'border-[var(--hv-wizard-error)]!' : usernameFormatValid ? 'border-[var(--hv-login-accent)]!' : '')}>
-                  <IconUser size={19} stroke={1.7} class="shrink-0 text-[var(--hv-login-muted)]" />
+                  <IconUser size={19} strokeWidth={1.8} class="shrink-0 text-[var(--hv-login-muted)]" />
                   <input id="username" type="text" class={textInputClass} bind:value={username} oninput={() => { usernameAvailable = null; }} onblur={() => { validateUsername(); suggestAvatarFromUsername(); if (usernameFormatValid) checkUsernameAvailability(); }} placeholder={t('setup.username.placeholder')} autocomplete="username" />
                 </div>
                 {#if usernameError}<p class="hv-field-error m-0 mt-1 text-xs text-[var(--hv-wizard-error)]">{usernameError}</p>{/if}
@@ -1053,7 +1053,7 @@
               <div class="mt-4">
                 <label for="fullname" class="mb-1.5 block text-c-label font-medium text-[var(--hv-wizard-text-label)]">{t('setup.fullname.label')} <span class="font-normal text-[var(--hv-login-muted)]">({t('setup.optional')})</span></label>
                 <div class={fieldWrapperClass}>
-                  <IconUserCheck size={19} stroke={1.7} class="shrink-0 text-[var(--hv-login-muted)]" />
+                  <IconUserCheck size={19} strokeWidth={1.8} class="shrink-0 text-[var(--hv-login-muted)]" />
                   <input id="fullname" type="text" class={textInputClass} bind:value={fullname} placeholder={t('setup.fullname.placeholder')} autocomplete="name" />
                 </div>
               </div>
@@ -1070,10 +1070,10 @@
               <div class="mt-6">
                 <label for="password" class="mb-1.5 block text-c-label font-medium text-[var(--hv-wizard-text-label)]">{t('setup.password.label')} <span class="text-[var(--hv-wizard-error)]">*</span></label>
                 <div class={cn(fieldWrapperClass, passwordError && 'border-[var(--hv-wizard-error)]!')}>
-                  <IconLock size={19} stroke={1.7} class="shrink-0 text-[var(--hv-login-muted)]" />
+                  <IconLock size={19} strokeWidth={1.8} class="shrink-0 text-[var(--hv-login-muted)]" />
                   <input id="password" type={showPassword ? 'text' : 'password'} class={textInputClass} bind:value={password} onblur={validatePassword} placeholder={t('setup.password.placeholder')} autocomplete="new-password" />
                   <button type="button" class="grid h-8 w-8 flex-none cursor-pointer place-items-center rounded-full border-none bg-transparent text-[var(--hv-login-muted)] hover:text-[var(--hv-wizard-text-title)] hv-ic" aria-label={showPassword ? t('login.hide_password') : t('login.show_password')} onclick={() => showPassword = !showPassword}>
-                    {#if showPassword}<IconEyeOff size={20} stroke={1.7}/>{:else}<IconEye size={20} stroke={1.7}/>{/if}
+                    {#if showPassword}<IconEyeOff size={20} strokeWidth={1.8}/>{:else}<IconEye size={20} strokeWidth={1.8}/>{/if}
                   </button>
                 </div>
                 {#if passwordError}<p class="hv-field-error m-0 mt-1 text-xs text-[var(--hv-wizard-error)]">{passwordError}</p>{/if}
@@ -1105,10 +1105,10 @@
               <div class="mt-4">
                 <label for="confirm-password" class="mb-1.5 block text-c-label font-medium text-[var(--hv-wizard-text-label)]">{t('setup.confirm_password.label')} <span class="text-[var(--hv-wizard-error)]">*</span></label>
                 <div class={cn(fieldWrapperClass, confirmPassword && confirmPassword !== password ? 'border-[var(--hv-wizard-error)]!' : confirmPassword && confirmPassword === password ? 'border-[var(--hv-wizard-success)]!' : '')}>
-                  <IconLock size={19} stroke={1.7} class="shrink-0 text-[var(--hv-login-muted)]" />
+                  <IconLock size={19} strokeWidth={1.8} class="shrink-0 text-[var(--hv-login-muted)]" />
                   <input id="confirm-password" type={showConfirmPassword ? 'text' : 'password'} class={textInputClass} bind:value={confirmPassword} onblur={validateConfirmPassword} placeholder={t('setup.confirm_password.placeholder')} autocomplete="new-password" />
                   <button type="button" class="grid h-8 w-8 flex-none cursor-pointer place-items-center rounded-full border-none bg-transparent text-[var(--hv-login-muted)] hover:text-[var(--hv-wizard-text-title)] hv-ic" aria-label={showConfirmPassword ? t('login.hide_password') : t('login.show_password')} onclick={() => showConfirmPassword = !showConfirmPassword}>
-                    {#if showConfirmPassword}<IconEyeOff size={20} stroke={1.7}/>{:else}<IconEye size={20} stroke={1.7}/>{/if}
+                    {#if showConfirmPassword}<IconEyeOff size={20} strokeWidth={1.8}/>{:else}<IconEye size={20} strokeWidth={1.8}/>{/if}
                   </button>
                 </div>
                 {#if confirmPasswordError}<p class="hv-field-error m-0 mt-1 text-xs text-[var(--hv-wizard-error)]">{confirmPasswordError}</p>{/if}
@@ -1118,7 +1118,7 @@
               <!-- Optional two-factor (TOTP) enrollment: the toggle reveals the
                    QR code. The secret is generated client-side; the 6-digit code
                    is validated server-side before the account is created. -->
-              <div class="mt-6 rounded-2xl border border-[var(--hv-login-field-border)] bg-white p-5">
+              <div class="mt-6 rounded-lg border border-[var(--hv-login-field-border)] bg-white p-5">
                 <div class="flex items-center justify-between gap-3">
                   <div class="min-w-0">
                     <p class="hv-2fa-optional-title m-0 text-sm font-semibold text-[var(--hv-wizard-text-title)]">{t('setup.2fa.optional_title')}</p>
@@ -1143,7 +1143,7 @@
                       <div class="mt-3">
                         <label for="setup-totp-code" class="mb-1.5 block text-c-label font-semibold text-[var(--hv-wizard-text-label)]">{t('setup.2fa.code')}</label>
                         <div class={cn(fieldWrapperClass, totpError && 'border-[var(--hv-wizard-error)]!')}>
-                          <IconShieldCheckered size={19} stroke={1.7} class="shrink-0 text-[var(--hv-login-muted)]" />
+                          <IconShieldCheckered size={19} strokeWidth={1.8} class="shrink-0 text-[var(--hv-login-muted)]" />
                           <input id="setup-totp-code" data-testid="setup-totp-code" type="text" inputmode="numeric" maxlength="6" class={textInputClass} bind:value={totpCode} oninput={() => { totpVerified = false; totpError = ''; }} placeholder="000000" autocomplete="one-time-code" disabled={totpVerifying} />
                         </div>
                         {#if totpError}<p class="hv-field-error hv-2fa-verify-error m-0 mt-1 text-xs text-[var(--hv-wizard-error)]">{totpError}</p>{/if}
@@ -1155,14 +1155,14 @@
                         {/if}
                         <div class="mt-2">
                           <Button variant="primary" data-testid="setup-totp-verify" class={ctaClass} fullWidth onclick={verifyTotpCode} disabled={totpVerifying || totpCode.length !== 6}>
-                            {#if totpVerifying}<IconLoader size={20} stroke={2} />{/if}
+                            {#if totpVerifying}<IconLoader size={20} strokeWidth={1.8} />{/if}
                             {t('setup.2fa.verify')}
                           </Button>
                         </div>
                       </div>
 
                       <div data-testid="setup-totp-apps" class="hv-2fa-apps-note mt-4 flex items-start gap-2.5 rounded-md bg-[var(--hv-login-accent-soft)] p-3">
-                        <IconShield size={18} stroke={1.8} class="mt-0.5 shrink-0 text-[var(--hv-login-accent-deep)]" />
+                        <IconShield size={18} strokeWidth={1.8} class="mt-0.5 shrink-0 text-[var(--hv-login-accent-deep)]" />
                         <div class="min-w-0">
                           <p class="m-0 text-xs leading-relaxed text-[var(--hv-wizard-text-body)]">{t('setup.2fa.compatible')}</p>
                           <p class="m-0 mt-1 text-xs leading-relaxed text-[var(--hv-wizard-text-body)]">{t('setup.2fa.platforms')}</p>
@@ -1183,20 +1183,20 @@
               <p data-testid="setup-step-desc" class="m-0 mt-2 text-sm text-[var(--hv-wizard-text-body)]">{t('setup.step3.description')}</p>
 
               <!-- Summary card -->
-              <div class="mt-6 overflow-hidden rounded-2xl border border-[var(--hv-login-field-border)] bg-white">
+              <div class="mt-6 overflow-hidden rounded-lg border border-[var(--hv-login-field-border)] bg-white">
                 <div class="flex items-center gap-4 border-b border-[var(--hv-login-hairline)] px-6 py-5">
                   <div class="h-16 w-16 shrink-0 overflow-hidden rounded-2xl border-2 border-[var(--hv-login-field-border)]">
                     {#if avatarPreview}
                       <img class="h-full w-full object-cover" src={avatarPreview} alt={t('setup.avatar.preview_alt')} width="64" height="64" />
                     {:else}
-                      <div class="grid h-full w-full place-items-center bg-[var(--hv-login-field-bg)] text-[var(--hv-wizard-text-body)]" aria-hidden="true"><IconUser size={28} stroke={2} /></div>
+                      <div class="grid h-full w-full place-items-center bg-[var(--hv-login-field-bg)] text-[var(--hv-wizard-text-body)]" aria-hidden="true"><IconUser size={28} strokeWidth={1.8} /></div>
                     {/if}
                   </div>
                   <div class="min-w-0">
                     <p class="hv-summary-value m-0 text-lg font-bold text-[var(--hv-wizard-text-heading)]!">{username || '—'}</p>
                     {#if fullname}<p class="hv-summary-item m-0 mt-0.5 truncate text-sm text-[var(--hv-wizard-text-body)]">{fullname}</p>{/if}
                     <span class="mt-1.5 inline-flex items-center gap-1 rounded-full bg-[var(--hv-login-accent-soft)] px-2 py-0.5 text-xs font-medium text-[var(--hv-login-accent-deep)]">
-                      <svg viewBox="0 0 12 12" class="h-3 w-3" fill="currentColor"><path d="M6 1l1.5 3 3.5.5-2.5 2.5.6 3.5L6 9l-3.1 1.5.6-3.5L1 4.5l3.5-.5z"/></svg>
+                      <IconShieldCheck size={12} strokeWidth={1.8} aria-hidden="true" />
                       {t('setup.verification.admin_badge')}
                     </span>
                   </div>
@@ -1241,9 +1241,9 @@
                     </Alert>
                     <Button variant="primary" class={cn(ctaClass, 'mt-3')} fullWidth onclick={startRecoveryCode} data-testid="setup-recovery-retry">{t('setup.recovery_retry')}</Button>
                   {:else}
-                    <div class="hv-recovery-box rounded-2xl border-2 border-[var(--hv-wizard-recovery-border)] bg-[var(--hv-wizard-recovery-bg)] p-5">
+                    <div class="hv-recovery-box rounded-lg border-2 border-[var(--hv-wizard-recovery-border)] bg-[var(--hv-wizard-recovery-bg)] p-5">
                       <div class="flex items-start gap-2">
-                        <IconAlertTriangle size={20} stroke={2} class="mt-0.5 shrink-0 text-[var(--hv-wizard-recovery-desc)]" />
+                        <IconAlertTriangle size={20} strokeWidth={1.8} class="mt-0.5 shrink-0 text-[var(--hv-wizard-recovery-desc)]" />
                         <div>
                           <p class="m-0 text-sm font-semibold text-[var(--hv-wizard-recovery-title)]">{t('setup.recovery_title')}</p>
                           <p class="m-0 mt-0.5 text-xs leading-relaxed text-[var(--hv-wizard-recovery-desc)]">{t('setup.recovery_intro')}</p>
@@ -1255,7 +1255,7 @@
                       </div>
                       <p class="m-0 mt-2 text-xs leading-relaxed text-[var(--hv-wizard-recovery-desc)]">{t('setup.recovery_warning')}</p>
                       <label class="mt-3 flex cursor-pointer items-center gap-2.5 text-c-label font-medium text-[var(--hv-wizard-recovery-title)]">
-                        <input type="checkbox" class="h-4 w-4 accent-[var(--hv-warning)]" bind:checked={recoveryAcknowledged} />
+                        <input type="checkbox" class="h-4 w-4 accent-[var(--hv-primary)]" bind:checked={recoveryAcknowledged} />
                         <span>{t('setup.recovery_ack')}</span>
                       </label>
                       <Button variant="primary" class={cn(ctaClass, 'mt-4')} fullWidth onclick={continueFromRecovery} disabled={!recoveryAcknowledged}>{t('setup.recovery_continue')}</Button>
@@ -1263,7 +1263,7 @@
                   {/if}
                 </div>
               {:else if showTwoFactorSummary}
-                <div class="hv-2fa-box mt-5 rounded-2xl border border-[var(--hv-login-field-border)] bg-white p-5">
+                <div class="hv-2fa-box mt-5 rounded-lg border border-[var(--hv-login-field-border)] bg-white p-5">
                   {#if twoFactorUnavailable}
                     <Alert variant="warning" title={t('setup.2fa.unavailable_title')}><p class="m-0">{t('setup.2fa.unavailable_message')}</p></Alert>
                     <Button variant="primary" class={cn(ctaClass, 'mt-3')} fullWidth onclick={finishSetup}>{t('setup.2fa.finish')}</Button>
@@ -1301,17 +1301,17 @@
         <!-- Footer nav -->
         <div data-testid="setup-footer" class="flex items-center justify-between gap-2.5 border-t border-[var(--hv-login-hairline)] px-8 py-4 @max-[480px]:px-6">
           <Button variant="secondary" class={ghostPrevClass} onclick={prevStep} disabled={currentStep === 0 || setupComplete || isLoading}>
-            <IconChevronLeft size={20} stroke={2} />
+            <IconChevronLeft size={20} strokeWidth={1.8} />
             {t('setup.previous')}
           </Button>
           {#if currentStep < totalSteps - 1}
             <Button variant="primary" class={ctaClass} onclick={nextStep} disabled={!canProceed || isVerifying}>
               {t('setup.next')}
-              <IconChevronRight size={20} stroke={2} />
+              <IconChevronRight size={20} strokeWidth={1.8} />
             </Button>
           {:else if !showTwoFactorSummary && !showRecovery}
             <Button variant="primary" class={createClass} onclick={handleSubmit} disabled={isLoading || isVerifying || !verificationResult.valid}>
-              {#if isLoading}<IconLoader size={20} stroke={2} /> {t('setup.creating')}{:else}<IconCheck size={20} stroke={2} /> {t('setup.create_account')}{/if}
+              {#if isLoading}<IconLoader size={20} strokeWidth={1.8} /> {t('setup.creating')}{:else}<IconCheck size={20} strokeWidth={1.8} /> {t('setup.create_account')}{/if}
             </Button>
           {/if}
         </div>

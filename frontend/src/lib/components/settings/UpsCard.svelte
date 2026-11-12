@@ -19,7 +19,7 @@
   import { onMount } from 'svelte';
   import { api } from '$lib/services/api';
   import { t } from '$lib/stores/i18n';
-  import { IconServer, IconPlus, IconTrash } from '@tabler/icons-svelte';
+  import { IconServer, IconPlus, IconTrash } from '$lib/icons/lucide';
   import SettingsCard from './SettingsCard.svelte';
   import { cn } from '$lib/utils.js';
   import {

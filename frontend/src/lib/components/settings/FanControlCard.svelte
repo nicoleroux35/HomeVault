@@ -432,7 +432,7 @@
     border-radius: 6px;
     padding: 4px 8px;
     font-size: 0.8125rem;
-    background: var(--hv-shell-surface);
+    background: var(--hv-shell-card);
     color: var(--hv-shell-text);
   }
 

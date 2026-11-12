@@ -326,7 +326,6 @@ use crate::handlers::{
     spa::serve_dist_file,
     spa::serve_fonts_file,
     spa::serve_spa,
-    spa::serve_sprite_unified,
     spa::serve_static_file,
     spa::serve_wallpapers_file,
     storage::{
@@ -2695,7 +2694,6 @@ pub fn create_app(state: AppStateArc) -> Router {
 
     // SPA fallback: serve index.html for all non-API routes.
     let spa = Router::new()
-        .route("/sprite-unified.svg", get(serve_sprite_unified))
         .route(
             "/manifest.json",
             get(|headers: HeaderMap| serve_dist_file("manifest.json", headers)),

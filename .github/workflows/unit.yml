@@ -30,3 +30,8 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Unit tests (lib)
         run: cargo test --lib --locked
+      # Stable-toolchain counterparts of the cargo-fuzz targets and the
+      # in-process load/soak suite. Both are fast and hermetic; the nightly
+      # fuzz campaign lives in fuzz.yml.
+      - name: Fuzz smoke + load/soak
+        run: cargo test --locked --test fuzz_smoke --test soak_integration

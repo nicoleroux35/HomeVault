@@ -319,8 +319,8 @@ sheet is gone.
 | Mockup | HomeVault | Why |
 |---|---|---|
 | 208px rail | `--hv-window-sidebar-w` (256px) | No 208px stop exists; adding one would be per-app vocabulary |
-| Card radius 16px | 18px (`SectionCard`, the surface stop) | One surface corner for every container; the mock's 16px stop was retired |
-| `#155DFC` / `#3B82F6` buttons | `--hv-primary` (#1E62AE) | One brand accent |
+| Card radius 16px | 20px (`SectionCard`, the surface stop) | One surface corner for every container; the mock's 16px stop was retired |
+| `#155DFC` / `#3B82F6` buttons | `--hv-primary` (#2E72C9) | One brand accent |
 | No back bar | Back bar always rendered when a pane is open | The E2E suite navigates back at desktop width |
 | Editable *Username* | Read-only | Not editable in this flow; avoids a second labelled input |
 | "Change password…" under Identity | Moved to **Security** | Keeps every credential control in one card |

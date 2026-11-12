@@ -6,11 +6,11 @@
  * Version       : 1.0.0
  *
  * Description:
- *   Desktop wallpaper choice, limited to the bundled photos served from
- *   /wallpapers/ (custom uploads and gradients are gone). Every stored or
- *   received value — including legacy ones (bare colours, gradients, the
- *   old default) — is normalized to a valid bundled image, so stale values
- *   can never produce a broken desktop. Persisted in localStorage.
+ *   Desktop wallpaper choice: the v2 built-in gradient (the default) or one
+ *   of the bundled photos served from /wallpapers/. Custom uploads are gone;
+ *   every stored or received value is normalized to one of those two shapes,
+ *   so a stale value can never produce a broken desktop. Persisted in
+ *   localStorage.
  *
  * Dependencies:
  *   - svelte (>= 5)
@@ -28,13 +28,11 @@ import { writable } from 'svelte/store';
  * `/wallpapers/`. Custom uploads / arbitrary gradients are no longer
  * supported — the choice is limited to what ships inside the binary.
  *
- * `{ type: 'default' }` (the built-in faceted gradient) is legacy only —
- * explicit request to remove it as a selectable/fallback option. It's kept
- * in the type purely so `normalizeWallpaper()` still recognises old stored
- * values; nothing sets it any more, and `DEFAULT_WALLPAPER` below now
- * points at a bundled photo instead, so any such stray value is normalized
- * away on next read. Desktop.svelte's gradient/facet-layer rendering path
- * stays as an inert fallback rather than being ripped out.
+ * `{ type: 'default' }` is the v2 wallpaper — the brand gradient + halos +
+ * dot grid declared in `tokens.css` (`--hv-desktop-bg`,
+ * `--hv-desktop-blob-*`, `--hv-desktop-dots`). It is the shipped default and a
+ * first-class tile in Settings → Appearance; a bundled photo remains a
+ * per-appliance choice.
  */
 export type WallpaperConfig =
   | { type: 'default' }
@@ -58,14 +56,9 @@ export const BUNDLED_WALLPAPERS: BundledWallpaper[] = Array.from(
   }
 );
 
-// The blue gradient is no longer offered — every fresh install (and every
-// account migrating off an old `{type:'default'}` value, since
-// normalizeWallpaper() below falls through to this for anything that isn't
-// a recognised bundled image) now defaults to the first bundled photo.
-const DEFAULT_WALLPAPER: WallpaperConfig = {
-  type: 'image',
-  value: BUNDLED_WALLPAPERS[0].url,
-};
+// v2 ships the built-in gradient again: it is the desktop language of the
+// refresh, and a fresh install must look like the approved screen.
+const DEFAULT_WALLPAPER: WallpaperConfig = { type: 'default' };
 
 const STORAGE_KEY = 'hv-wallpaper';
 
@@ -77,11 +70,11 @@ const STORAGE_KEY = 'hv-wallpaper';
  */
 export function normalizeWallpaper(raw: unknown): WallpaperConfig {
   // The settings API persists the wallpaper as a bare path string
-  // (`/wallpapers/hv-07.webp`); older exports may carry the JSON-encoded
-  // object. Accept both shapes here so hydration never silently falls back
-  // to the default photo.
+  // (`/wallpapers/hv-07.webp`) or an empty string for the built-in gradient;
+  // older exports may carry the JSON-encoded object. Accept every shape.
   if (typeof raw === 'string') {
     const trimmed = raw.trim();
+    if (!trimmed) return DEFAULT_WALLPAPER;
     if (trimmed.startsWith('/wallpapers/')) {
       return { type: 'image', value: trimmed };
     }
@@ -93,6 +86,7 @@ export function normalizeWallpaper(raw: unknown): WallpaperConfig {
   }
   if (raw && typeof raw === 'object') {
     const r = raw as Record<string, unknown>;
+    if (r.type === 'default') return DEFAULT_WALLPAPER;
     if (
       r.type === 'image' &&
       typeof r.value === 'string' &&
@@ -102,6 +96,11 @@ export function normalizeWallpaper(raw: unknown): WallpaperConfig {
     }
   }
   return DEFAULT_WALLPAPER;
+}
+
+/** Serialize the live choice for the settings API: `""` means the gradient. */
+export function serializeWallpaper(wallpaper: WallpaperConfig): string {
+  return wallpaper.type === 'image' ? JSON.stringify(wallpaper) : '';
 }
 
 function readInitial(): WallpaperConfig {
@@ -135,7 +134,7 @@ function createWallpaperStore() {
       this.setWallpaper(normalizeWallpaper(raw));
     },
 
-    /** Back to the default bundled wallpaper (the old gradient is gone). */
+    /** Back to the v2 built-in gradient. */
     reset() {
       this.setWallpaper(DEFAULT_WALLPAPER);
     },

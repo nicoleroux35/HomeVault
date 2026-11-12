@@ -23,7 +23,7 @@
   import { Modal, Button, Alert } from '$lib/components/theme';
   import { PageLayout } from '$lib/components/app';
   import { cn } from '$lib/utils.js';
-  import { IconNotes, IconSearch, IconFilter, IconTrash, IconAlertTriangle, IconSettings, IconDownload } from '@tabler/icons-svelte';
+  import { IconNotes, IconSearch, IconFilter, IconTrash, IconAlertTriangle, IconSettings, IconDownload } from '$lib/icons/lucide';
 
   interface JournalSource {
     id: string;
@@ -362,7 +362,7 @@
   data-testid="journal-page"
 >
   {#snippet icon()}
-    <IconNotes stroke={1.8} />
+    <IconNotes strokeWidth={1.8} />
   {/snippet}
 
   <!-- Page-level actions: a WindowToolbar row under the header, never inside
@@ -579,7 +579,7 @@
 
 <Modal open={showClearConfirm} title={$t('journal.clear_confirm_title')} size="sm" onclose={() => (showClearConfirm = false)}>
   {#snippet icon()}
-    <IconAlertTriangle size="28" stroke={2} />
+    <IconAlertTriangle size="28" strokeWidth={1.8} />
   {/snippet}
   {#snippet children()}
     <div class="flex flex-col gap-3">
@@ -601,7 +601,7 @@
 
 <Modal open={showCleanupSettings} title={$t('journal.cleanup_settings')} size="sm" onclose={() => (showCleanupSettings = false)}>
   {#snippet icon()}
-    <IconSettings size="24" stroke={2} />
+    <IconSettings size="24" strokeWidth={1.8} />
   {/snippet}
   {#snippet children()}
     <div class="flex flex-col gap-3">

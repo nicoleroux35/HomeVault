@@ -1,5 +1,77 @@
 # HomeVault — Test tracking
 
+## 2026-11-12 — full Rust + frontend verification (executed)
+
+| Suite | Result |
+|---|---|
+| Rust (`cargo test --tests --no-fail-fast`) | **112 test targets — 4 609 passed / 0 failed / 9 ignored** (2 960 lib + 1 643 integration + 2 fuzz smoke + 4 soak) |
+| Frontend unit/component (`cd frontend && npm test`) | **54 passed / 0 failed** (9 files) |
+| Frontend type-check (`npm run check`) | **0 errors / 0 warnings** |
+| i18n + design-token lint (`npm run lint:ui`) | **OK** — 264 / 153 baselined occurrences, 0 new |
+| Frontend coverage (`npm run test:coverage`) | **18.3 % lines / 16.8 % statements** — ratchet thresholds met |
+| Frontend build (`npm run build`) | **OK** (103 precompressed files) |
+| `cargo fmt --all --check` | **0 diff** (7 files reformatted by this pass) |
+
+The integration run covered every `tests/*_integration.rs` file on this host;
+the 9 ignored tests are the opt-in `login_pam_integration` host cases. The
+real-hardware VM suite and the nightly cargo-fuzz campaigns remain opt-in and
+were not run here (see the 2026-11-11 section and
+`docs/guides/hardware-testing.md`).
+
+## 2026-11-11 — quality gates added (executed)
+
+The ten missing gates from the test/CI audit are now implemented and were run
+on this host. New tooling is listed with its result; existing suites were
+re-run where noted.
+
+| Gate | Result |
+|---|---|
+| Frontend unit/component (`npx vitest run`) | **54 passed / 0 failed** (9 files) |
+| Frontend coverage (`npm run test:coverage`) | **18.3 % lines / 16.8 % statements** (ratchet: lines 17, statements 16, functions 13, branches 15) |
+| Rust lib (`cargo test --lib`, under instrumentation) | **2 960 passed / 0 failed** |
+| Rust coverage (`cargo llvm-cov --lib`) | **46.50 % lines / 45.72 % functions / 45.84 % regions**; `target/coverage/lcov.info` written |
+| Load/soak (`cargo test --test soak_integration`) | **4 passed** — 8 users × 16 parallel reads (p95 101 ms), 8 MiB upload/download SHA-256 match, 1 000-file / 40-level tree, 2 s endurance window (4 260 requests, 0 errors) |
+| Fuzz smoke (`cargo test --test fuzz_smoke`) | **2 passed** — 4 000 hostile inputs per test through the `/proc`/SMART/mdadm/SMB/NFS/manifest/Docker/upload/WS-Discovery parsers |
+| cargo-fuzz campaigns (nightly) | **6 targets clean** (133k–406k runs each in 10 s); `ws_discovery` found a NUL-byte crash in the unit renderer, fixed in `src/ws_discovery.rs` and pinned by a unit test |
+| Accessibility D2 (`a11y.spec.ts`) | **66 passed** — axe-core WCAG 2.2 AA on login + desktop + 31 app windows, Firefox and Chromium; `a11y-baseline.json` (4.5 KB) freezes existing debt |
+| Visual regression D3 (`playwright.visual.config.ts`) | **96 baselines written** at 360/768/1280 for the shell + 31 windows; the 1280 project re-ran **32 passed** |
+| Browser compatibility (WebKit + mobile) | **9 passed** — WebKit desktop, iPhone 13 (WebKit) and Pixel 7 (Chromium), 3 checks each. WebKit needed `libavif16`/`libgav1`/`libyuv`; they were extracted locally and linked into the Playwright bundle (`npx playwright install-deps` on a workstation with root) |
+| i18n lint D4 (`npm run lint:i18n`) | **OK** — 264 existing strings baselined, 0 new |
+| Token lint D1 (`npm run lint:tokens`) | **OK** — 153 existing escapes baselined, 0 new |
+| Installer `unit-hardening.test.sh` | **64 passed / 0 failed** |
+| Installer `update-engine.test.sh` | **43 passed / 0 failed** |
+| Installer `data-dir.test.sh` | **12 passed / 0 failed** |
+| Installer upgrade → failed readiness → rollback (`upgrade-rollback.test.sh`) | **24 passed / 0 failed** (new) |
+
+New files:
+
+- `frontend/vitest.config.ts`, `frontend/src/test/setup.ts` and 9 test files
+  (stores, helpers, `EmptyState`, `StatCard`, i18n).
+- `frontend/scripts/lint-i18n.mjs`, `frontend/scripts/lint-tokens.mjs` and
+  their baselines; `npm run lint:ui` runs both.
+- `tests/e2e/design/a11y.spec.ts` + `a11y-baseline.json`.
+- `tests/e2e/design/visual.spec.ts` + `playwright.visual.config.ts` + 96
+  screenshots under `tests/e2e/design/visual.spec.ts-snapshots/`.
+- `tests/e2e/compat/compat.spec.ts` + `playwright.compat.config.ts`.
+- `tests/soak_integration.rs`, `scripts/soak.sh`,
+  `scripts/load/homevault.k6.js` (+ README).
+- `tests/fuzz_smoke.rs` and the `fuzz/` cargo-fuzz crate (7 targets).
+- `installer/tests/upgrade-rollback.test.sh`.
+- `tests/vm/hardware.vm.test.ts`, `scripts/hardware/smb-nfs-acl.sh`,
+  `scripts/hardware/vpn-tunnel.sh`, `docs/guides/hardware-testing.md`.
+- `scripts/coverage.sh`; workflows `installer.yml`, `coverage.yml`, `fuzz.yml`.
+- `component.yml` now runs Vitest, coverage and the two linters; `unit.yml`
+  runs the fuzz smoke and soak suites; `e2e-playwright.yml` runs axe, visual
+  regression and the WebKit/mobile compatibility suite.
+
+**Not executed here:** the real-hardware VM suite (needs a provisioned host
+and its gates; all 10 tests skip cleanly without `HV_VM_BASE_URL`) and the
+nightly cargo-fuzz campaigns (need nightly + `cargo fuzz`; see the fuzz
+section). The stable fuzz smoke runs on every push and covers the same
+parsers. **Mobile viewports are emulated** (iPhone 13 / Pixel 7 device
+profiles); a pass on a physical phone or tablet is still a manual lab step,
+recorded with the hardware proofs.
+
 ## 2026-11-10 — verification run (executed)
 
 | Suite | Result |
@@ -2389,8 +2461,8 @@ that predated this session), `cargo clippy` clean on the touched files.
 |---|---|
 | Manual live audit (CLAUDE.md, invariants) | **29 / 29** screens (Quotas audited live on 2026-10-07; Scheduled Tasks and Metrics live-audited on 2026-10-13) — the Power card and the MCP gateway card live inside Settings (26) |
 | At least one relevant Rust unit test | **29 / 29** (Widgets and Quotas: not applicable — Quotas has no code of its own, it reads an existing endpoint; Desktop/shell covered since 2026-09-09 by `src/sse/progress.rs` + `src/handlers/activity.rs` — taskbar) |
-| Rust integration test (`tests/*.rs`) | **81 files** `*_integration.rs` (56 + `auth_guard_integration.rs`, the auth-guard contract suite, 2026-10-24 — ROADMAP X.7/X.8, + `acme_integration.rs`, `ddns_integration.rs` and `identity_integration.rs`, the tranche T1 reachability seams, 2026-10-29; Phase 3 added `traffic_control_integration.rs`, `iscsi_integration.rs`, `directory_integration.rs` and `oidc_integration.rs`, 2026-11-01); one per screen except Quotas — Login, Setup Wizard, Account, Docker (+ `compose_integration.rs` — editing the compose of a container, + `docker_integration.rs` — volumes, prune, exec, inspect, live-log tickets, builds, registries, daemon config), Users (+ `quota_integration.rs` — the truthful home-quota contract of `GET /users/{u}/home`, 2026-10-22), Groups, Rescue, Network, VPN, Shares/Protocols, Settings (security cards **+ core** — `settings_core_integration.rs` **+ built-in HTTPS/TLS — `tls_integration.rs` + certificate automation — `acme_integration.rs` + dynamic DNS — `ddns_integration.rs`**), Downloader, Storage, RAID, Backup, Cloud Sync, Syncthing, Terminal, Chat (+ `mcp_integration.rs` — external-agent server + catalog phase-B endpoints, + **`rag_integration.rs`** — the knowledge base index/search/reconcile contract, 2026-10-22), Explorer, Dashboard, System journal, Widgets, Desktop/shell (+ `activity_integration.rs` — taskbar), Health, **VirtualMachines**, **Scheduled Tasks**, **Metrics**, Power; **the Quotas app: no file of its own** — its only endpoint (`GET /transfer-quotas/{type}`) is covered by `transfer_quota.rs` + `explorer_integration.rs`. The remaining files are cross-cutting (`mdns`, `notifications`, `progress`, `snmp`, `ups`, `weather_location`, `app_catalog`, `app_proxy`, `compose`, `security`, `tls`, `share_links`, `spa_assets`, …) |
-| Playwright E2E test (`tests/e2e/`) | **36 screen specs out of 61 files** — Login (+ `password-change.spec.ts`, the forced first-sign-in change screen), Setup Wizard, Account (+ `account/identity.spec.ts`, trusted devices, rescue e-mail and the sign-in recovery route, 2026-10-29), Users (+ `users/admin-sessions.spec.ts`, `users/account-expiry.spec.ts` and `users/group-access.spec.ts`, the per-user sessions, account-expiry and group-grant sub-specs, 2026-10-20), Groups (+ `groups/group-identity.spec.ts`, the rename + description sub-spec, 2026-10-20), Terminal, Settings (+ `settings/power.spec.ts`, `settings/mcp.spec.ts`, `settings/knowledge-base.spec.ts` — the RAG knowledge base, 2026-10-22, + `settings/acme.spec.ts` — certificate automation, 2026-10-29, + `settings/ddns.spec.ts` — dynamic DNS, 2026-10-29), RAID, Docker, Rescue, Network, VPN, Shares/Protocols, Downloader, Storage (+ `storage/snapshot-schedules.spec.ts`), Backup, Cloud Sync, Syncthing, Chat, Explorer, Dashboard, System journal, Widgets, Edit widgets, Desktop/shell (+ `shortcuts.spec.ts`, `power.spec.ts` — the mocked restart/shutdown feedback, 2026-10-24), Health, **VirtualMachines**, **Quotas**, **Scheduled Tasks**, **Metrics**, **Directory sign-in** (+ `directory/directory.spec.ts`, all three providers, 2026-11-02), plus `security/` (sub-feature, not a section of `SCREENS.md`), plus **`design/typography.spec.ts`** (cross-cutting: native text-ladder conformance + role table + the 11px floor + text scaling, walked over the login screen and five apps); the Quotas spec (`tests/e2e/quotas/quotas.spec.ts`, written on 2026-09-22) has been **green end to end since 2026-10-07** — **38/38** (Firefox, scratch server) — see the per-screen detail line 6 |
+| Rust integration test (`tests/*.rs`) | **109 files** `*_integration.rs` — the per-screen suites plus the cross-cutting ones (`auth_guard_integration.rs`, the auth-guard contract suite, 2026-10-24 — ROADMAP X.7/X.8, + `acme_integration.rs`, `ddns_integration.rs` and `identity_integration.rs`, the tranche T1 reachability seams, 2026-10-29; Phase 3 added `traffic_control_integration.rs`, `iscsi_integration.rs`, `directory_integration.rs` and `oidc_integration.rs`, 2026-11-01); one per screen except Quotas — Login, Setup Wizard, Account, Docker (+ `compose_integration.rs` — editing the compose of a container, + `docker_integration.rs` — volumes, prune, exec, inspect, live-log tickets, builds, registries, daemon config), Users (+ `quota_integration.rs` — the truthful home-quota contract of `GET /users/{u}/home`, 2026-10-22), Groups, Rescue, Network, VPN, Shares/Protocols, Settings (security cards **+ core** — `settings_core_integration.rs` **+ built-in HTTPS/TLS — `tls_integration.rs` + certificate automation — `acme_integration.rs` + dynamic DNS — `ddns_integration.rs`**), Downloader, Storage, RAID, Backup, Cloud Sync, Syncthing, Terminal, Chat (+ `mcp_integration.rs` — external-agent server + catalog phase-B endpoints, + **`rag_integration.rs`** — the knowledge base index/search/reconcile contract, 2026-10-22), Explorer, Dashboard, System journal, Widgets, Desktop/shell (+ `activity_integration.rs` — taskbar), Health, **VirtualMachines**, **Scheduled Tasks**, **Metrics**, Power; **the Quotas app: no file of its own** — its only endpoint (`GET /transfer-quotas/{type}`) is covered by `transfer_quota.rs` + `explorer_integration.rs`. The remaining files are cross-cutting (`mdns`, `notifications`, `progress`, `snmp`, `ups`, `weather_location`, `app_catalog`, `app_proxy`, `compose`, `security`, `tls`, `share_links`, `spa_assets`, …) |
+| Playwright E2E test (`tests/e2e/`) | **76 spec files** — Login (+ `password-change.spec.ts`, the forced first-sign-in change screen), Setup Wizard, Account (+ `account/identity.spec.ts`, trusted devices, rescue e-mail and the sign-in recovery route, 2026-10-29), Users (+ `users/admin-sessions.spec.ts`, `users/account-expiry.spec.ts` and `users/group-access.spec.ts`, the per-user sessions, account-expiry and group-grant sub-specs, 2026-10-20), Groups (+ `groups/group-identity.spec.ts`, the rename + description sub-spec, 2026-10-20), Terminal, Settings (+ `settings/power.spec.ts`, `settings/mcp.spec.ts`, `settings/knowledge-base.spec.ts` — the RAG knowledge base, 2026-10-22, + `settings/acme.spec.ts` — certificate automation, 2026-10-29, + `settings/ddns.spec.ts` — dynamic DNS, 2026-10-29), RAID, Docker, Rescue, Network, VPN, Shares/Protocols, Downloader, Storage (+ `storage/snapshot-schedules.spec.ts`), Backup, Cloud Sync, Syncthing, Chat, Explorer, Dashboard, System journal, Widgets, Edit widgets, Desktop/shell (+ `shortcuts.spec.ts`, `power.spec.ts` — the mocked restart/shutdown feedback, 2026-10-24), Health, **VirtualMachines**, **Quotas**, **Scheduled Tasks**, **Metrics**, **Directory sign-in** (+ `directory/directory.spec.ts`, all three providers, 2026-11-02), plus `security/` (sub-feature, not a section of `SCREENS.md`), plus **`design/typography.spec.ts`** (cross-cutting: native text-ladder conformance + role table + the 11px floor + text scaling, walked over the login screen and five apps); the Quotas spec (`tests/e2e/quotas/quotas.spec.ts`, written on 2026-09-22) has been **green end to end since 2026-10-07** — **38/38** (Firefox, scratch server) — see the per-screen detail line 6 |
 
 All 29 screens have been verified by hand **and** have at least one
 automated test (Rust or Playwright) — none is without a non-regression

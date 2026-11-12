@@ -557,10 +557,11 @@ impl Default for NotificationSettings {
 }
 
 /// The shipped accent — `--hv-primary` ("HomeVault Blue"). The only palette
-/// blue that clears WCAG 1.4.3 in *both* directions: white on it (6.15:1,
+/// blue that clears WCAG 1.4.3 in *both* directions: white on it (4.81:1,
 /// button fills) and it as text on `--hv-surface` and the `--hv-primary-*`
-/// tints (4.99–5.68:1). The legacy default `#4a90d9` failed both (≤3.34:1).
-pub const DEFAULT_ACCENT: &str = "#1E62AE";
+/// tints (4.52–5.49:1). The legacy defaults `#4a90d9` and `#1E62AE` are
+/// rewritten so the v2 palette applies on the next load.
+pub const DEFAULT_ACCENT: &str = "#2E72C9";
 
 /// UI appearance settings (wallpaper, accent color).
 ///
@@ -646,9 +647,9 @@ pub fn validate_wallpaper_field(raw: &str) -> Result<String, String> {
                     .get("value")
                     .and_then(|v| v.as_str())
                     .and_then(normalize_wallpaper_reference),
-                // The built-in gradient is no longer selectable; the client
-                // maps it to the first bundled photo, so do the same.
-                Some("default") => normalize_wallpaper_reference("/wallpapers/hv-01.webp"),
+                // The v2 built-in gradient is stored as the empty string (the
+                // same value the shipped default carries).
+                Some("default") => Some(String::new()),
                 _ => None,
             },
             _ => None,
@@ -691,14 +692,14 @@ pub fn validate_accent_color_field(raw: &str) -> Result<String, String> {
     Ok(trimmed.to_string())
 }
 
-/// Rewrite the legacy non-compliant default accent on every path that can
-/// introduce it (shipped default, persisted load, import,
-/// `PUT /settings/appearance`). `#4a90d9` fails WCAG 1.4.3 in both
-/// directions — 3.34:1 behind white button text, ≤3.34:1 as text on the
-/// light surfaces — while every other value is returned untouched (the
-/// accent has no editing UI, so nothing an operator chose is overridden).
+/// Rewrite the legacy default accents on every path that can introduce them
+/// (shipped default, persisted load, import, `PUT /settings/appearance`).
+/// `#4a90d9` failed WCAG 1.4.3 in both directions and `#1E62AE` is the
+/// pre-v2 brand stop; both become the shipped default. Any other value is
+/// returned untouched (the accent has no editing UI, so nothing an operator
+/// actually chose is overridden).
 pub fn normalize_accent(accent: &str) -> String {
-    if accent.eq_ignore_ascii_case("#4a90d9") {
+    if accent.eq_ignore_ascii_case("#4a90d9") || accent.eq_ignore_ascii_case("#1E62AE") {
         DEFAULT_ACCENT.to_string()
     } else {
         accent.to_string()
@@ -2341,7 +2342,7 @@ mod tests {
         let a = AppearanceSettings::default();
         // HomeVault Blue clears §1.4.3 both behind white text (6.15:1) and
         // as text on the light surfaces/tints (4.99–5.68:1).
-        assert_eq!(a.accent_color.as_deref(), Some("#1E62AE"));
+        assert_eq!(a.accent_color.as_deref(), Some("#2E72C9"));
         // No wallpaper by default — the desktop paints its own gradient.
         assert_eq!(a.wallpaper.as_deref(), Some(""));
     }
@@ -2396,13 +2397,12 @@ mod tests {
             validate_wallpaper_field("  /wallpapers/hv-12.webp\n").unwrap(),
             "/wallpapers/hv-12.webp"
         );
-        // The legacy gradient tile is coerced to the first bundled photo,
-        // exactly as `normalizeWallpaper()` does in the browser.
+        // The v2 built-in gradient normalizes to the empty string, exactly as
+        // `normalizeWallpaper()` does in the browser.
         assert_eq!(
             validate_wallpaper_field(r#"{"type":"default"}"#).unwrap(),
-            "/wallpapers/hv-01.webp"
+            ""
         );
-        // Never picked: the desktop paints its own gradient.
         assert_eq!(validate_wallpaper_field("").unwrap(), "");
         assert_eq!(validate_wallpaper_field("   ").unwrap(), "");
     }
@@ -2466,8 +2466,10 @@ mod tests {
         // client again, in any letter case…
         assert_eq!(normalize_accent("#4a90d9"), DEFAULT_ACCENT);
         assert_eq!(normalize_accent("#4A90D9"), DEFAULT_ACCENT);
+        // The pre-v2 brand stop migrates to the v2 default too.
+        assert_eq!(normalize_accent("#1E62AE"), DEFAULT_ACCENT);
+        assert_eq!(normalize_accent("#1e62ae"), DEFAULT_ACCENT);
         // …while every other value (round-tripped export, operator-set) is kept.
-        assert_eq!(normalize_accent("#1E62AE"), "#1E62AE");
         assert_eq!(normalize_accent("#e2725b"), "#e2725b");
         assert_eq!(normalize_accent("#123456"), "#123456");
     }

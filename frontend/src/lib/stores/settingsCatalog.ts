@@ -12,7 +12,7 @@
  *   others. Adding a category means one entry here plus its i18n keys.
  *
  * Dependencies:
- *   - @tabler/icons-svelte
+ *   - $lib/icons/lucide
  *   - svelte (>= 5)
  *
  * Usage:
@@ -29,7 +29,7 @@ import {
   IconPalette,
   IconSettings,
   IconShieldCheckered
-} from '@tabler/icons-svelte';
+} from '$lib/icons/lucide';
 import { writable } from 'svelte/store';
 import NotificationBellIcon from '$lib/components/shared/NotificationBellIcon.svelte';
 

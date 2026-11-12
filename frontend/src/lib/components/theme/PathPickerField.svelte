@@ -19,7 +19,7 @@
      ======================================================================== -->
 <script lang="ts">
   import { t } from '$lib/stores/i18n';
-  import { IconFolderOpen, IconFile as FileIcon } from '@tabler/icons-svelte';
+  import { IconFolderOpen, IconFile as FileIcon } from '$lib/icons/lucide';
   import FloatingPathPicker from './FloatingPathPicker.svelte';
 
   /**

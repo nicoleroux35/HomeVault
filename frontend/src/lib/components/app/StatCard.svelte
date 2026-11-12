@@ -47,7 +47,7 @@
     label: string;
     /** The metric value (string or pre-formatted snippet). */
     value?: string | Snippet;
-    /** Optional sprite icon name for the tile glyph. */
+    /** Optional dynamic icon name for the tile glyph. */
     icon?: string;
     /** Custom glyph, wins over `icon`. */
     iconSnippet?: Snippet;
@@ -79,7 +79,7 @@
 
   function baseClass(): string {
     return cn(
-      'hv-stat-card flex items-center gap-4 rounded-xl bg-card border border-border shadow-[var(--hv-shell-shadow-card)] px-5 py-4 text-left',
+      'hv-stat-card flex items-center gap-4 rounded-2xl bg-card border border-border shadow-[var(--hv-shell-shadow-card)] px-5 py-4 text-left',
       onClick ? 'cursor-pointer transition-colors hover:border-[var(--hv-shell-border-strong)] focus-visible:outline-2 focus-visible:outline-[var(--hv-primary)] focus-visible:outline-offset-2' : '',
       extraClass,
     );
@@ -89,16 +89,16 @@
 {#if onClick}
   <button class={baseClass()} type="button" data-testid={testId} onclick={onClick}>
     {#if iconSnippet || icon}
-      <span class={cn('hv-stat-icon grid place-items-center w-11 h-11 rounded-lg flex-none', tileClass)}>
+      <span class={cn('hv-stat-icon grid place-items-center w-8 h-8 rounded-[9px] flex-none', tileClass)}>
         {#if iconSnippet}
           {@render iconSnippet()}
         {:else}
-          <Icon name={icon!} size={22} stroke={1.8} />
+          <Icon name={icon!} size={18} strokeWidth={1.8} />
         {/if}
       </span>
     {/if}
     <span class="min-w-0">
-      <span class="block text-c-sm font-medium text-muted-foreground truncate">{label}</span>
+      <span class="block text-c-xs font-semibold uppercase tracking-[1px] text-[var(--hv-shell-text-3)] truncate">{label}</span>
       {#if value}
         <span class="block text-xl font-semibold leading-tight text-foreground truncate">
           {#if typeof value === 'string'}{value}{:else}{@render value()}{/if}
@@ -114,16 +114,16 @@
 {:else}
   <div class={baseClass()} data-testid={testId}>
     {#if iconSnippet || icon}
-      <span class={cn('hv-stat-icon grid place-items-center w-11 h-11 rounded-lg flex-none', tileClass)}>
+      <span class={cn('hv-stat-icon grid place-items-center w-8 h-8 rounded-[9px] flex-none', tileClass)}>
         {#if iconSnippet}
           {@render iconSnippet()}
         {:else}
-          <Icon name={icon!} size={22} stroke={1.8} />
+          <Icon name={icon!} size={18} strokeWidth={1.8} />
         {/if}
       </span>
     {/if}
     <div class="min-w-0">
-      <div class="text-c-sm font-medium text-muted-foreground truncate">{label}</div>
+      <div class="text-c-xs font-semibold uppercase tracking-[1px] text-[var(--hv-shell-text-3)] truncate">{label}</div>
       {#if value}
         <div class="text-xl font-semibold leading-tight text-foreground truncate">
           {#if typeof value === 'string'}{value}{:else}{@render value()}{/if}

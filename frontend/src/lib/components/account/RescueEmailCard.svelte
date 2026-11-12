@@ -24,7 +24,7 @@
   import { Button } from '$lib/components/theme';
   import { SectionCard } from '$lib/components/app';
   import { cn } from '$lib/utils.js';
-  import { IconMail, IconCheck } from '@tabler/icons-svelte';
+  import { IconMail, IconCheck } from '$lib/icons/lucide';
 
   let loading = $state(true);
   let busy = $state(false);
@@ -117,7 +117,7 @@
 <SectionCard data-testid="account-card" class="col-span-2 w-full @max-[880px]:col-span-1">
   {#snippet titleSnippet()}
     <div data-testid="account-card-title" class="flex items-center gap-2 text-c-card-title font-semibold text-[var(--hv-shell-text-strong)]">
-      <IconMail size={17} stroke={2} class="text-[var(--hv-primary)]" /> {$t('account.section_rescue')}
+      <IconMail size={17} strokeWidth={1.8} class="text-[var(--hv-primary)]" /> {$t('account.section_rescue')}
     </div>
   {/snippet}
 
@@ -133,7 +133,7 @@
   {:else if configured}
     <div data-testid="rescue-verified" class="flex items-center gap-3 px-3 py-2.5 rounded-xl bg-[var(--hv-shell-border-soft)] border border-[var(--hv-shell-border)]">
       <span class="flex-none grid place-items-center w-11 h-11 rounded-lg bg-[var(--hv-primary-light)] text-[var(--hv-primary)]">
-        <IconCheck size={20} stroke={2.2} />
+        <IconCheck size={20} strokeWidth={2.2} />
       </span>
       <div class="flex-1 min-w-0">
         <strong class="block text-sm text-[var(--hv-shell-text-strong)] truncate">{storedEmail}</strong>

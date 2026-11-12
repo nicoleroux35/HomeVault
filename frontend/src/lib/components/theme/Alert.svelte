@@ -11,7 +11,7 @@
        --hv-* tokens, optional action buttons and dismissible close.
 
      Dependencies:
-       - svelte (>= 5), @tabler/icons-svelte, components/ui/alert (vendored)
+       - svelte (>= 5), $lib/icons/lucide, components/ui/alert (vendored)
 
      Usage:
        `import { Alert } from '$lib/components/theme'` — see index.ts.
@@ -29,7 +29,7 @@
    * render in the alert-action slot; `dismissible` renders a ghost close
    * button wired to `ondismiss`.
    */
-  import { IconInfoCircle, IconCircleCheck, IconAlertTriangle, IconAlertCircle, IconX } from '@tabler/icons-svelte';
+  import { IconInfoCircle, IconCircleCheck, IconAlertTriangle, IconAlertCircle, IconX } from '$lib/icons/lucide';
   import * as Alert from '$lib/components/ui/alert/index.js';
   import { Button } from '$lib/components/ui/button/index.js';
   import { t } from '$lib/stores/i18n';

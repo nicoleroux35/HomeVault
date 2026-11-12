@@ -47,7 +47,7 @@
     IconPlayerPlay,
     IconRefresh,
     IconInfoCircle,
-  } from '@tabler/icons-svelte';
+  } from '$lib/icons/lucide';
 
   interface ServiceCapability {
     id: string;
@@ -294,16 +294,16 @@
 
 <PageLayout title={$t('traffic.title')} data-testid="traffic-page">
   {#snippet icon()}
-    <IconGauge stroke={1.8} />
+    <IconGauge strokeWidth={1.8} />
   {/snippet}
 
   {#snippet toolbarRight()}
     <div class="flex items-center gap-2">
       <Button variant="secondary" data-testid="traffic-apply" disabled={busy !== null} onclick={applyNow}>
-        <IconRefresh size={16} stroke={2} /> {$t('traffic.apply_now')}
+        <IconRefresh size={16} strokeWidth={1.8} /> {$t('traffic.apply_now')}
       </Button>
       <Button variant="primary" data-testid="traffic-save" loading={busy === 'save'} disabled={busy !== null} onclick={save}>
-        <IconCheck size={16} stroke={2} /> {$t('traffic.save')}
+        <IconCheck size={16} strokeWidth={1.8} /> {$t('traffic.save')}
       </Button>
     </div>
   {/snippet}
@@ -332,9 +332,9 @@
         )}
       >
         {#if liveState.shaping}
-          <IconCheck size={20} stroke={2} class="flex-none text-[var(--hv-success)]" aria-hidden="true" />
+          <IconCheck size={20} strokeWidth={1.8} class="flex-none text-[var(--hv-success)]" aria-hidden="true" />
         {:else}
-          <IconInfoCircle size={20} stroke={2} class="flex-none text-[var(--hv-shell-text-2)]" aria-hidden="true" />
+          <IconInfoCircle size={20} strokeWidth={1.8} class="flex-none text-[var(--hv-shell-text-2)]" aria-hidden="true" />
         {/if}
         <div class="flex flex-col gap-0.5 min-w-0">
           <span class="font-semibold text-[var(--hv-shell-text-strong)]">
@@ -414,7 +414,7 @@
       <SectionCard title={$t('traffic.schedule_title')} description={$t('traffic.schedule_desc')} data-testid="traffic-schedule">
         {#snippet actions()}
           <Button variant="secondary" size="sm" data-testid="traffic-add-window" disabled={!settings.enabled} onclick={addWindow}>
-            <IconPlus size={15} stroke={2} /> {$t('traffic.add_window')}
+            <IconPlus size={15} strokeWidth={1.8} /> {$t('traffic.add_window')}
           </Button>
         {/snippet}
         <div class="flex flex-col gap-3">
@@ -431,7 +431,7 @@
                     aria-label={$t('traffic.remove_window')}
                     data-testid="traffic-remove-window-{index}"
                     onclick={() => removeWindow(index)}
-                  ><IconTrash size={16} stroke={1.8} /></button>
+                  ><IconTrash size={16} strokeWidth={1.8} /></button>
                 </div>
                 <div class="flex items-center gap-1 flex-wrap" role="group" aria-label={$t('traffic.days_label')}>
                   {#each DAY_KEYS as dayKey, day}
@@ -494,11 +494,11 @@
           </span>
           {#if settings.paused}
             <Button variant="primary" data-testid="traffic-resume" disabled={busy !== null} onclick={() => setPaused(false)}>
-              <IconPlayerPlay size={16} stroke={2} /> {$t('traffic.resume')}
+              <IconPlayerPlay size={16} strokeWidth={1.8} /> {$t('traffic.resume')}
             </Button>
           {:else}
             <Button variant="warning" data-testid="traffic-pause" disabled={busy !== null} onclick={() => setPaused(true)}>
-              <IconPlayerPause size={16} stroke={2} /> {$t('traffic.pause')}
+              <IconPlayerPause size={16} strokeWidth={1.8} /> {$t('traffic.pause')}
             </Button>
           {/if}
         </div>

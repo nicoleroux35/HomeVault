@@ -25,10 +25,10 @@
   const collapsed = $derived(railCtx?.collapsed ?? false);
 
   interface Props {
-    /** Custom glyph (a tabler icon, an inline SVG, …). Preferred over
+    /** Custom glyph (a Lucide component, an inline SVG, …). Preferred over
      *  `iconName`; rendered in both the expanded and collapsed states. */
     icon?: Snippet;
-    /** Fallback sprite glyph (`<Icon name=…>`) when no custom snippet is given. */
+    /** Fallback dynamic glyph (`<Icon name=…>`) when no custom snippet is given. */
     iconName?: string;
     /** Row label. Shown expanded; becomes the tooltip (unless `title`) when
      *  the rail is collapsed. */
@@ -228,7 +228,7 @@
     width: var(--hv-settings-icon-tile, 28px);
     height: var(--hv-settings-icon-tile, 28px);
     padding: 6px;
-    border-radius: var(--hv-radius-full);
+    border-radius: 9px;
     background: color-mix(
       in srgb,
       var(--hv-row-accent, transparent) var(--hv-settings-cat-tint, 9%),

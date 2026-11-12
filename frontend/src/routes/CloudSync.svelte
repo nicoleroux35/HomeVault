@@ -26,7 +26,7 @@
   import WindowHeader from '$lib/components/desktop/WindowHeader.svelte';
   import { t, translate } from '$lib/stores/i18n';
   import FolderPicker from '$lib/components/theme/FolderPicker.svelte';
-  import { IconCheck, IconCloud, IconCloudOff, IconCloudCheck, IconCloudDownload, IconCloud as CloudSyncIcon, IconCloudUpload, IconDatabase, IconFileCode, IconFolderOpen, IconServer, IconLoader, IconPlus, IconX, IconArrowRight, IconGlobe, IconLink, IconRefresh } from '@tabler/icons-svelte';
+  import { IconCheck, IconCloud, IconCloudOff, IconCloudCheck, IconCloudDownload, IconCloud as CloudSyncIcon, IconCloudUpload, IconDatabase, IconFileCode, IconFolderOpen, IconServer, IconLoader, IconPlus, IconX, IconArrowRight, IconGlobe, IconLink, IconRefresh } from '$lib/icons/lucide';
 
   // ---------------------------------------------------------------------------
   // Types
@@ -465,13 +465,13 @@
 
   function getProviderIcon(type: string): string {
     const lower = type.toLowerCase();
-    if (lower.includes('drive') || lower.includes('google')) return 'brand_google';
-    if (lower.includes('dropbox')) return 'brand_dropbox';
-    if (lower.includes('onedrive') || lower.includes('microsoft')) return 'brand_windows';
+    if (lower.includes('drive') || lower.includes('google')) return 'cloud';
+    if (lower.includes('dropbox')) return 'cloud';
+    if (lower.includes('onedrive') || lower.includes('microsoft')) return 'cloud';
     if (lower.includes('box')) return 'box';
     if (lower.includes('mega')) return 'megaphone';
     if (lower.includes('s3') || lower.includes('aws') || lower.includes('amazon')) return 'cloud';
-    if (lower.includes('azure')) return 'brand_azure';
+    if (lower.includes('azure')) return 'cloud';
     if (lower.includes('crypt')) return 'lock';
     if (lower.includes('ftp') || lower.includes('sftp')) return 'upload';
     if (lower.includes('webdav')) return 'world';
@@ -538,14 +538,14 @@
   bind:activeTab
 >
   {#snippet icon()}
-    <CloudSyncIcon stroke={1.8} />
+    <CloudSyncIcon strokeWidth={1.8} />
   {/snippet}
 
   <!-- Page-level primary action: a WindowToolbar row under the header, never
        inside it (the header bar is icon + title + window controls only). -->
   {#snippet toolbarRight()}
     <Button variant="primary" onclick={openAddRemoteModal}>
-      <IconPlus size={16} stroke={2} />
+      <IconPlus size={16} strokeWidth={1.8} />
       <span>{$t('rclone.add_remote')}</span>
     </Button>
   {/snippet}
@@ -602,23 +602,23 @@
       {#if !rcloneReady}
         <SectionCard data-testid="cloudsync-empty">
           <EmptyState title={$t('rclone.errors.not_installed')} description={$t('rclone.not_installed_desc')}>
-            {#snippet iconSnippet()}<IconCloudOff size={32} stroke={1.8} />{/snippet}
+            {#snippet iconSnippet()}<IconCloudOff size={32} strokeWidth={1.8} />{/snippet}
             {#snippet action()}<Button variant="primary" onclick={openConfigModal}>{$t('rclone.view_config_help')}</Button>{/snippet}
           </EmptyState>
         </SectionCard>
       {:else if remotes.length === 0}
         <SectionCard data-testid="cloudsync-empty">
           <EmptyState title={$t('rclone.no_remotes')} description={$t('rclone.no_remotes_desc')}>
-            {#snippet iconSnippet()}<IconCloud size={32} stroke={1.8} />{/snippet}
+            {#snippet iconSnippet()}<IconCloud size={32} strokeWidth={1.8} />{/snippet}
             {#snippet action()}<Button variant="primary" onclick={openAddRemoteModal}><IconPlus size={15} /> {$t('rclone.add_remote')}</Button>{/snippet}
           </EmptyState>
         </SectionCard>
       {:else}
         <div class="grid gap-4 [grid-template-columns:repeat(auto-fill,minmax(260px,1fr))]">
           {#each remotes as remote}
-            <div data-testid="cloudsync-remote-card" class="rounded-2xl bg-[var(--hv-shell-card)] border border-[var(--hv-shell-border)] shadow-[var(--hv-shell-shadow-card)] overflow-hidden">
+            <div data-testid="cloudsync-remote-card" class="rounded-2xl bg-card border border-border shadow-[var(--hv-shell-shadow-card)] overflow-hidden">
               <div class="flex items-center gap-3 px-4 pt-4">
-                <span class="grid place-items-center w-11 h-11 rounded-xl flex-none bg-[var(--hv-primary-light)] text-[var(--hv-primary)]"><Icon name={getProviderIcon(remote.type)} size={22} /></span>
+                <span class="grid place-items-center w-8 h-8 rounded-[9px] flex-none bg-[var(--hv-primary-light)] text-[var(--hv-primary)]"><Icon name={getProviderIcon(remote.type)} size={22} /></span>
                 <div class="flex-1 min-w-0">
                   <div class="text-sm font-bold text-[var(--hv-shell-text-strong)] truncate">{remote.name}</div>
                   <div class="text-xs text-[var(--hv-shell-text-2)]">{remote.type}</div>
@@ -661,7 +661,7 @@
       {#if mounts.length === 0}
         <SectionCard data-testid="cloudsync-empty">
           <EmptyState title={$t('rclone.no_active_mounts')} description={$t('rclone.no_active_mounts_desc')}>
-            {#snippet iconSnippet()}<IconServer size={32} stroke={1.8} />{/snippet}
+            {#snippet iconSnippet()}<IconServer size={32} strokeWidth={1.8} />{/snippet}
             {#snippet action()}<Button variant="primary" onclick={openAddRemoteModal}><IconPlus size={15} /> {$t('rclone.add_remote')}</Button>{/snippet}
           </EmptyState>
         </SectionCard>
@@ -717,7 +717,7 @@
       {#if syncJobs.length === 0}
         <SectionCard data-testid="cloudsync-empty">
           <EmptyState title={$t('rclone.no_sync_jobs')} description={$t('rclone.no_sync_jobs_desc')}>
-            {#snippet iconSnippet()}<IconCloud size={32} stroke={1.8} />{/snippet}
+            {#snippet iconSnippet()}<IconCloud size={32} strokeWidth={1.8} />{/snippet}
             {#snippet action()}<Button variant="primary" onclick={openSyncModal}><IconCloudUpload size={15} /> {$t('rclone.create_sync_job')}</Button>{/snippet}
           </EmptyState>
         </SectionCard>
@@ -749,15 +749,15 @@
         </div>
         <div class="flex flex-col gap-3">
           <div class="flex items-start gap-3">
-            <span class="grid place-items-center w-11 h-11 rounded-xl flex-none bg-[var(--hv-primary-light)] text-[var(--hv-primary)]"><IconCloudUpload size={20} /></span>
+            <span class="grid place-items-center w-8 h-8 rounded-[9px] flex-none bg-[var(--hv-primary-light)] text-[var(--hv-primary)]"><IconCloudUpload size={20} /></span>
             <div><h4 class="m-0 text-sm font-semibold text-[var(--hv-shell-text-strong)]">{$t('rclone.direction_local_to_cloud')}</h4><p class="m-0 mt-0.5 text-xs text-[var(--hv-shell-text)]">{$t('rclone.local_to_cloud_desc')}</p></div>
           </div>
           <div class="flex items-start gap-3">
-            <span class="grid place-items-center w-11 h-11 rounded-xl flex-none bg-[var(--hv-success-bg)] text-[var(--hv-success)]"><IconCloudDownload size={20} /></span>
+            <span class="grid place-items-center w-8 h-8 rounded-[9px] flex-none bg-[var(--hv-success-bg)] text-[var(--hv-success)]"><IconCloudDownload size={20} /></span>
             <div><h4 class="m-0 text-sm font-semibold text-[var(--hv-shell-text-strong)]">{$t('rclone.direction_cloud_to_local')}</h4><p class="m-0 mt-0.5 text-xs text-[var(--hv-shell-text)]">{$t('rclone.cloud_to_local_desc')}</p></div>
           </div>
           <div class="flex items-start gap-3">
-            <span class="grid place-items-center w-11 h-11 rounded-xl flex-none bg-[var(--hv-warning-bg)] text-[var(--hv-warning)]"><IconCloud size={20} /></span>
+            <span class="grid place-items-center w-8 h-8 rounded-[9px] flex-none bg-[var(--hv-warning-bg)] text-[var(--hv-warning)]"><IconCloud size={20} /></span>
             <div><h4 class="m-0 text-sm font-semibold text-[var(--hv-shell-text-strong)]">{$t('rclone.two_way_sync')}</h4><p class="m-0 mt-0.5 text-xs text-[var(--hv-shell-text)]">{$t('rclone.two_way_sync_desc')}</p></div>
           </div>
         </div>

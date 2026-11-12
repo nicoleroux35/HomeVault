@@ -167,9 +167,9 @@ Largest family: raw values and per-screen reimplementations.
   parallel (sprite `<Icon>` in app code, `@lucide/svelte` ×35 inside
   `components/ui/**`, inline SVG in Dashboard/Desktop/SetupWizard/Login).
 - **Fix:** replace the glyphs with `<Icon>` (`x`, `star`, `check`), and write the
-  layer rule into `docs/guides/design-system.md`: sprite `<Icon>` for app code,
-  Lucide only inside `components/ui` primitives, inline SVG only for artwork
-  (wallpapers/orbs).
+  layer rule into `docs/guides/design-system.md`: Lucide for app code (through
+  `$lib/icons/lucide`), Lucide directly inside `components/ui` primitives,
+  inline SVG only for artwork (wallpapers/orbs).
 - **Prevent:** [D4](#durable-fixes-d1--d4) (no hardcoded glyph strings) is
   i18n-focused; for icons add the rule to the design-system checklist instead.
 
@@ -394,9 +394,9 @@ severity it becomes if it fails. Nothing here is deducted yet.
 - [ ] **V7 — State in the URL.** Filters/selection/sort survive reload?
       (`URLSearchParams` appears only in `lib/services/api.ts`, routing uses
       bare `pushState`.) → **Warning** if state resets silently.
-- [ ] **V8 — Performance budgets.** `sprite-unified.svg` ≈4MB fetched at startup
-      (`frontend/src/main.ts`, trade-off documented) + `mapping-unified.ts`
-      484KB. Measure CLS < 0.1 and LCP < 2.5s. → **Warning** if over budget.
+- [x] **V8 — Performance budgets.** Résolu 2026-11-10 : le sprite de 4 Mo, son
+      fetch au démarrage et `mapping-unified.ts` (484 Ko) ont été supprimés au
+      profit des composants Lucide tree-shakés (`$lib/icons/lucide`).
 - [ ] **V9 — Dead `var(--hv-*, #hex)` fallbacks.** All tokens verified defined at
       `:root`, so fallbacks should never render; confirm no theme path disables
       them. → no deduction expected (cleanup lives in W4).
@@ -409,21 +409,35 @@ Tooling that keeps the families closed. Ordered by leverage. Stack note: this is
 Svelte 5 + Tailwind 4 + Vite — `eslint-plugin-tailwindcss` does **not** apply;
 use stylelint + grep gates + Playwright instead.
 
-- [ ] **D1 — Token/magic-number gate** (closes W1, W3, W4, W13, part of W2).
-  *Instruction for the coding assistant:* "Add stylelint
+- [x] **D1 — Token/magic-number gate** (closes W1, W3, W4, W13, part of W2).
+  **Done 2026-11-11:** `frontend/scripts/lint-tokens.mjs` flags raw hex,
+  `transition: all`, `text-[length:`, off-scale radius/spacing, raw z-index
+  and dead `var(--hv-*, #hex)` fallbacks. It is a ratchet over
+  `frontend/lint-tokens-baseline.json` (153 existing escapes) and runs as
+  `npm run lint:tokens` in the component CI gate. *Instruction for the coding assistant:* "Add stylelint
   (`stylelint-config-standard-scss`-free, plain CSS/Svelte via
   `postcss-html`) with rules that fail on raw hex colours in `.svelte`/CSS, on
   spacing/radius values outside the token scale, on `transition: all`, and on
   `text-[length:` — and wire it as a pre-commit hook."
-- [ ] **D2 — axe-core on every screen** (closes C2 fallout, W9, W17, V5, and
-  guards contrast if W14 ships). *Instruction:* "Add an automated accessibility
+- [x] **D2 — axe-core on every screen** (closes C2 fallout, W9, W17, V5, and
+  guards contrast if W14 ships). **Done 2026-11-11:**
+  `tests/e2e/design/a11y.spec.ts` runs `@axe-core/playwright` over the login
+  screen, the desktop shell and all 31 app windows on Firefox + Chromium
+  (66 checks), WCAG 2.2 AA tags. Existing violations are frozen in
+  `a11y-baseline.json`; a new one fails the E2E job.
+  *Instruction:* "Add an automated accessibility
   test that runs axe-core via `@axe-core/playwright` against all 27 screens and
   fails the build on violations."
-- [ ] **D3 — Visual regression at 3 widths** (closes W15, guards W2/W3, covers
-  V2). *Instruction:* "Set up Playwright visual regression tests: screenshot
+- [x] **D3 — Visual regression at 3 widths** (closes W15, guards W2/W3, covers
+  V2). **Done 2026-11-11:** `tests/e2e/design/visual.spec.ts` +
+  `playwright.visual.config.ts` screenshot the shell and all 31 app windows at
+  360/768/1280 (96 committed baselines). *Instruction:* "Set up Playwright visual regression tests: screenshot
   each screen at 360px, 768px and 1280px and fail when pixels change
   unexpectedly."
-- [ ] **D4 — i18n lint** (closes W7). *Instruction:* "Add a lint rule that flags
+- [x] **D4 — i18n lint** (closes W7). **Done 2026-11-11:**
+  `frontend/scripts/lint-i18n.mjs` flags hard-coded markup text and literal
+  `aria-label`/`alt`/`placeholder`/`title` values, ratcheted by
+  `lint-i18n-baseline.json` (264 existing strings). *Instruction:* "Add a lint rule that flags
   hard-coded user-visible strings — including `aria-label`, `title` and visible
   text — in `.svelte` files so all copy goes through the translation keys."
 

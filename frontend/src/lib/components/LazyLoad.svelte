@@ -11,14 +11,14 @@
        inline error with a retry when the import fails.
 
      Dependencies:
-       - svelte (>= 5), @tabler/icons-svelte
+       - svelte (>= 5), $lib/icons/lucide
 
      Usage:
        Wraps the dynamic import in the window manager's component loaders.
      ======================================================================== -->
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { IconCircleX } from '@tabler/icons-svelte';
+  import { IconCircleX } from '$lib/icons/lucide';
 
   /** Function that returns a promise resolving to the component module to lazily load */
   export let componentLoader: () => Promise<any>;
@@ -49,7 +49,7 @@
   </div>
 {:else if error}
   <div class="lazy-error">
-    <IconCircleX size={48} stroke={2} />
+    <IconCircleX size={48} strokeWidth={1.8} />
     <p>{error}</p>
     <button onclick={() => window.location.reload()}>Reload</button>
   </div>

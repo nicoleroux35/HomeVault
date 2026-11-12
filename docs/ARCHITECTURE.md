@@ -69,10 +69,6 @@ too — they are written by `npm run build` (npm `postbuild`) *after* the last
 silently ship uncompressed assets. `installer/install.sh --package` builds
 from clean, so releases are unaffected.
 
-`npm run build` also runs `prebuild` (`generate-sprite.mjs`, regenerating the
-icon sprite from the sources) — see
-[Frontend Structure](./FRONTEND.md) → Icon sprite.
-
 ### First run
 
 1. Start the backend (`cargo run --bin homevault`).
@@ -191,8 +187,8 @@ terminates TLS is still supported. Full detail: [guides/tls.md](./guides/tls.md)
 
 ## SPA serving
 
-`create_app` merges a `spa` router that serves `/sprite-unified.svg`, `/manifest.json`,
-favicon, and a `fallback` to `serve_spa`. Static assets come from the
+`create_app` merges a `spa` router that serves `/manifest.json`, favicon,
+`/sw.js`, the bundles/fonts/wallpapers, and a `fallback` to `serve_spa`. Static assets come from the
 `include_dir!`-embedded `static/` tree (`spa::STATIC_DIR`). Wallpapers are
 **bundled** — `frontend/public/wallpapers/hv-NN.webp` are copied into
 `static/dist/` by `vite build` and served by `spa::serve_wallpapers_file` on
@@ -211,7 +207,7 @@ derived per file and matter for correctness:
 - **`ETag`** — a truncated SHA-256 of the *identity* bytes, with a `-br` /
   `-gz` suffix per content coding. Without a validator a browser can never
   issue `If-None-Match`, so before this change `/wallpapers/*.webp` (several
-  MB) and the icon sprite were re-downloaded on every visit. `spa` now answers
+  MB) were re-downloaded on every visit. `spa` now answers
   a matching `If-None-Match` with `304` and no body. Keep the per-coding ETags
   distinct: a cache holding the identity body must not validate a `br`
   request.
@@ -221,10 +217,6 @@ derived per file and matter for correctness:
   - `CACHE_IMMUTABLE` (`public, max-age=31536000, immutable`) for
     `/assets/*`, `/fonts/*` (content-hashed by Vite), `/wallpapers/*` and
     `/static/*` (release-scoped, hand-authored).
-  - `CACHE_REVALIDATE` (`public, max-age=86400`) for `/sprite-unified.svg`:
-    its URL is fixed but its content is regenerated
-    from the sources on every build, so `immutable` would pin a stale sprite
-    (blank new icons) in every browser.
   - none for `serve_dist_file` (`/manifest.json`, `/favicon.svg`, `/sw.js`) and
     none for `serve_spa` (`index.html`): a stale `index.html` or `sw.js` would
     strand an upgraded client on the previous release.
@@ -468,11 +460,9 @@ Maintainers produce the release assets with the same file, from a checkout
 
 The archive is a single `homevault` binary that already contains the built UI,
 so both frontend build steps run before `cargo build` and are part of the
-release: `npm run build` regenerates the **subset** icon sprite (`prebuild`,
-see [FRONTEND.md](./FRONTEND.md) → Icon sprite) and writes the pre-compressed
-`.br` / `.gz` siblings (`postbuild`, see the SPA-serving section above).
-Skipping or reordering that would ship a full-sprite, on-the-fly-compressed
-binary.
+release: `npm run build` writes the pre-compressed `.br` / `.gz` siblings
+(`postbuild`, see the SPA-serving section above). Skipping or reordering that
+would ship an on-the-fly-compressed binary.
 
 `src/dependencies.rs`'s tests keep the two sides honest: every package in the
 runtime inventory must appear in `install.sh`, the inline systemd unit and

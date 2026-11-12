@@ -332,7 +332,7 @@ fn callback_page(status: StatusCode, title: &str, message: &str) -> Response {
          <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\
          <title>{title}</title>\
          <style>body{{font-family:system-ui,sans-serif;max-width:38rem;margin:4rem auto;padding:0 1.5rem;color:#1f2933;line-height:1.5}}\
-         h1{{font-size:1.4rem}}a{{color:#1E62AE}}</style></head>\
+         h1{{font-size:1.4rem}}a{{color:#2E72C9}}</style></head>\
          <body><h1>{title}</h1><p>{message}</p>\
          <p><a href=\"/desktop\">Return to HomeVault</a></p></body></html>",
         title = escape_html(title),

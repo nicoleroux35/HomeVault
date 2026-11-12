@@ -614,7 +614,10 @@ fn resolve_unconfined(path: &str) -> Option<PathBuf> {
 /// Extracts a safe filename from a client-provided upload name.
 /// Returns `None` if the name is empty, a dot component, or attempts to
 /// escape the target directory (e.g. contains `..` or path separators).
-pub(crate) fn sanitize_upload_filename(name: &str) -> Option<String> {
+///
+/// Public so the fuzz harness (`fuzz/fuzz_targets/upload_filename.rs`) and
+/// `tests/fuzz_smoke.rs` can drive the real gate instead of a copy.
+pub fn sanitize_upload_filename(name: &str) -> Option<String> {
     let trimmed = name.trim();
     let file_name = std::path::Path::new(trimmed).file_name()?;
     let file_name = file_name.to_str()?;
@@ -665,7 +668,9 @@ pub(crate) fn content_type_for_path(path: &std::path::Path) -> &'static str {
 
 /// Neutralises characters that could break a `Content-Disposition` header
 /// (quotes, backslashes, control characters).
-pub(crate) fn sanitize_download_filename(name: &str) -> String {
+///
+/// Public for the same reason as [`sanitize_upload_filename`].
+pub fn sanitize_download_filename(name: &str) -> String {
     name.chars()
         .map(|c| {
             if c.is_control() || c == '"' || c == '\\' {

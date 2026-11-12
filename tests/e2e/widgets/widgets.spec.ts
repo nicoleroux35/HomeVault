@@ -244,18 +244,19 @@ test.describe('2 — Tile / desktop consistency', () => {
         headerH: Math.round(hb.height),
         tileW: Math.round(tb.width),
         tileH: Math.round(tb.height),
-        // Perfect circle, like the dock tiles / topbar buttons / in-window app
-        // header (--hv-winhdr-icon-radius: 50%).
+        // v2 icon pill: a 9px squircle shared with the in-window app header.
         tileRadius: getComputedStyle(tile).borderTopLeftRadius,
         tileCentered: Math.abs((tb.top + tb.height / 2) - (hb.top + hb.height / 2)),
+        // v2 header trailing status slot (live dot / count / badge).
+        metaCount: header.querySelectorAll('.hv-widget-meta').length,
         // Width stops come from the shared --hv-monitor-w* token set.
         compactW: tokenWidth('--hv-monitor-w-compact'),
         standardW: tokenWidth('--hv-monitor-w'),
         wideW: tokenWidth('--hv-monitor-w-wide'),
       };
     });
-    // Floating widget-card corner (--hv-radius-card = 18px) — not a control radius.
-    expect(parseFloat(geo.radius)).toBe(18);
+    // Floating widget-card corner (--hv-radius-card = 20px) — not a control radius.
+    expect(parseFloat(geo.radius)).toBe(20);
     // The header is the app-header bar: 44px, a 28px icon tile dead-centre, and
     // no close/action button (monitor visibility is managed in Settings).
     // A 1px rounding difference between engines is not a geometry regression.
@@ -263,8 +264,9 @@ test.describe('2 — Tile / desktop consistency', () => {
     expect(geo.headerH).toBeLessThanOrEqual(45);
     expect(geo.tileW).toBe(28);
     expect(geo.tileH).toBe(28);
-    expect(geo.tileRadius, 'widget header icon tile is a perfect circle').toBe('50%');
+    expect(geo.tileRadius, 'widget header icon tile is the 9px icon pill').toBe('9px');
     expect(geo.tileCentered).toBeLessThanOrEqual(2);
+    expect(geo.metaCount, 'the v2 header carries its trailing status slot').toBe(1);
     // Width stops: compact 280 / standard 300 / wide 320.
     expect(geo.compactW).toBe(280);
     expect(geo.standardW).toBe(300);

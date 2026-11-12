@@ -31,7 +31,7 @@
   import { createConfirmState } from '$lib/utils/confirmDialog.svelte';
   import { notifyError, notifySuccess } from '$lib/utils/notify';
   import { cn } from '$lib/utils.js';
-  import { IconShare, IconPlus, IconSettings, IconPlayerPlay, IconSquare, IconRefresh, IconShield, IconTrash, IconUser, IconUsers, IconGauge } from '@tabler/icons-svelte';
+  import { IconShare, IconPlus, IconSettings, IconPlayerPlay, IconSquare, IconRefresh, IconShield, IconTrash, IconUser, IconUsers, IconGauge } from '$lib/icons/lucide';
 
   interface Share {
     name: string;
@@ -1056,7 +1056,7 @@
   footerMode="status"
 >
   {#snippet icon()}
-    <IconShare stroke={1.7} />
+    <IconShare strokeWidth={1.8} />
   {/snippet}
 
   <!-- Page-level primary action: a WindowToolbar row under the header, never
@@ -1064,7 +1064,7 @@
   {#snippet toolbarRight()}
     {#if activeTab === 'list'}
       <Button variant="primary" onclick={() => (showCreateModal = true)} data-testid="shares-new">
-        <IconPlus size={18} stroke={2} /> {$t('shares.new_share')}
+        <IconPlus size={18} strokeWidth={1.8} /> {$t('shares.new_share')}
       </Button>
     {/if}
   {/snippet}
@@ -1103,17 +1103,17 @@
 
       {#if shares.length === 0}
         <EmptyState data-testid="shares-empty" title={$t('shares.empty_title')} description={$t('shares.empty_desc')}>
-          {#snippet iconSnippet()}<IconShare size={32} stroke={1.8} />{/snippet}
+          {#snippet iconSnippet()}<IconShare size={32} strokeWidth={1.8} />{/snippet}
           {#snippet action()}
             <Button variant="primary" size="lg" onclick={() => (showCreateModal = true)}>
-              <IconPlus size={19} stroke={2.2} /> {$t('shares.new_share')}
+              <IconPlus size={19} strokeWidth={2.2} /> {$t('shares.new_share')}
             </Button>
           {/snippet}
         </EmptyState>
       {:else}
         <div class="flex flex-col gap-3 max-w-[640px]">
           {#each shares as share (share.name + share.share_type)}
-            <div data-testid="shares-card" class="p-4 rounded-2xl bg-[var(--hv-shell-card)] border border-[var(--hv-shell-border)]">
+            <div data-testid="shares-card" class="p-4 rounded-2xl bg-card border border-border">
               <div class="flex items-center justify-between gap-2.5 mb-3">
                 <span class="px-2.5 py-1.5 rounded-md text-c-xs font-extrabold tracking-wide text-white" style="background:{getProtocolColor(share.share_type)}">{share.share_type.toUpperCase()}</span>
                 <span class:on={share.enabled} class={cn('inline-flex items-center gap-2 text-c-label font-semibold', share.enabled ? 'text-[var(--hv-success)]' : 'text-[var(--hv-shell-text)]')}>
@@ -1230,7 +1230,7 @@
       {@render svcBar('smb', 'SMB / CIFS')}
       {@render modeSwitch(smbMode, (m) => (smbMode = m))}
       {#if configLoading}<div data-testid="shares-loading" class="flex items-center justify-center py-12"><Spinner /></div>{:else}
-        <div data-testid="shares-form" class="flex flex-col gap-4 p-5 rounded-2xl bg-[var(--hv-shell-card)] border border-[var(--hv-shell-border)]">
+        <div data-testid="shares-form" class="flex flex-col gap-4 p-5 rounded-2xl bg-card border border-border">
           <label class={field}><span class={fieldLabel}>{$t('shares.workgroup')}</span><input class={inp} bind:value={smbConfig.workgroup} /></label>
           {@render toggleField($t('shares.guest'), smbConfig.allow_guest, (v) => (smbConfig.allow_guest = v))}
           {#if smbMode === 'advanced'}
@@ -1238,7 +1238,7 @@
             {#if smbConfig.security_mode === 'ads'}
               <label class={field}><span class={fieldLabel}>{$t('shares.realm')}</span><input class={inp} bind:value={smbConfig.realm} placeholder="EXAMPLE.LAN" data-testid="smb-realm" /></label>
               <label class={field}><span class={fieldLabel}>{$t('shares.idmap_range')}</span><input class={inp} bind:value={smbConfig.idmap_range} placeholder="10000-999999" data-testid="smb-idmap-range" /></label>
-              <p class="m-0 text-c-small text-[var(--hv-shell-text-muted)]">{$t('shares.ads_hint')}</p>
+              <p class="m-0 text-c-small text-[var(--hv-shell-text-3)]">{$t('shares.ads_hint')}</p>
               <div class="flex flex-col gap-2 p-3 rounded-xl bg-[var(--hv-shell-border-soft)] border border-[var(--hv-shell-border)]">
                 <label class={field}><span class={fieldLabel}>{$t('shares.domain_user')}</span><input class={inp} bind:value={domainUser} autocomplete="username" /></label>
                 <label class={field}><span class={fieldLabel}>{$t('shares.domain_password')}</span><input class={inp} type="password" bind:value={domainPassword} autocomplete="current-password" /></label>
@@ -1250,34 +1250,34 @@
             {/if}
             <label class={field}><span class={fieldLabel}>{$t('shares.version')}</span><select class={inp} bind:value={smbConfig.protocol_version}><option value="SMB2">SMB2</option><option value="SMB3">SMB3</option></select></label>
             {@render toggleField($t('shares.multichannel'), smbConfig.multichannel, (v) => (smbConfig.multichannel = v))}
-            <p class="m-0 text-c-small text-[var(--hv-shell-text-muted)]">{$t('shares.multichannel_hint')}</p>
+            <p class="m-0 text-c-small text-[var(--hv-shell-text-3)]">{$t('shares.multichannel_hint')}</p>
             <!-- P1: discovery-only WS-Discovery, so Windows Explorer lists the
                  appliance without a typed path. No share or file is exposed. -->
             {@render toggleField($t('shares.ws_discovery'), smbConfig.ws_discovery, (v) => (smbConfig.ws_discovery = v))}
-            <p class="m-0 text-c-small text-[var(--hv-shell-text-muted)]" data-testid="ws-discovery-hint">
+            <p class="m-0 text-c-small text-[var(--hv-shell-text-3)]" data-testid="ws-discovery-hint">
               {wsDiscoveryStatus?.available ? $t('shares.ws_discovery_hint') : $t('shares.ws_discovery_unavailable')}
             </p>
             {#if wsDiscoveryStatus && wsDiscoveryStatus.available && !wsDiscoveryStatus.running}
-              <p class="m-0 text-c-small text-[var(--hv-shell-text-muted)]" data-testid="ws-discovery-detail">{wsDiscoveryStatus.detail}</p>
+              <p class="m-0 text-c-small text-[var(--hv-shell-text-3)]" data-testid="ws-discovery-detail">{wsDiscoveryStatus.detail}</p>
             {/if}
             {@render toggleField($t('shares.durable_handles'), smbConfig.durable_handles, (v) => (smbConfig.durable_handles = v))}
-            <p class="m-0 text-c-small text-[var(--hv-shell-text-muted)]">{$t('shares.durable_handles_hint')}</p>
+            <p class="m-0 text-c-small text-[var(--hv-shell-text-3)]">{$t('shares.durable_handles_hint')}</p>
             <label class={field}><span class={fieldLabel}>{$t('shares.smb_encrypt')}</span><select class={inp} bind:value={smbConfig.smb_encrypt}><option value="off">{$t('shares.encrypt_off')}</option><option value="desired">{$t('shares.encrypt_desired')}</option><option value="required">{$t('shares.encrypt_required')}</option></select></label>
-            <p class="m-0 text-c-small text-[var(--hv-shell-text-muted)]">{$t('shares.smb_encrypt_hint')}</p>
+            <p class="m-0 text-c-small text-[var(--hv-shell-text-3)]">{$t('shares.smb_encrypt_hint')}</p>
             <label class={field}><span class={fieldLabel}>{$t('shares.server_signing')}</span><select class={inp} bind:value={smbConfig.server_signing}><option value="off">{$t('shares.signing_off')}</option><option value="desired">{$t('shares.signing_desired')}</option><option value="mandatory">{$t('shares.signing_mandatory')}</option></select></label>
-            <p class="m-0 text-c-small text-[var(--hv-shell-text-muted)]">{$t('shares.server_signing_hint')}</p>
+            <p class="m-0 text-c-small text-[var(--hv-shell-text-3)]">{$t('shares.server_signing_hint')}</p>
             {@render toggleField($t('shares.strict_sync'), smbConfig.strict_sync, (v) => (smbConfig.strict_sync = v))}
-            <p class="m-0 text-c-small text-[var(--hv-shell-text-muted)]">{$t('shares.strict_sync_hint')}</p>
+            <p class="m-0 text-c-small text-[var(--hv-shell-text-3)]">{$t('shares.strict_sync_hint')}</p>
             <label class={field}><span class={fieldLabel}>{$t('shares.aio_read_size')}</span><input class={inp} type="number" min="0" max="16777216" bind:value={smbConfig.aio_read_size} /></label>
             <label class={field}><span class={fieldLabel}>{$t('shares.aio_write_size')}</span><input class={inp} type="number" min="0" max="16777216" bind:value={smbConfig.aio_write_size} /></label>
-            <p class="m-0 text-c-small text-[var(--hv-shell-text-muted)]">{$t('shares.aio_hint')}</p>
+            <p class="m-0 text-c-small text-[var(--hv-shell-text-3)]">{$t('shares.aio_hint')}</p>
             {@render toggleField($t('shares.use_sendfile'), smbConfig.use_sendfile, (v) => (smbConfig.use_sendfile = v))}
-            <p class="m-0 text-c-small text-[var(--hv-shell-text-muted)]">{$t('shares.use_sendfile_hint')}</p>
+            <p class="m-0 text-c-small text-[var(--hv-shell-text-3)]">{$t('shares.use_sendfile_hint')}</p>
             {@render toggleField($t('shares.oplocks'), smbConfig.oplocks, (v) => (smbConfig.oplocks = v))}
             {@render toggleField($t('shares.kernel_oplocks'), smbConfig.kernel_oplocks, (v) => (smbConfig.kernel_oplocks = v))}
             {@render toggleField($t('shares.level2_oplocks'), smbConfig.level2_oplocks, (v) => (smbConfig.level2_oplocks = v))}
-            <p class="m-0 text-c-small text-[var(--hv-shell-text-muted)]">{$t('shares.oplocks_hint')}</p>
-            <p class="m-0 text-c-small text-[var(--hv-shell-text-muted)]">{$t('shares.smb_domain_note')}</p>
+            <p class="m-0 text-c-small text-[var(--hv-shell-text-3)]">{$t('shares.oplocks_hint')}</p>
+            <p class="m-0 text-c-small text-[var(--hv-shell-text-3)]">{$t('shares.smb_domain_note')}</p>
             <label class={field}><span class={fieldLabel}>{$t('shares.create_mask')}</span><input class={inp} bind:value={smbConfig.create_mask} /></label>
             <label class={field}><span class={fieldLabel}>{$t('shares.directory_mask')}</span><input class={inp} bind:value={smbConfig.directory_mask} /></label>
           {/if}
@@ -1286,7 +1286,7 @@
       {/if}
 
       {#if smbShares > 0}
-        <div data-testid="shares-recycle" class="flex flex-col gap-4 p-5 rounded-2xl bg-[var(--hv-shell-card)] border border-[var(--hv-shell-border)]">
+        <div data-testid="shares-recycle" class="flex flex-col gap-4 p-5 rounded-2xl bg-card border border-border">
           <div>
             <h3 class="m-0 text-c-card-title font-semibold text-[var(--hv-shell-text-strong)]">{$t('shares.recycle_title')}</h3>
             <p class="m-0 mt-1 text-c-base text-[var(--hv-shell-text)] leading-relaxed">{$t('shares.recycle_desc')}</p>
@@ -1305,7 +1305,7 @@
           </div>
         </div>
 
-        <div data-testid="shares-time-machine" class="flex flex-col gap-4 p-5 rounded-2xl bg-[var(--hv-shell-card)] border border-[var(--hv-shell-border)]">
+        <div data-testid="shares-time-machine" class="flex flex-col gap-4 p-5 rounded-2xl bg-card border border-border">
           <div>
             <h3 class="m-0 text-c-card-title font-semibold text-[var(--hv-shell-text-strong)]">{$t('shares.tm_title')}</h3>
             <p class="m-0 mt-1 text-c-base text-[var(--hv-shell-text)] leading-relaxed">{$t('shares.tm_desc')}</p>
@@ -1353,7 +1353,7 @@
           </div>
         </div>
 
-        <div data-testid="shares-previous-versions" class="flex flex-col gap-4 p-5 rounded-2xl bg-[var(--hv-shell-card)] border border-[var(--hv-shell-border)]">
+        <div data-testid="shares-previous-versions" class="flex flex-col gap-4 p-5 rounded-2xl bg-card border border-border">
           <div>
             <h3 class="m-0 text-c-card-title font-semibold text-[var(--hv-shell-text-strong)]">{$t('shares.pv_title')}</h3>
             <p class="m-0 mt-1 text-c-base text-[var(--hv-shell-text)] leading-relaxed">{$t('shares.pv_desc')}</p>
@@ -1372,7 +1372,7 @@
           </div>
         </div>
 
-        <div class="flex flex-col gap-3 p-5 rounded-2xl bg-[var(--hv-shell-card)] border border-[var(--hv-shell-border)]">
+        <div class="flex flex-col gap-3 p-5 rounded-2xl bg-card border border-border">
           <div>
             <h3 class="m-0 text-c-card-title font-semibold text-[var(--hv-shell-text-strong)]">{$t('shares.smb_access_title')}</h3>
             <p class="m-0 mt-1 text-c-base text-[var(--hv-shell-text)] leading-relaxed">{$t('shares.smb_access_desc')}</p>
@@ -1393,20 +1393,20 @@
       {@render svcBar('nfs', 'NFS')}
       {@render modeSwitch(nfsMode, (m) => (nfsMode = m))}
       {#if configLoading}<div data-testid="shares-loading" class="flex items-center justify-center py-12"><Spinner /></div>{:else}
-        <div data-testid="shares-form" class="flex flex-col gap-4 p-5 rounded-2xl bg-[var(--hv-shell-card)] border border-[var(--hv-shell-border)]">
+        <div data-testid="shares-form" class="flex flex-col gap-4 p-5 rounded-2xl bg-card border border-border">
           <label class={field}><span class={fieldLabel}>{$t('shares.networks')}</span><textarea class={cn(inp, 'h-auto min-h-[76px] py-3 font-[family-name:var(--hv-font-mono)] text-c-base leading-relaxed resize-y')} bind:value={nfsNetworks} rows="3"></textarea></label>
           <label class={field}><span class={fieldLabel}>{$t('shares.access')}</span><select class={inp} bind:value={nfsConfig.default_access}><option value="rw">{$t('shares.read_write')}</option><option value="ro">{$t('shares.read_only_opt')}</option></select></label>
           {#if nfsMode === 'advanced'}
             <label class={field}><span class={fieldLabel}>{$t('shares.version')}</span><select class={inp} bind:value={nfsConfig.version}><option value="auto">{$t('shares.nfs_version_auto')}</option><option value="3">NFS v3</option><option value="4">NFS v4</option><option value="4.1">NFS v4.1</option><option value="4.2">NFS v4.2</option></select></label>
             <label class={field}><span class={fieldLabel}>{$t('shares.nfs_security')}</span><select class={inp} bind:value={nfsConfig.security_flavor}><option value="sys">{$t('shares.nfs_sec_sys')}</option><option value="krb5">krb5</option><option value="krb5i">krb5i</option><option value="krb5p">krb5p</option></select></label>
-            <p class="m-0 text-c-small text-[var(--hv-shell-text-muted)]">{$t('shares.nfs_kerberos_hint')}</p>
+            <p class="m-0 text-c-small text-[var(--hv-shell-text-3)]">{$t('shares.nfs_kerberos_hint')}</p>
             <label class={field}><span class={fieldLabel}>{$t('shares.root_squash')}</span><select class={inp} bind:value={nfsConfig.root_squash}><option value="root_squash">{$t('shares.root_squash')}</option><option value="no_root_squash">{$t('shares.no_root_squash')}</option><option value="all_squash">{$t('shares.all_squash')}</option></select></label>
             <label class={field}><span class={fieldLabel}>{$t('shares.nfs_security')}</span><select class={inp} bind:value={nfsConfig.security_flavor}><option value="sys">AUTH_SYS</option><option value="krb5">Kerberos (krb5)</option><option value="krb5i">Kerberos integrity (krb5i)</option><option value="krb5p">Kerberos privacy (krb5p)</option></select></label>
           {/if}
           <Button variant="primary" size="lg" onclick={saveNfsConfig}>{$t('common.save')}</Button>
         </div>
 
-        <div class="flex flex-col gap-3 p-5 rounded-2xl bg-[var(--hv-shell-card)] border border-[var(--hv-shell-border)]" data-testid="shares-nfs-rules">
+        <div class="flex flex-col gap-3 p-5 rounded-2xl bg-card border border-border" data-testid="shares-nfs-rules">
           <div>
             <h3 class="m-0 text-c-card-title font-semibold text-[var(--hv-shell-text-strong)]">{$t('shares.nfs_rules_title')}</h3>
             <p class="m-0 mt-1 text-c-base text-[var(--hv-shell-text)] leading-relaxed">{$t('shares.nfs_rules_desc')}</p>
@@ -1435,7 +1435,7 @@
       {@render svcBar('ftp', 'FTP')}
       {@render modeSwitch(ftpMode, (m) => (ftpMode = m))}
       {#if configLoading}<div data-testid="shares-loading" class="flex items-center justify-center py-12"><Spinner /></div>{:else}
-        <div data-testid="shares-form" class="flex flex-col gap-4 p-5 rounded-2xl bg-[var(--hv-shell-card)] border border-[var(--hv-shell-border)]">
+        <div data-testid="shares-form" class="flex flex-col gap-4 p-5 rounded-2xl bg-card border border-border">
           {@render toggleField($t('shares.force_tls'), ftpConfig.force_tls, (v) => (ftpConfig.force_tls = v))}
           {@render toggleField($t('shares.anonymous'), ftpConfig.allow_anonymous, (v) => (ftpConfig.allow_anonymous = v))}
           {#if ftpConfig.allow_anonymous}
@@ -1447,8 +1447,8 @@
             <label class={field}><span class={fieldLabel}>{$t('shares.passive_ports')}</span><input class={inp} bind:value={ftpConfig.passive_ports} /></label>
             <label class={field}><span class={fieldLabel}>{$t('shares.max_clients')}</span><input class={inp} type="number" bind:value={ftpConfig.max_clients} /></label>
             <label class={field}><span class={fieldLabel}>{$t('shares.allowed_users')}</span><textarea class={cn(inp, 'h-auto min-h-[76px] py-3 font-[family-name:var(--hv-font-mono)] text-c-base leading-relaxed resize-y')} bind:value={ftpUsers} rows="3"></textarea></label>
-            <p class="m-0 text-c-small text-[var(--hv-shell-text-muted)]">{$t('shares.allowed_users_hint')}</p>
-            <p class="m-0 text-c-small text-[var(--hv-shell-text-muted)]">{$t('shares.ftp_chroot_note')}</p>
+            <p class="m-0 text-c-small text-[var(--hv-shell-text-3)]">{$t('shares.allowed_users_hint')}</p>
+            <p class="m-0 text-c-small text-[var(--hv-shell-text-3)]">{$t('shares.ftp_chroot_note')}</p>
           {/if}
           <Button variant="primary" size="lg" onclick={saveFtpConfig}>{$t('common.save')}</Button>
         </div>
@@ -1460,7 +1460,7 @@
       {@render svcBar('webdav', 'WebDAV')}
       {@render modeSwitch(webdavMode, (m) => (webdavMode = m))}
       {#if configLoading}<div data-testid="shares-loading" class="flex items-center justify-center py-12"><Spinner /></div>{:else}
-        <div data-testid="shares-form" class="flex flex-col gap-4 p-5 rounded-2xl bg-[var(--hv-shell-card)] border border-[var(--hv-shell-border)]">
+        <div data-testid="shares-form" class="flex flex-col gap-4 p-5 rounded-2xl bg-card border border-border">
           <label class={field}><span class={fieldLabel}>{$t('shares.access_url')}</span><input class={inp} value={webdavUrl} disabled /></label>
           {@render toggleField($t('shares.auth_required'), webdavConfig.require_auth, (v) => (webdavConfig.require_auth = v))}
           {@render toggleField($t('shares.ssl_tls'), webdavConfig.require_ssl, (v) => (webdavConfig.require_ssl = v))}
@@ -1477,14 +1477,14 @@
     <div data-testid="shares-config" class="flex flex-col gap-4 max-w-[640px]">
       {@render svcBar('sftp', 'SFTP')}
       {#if configLoading}<div data-testid="shares-loading" class="flex items-center justify-center py-12"><Spinner /></div>{:else}
-        <div data-testid="shares-form" class="flex flex-col gap-4 p-5 rounded-2xl bg-[var(--hv-shell-card)] border border-[var(--hv-shell-border)]">
+        <div data-testid="shares-form" class="flex flex-col gap-4 p-5 rounded-2xl bg-card border border-border">
           <p class="m-0 text-c-base text-[var(--hv-shell-text)] leading-relaxed">{$t('shares.sftp_hint')}</p>
           <label class={field}><span class={fieldLabel}>{$t('shares.sftp_port')}</span><input class={inp} type="number" bind:value={sftpConfig.port} /></label>
           <Button variant="primary" size="lg" onclick={saveSftpConfig}>{$t('common.save')}</Button>
         </div>
       {/if}
 
-      <div data-testid="shares-form" class="flex flex-col gap-4 p-5 rounded-2xl bg-[var(--hv-shell-card)] border border-[var(--hv-shell-border)]">
+      <div data-testid="shares-form" class="flex flex-col gap-4 p-5 rounded-2xl bg-card border border-border">
         <div data-testid="shares-form-head" class="flex items-center justify-between gap-3 flex-wrap">
           <h3 class="m-0 text-c-card-title font-semibold text-[var(--hv-shell-text-strong)]">{$t('shares.sftp_users_title')}</h3>
           <Button variant="ghost" onclick={handleRefreshSftpAccess} disabled={sftpRefreshing}>
@@ -1542,7 +1542,7 @@
           <Alert variant="warning">{$t('shares.rsync_missing_binary')}</Alert>
         {/if}
 
-        <div data-testid="shares-rsync-settings" class="flex flex-col gap-4 p-5 rounded-2xl bg-[var(--hv-shell-card)] border border-[var(--hv-shell-border)]">
+        <div data-testid="shares-rsync-settings" class="flex flex-col gap-4 p-5 rounded-2xl bg-card border border-border">
           <div>
             <h3 class="m-0 text-c-card-title font-semibold text-[var(--hv-shell-text-strong)]">{$t('shares.rsync_title')}</h3>
             <p class="m-0 mt-1 text-c-base text-[var(--hv-shell-text)] leading-relaxed">{$t('shares.rsync_desc')}</p>
@@ -1571,11 +1571,11 @@
           <code class="text-c-label font-[family-name:var(--hv-font-mono)] break-all text-[var(--hv-shell-text-2)]">{rsync.ssh_path}</code>
         </div>
 
-        <div data-testid="shares-rsync-modules" class="flex flex-col gap-3 p-5 rounded-2xl bg-[var(--hv-shell-card)] border border-[var(--hv-shell-border)]">
+        <div data-testid="shares-rsync-modules" class="flex flex-col gap-3 p-5 rounded-2xl bg-card border border-border">
           <div class="flex items-center justify-between gap-3 flex-wrap">
             <h3 class="m-0 text-c-card-title font-semibold text-[var(--hv-shell-text-strong)]">{$t('shares.rsync_modules_title')}</h3>
             <Button variant="primary" onclick={() => openRsyncModule()} disabled={rsync.modules.length >= rsync.module_limit}>
-              <IconPlus size={16} stroke={2} /> {$t('shares.rsync_add_module')}
+              <IconPlus size={16} strokeWidth={1.8} /> {$t('shares.rsync_add_module')}
             </Button>
           </div>
           <p class="m-0 text-c-base text-[var(--hv-shell-text)] leading-relaxed">{$t('shares.rsync_modules_desc')}</p>
@@ -1603,10 +1603,10 @@
                         ariaLabelledby={`shares-rsync-module-${module.name}`}
                       />
                       <button type="button" class="grid place-items-center w-9 h-9 flex-none rounded-lg border-none bg-transparent text-[var(--hv-shell-text-2)] cursor-pointer hover:bg-[var(--hv-subtle-hover)] hover:text-[var(--hv-shell-text-strong)] hv-ic" data-testid="shares-rsync-edit" aria-label={$t('tasks.edit', { name: module.name })} onclick={() => openRsyncModule(module)}>
-                        <IconUser size={18} stroke={1.8} />
+                        <IconUser size={18} strokeWidth={1.8} />
                       </button>
                       <button type="button" class="grid place-items-center w-9 h-9 flex-none rounded-lg border-none bg-transparent text-[var(--hv-shell-text-2)] cursor-pointer hover:bg-[var(--hv-subtle-hover)] hover:text-[var(--hv-shell-text-strong)] hv-ic" data-testid="shares-rsync-delete" aria-label={$t('tasks.delete', { name: module.name })} disabled={rsyncBusyName === module.name} onclick={() => deleteRsyncModule(module)}>
-                        <IconTrash size={18} stroke={1.8} />
+                        <IconTrash size={18} strokeWidth={1.8} />
                       </button>
                     </div>
                   </div>
@@ -1616,7 +1616,7 @@
           {/if}
         </div>
 
-        <div data-testid="shares-rsync-passwords" class="flex flex-col gap-3 p-5 rounded-2xl bg-[var(--hv-shell-card)] border border-[var(--hv-shell-border)]">
+        <div data-testid="shares-rsync-passwords" class="flex flex-col gap-3 p-5 rounded-2xl bg-card border border-border">
           <h3 class="m-0 text-c-card-title font-semibold text-[var(--hv-shell-text-strong)]">{$t('shares.rsync_passwords_title')}</h3>
           <p class="m-0 text-c-base text-[var(--hv-shell-text)] leading-relaxed">{$t('shares.rsync_passwords_desc')}</p>
           {#if rsync.available_users.length === 0}
@@ -1679,8 +1679,8 @@
 </PageLayout>
 
 {#snippet svcBar(svc: string, label: string)}
-  <div data-testid="shares-svcbar" class="flex items-center gap-3 flex-wrap px-4 py-4 rounded-2xl bg-[var(--hv-shell-card)] border border-[var(--hv-shell-border)]">
-    <span class="grid place-items-center w-[46px] h-[46px] flex-none rounded-lg text-white" style="background:{getProtocolColor(svc)}"><IconSettings size={20} stroke={1.9} /></span>
+  <div data-testid="shares-svcbar" class="flex items-center gap-3 flex-wrap px-4 py-4 rounded-2xl bg-card border border-border">
+    <span class="grid place-items-center w-[46px] h-[46px] flex-none rounded-lg text-white" style="background:{getProtocolColor(svc)}"><IconSettings size={20} strokeWidth={1.8} /></span>
     <div class="flex-1 min-w-[120px]">
       <h2 class="m-0 mb-0.5 text-base font-semibold text-[var(--hv-shell-text-strong)]">{label}</h2>
       <span class:on={getServiceRunning(svc)} class={cn('inline-flex items-center gap-2 text-c-label font-semibold', getServiceRunning(svc) ? 'text-[var(--hv-success)]' : 'text-[var(--hv-shell-text)]')}>
@@ -1714,7 +1714,7 @@
 <!-- Create share -->
 <Modal open={showCreateModal} title={$t('shares.modal_title')} size="md" onclose={closeCreate}>
   {#snippet icon()}
-    <IconPlus size={22} stroke={2} />
+    <IconPlus size={22} strokeWidth={1.8} />
   {/snippet}
   {#snippet children()}
     <div class="flex flex-col gap-4">
@@ -1757,7 +1757,7 @@
   onclose={() => (rsyncModuleModal = false)}
 >
   {#snippet icon()}
-    <IconGauge size={22} stroke={1.9} />
+    <IconGauge size={22} strokeWidth={1.8} />
   {/snippet}
   {#snippet children()}
     <div class="flex flex-col gap-4">
@@ -1810,7 +1810,7 @@
               />
               <span class="text-c-base text-[var(--hv-shell-text-strong)]">{user}</span>
               {#if !(rsync?.users_with_secret ?? []).includes(user)}
-                <span class="text-c-label text-[var(--hv-warning,#B45309)]">{$t('shares.rsync_no_password_yet')}</span>
+                <span class="text-c-label text-[var(--hv-warning,#96601A)]">{$t('shares.rsync_no_password_yet')}</span>
               {/if}
             </label>
           {/each}
@@ -1832,7 +1832,7 @@
 <!-- Permissions -->
 <Modal open={showPermissionsModal} title={$t('shares.permissions_title', { name: permissionsShare?.name ?? '' })} size="md" onclose={closePermissions}>
   {#snippet icon()}
-    <IconShield size={22} stroke={1.9} />
+    <IconShield size={22} strokeWidth={1.8} />
   {/snippet}
   {#snippet children()}
     {#if permissionsLoading}

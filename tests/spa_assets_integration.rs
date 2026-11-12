@@ -27,8 +27,7 @@
 //!   revalidate at all, so `/wallpapers/*.webp` — several MB — were
 //!   re-downloaded on every visit);
 //! * the paths whose content never changes within a release
-//!   (`/static/*`, `/wallpapers/*`) are pinned with `immutable`, while the
-//!   generated icon sprite gets a long-but-revalidated lifetime;
+//!   (`/static/*`, `/wallpapers/*`) are pinned with `immutable`;
 //! * a pre-compressed `.br` / `.gz` sibling emitted by
 //!   `frontend/scripts/precompress-dist.mjs` is what actually gets served, and
 //!   the response is `Vary: accept-encoding`.
@@ -36,7 +35,7 @@
 //! `static/sounds/README.md` is committed, so the route assertions hold even
 //! when `static/dist` has never been built (which is the case in the
 //! integration CI job — it runs `cargo test` with no frontend build). The
-//! sprite/wallpaper assertions therefore state their build prerequisite
+//! asset assertions therefore state their build prerequisite
 //! explicitly and no-op when it is absent.
 //!
 //! Run:
@@ -57,7 +56,6 @@ use homevault::handlers::spa;
 fn router() -> Router {
     Router::new()
         .route("/static/{*path}", get(spa::serve_static_file))
-        .route("/sprite-unified.svg", get(spa::serve_sprite_unified))
         .route("/wallpapers/{*path}", get(spa::serve_wallpapers_file))
         .route(
             "/manifest.json",
@@ -152,31 +150,12 @@ async fn unknown_static_path_is_404_not_the_spa_fallback() {
 }
 
 // =========================================================================
-// /sprite-unified.svg, /wallpapers/*, /manifest.json — need `static/dist`
+// /favicon.svg, /wallpapers/*, /manifest.json — need `static/dist`
 // =========================================================================
 
 #[tokio::test]
-async fn icon_sprite_is_revalidated_rather_than_immutable() {
-    let res = fetch("/sprite-unified.svg", &[]).await;
-    if res.status() == StatusCode::NOT_FOUND {
-        // No frontend build in this checkout (`static/dist` is gitignored).
-        return;
-    }
-    assert_eq!(res.status(), StatusCode::OK);
-    assert!(header_of(&res, header::ETAG).is_some());
-
-    // The sprite is regenerated from the sources on every build, so a year of
-    // `immutable` would pin a stale copy (and therefore blank new icons) in
-    // every browser. It must stay revalidated.
-    assert_eq!(
-        header_of(&res, header::CACHE_CONTROL),
-        Some("public, max-age=86400")
-    );
-}
-
-#[tokio::test]
 async fn precompressed_sibling_is_served_instead_of_compressing_on_the_fly() {
-    let identity = fetch("/sprite-unified.svg", &[]).await;
+    let identity = fetch("/favicon.svg", &[]).await;
     if identity.status() == StatusCode::NOT_FOUND {
         return; // no frontend build — see the module docs
     }
@@ -187,7 +166,7 @@ async fn precompressed_sibling_is_served_instead_of_compressing_on_the_fly() {
         "a request without Accept-Encoding must get the identity bytes"
     );
 
-    let gzipped = fetch("/sprite-unified.svg", &[("accept-encoding", "gzip")]).await;
+    let gzipped = fetch("/favicon.svg", &[("accept-encoding", "gzip")]).await;
     assert_eq!(gzipped.status(), StatusCode::OK);
     assert_eq!(header_of(&gzipped, header::CONTENT_ENCODING), Some("gzip"));
     // `Vary` is what stops a shared cache from handing the compressed bytes to
@@ -217,12 +196,12 @@ async fn precompressed_sibling_is_served_instead_of_compressing_on_the_fly() {
 
 #[tokio::test]
 async fn brotli_is_preferred_when_the_client_offers_it() {
-    let identity = fetch("/sprite-unified.svg", &[]).await;
+    let identity = fetch("/favicon.svg", &[]).await;
     if identity.status() == StatusCode::NOT_FOUND {
         return;
     }
 
-    let brotli = fetch("/sprite-unified.svg", &[("accept-encoding", "gzip, br")]).await;
+    let brotli = fetch("/favicon.svg", &[("accept-encoding", "gzip, br")]).await;
     assert_eq!(brotli.status(), StatusCode::OK);
     assert_eq!(header_of(&brotli, header::CONTENT_ENCODING), Some("br"));
 }

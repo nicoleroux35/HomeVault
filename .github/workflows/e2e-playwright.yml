@@ -84,7 +84,7 @@ jobs:
       - name: Build frontend (embedded as static/dist)
         run: cd frontend && npm run build
       - name: Install browsers matching @playwright/test
-        run: npx playwright install chromium firefox
+        run: npx playwright install chromium firefox webkit
       - name: Build backend
         run: export PATH="$HOME/.cargo/bin:$PATH" && cargo build --locked
       # Nothing after this point needs cargo or the package caches, and the
@@ -164,8 +164,29 @@ jobs:
       # shifts layout mid-click); failures that persist warm stay red.
       - name: E2E stage B — all screens except setup
         run: |
-          E2E_DIRS=$(for d in tests/e2e/*/; do [ "$d" != "tests/e2e/setup/" ] && printf '%s ' "$d"; done)
+          E2E_DIRS=$(for d in tests/e2e/*/; do
+            case "$d" in
+              tests/e2e/setup/|tests/e2e/design/|tests/e2e/compat/) ;;
+              *) printf '%s ' "$d" ;;
+            esac
+          done)
           npx playwright test $E2E_DIRS --workers=1 --reporter=html --retries=1
+      # D2 — WCAG 2.2 AA (plus the existing typography and UI-kit guards).
+      # The baseline freezes existing debt and fails on any new axe violation.
+      - name: Design gates — axe-core, typography, UI kit
+        run: |
+          npx playwright test \
+            tests/e2e/design/a11y.spec.ts \
+            tests/e2e/design/typography.spec.ts \
+            tests/e2e/design/ui-kit.spec.ts \
+            --workers=1 --reporter=line
+      # D3 — visual regression at 360 / 768 / 1280. Baselines are committed
+      # under tests/e2e/design/visual.spec.ts-snapshots.
+      - name: Visual regression — three widths
+        run: npx playwright test --config=playwright.visual.config.ts --workers=1 --reporter=line
+      # Browser compatibility — WebKit desktop + iPhone and a Pixel viewport.
+      - name: Browser compatibility — WebKit + real mobile viewports
+        run: npx playwright test --config=playwright.compat.config.ts --workers=1 --reporter=line
       - name: Stop server
         if: always()
         run: |

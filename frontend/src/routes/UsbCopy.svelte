@@ -37,6 +37,8 @@
   import type { UsbCopyProfile, RemovableDevice } from '$lib/types/phase4';
   import Modal from '$lib/components/theme/Modal.svelte';
   import { Button } from '$lib/components/theme';
+  import { PageLayout, SectionCard } from '$lib/components/app';
+  import { IconUsb } from '$lib/icons/lucide';
 
   let profiles = $state<UsbCopyProfile[]>([]);
   let devices = $state<RemovableDevice[]>([]);
@@ -184,16 +186,22 @@
   }
 </script>
 
-<div class="usb-page">
-  <header class="usb-header">
-    <div class="min-w-0">
-      <h2 class="usb-title">{$t('settings.usb_copy_title')}</h2>
-      <p class="usb-subtitle">{$t('settings.usb_copy_subtitle')}</p>
-    </div>
+<PageLayout title={$t('settings.usb_copy_title')} data-testid="usb-page">
+  {#snippet icon()}
+    <IconUsb strokeWidth={1.8} />
+  {/snippet}
+
+  {#snippet toolbarRight()}
+    <Button variant="ghost" onclick={loadData} data-testid="usb-refresh">
+      {$t('common.refresh')}
+    </Button>
     <Button variant="primary" onclick={openNewProfile} data-testid="usb-new-profile">
       {$t('settings.usb_copy_new_profile')}
     </Button>
-  </header>
+  {/snippet}
+
+  <div class="flex flex-col gap-4">
+    <p class="m-0 text-c-sm text-[var(--hv-shell-text-2)]">{$t('settings.usb_copy_subtitle')}</p>
 
   {#if error}
     <div class="usb-alert usb-alert-error" role="alert">{error}</div>
@@ -211,12 +219,8 @@
   {#if loading}
     <p class="usb-hint">{$t('common.loading')}</p>
   {:else}
-    <div class="usb-grid">
-      <section class="usb-card" aria-labelledby="usb-profiles-heading">
-        <h2 id="usb-profiles-heading" class="usb-card-title">
-          {$t('settings.usb_copy_profiles_title')}
-        </h2>
-
+    <div class="grid gap-4 @min-[900px]:grid-cols-[3fr_2fr]">
+      <SectionCard title={$t('settings.usb_copy_profiles_title')} class="min-w-0">
         {#if profiles.length === 0}
           <p class="usb-hint" data-testid="usb-no-profiles">
             {$t('settings.usb_copy_profiles_empty')}
@@ -295,18 +299,9 @@
             {/each}
           </ul>
         {/if}
-      </section>
+      </SectionCard>
 
-      <section class="usb-card" aria-labelledby="usb-devices-heading">
-        <div class="usb-card-head">
-          <h2 id="usb-devices-heading" class="usb-card-title">
-            {$t('settings.usb_copy_devices_title')}
-          </h2>
-          <Button variant="ghost" size="sm" onclick={loadData} data-testid="usb-refresh">
-            {$t('common.refresh')}
-          </Button>
-        </div>
-
+      <SectionCard title={$t('settings.usb_copy_devices_title')} class="min-w-0">
         {#if devices.length === 0}
           <p class="usb-hint" data-testid="usb-no-devices">
             {$t('settings.usb_copy_devices_empty')}
@@ -334,10 +329,11 @@
             {/each}
           </ul>
         {/if}
-      </section>
+      </SectionCard>
     </div>
   {/if}
-</div>
+  </div>
+</PageLayout>
 
 <Modal
   open={showProfileDialog}
@@ -476,42 +472,11 @@
 </Modal>
 
 <style>
-  .usb-page {
-    display: flex;
-    flex-direction: column;
-    gap: 16px;
-    padding: 16px;
-    color: var(--hv-shell-text);
-  }
-
-  .usb-header {
-    display: flex;
-    align-items: flex-start;
-    justify-content: space-between;
-    gap: 16px;
-    flex-wrap: wrap;
-  }
-
-  /* Rendered as an `h2`: the desktop window chrome already carries the
-     screen's single `h1`, and a second one breaks the one-h1 invariant. */
-  .usb-title {
-    margin: 0;
-    font-size: 1.125rem;
-    font-weight: 600;
-    color: var(--hv-shell-text);
-  }
-
-  .usb-subtitle {
-    margin: 2px 0 0;
-    font-size: 0.8125rem;
-    color: var(--hv-shell-text-2);
-  }
-
   .usb-alert {
     border: 1px solid var(--hv-shell-border);
-    border-radius: 8px;
+    border-radius: var(--hv-radius-control);
     padding: 10px 12px;
-    font-size: 0.8125rem;
+    font-size: var(--hv-text-base);
   }
 
   .usb-alert-error {
@@ -532,39 +497,6 @@
     color: var(--hv-shell-text-2);
   }
 
-  .usb-grid {
-    display: grid;
-    grid-template-columns: 1fr;
-    gap: 16px;
-  }
-
-  @media (min-width: 900px) {
-    .usb-grid {
-      grid-template-columns: 3fr 2fr;
-    }
-  }
-
-  .usb-card {
-    border: 1px solid var(--hv-shell-border);
-    border-radius: 10px;
-    padding: 14px;
-    background: var(--hv-shell-surface);
-  }
-
-  .usb-card-head {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 8px;
-  }
-
-  .usb-card-title {
-    margin: 0 0 10px;
-    font-size: 0.875rem;
-    font-weight: 600;
-    color: var(--hv-settings-title);
-  }
-
   .usb-profiles,
   .usb-devices {
     list-style: none;
@@ -577,8 +509,9 @@
   .usb-profile,
   .usb-device {
     border: 1px solid var(--hv-shell-border);
-    border-radius: 8px;
-    padding: 10px 12px;
+    border-radius: var(--hv-radius-control);
+    background: var(--hv-shell-card);
+    padding: 12px;
   }
 
   .usb-profile.is-disabled {
@@ -671,21 +604,30 @@
 
   .usb-field label {
     display: block;
-    font-size: 0.8125rem;
-    font-weight: 500;
-    color: var(--hv-settings-title);
+    font-size: var(--hv-text-label);
+    font-weight: var(--hv-font-weight-medium);
+    color: var(--hv-shell-text-strong);
   }
 
   .usb-field input[type='text'],
+  .usb-field input[type='number'],
   .usb-field select {
     width: 100%;
+    min-height: var(--hv-touch-target-min);
     margin-top: 4px;
     border: 1px solid var(--hv-shell-border-strong);
-    border-radius: 6px;
-    padding: 6px 10px;
-    font-size: 0.8125rem;
-    background: var(--hv-shell-surface);
-    color: var(--hv-shell-text);
+    border-radius: var(--hv-radius-control);
+    padding: 0 12px;
+    font-size: var(--hv-text-base);
+    background: var(--hv-shell-fill);
+    color: var(--hv-shell-text-strong);
+  }
+
+  .usb-field input:focus-visible,
+  .usb-field select:focus-visible {
+    outline: none;
+    border-color: var(--hv-primary);
+    box-shadow: var(--hv-focus-ring);
   }
 
   .usb-field-check {

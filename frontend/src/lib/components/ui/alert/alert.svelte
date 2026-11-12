@@ -8,7 +8,7 @@
 				default: "bg-card text-card-foreground",
 				destructive: "text-destructive bg-card *:data-[slot=alert-description]:text-destructive/90 *:[svg]:text-current",
 				/* HomeVault semantic tints — quiet-fill + border from the `--hv-*`
-				   tokens, the old `.hv-alert-{variant}` look. */
+				 tokens, the old `.hv-alert-{variant}` look. */
 				info: "bg-[var(--hv-primary-light)] text-card-foreground border-[var(--hv-primary-fixed-dim)]",
 				success: "bg-[var(--hv-success-bg)] text-card-foreground border-[var(--hv-success-border)]",
 				warning: "bg-[var(--hv-warning-bg)] text-card-foreground border-[var(--hv-warning-border)]",

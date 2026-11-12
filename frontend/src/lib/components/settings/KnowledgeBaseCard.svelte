@@ -25,7 +25,7 @@
   import { api } from '$lib/services/api';
   import { t, translate } from '$lib/stores/i18n';
   import { isAdmin } from '$lib/stores/auth';
-  import { IconCheck, IconRefresh } from '@tabler/icons-svelte';
+  import { IconCheck, IconRefresh } from '$lib/icons/lucide';
   import SettingsCard from './SettingsCard.svelte';
   import { cn } from '$lib/utils.js';
   import {
@@ -182,7 +182,7 @@
       aria-label={$t('chat.rag_refresh')}
       title={$t('chat.rag_refresh')}
     >
-      <IconRefresh size={20} stroke={2} />
+      <IconRefresh size={20} strokeWidth={1.8} />
     </button>
   </div>
 
@@ -210,7 +210,7 @@
       <div class="flex flex-wrap items-center gap-2">
         {#if embeddingInstalled}
           <span data-testid="kb-embedding-installed" class="inline-flex items-center gap-1 text-xs font-semibold text-[var(--hv-success)]">
-            <IconCheck size={16} stroke={2.5} /> {$t('chat.rag_embedding_ready')}
+            <IconCheck size={16} strokeWidth={2.5} /> {$t('chat.rag_embedding_ready')}
           </span>
         {:else if $isAdmin}
           <button

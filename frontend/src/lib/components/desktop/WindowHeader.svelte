@@ -147,7 +147,7 @@
              `size` prop. Passing one here (and in every route's icon snippet)
              only duplicated the clamp. `stroke` is NOT clamped by any rule, so
              it stays explicit or the glyph would visibly thicken. -->
-        <Icon name={iconName} stroke={1.8} />
+        <Icon name={iconName} strokeWidth={1.8} />
       {/if}
     </div>
 
@@ -171,7 +171,7 @@
         {#if actionLabel}
           <button class="hv-winhdr-action-btn" onclick={onAction} disabled={actionDisabled}>
             {#if ActionIcon}
-              <ActionIcon size={15} stroke={2} />
+              <ActionIcon size={15} strokeWidth={1.8} />
             {/if}
             <span>{actionLabel}</span>
           </button>
@@ -193,7 +193,7 @@
           onkeydown={(e) => onTabKeydown(e, i)}
         >
           {#if tab.icon}
-            <tab.icon size={15} stroke={2} />
+            <tab.icon size={15} strokeWidth={1.8} />
           {/if}
           {tab.label}
           {#if tab.count !== undefined}

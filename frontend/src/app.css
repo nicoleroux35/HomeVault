@@ -52,8 +52,8 @@ body {
    `--primary`, `--ring`, …) and registers the Tailwind v4 color/radius
    tokens the `components/ui/*` components reference (`bg-primary`,
    `text-muted-foreground`, `ring-ring`, `rounded-md`, …), so every ui/*
-   component renders the HomeVault palette — #1E62AE brand, #1F2733 ink on
-   #FFFFFF/#F7F8FA paper, #DCE1E7 hairlines, #C22B21 danger.
+   component renders the HomeVault palette — #2E72C9 brand, #1F2733 ink on
+   #FFFFFF/#F6F8FB paper, #E3E8EF hairlines, #C0392B danger.
    ===================================================================== */
 
 @theme inline {
@@ -163,13 +163,15 @@ body {
   --background: var(--hv-shell-bg);
   --foreground: var(--hv-shell-text-strong);
 
-  --card: var(--hv-shell-card);
+  /* Cards are white paper in v2; `--hv-shell-card` stays the recessed fill
+     that nested tiles and rows read instead. */
+  --card: var(--hv-shell-glass);
   --card-foreground: var(--hv-shell-text-strong);
 
-  --popover: var(--hv-shell-card);
+  --popover: var(--hv-shell-glass);
   --popover-foreground: var(--hv-shell-text-strong);
 
-  /* Brand = HomeVault primary #1E62AE (was shadcn default black). */
+  /* Brand = HomeVault primary #2E72C9 (was shadcn default black). */
   --primary: var(--hv-primary);
   --primary-foreground: var(--hv-on-primary);
 
@@ -183,7 +185,7 @@ body {
   --accent: var(--hv-surface-container-low);
   --accent-foreground: var(--hv-shell-text-strong);
 
-  /* Success #1E7E34 / warning #B45309 / danger #C22B21 — the HomeVault
+  /* Success #167A4D / warning #96601A / danger #C0392B — the HomeVault
      semantic hues (were shadcn green/yellow/red). */
   --success: var(--hv-success);
   --warning: var(--hv-warning);
@@ -204,9 +206,9 @@ body {
   --sidebar-border: var(--hv-shell-border);
   --sidebar-ring: var(--hv-primary);
 
-  /* Radius: HomeVault stop map (8/12/18 + badge/pill). shadcn's `rounded-md`
+  /* Radius: HomeVault stop map (8/12/20 + badge/pill). shadcn's `rounded-md`
      and `rounded-lg` → --radius-md/--radius-lg → the 12px control corner;
-     `rounded-xl` / `rounded-2xl` → the 18px surface corner. Retune a family in
+     `rounded-xl` / `rounded-2xl` → the 20px surface corner. Retune a family in
      tokens.css, never here. */
   --radius: var(--hv-radius-default);
 }

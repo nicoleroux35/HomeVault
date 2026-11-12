@@ -52,9 +52,9 @@
       if (response.data.accent_color) {
         document.documentElement.style.setProperty('--hv-primary', response.data.accent_color);
       }
-      if (response.data.wallpaper) {
-        // `normalizeWallpaper` accepts the bare path the API stores and the
-        // legacy JSON-encoded object.
+      if (typeof response.data.wallpaper === 'string') {
+        // An empty string is the built-in v2 gradient; otherwise this is the
+        // bare path (or a legacy JSON object) `normalizeWallpaper` accepts.
         wallpaperStore.applyRaw(response.data.wallpaper);
       }
     } catch (error) {

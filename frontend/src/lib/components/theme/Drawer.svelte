@@ -13,7 +13,7 @@
        with the --hv-* tokens. On desktop layouts prefer Modal.
 
      Dependencies:
-       - svelte (>= 5), bits-ui, @tabler/icons-svelte
+       - svelte (>= 5), bits-ui, $lib/icons/lucide
 
      Usage:
        `import { Drawer } from '$lib/components/theme'`.
@@ -37,7 +37,7 @@
    * drag snapping, so the sheet renders at its full `max-h`/`max-w` size.
    */
   import { Dialog } from 'bits-ui';
-  import { IconX } from '@tabler/icons-svelte';
+  import { IconX } from '$lib/icons/lucide';
   import { t } from '$lib/stores/i18n';
   import type { Snippet } from 'svelte';
 
@@ -93,7 +93,7 @@
         class="absolute top-3 right-3 z-10 grid h-9 w-9 cursor-pointer place-items-center rounded-full border-none bg-transparent text-[var(--hv-shell-text-2)] hover:text-[var(--hv-shell-text-strong)] hv-ic-abs"
         aria-label={$t('common.close')}
       >
-        <IconX size={20} stroke={1.7} />
+        <IconX size={20} strokeWidth={1.8} />
       </Dialog.Close>
 
       {#if header}

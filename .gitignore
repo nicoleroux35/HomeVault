@@ -54,6 +54,10 @@ data/
 /node_modules/
 /test-results/
 /playwright-report/
+/playwright-report-visual/
+/playwright-report-compat/
+/playwright-report-vm/
+/frontend/coverage/
 /playwright/.cache/
 /blob-report/
 
@@ -124,3 +128,15 @@ ses_*
 # `ROADMAP-DSM.md`. Kept on disk for reference, deliberately not published —
 # a maintained document in the tree must not be a stale one.
 /dsm_homevault_comparison.md
+
+# Local planning/audit records captured on this workstation: they carry
+# machine-specific paths and dated snapshots of the backlog. The maintained
+# versions live in docs/ and the tracked tasklists; these inputs are not
+# published (CLAUDE.md, "Keep the repository clean").
+/PLAN_INSTALLATION_2_VOIES.md
+/TEST_FAILURES_TASKLIST.md
+/COMPARAISON_FIABILITE_DSM_TRUENAS_HOMEVAULT_*.md
+
+# Local design exports (canvas SVGs + notes) for the v2 visual pass. Reference
+# material only; the app's own screens live in frontend/src.
+/Nouveau_design/

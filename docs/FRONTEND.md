@@ -68,29 +68,31 @@ all token-driven — SVG paint properties can't be Tailwind classes), and
 (`.set-spinner`; the save-button skin lives in `SettingsSaveButton`).
 ## Design system
 
-The product has **one** design identity — "HomeVault Appliance" (2026-09-12),
-which replaced "Fluent Paper" and "Frosted Glass Modernism". The full
+The product has **one** design identity — "HomeVault Appliance v2" (2026-11-10,
+from `Nouveau_design/DESIGN.md`), which replaced "Fluent Paper", "Frosted Glass
+Modernism" and the first Appliance skin. The full
 reference is **`docs/guides/design-system.md`**; the summary:
 
 - `frontend/src/lib/styles/theme/tokens.css` is the **single source of truth**
   for design tokens. Every `var(--…)` in `.svelte`/`.css` must use the
   `--hv-` prefix. Values are bespoke HomeVault stops (one brand accent
-  `#1E62AE` "HomeVault Blue", cool blue-grey neutrals `#1F2733` ink family,
-  semantic `#1E7E34`/`#B45309`/`#C22B21`, opaque `--hv-shell-*` surfaces), so
+  `#2E72C9` "HomeVault Blue", cool blue-grey neutrals `#1F2733` ink family,
+  semantic `#167A4D`/`#96601A`/`#C0392B`, opaque `--hv-shell-*` surfaces), so
   the compliance is auditable in the file itself — no external framework is
   authoritative.
-- **Opaque paper surfaces** — `--hv-shell-glass` `#FFFFFF` / card `#F7F8FA` /
-  fill `#EFF1F4` / hairlines `#DCE1E7`; no backdrop blur anywhere in-window
+- **Opaque paper surfaces** — `--hv-shell-glass` `#FFFFFF` / card `#F6F8FB` /
+  fill `#F3F6FA` / hairlines `#E3E8EF`; no backdrop blur anywhere in-window
   (a dark photo wallpaper must never wash out ink text). Depth comes from the
   layered shadow scale.
 - **Appliance radius stops** — three corners, one value each: the **badge**
   stop (**8px**: inline badges, micro chips — `--hv-radius-badge`), the
   **control** stop (**12px**: buttons, inputs, selects, chips, rows — pinned on
   every button of every screen by E2E `desktop.spec.ts` `14.12`) and the
-  **surface** stop (**18px**: windows, monitor widgets, modals, drawers,
+  **surface** stop (**20px**: windows, monitor widgets, modals, drawers,
   popovers, cards). `--hv-radius-pill` (980px) is the tag corner for filter /
-  severity / category chips. The ladder was retuned 4/6/12 → 8/12/18 on
-  2026-10-19 from the Apple-derived reference §4 (see
+  severity / category chips. The v2 refresh (2026-11-10) moved the container
+  stop 18 → 20px and introduced the 9–16px squircle icon pill for widget
+  headers, Settings tiles, window app tiles and dock tiles (see
   `docs/guides/design-system.md` §2.2/§3.2); the 16px window, 24px chrome-panel,
   8px and 10px control stops stay retired, and the aliases (`md`/`lg`,
   `2xl`/`3xl`/`4xl`, `sm`) resolve to those three values, so retune each family
@@ -101,74 +103,60 @@ reference is **`docs/guides/design-system.md`**; the summary:
   `text-[length:var(--hv-…)]` spelling is banned (see
   `docs/guides/design-system.md` §2.1).
 - **One component language, three layers**: primitives (`theme/`) → framework
-  (`ui/`, shadcn-svelte / Melt UI) → page composites (`app/`) + desktop
+  (`ui/`, shadcn-svelte / Bits UI) → page composites (`app/`) + desktop
   (`desktop/`). New screens use these — nothing hand-rolled per app.
 
-### Icon sprite (`phosphor-` / `tabler-`)
+### Icons — Lucide (`@lucide/svelte`)
 
-`frontend/src/lib/icons/generate-sprite.mjs` reads `@phosphor-icons/web`
-(`selection.json`) and `@tabler/icons-svelte` (Svelte components) and bakes
-them into the unified sprite `public/sprite-unified.svg` under the `phosphor-`
-/ `tabler-` prefixes. `Icon.svelte` treats `phosphor-*` symbols as filled
-glyphs (`fill: currentColor`) since Phosphor's regular set is solid shapes,
-unlike Tabler's stroke-based outlines. Usage: `<Icon name="tabler-check" />`
-or `<Icon name="check" library="tabler" />`. The library-agnostic
-`getIcon(name)` auto-fallback prefers `tabler` then `phosphor`.
+The v2 design's icon grid is Lucide outline at `stroke-width: 1.8`. Every
+product icon now goes through `frontend/src/lib/icons/lucide.ts`, a facade that
+re-exports the Lucide component under the historical `Icon*` name (for example
+`House as IconHome`, `HeartPulse as IconHeartbeat`). Route/component imports
+use that facade (`import { IconHome } from '$lib/icons/lucide'`), so a screen
+never depends on the package name and the retired Tabler/Phosphor imports do
+not creep back.
 
-**The sprite is subset to the icons the frontend can actually reference.**
-The two libraries ship 7 750 glyphs (~3.6 MB) but `main.ts` fetches the sprite
-and injects it into the DOM on every page load, so everything unused is pure
-transfer/parse/memory cost. The script scans only the files whose string
-literals can become an icon name:
+Names that arrive as **data** (`<Icon name="folder">`, app registry `icon`,
+settings catalogue, sidebar config) resolve through
+`frontend/src/lib/icons/lucide-registry.ts`, a kebab-name → Lucide component
+map. Add a key there whenever a new string can reach `Icon.svelte`.
 
-1. components rendering the sprite (`<Icon name="folder">`, or a literal
-   inside a `name={cond ? 'a' : 'b'}` expression),
-2. components handing an icon name down as a prop (`<EmptyState icon="gauge">`,
-   `iconName="terminal"`),
-3. `$lib/stores/**` and `$lib/services/**` (they can feed those components),
-4. the first-party `catalog/**/homevault-app.toml` manifests (`icon = "…"`).
-
-That closure yields ~110 icons. Scanning the whole tree instead is
-**not** a substitute: icon names are ordinary short words (`home`, `user`,
-`lock`), so a whole-tree literal scan matches nearly the entire library and
-removes almost nothing (measured: 7 659 of 7 750 kept). The Docker app catalog
-never reaches the sprite at all — `Docker.svelte::catalogIconFor` resolves a
-manifest `icon` to a bundled Tabler *component*.
-
-Regeneration is wired into the build (`npm run build` runs `prebuild`), and
-`mapping-unified.ts` is filtered to the same set so `getIcon`/`hasIcon` stay
-truthful. A new icon is therefore picked up automatically once it appears as a
-literal in one of those files. If a runtime-constructed name ever turns up,
-regenerate the complete sprite with `HV_SPRITE_FULL=1 npm run icons:generate`.
-The script aborts the build if the subset comes out empty.
+There is **no sprite sheet and no icon prebuild**: the old
+`generate-sprite.mjs` / `sprite-unified.svg` / `mapping-unified.ts` pipeline and
+its boot-time fetch were removed on 2026-11-10. Vite tree-shakes the Lucide
+components actually imported; the `icons-lucide` chunk is the only icon chunk.
+`npm run icons:generate` no longer exists.
 
 **The Fluent System Icons set
-(`@fluentui/svg-icons`, `fluent-` prefix) was removed 2026-09-11** along with
-the Fluent component library — the sprite is now Phosphor + Tabler only.
+(`@fluentui/svg-icons`, `fluent-` prefix) was removed 2026-09-11**; Tabler and
+Phosphor followed on 2026-11-10 when the sprite pipeline was retired.
 
-### shadcn-svelte + Melt UI (2026-09-11, replaces Web Awesome and Fluent)
+### shadcn-svelte + Bits UI (2026-09-11, replaces Web Awesome and Fluent)
 
 The shared component library is **shadcn-svelte** (copy-paste components in
-`frontend/src/lib/components/ui/`, built on **Melt UI** primitives via
-`bits-ui`). It replaces both the `@fluentui/web-components` pilot and the
+`frontend/src/lib/components/ui/`, built on **Bits UI** primitives
+(`bits-ui`). It replaces both the `@fluentui/web-components` pilot and the
 `@awesome.me/webawesome` wrapper 1:1 — same wrapped theme components, same
 external prop APIs, no call site needed updating.
 
-- **Setup:** `components.json` (style `vega`, base `neutral`), the Tailwind v4
-  theme bridge in `app.css` (`@theme inline` + `:root`), and the generated
-  `lib/components/ui/{button,badge,dialog,input,checkbox,radio-group,switch,
-  alert,skeleton,tooltip,select,separator,spinner}`. `lib/utils.ts` exports
+- **Setup:** `components.json` (style `vega`, base `neutral`), the
+  `shadcn-svelte` CLI as a dev dependency, the Tailwind v4 theme bridge in
+  `app.css` (`@theme inline` + `:root`), and the generated
+  `lib/components/ui/` primitives (see the inventory below). `lib/utils.ts` exports
   `cn()` (clsx + tailwind-merge) and the `WithElementRef` / `WithoutChildren*`
   type helpers. `tw-animate-css` supplies the `animate-in/out` utilities the
   dialog/select/tooltip use.
-- **Primitive set (2026-09-13):** the `ui/` layer was completed with the rest
-  of the shadcn-svelte registry: `accordion`, `calendar`, `collapsible`,
-  `command`, `context-menu`, `date-picker` (composed from `calendar` +
-  `popover` + date-fns), `dropdown-menu`, `input-group`, `pagination`,
-  `popover`, `progress`, `scroll-area`, `slider`, `sonner` (toasts),
-  `tabs`, `textarea`, `toggle`, `toggle-group`. Toasts are surfaced via the
-  `theme/Toast.svelte` wrapper (mounted once in `App.svelte`; `toast()` from
-  `svelte-sonner`; hardcoded light theme — HomeVault is light-only).
+- **Primitive set (v2 refresh, 2026-11-10):** the missing registry primitives
+  were added: `card`, `tabs`, `tooltip`, `dropdown-menu`, `popover`,
+  `progress`, `separator`, `sheet`, `scroll-area`, `slider`, `textarea`,
+  `table`, `avatar`, `skeleton`, joining the existing `button`, `badge`,
+  `alert`, `dialog`, `input`, `checkbox`, `radio-group`, `select`, `switch`,
+  `sonner` and `spinner`. `sheet` is the shadcn bottom/top/side overlay;
+  `theme/Drawer` remains the product entry point for that pattern. Toasts are
+  surfaced via `theme/Toast.svelte` (mounted once in `App.svelte`; `toast()`
+  from `svelte-sonner`; light-only). `accordion`, `calendar`, `command`,
+  `context-menu`, `input-group`, `pagination`, `toggle` and `toggle-group` are
+  **not** installed — add one only with its first caller.
 - **Charts (2026-09-13):** `lib/components/charts/` wraps **LayerChart**
   (Svelte 5 / d3) with `--hv-*` tokens: `DonutChart`, `BarsChart`,
   `TrendLineChart`. The Dashboard's CPU per-core panel uses `BarsChart`.
@@ -183,12 +171,12 @@ external prop APIs, no call site needed updating.
 - **Theming is a bridge, not a theme object:** `tokens.css` (`--hv-*`) stays
   the single source of truth. `app.css`'s `:root` maps shadcn's semantic
   variables (`--background`, `--foreground`, `--primary`, `--ring`, …) onto the
-  `--hv-*` tokens — #1E62AE brand, #1F2733 ink on #FFFFFF/#F7F8FA paper,
-  #DCE1E7 hairlines, #C22B21 danger — and the `@theme inline` block registers
+  `--hv-*` tokens — #2E72C9 brand, #1F2733 ink on #FFFFFF/#F6F8FB paper,
+  #E3E8EF hairlines, #C0392B danger — and the `@theme inline` block registers
   them as Tailwind v4 color/radius tokens (`bg-primary`, `text-muted-foreground`,
   `ring-ring`, `rounded-md`, …). A `variant="brand"`-style button therefore
   renders HomeVault's blue, not shadcn's default black; `success`/`warning`/
-  `danger` render `#1E7E34`/`#B45309`/`#C22B21`.
+  `danger` render `#167A4D`/`#96601A`/`#C0392B`.
 - **Wrapped components (external prop API unchanged):** `Button` → shadcn
   button (variants `primary`→default, `secondary`, `success`, `danger`,
   `warning`, `ghost`; `loading` renders the shared Spinner), `Badge` → shadcn
@@ -251,7 +239,7 @@ library):**
   ring and a back link. Every primary button on the screen (sign in, verify,
   recovery, retry, the error modal's dismiss) shares that one CTA treatment.
   The accent is the brand accent — `--hv-login-accent` **is** `--hv-primary`
-  (#1E62AE), so the screen is the desktop palette, not a second identity
+  (#2E72C9), so the screen is the desktop palette, not a second identity
   (`design-system.md` §6.1, 2026-10-17). Errors open the shared error `<Modal>` and shake the
   card (`animate-[hv-shake_0.4s_ease]`); a successful login scales + fades the
   card out before navigating to `/desktop`.
@@ -386,7 +374,7 @@ Dashboard metrics are fetched directly via `api.ts`. There is no
   `svelte-sonner`) and `Drawer` (bits-ui `Dialog` mobile bottom-sheet). The
   interactive ones (`Button`, `Badge`, `Spinner`, `Modal`,
   `Toggle`, `Alert`, `Input`, `Checkbox`, `Radio`) wrap the shadcn-svelte
-  components in `ui/` (Melt/bits-ui) — see "shadcn-svelte + Melt UI" above.
+  components in `ui/` (Bits UI) — see "shadcn-svelte + Bits UI" above.
   - **`Toggle` vs `Switch`** — two switches, deliberately:
     `Toggle` is a bits-ui `role="switch"` **button** (label rendered as a
     sibling span) and is the general-purpose one (Shares, Docker, Restic,
@@ -397,14 +385,13 @@ Dashboard metrics are fetched directly via `api.ts`. There is no
     included — its E2E suite drives `.settings-toggle-label` +
     `input[type=checkbox]` via `flipSwitch()`, and the design fixes one toggle
     geometry screen-wide); do not put a `Toggle` back there.
-- `ui/` — the generated shadcn-svelte components (`components/ui/{button,badge,
-  dialog,input,checkbox,radio-group,switch,alert,skeleton,tooltip,select,
-  separator,spinner,accordion,calendar,collapsible,command,context-menu,
-  dropdown-menu,input-group,pagination,popover,progress,scroll-area,slider,
-  sonner,tabs,textarea,toggle,toggle-group}` + the composed `date-picker`),
-  copy-paste sources built on Melt UI / bits-ui. Import
-  individual modules (`$lib/components/ui/button/index.js`), never a barrel
-  that pulls everything in.
+- `ui/` — the generated shadcn-svelte components
+  (`components/ui/{alert,avatar,badge,button,card,checkbox,dialog,
+  dropdown-menu,input,popover,progress,radio-group,scroll-area,select,
+  separator,sheet,skeleton,slider,sonner,spinner,switch,table,tabs,textarea,
+  tooltip}`), copy-paste sources built on bits-ui. Import individual modules
+  (`$lib/components/ui/button/index.js`), never a barrel that pulls everything
+  in.
 - `charts/` — **LayerChart wrappers** (2026-09-13) themed with `--hv-*` tokens:
   `DonutChart`, `BarsChart`, `TrendLineChart`. Used by the Dashboard CPU
   per-core panel; barrel export via `index.ts`.
@@ -491,9 +478,27 @@ Components call the `t` helper from `stores/i18n.ts` with dotted keys
 ```bash
 cd frontend
 npm install
-npm run dev      # Vite dev server
-npm run build    # production build → static/dist
-npm run check    # svelte-check type checking
+npm run dev            # Vite dev server
+npm run build          # production build → static/dist
+npm run check          # svelte-check type checking
+npm test               # Vitest: stores, helpers, shared components
+npm run test:coverage  # Vitest + v8 coverage, ratcheted thresholds
+npm run lint:ui        # i18n + design-token gates (ratcheted baselines)
+```
+
+The unit/component runner is **Vitest** (`vitest.config.ts`,
+`src/test/setup.ts`) with `@testing-library/svelte` on jsdom. It runs in
+seconds and needs no server. Keep the coverage thresholds in
+`vitest.config.ts` moving up, never down; the same applies to the two lint
+baselines (`lint-i18n-baseline.json`, `lint-tokens-baseline.json`) when you
+translate a screen or replace a raw value with a token.
+
+The cross-cutting visual gates live at the repository root:
+
+```bash
+npx playwright test tests/e2e/design/a11y.spec.ts   # axe-core, WCAG 2.2 AA
+npx playwright test --config=playwright.visual.config.ts   # 360/768/1280
+npx playwright test --config=playwright.compat.config.ts   # WebKit + mobile
 ```
 
 ## Related docs

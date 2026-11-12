@@ -51,7 +51,7 @@
       {#if iconSnippet}
         {@render iconSnippet()}
       {:else}
-        <Icon name={icon!} size={compact ? 20 : 26} stroke={1.8} />
+        <Icon name={icon!} size={compact ? 20 : 26} strokeWidth={1.8} />
       {/if}
     </span>
   {/if}

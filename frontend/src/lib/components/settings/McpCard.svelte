@@ -24,7 +24,7 @@
   import { api } from '$lib/services/api';
   import { t, translate } from '$lib/stores/i18n';
   import { Switch } from '$lib/components/theme';
-  import { IconPlus, IconTrash, IconCopy, IconCheck } from '@tabler/icons-svelte';
+  import { IconPlus, IconTrash, IconCopy, IconCheck } from '$lib/icons/lucide';
   import SettingsCard from './SettingsCard.svelte';
   import { cn } from '$lib/utils.js';
   import {
@@ -340,7 +340,7 @@
             <span class="text-xs font-semibold text-[var(--hv-warning)]">{$t('mcp.token_once')}</span>
             <span class="px-2.5 py-2 rounded-lg bg-[var(--hv-settings-tile)] font-[family-name:var(--hv-font-mono)] text-xs break-all text-[var(--hv-settings-title)]">{justCreated}</span>
             <button class={cn(settingsBtn, settingsBtnGhost, 'self-start')} onclick={copyCreated}>
-              {#if copied}<IconCheck size={16} stroke={2} /> {$t('chat.copied')}{:else}<IconCopy size={16} stroke={2} /> {$t('chat.copy_message')}{/if}
+              {#if copied}<IconCheck size={16} strokeWidth={1.8} /> {$t('chat.copied')}{:else}<IconCopy size={16} strokeWidth={1.8} /> {$t('chat.copy_message')}{/if}
             </button>
           </div>
         {/if}
@@ -366,7 +366,7 @@
             disabled={creating || !newTokenName.trim()}
             aria-label={$t('mcp.token_create')}
           >
-            <IconPlus size={16} stroke={2} />
+            <IconPlus size={16} strokeWidth={1.8} />
             {$t('mcp.token_create')}
           </button>
         </form>
@@ -387,7 +387,7 @@
                   onclick={() => revokeToken(tok.id)}
                   aria-label={$t('mcp.token_revoke')}
                 >
-                  <IconTrash size={16} stroke={2} />
+                  <IconTrash size={16} strokeWidth={1.8} />
                 </button>
               </li>
             {/each}

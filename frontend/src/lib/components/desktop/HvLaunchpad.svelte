@@ -13,7 +13,7 @@
 
      Dependencies:
        - svelte (>= 5), theme/Icon, stores/dragState, stores/i18n,
-         utils/focusTrap, @tabler/icons-svelte
+         utils/focusTrap, $lib/icons/lucide
 
      Usage:
        Opened from the desktop dock / menubar.
@@ -24,7 +24,7 @@
   import { startDrag } from '$lib/stores/dragState';
   import { languageStore, t } from '$lib/stores/i18n';
   import { focusTrap } from '$lib/utils/focusTrap';
-  import { IconPlus } from '@tabler/icons-svelte';
+  import { IconPlus } from '$lib/icons/lucide';
 
   let {
     apps = [],
@@ -336,7 +336,7 @@
                 {#if app.customIcon}
                   {@html app.customIcon}
                 {:else}
-                  <Icon name={app.icon} size={28} stroke={1.8} />
+                  <Icon name={app.icon} size={28} strokeWidth={1.8} />
                 {/if}
                 <!-- Running marker. Presence, not colour, carries the
                      meaning — exactly how the dock's running indicator
@@ -369,7 +369,7 @@
                 {#if app.customIcon}
                   {@html app.customIcon}
                 {:else}
-                  <Icon name={app.icon} size={28} stroke={1.8} />
+                  <Icon name={app.icon} size={28} strokeWidth={1.8} />
                 {/if}
               </span>
               <span class="lp-card-name">{app.name}</span>
@@ -394,7 +394,7 @@
             onclick={() => { onAddShortcut(); onClose(); }}
           >
             <span class="lp-card-icon lp-card-icon-add" aria-hidden="true">
-              <IconPlus size={28} stroke={1.8} />
+              <IconPlus size={28} strokeWidth={1.8} />
             </span>
             <span class="lp-card-name">{$t('shortcuts.add_short')}</span>
           </button>

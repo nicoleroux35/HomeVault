@@ -778,12 +778,12 @@ test.describe('4 — Appearance', () => {
     await expect(page.locator('[data-slot="dialog-content"]')).toHaveCount(0);
   });
 
-  test('4.2 — grid is a 3-column radiogroup of the 44 bundled images', async ({ page }) => {
+  test('4.2 — grid is a 3-column radiogroup of the gradient + 44 bundled images', async ({ page }) => {
     await openSettings(page, admin);
     await openCategory(page, 'appearance');
     const grid = set(page).locator('.settings-wallpaper-grid');
     await expect(grid).toHaveAttribute('role', 'radiogroup');
-    await expect(grid.locator('.settings-wallpaper-tile')).toHaveCount(44);
+    await expect(grid.locator('.settings-wallpaper-tile')).toHaveCount(45);
     const cols = await grid.evaluate(
       (el) => getComputedStyle(el).gridTemplateColumns.split(' ').length
     );
@@ -810,7 +810,7 @@ test.describe('4 — Appearance', () => {
     await openSettings(page, admin);
     await openCategory(page, 'appearance');
     const tiles = set(page).locator('.settings-wallpaper-tile');
-    const target = tiles.nth(3); // 4th bundled wallpaper = hv-04 (no gradient tile any more)
+    const target = set(page).locator('[data-wallpaper-id="hv-04"]');
     await target.click();
     await expect(target).toHaveClass(/is-selected/);
     await expect(target).toHaveAttribute('aria-checked', 'true');
@@ -824,19 +824,19 @@ test.describe('4 — Appearance', () => {
     await openCategory(page, 'general');
     await openCategory(page, 'appearance');
     await expect(
-      set(page).locator('.settings-wallpaper-tile').nth(3)
+      set(page).locator('[data-wallpaper-id="hv-04"]')
     ).toHaveAttribute('aria-checked', 'true');
   });
 
-  test('4.5 — there is no gradient "default" tile; every tile is a real wallpaper', async ({ page }) => {
+  test('4.5 — the first tile is the v2 built-in gradient and can be restored', async ({ page }) => {
     await openSettings(page, admin);
     await openCategory(page, 'appearance');
-    const tiles = set(page).locator('.settings-wallpaper-tile');
-    await tiles.first().click();
-    await expect(tiles.first()).toHaveAttribute('aria-checked', 'true');
+    const tile = set(page).locator('[data-wallpaper-id="default"]');
+    await expect(tile).toBeVisible();
+    await tile.click();
+    await expect(tile).toHaveAttribute('aria-checked', 'true');
     const stored = await page.evaluate(() => localStorage.getItem('hv-wallpaper'));
-    expect(stored).toContain('/wallpapers/hv-01.webp');
-    expect(stored).not.toContain('"default"');
+    expect(stored).toContain('"default"');
   });
 
   test('4.6 — picking a wallpaper stages it; only the Save button PUTs /api/settings/appearance', async ({ page }) => {
@@ -920,7 +920,7 @@ test.describe('4 — Appearance', () => {
     expect(m.cols, '2 columns below 560px').toBe(2);
     expect(m.ratio, `thumbnail aspect ratio ${m.ratio.toFixed(2)} should be ~1.6`).toBeGreaterThan(1.45);
     expect(m.ratio).toBeLessThan(1.75);
-    expect(m.tileCount, 'all 44 wallpapers are in the grid').toBe(44);
+    expect(m.tileCount, 'the gradient + all 44 wallpapers are in the grid').toBe(45);
     expect(m.uniform, `every tile is ${m.w}x${m.h}, got ${m.sizes.join(', ')}`).toBe(true);
     expect(m.colGap, 'column gap == row gap').toBe(m.rowGap);
     expect(m.outsetShadow, 'no bleeding outset drop-shadow on thumbnails').toBe(false);
@@ -2825,7 +2825,7 @@ test.describe('23 — Redesigned shell', () => {
     expect(narrow.cards).toBeGreaterThan(0);
   });
 
-  test('23.12 — one icon tile on the whole screen: a circle at one size, glyphs on the 16/20 ladder', async ({ page }) => {
+  test('23.12 — one icon tile on the whole screen: a 9px squircle at one size, glyphs on the 16/20 ladder', async ({ page }) => {
     // Regressions this pins, all real on 2026-10-19: the rail tile and the
     // Widgets rows were 28px squares with a 12px corner while the Privacy rows
     // were 36px tiles with an 18px corner and a 20px glyph — three shapes and
@@ -2867,9 +2867,8 @@ test.describe('23 — Redesigned shell', () => {
       glyphs.push(...found.glyphs);
     }
 
-    // 1 — every decorative tile is the same 28px circle. A `50%` / `9999px`
-    // radius computes to a huge px value in Firefox, so the check is
-    // "radius resolves to at least half the box", not a literal string.
+    // 1 — every decorative tile is the same 28px squircle (v2: radius 9px,
+    // the icon-pill shape shared with the widget headers).
     const tileSize = await page.evaluate(() =>
       parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--hv-settings-icon-tile')),
     );
@@ -2879,9 +2878,7 @@ test.describe('23 — Redesigned shell', () => {
       expect(t.w, `${t.cat}: tile width (${t.cls})`).toBe(tileSize);
       expect(t.h, `${t.cat}: tile height (${t.cls})`).toBe(tileSize);
       const r = t.radius === '50%' ? Infinity : parseFloat(t.radius);
-      expect(r, `${t.cat}: tile is a circle (${t.radius} on ${t.w}px — ${t.cls})`).toBeGreaterThanOrEqual(
-        tileSize / 2,
-      );
+      expect(r, `${t.cat}: tile is the 9px icon-pill squircle (${t.radius} on ${t.w}px — ${t.cls})`).toBe(9);
     }
     // Exactly one tile size on the whole screen — the point of the test.
     expect([...new Set(tiles.map((t) => `${t.w}x${t.h}`))], 'one tile size').toEqual([`${tileSize}x${tileSize}`]);

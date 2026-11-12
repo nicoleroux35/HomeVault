@@ -25,7 +25,7 @@
   import { createConfirmState } from '$lib/utils/confirmDialog.svelte';
   import { notifyError, notifySuccess } from '$lib/utils/notify';
   import { cn } from '$lib/utils.js';
-  import { IconPlus, IconPlayerPlay, IconTrash, IconTool, IconArrowsExchange } from '@tabler/icons-svelte';
+  import { IconPlus, IconPlayerPlay, IconTrash, IconTool, IconArrowsExchange } from '$lib/icons/lucide';
 
   interface ReplicationJob {
     id: number;
@@ -269,12 +269,12 @@
 
 <PageLayout title={$t('replication.title')} data-testid="replication-page">
   {#snippet icon()}
-    <IconArrowsExchange stroke={1.8} />
+    <IconArrowsExchange strokeWidth={1.8} />
   {/snippet}
 
   {#snippet toolbarRight()}
     <Button variant="primary" data-testid="replication-new" onclick={openCreate}>
-      <IconPlus size={16} stroke={2} /> {$t('replication.new_job')}
+      <IconPlus size={16} strokeWidth={1.8} /> {$t('replication.new_job')}
     </Button>
   {/snippet}
 
@@ -324,7 +324,7 @@
                     data-testid="replication-preview-{job.id}"
                     disabled={previewBusy === job.id}
                     onclick={() => showPreview(job)}
-                  ><IconTool size={17} stroke={1.8} /></button>
+                  ><IconTool size={17} strokeWidth={1.8} /></button>
                   <button
                     type="button"
                     class="grid place-items-center w-9 h-9 flex-none rounded-lg border-none bg-transparent text-[var(--hv-shell-text-2)] cursor-pointer hover:bg-[var(--hv-subtle-hover)] hover:text-[var(--hv-shell-text-strong)] hv-ic"
@@ -332,21 +332,21 @@
                     data-testid="replication-run-{job.id}"
                     disabled={job.running || busyId === job.id}
                     onclick={() => runNow(job)}
-                  ><IconPlayerPlay size={17} stroke={1.8} /></button>
+                  ><IconPlayerPlay size={17} strokeWidth={1.8} /></button>
                   <button
                     type="button"
                     class="grid place-items-center w-9 h-9 flex-none rounded-lg border-none bg-transparent text-[var(--hv-shell-text-2)] cursor-pointer hover:bg-[var(--hv-subtle-hover)] hover:text-[var(--hv-shell-text-strong)] hv-ic"
                     aria-label={$t('tasks.edit', { name: job.name })}
                     data-testid="replication-edit-{job.id}"
                     onclick={() => openEdit(job)}
-                  ><IconTool size={17} stroke={1.8} /></button>
+                  ><IconTool size={17} strokeWidth={1.8} /></button>
                   <button
                     type="button"
                     class="grid place-items-center w-9 h-9 flex-none rounded-lg border-none bg-transparent text-[var(--hv-shell-text-2)] cursor-pointer hover:bg-[var(--hv-error-bg)] hover:text-[var(--hv-error)] hv-ic"
                     aria-label={$t('tasks.delete', { name: job.name })}
                     data-testid="replication-delete-{job.id}"
                     onclick={() => removeJob(job)}
-                  ><IconTrash size={17} stroke={1.8} /></button>
+                  ><IconTrash size={17} strokeWidth={1.8} /></button>
                 </div>
               </div>
 
@@ -392,7 +392,7 @@
 <!-- Create / edit -->
 <Modal open={modalOpen} title={editing === null ? $t('replication.new_job') : $t('replication.edit_job')} size="lg" onclose={() => (modalOpen = false)}>
   {#snippet icon()}
-    <IconArrowsExchange size={22} stroke={1.9} />
+    <IconArrowsExchange size={22} strokeWidth={1.8} />
   {/snippet}
   {#snippet children()}
     <div class="flex flex-col gap-3">
@@ -476,7 +476,7 @@
 <!-- Dry run -->
 <Modal open={!!preview || !!previewError} title={$t('replication.preview')} size="lg" onclose={() => { preview = null; previewError = ''; }}>
   {#snippet icon()}
-    <IconTool size={22} stroke={1.9} />
+    <IconTool size={22} strokeWidth={1.8} />
   {/snippet}
   {#snippet children()}
     {#if previewError}

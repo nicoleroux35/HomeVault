@@ -29,7 +29,7 @@
     GeoIpCountryRule,
   } from '$lib/services/api';
   import { t } from '$lib/stores/i18n';
-  import { IconX } from '@tabler/icons-svelte';
+  import { IconX } from '$lib/icons/lucide';
   import SettingsCard from './SettingsCard.svelte';
   import Switch from '$lib/components/theme/Switch.svelte';
   import { cn } from '$lib/utils.js';

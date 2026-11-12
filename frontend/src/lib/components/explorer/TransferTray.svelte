@@ -12,7 +12,7 @@
 
      Dependencies:
        - svelte (>= 5), $lib/services/api, stores/i18n,
-         utils/transferFormat, @tabler/icons-svelte
+         utils/transferFormat, $lib/icons/lucide
 
      Usage:
        Rendered inside the Explorer's "Transfers" modal:
@@ -47,7 +47,7 @@
     progressPercent,
     transferDetailLine,
   } from '$lib/utils/transferFormat';
-  import { IconAlertCircle, IconDownload, IconFolderSymlink, IconUpload, IconX } from '@tabler/icons-svelte';
+  import { IconAlertCircle, IconDownload, IconFolderSymlink, IconUpload, IconX } from '$lib/icons/lucide';
 
   let { onclose }: { onclose: () => void } = $props();
 
@@ -194,8 +194,8 @@
         data-testid={`transfer-tab-${z.id}`}
         aria-pressed={zone === z.id}
         class="flex min-h-11 items-center gap-1.5 rounded-lg border px-3 text-c-sm cursor-pointer transition-colors {zone === z.id
-          ? 'border-[var(--hv-primary)] bg-[var(--hv-primary-soft)] text-[var(--hv-primary)] font-semibold'
-          : 'border-[var(--hv-border-soft)] bg-transparent text-[var(--hv-text-2)] hover:bg-[var(--hv-subtle-hover)]'}"
+          ? 'border-[var(--hv-primary)] bg-[var(--hv-primary-light)] text-[var(--hv-primary)] font-semibold'
+          : 'border-[var(--hv-shell-border-soft)] bg-transparent text-[var(--hv-shell-text-2)] hover:bg-[var(--hv-subtle-hover)]'}"
         onclick={() => (zone = z.id)}
       >
         <z.icon size={15} aria-hidden="true" />
@@ -204,7 +204,7 @@
           data-testid={`transfer-count-${z.id}`}
           class="min-w-5 rounded-full px-1.5 py-0.5 text-center text-c-xs font-semibold {count(z.id) > 0
             ? 'bg-[var(--hv-primary)] text-[var(--hv-on-primary)]'
-            : 'bg-[var(--hv-subtle)] text-[var(--hv-text-3)]'}"
+            : 'bg-[var(--hv-subtle-hover)] text-[var(--hv-shell-text-3)]'}"
           aria-label={$t('explorer.transfer_zone_count', { count: String(count(z.id)) })}
         >{count(z.id)}</span>
       </button>
@@ -219,18 +219,18 @@
   {/if}
 
   {#if visibleRows.length === 0}
-    <p class="m-0 py-6 text-center text-c-sm text-[var(--hv-text-2)]" data-testid="transfer-empty">
+    <p class="m-0 py-6 text-center text-c-sm text-[var(--hv-shell-text-2)]" data-testid="transfer-empty">
       {$t('explorer.transfer_empty')}
     </p>
   {:else}
     <ul class="m-0 flex list-none flex-col gap-1.5 p-0">
       {#each visibleRows as row (row.id)}
         <li
-          class="rounded-lg border border-[var(--hv-border-soft)] bg-[var(--hv-surface)] p-2.5"
+          class="rounded-lg border border-[var(--hv-shell-border-soft)] bg-[var(--hv-surface)] p-2.5"
           data-testid="transfer-row"
         >
           <div class="flex items-center gap-2">
-            <span class="min-w-0 flex-1 truncate text-c-sm font-medium text-[var(--hv-text)]">
+            <span class="min-w-0 flex-1 truncate text-c-sm font-medium text-[var(--hv-shell-text)]">
               {row.name || $t(`explorer.transfer_kind_${row.kindLabel}`)}
             </span>
             <!-- Only offered when the row can really be stopped: an upload
@@ -240,7 +240,7 @@
             {#if row.kind === 'upload' || row.cancelPath}
               <button
                 type="button"
-                class="hv-ic inline-flex items-center justify-center rounded-lg border border-[var(--hv-border-soft)] bg-transparent p-1.5 text-[var(--hv-text-2)] cursor-pointer hover:bg-[var(--hv-subtle-hover)] disabled:opacity-50 disabled:cursor-progress"
+                class="hv-ic inline-flex items-center justify-center rounded-lg border border-[var(--hv-shell-border-soft)] bg-transparent p-1.5 text-[var(--hv-shell-text-2)] cursor-pointer hover:bg-[var(--hv-subtle-hover)] disabled:opacity-50 disabled:cursor-progress"
                 aria-label={$t('explorer.transfer_cancel', { name: row.name || row.id })}
                 data-testid="transfer-cancel"
                 disabled={cancelling.includes(row.id)}
@@ -257,7 +257,7 @@
           {:else}
             {@const pct = progressPercent(row.progress)}
             <div
-              class="mt-1.5 h-1.5 w-full overflow-hidden rounded-full bg-[var(--hv-subtle)]"
+              class="mt-1.5 h-1.5 w-full overflow-hidden rounded-full bg-[var(--hv-subtle-hover)]"
               role="progressbar"
               aria-valuemin="0"
               aria-valuemax="100"
@@ -270,7 +270,7 @@
                 class:opacity-60={pct === null}
               ></div>
             </div>
-            <p class="m-0 mt-1 truncate text-c-xs text-[var(--hv-text-2)]" data-testid="transfer-detail">
+            <p class="m-0 mt-1 truncate text-c-xs text-[var(--hv-shell-text-2)]" data-testid="transfer-detail">
               {transferDetailLine(row, {
                 language: $languageStore,
                 etaLabel: $t('explorer.transfer_eta_left'),
@@ -278,7 +278,7 @@
               })}
             </p>
             {#if row.where}
-              <p class="m-0 mt-0.5 truncate text-c-xs text-[var(--hv-text-3)]">{row.where}</p>
+              <p class="m-0 mt-0.5 truncate text-c-xs text-[var(--hv-shell-text-3)]">{row.where}</p>
             {/if}
           {/if}
         </li>
@@ -286,23 +286,23 @@
     </ul>
   {/if}
 
-  <details class="rounded-lg border border-[var(--hv-border-soft)] p-2.5" data-testid="transfer-history" ontoggle={(e) => { if ((e.currentTarget as HTMLDetailsElement).open) loadHistory(); }}>
-    <summary class="cursor-pointer text-c-sm font-medium text-[var(--hv-text)]">
+  <details class="rounded-lg border border-[var(--hv-shell-border-soft)] p-2.5" data-testid="transfer-history" ontoggle={(e) => { if ((e.currentTarget as HTMLDetailsElement).open) loadHistory(); }}>
+    <summary class="cursor-pointer text-c-sm font-medium text-[var(--hv-shell-text)]">
       {$t('explorer.transfer_history_title')}
     </summary>
-    <p class="m-0 mt-1 text-c-xs text-[var(--hv-text-2)]">{$t('explorer.transfer_history_desc')}</p>
+    <p class="m-0 mt-1 text-c-xs text-[var(--hv-shell-text-2)]">{$t('explorer.transfer_history_desc')}</p>
     {#if historyLoaded && history.length === 0}
-      <p class="m-0 mt-2 text-c-sm text-[var(--hv-text-2)]" data-testid="transfer-history-empty">
+      <p class="m-0 mt-2 text-c-sm text-[var(--hv-shell-text-2)]" data-testid="transfer-history-empty">
         {$t('explorer.transfer_history_empty')}
       </p>
     {:else}
       <ul class="m-0 mt-2 flex list-none flex-col gap-1 p-0">
         {#each history as entry (entry.id)}
           <li
-            class="flex flex-wrap items-baseline gap-x-2 gap-y-0.5 rounded-md border border-[var(--hv-border-soft)] px-2 py-1 text-c-xs"
+            class="flex flex-wrap items-baseline gap-x-2 gap-y-0.5 rounded-md border border-[var(--hv-shell-border-soft)] px-2 py-1 text-c-xs"
             data-testid="transfer-history-row"
           >
-            <span class="font-medium text-[var(--hv-text)]">
+            <span class="font-medium text-[var(--hv-shell-text)]">
               {$t(`explorer.transfer_kind_${entry.operation === 'upload'
                 ? 'upload'
                 : entry.operation === 'download'
@@ -313,10 +313,10 @@
                       ? 'usb_copy'
                       : 'copy'}`)}
             </span>
-            <span class="min-w-0 flex-1 truncate text-[var(--hv-text-2)]">{entry.dest_path ?? entry.source_path ?? ''}</span>
-            <span class="text-[var(--hv-text-3)]">{formatBytes(entry.bytes_total)}</span>
+            <span class="min-w-0 flex-1 truncate text-[var(--hv-shell-text-2)]">{entry.dest_path ?? entry.source_path ?? ''}</span>
+            <span class="text-[var(--hv-shell-text-3)]">{formatBytes(entry.bytes_total)}</span>
             {#if entry.method}
-              <span class="rounded bg-[var(--hv-subtle)] px-1 text-[var(--hv-text-2)]">{entry.method}</span>
+              <span class="rounded bg-[var(--hv-subtle-hover)] px-1 text-[var(--hv-shell-text-2)]">{entry.method}</span>
             {/if}
             {#if entry.verified}
               <span class="text-[var(--hv-success)]">{$t('explorer.transfer_history_verified')}</span>
@@ -335,7 +335,7 @@
   <div class="flex justify-end">
     <button
       type="button"
-      class="min-h-11 rounded-lg border border-[var(--hv-border-soft)] bg-transparent px-3 text-c-sm text-[var(--hv-text)] cursor-pointer hover:bg-[var(--hv-subtle-hover)]"
+      class="min-h-11 rounded-lg border border-[var(--hv-shell-border-soft)] bg-transparent px-3 text-c-sm text-[var(--hv-shell-text)] cursor-pointer hover:bg-[var(--hv-subtle-hover)]"
       onclick={onclose}
       data-testid="transfer-close"
     >{$t('explorer.transfer_close')}</button>

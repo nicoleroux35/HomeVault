@@ -29,7 +29,7 @@
   import { createConfirmState } from '$lib/utils/confirmDialog.svelte';
   import { cn } from '$lib/utils.js';
   import WindowHeader from '$lib/components/desktop/WindowHeader.svelte';
-  import { IconServer, IconDatabase, IconThermometer, IconUsb, IconActivity, IconLock, IconLockOpen, IconKey, IconShieldCheckered, IconTrash, IconBolt, IconPlus, IconPlayerPlay, IconClock, IconAlertTriangle, IconStack, IconTool, IconCamera, IconArrowsExchange, IconArrowBackUp } from '@tabler/icons-svelte';
+  import { IconServer, IconDatabase, IconThermometer, IconUsb, IconActivity, IconLock, IconLockOpen, IconKey, IconShieldCheckered, IconTrash, IconBolt, IconPlus, IconPlayerPlay, IconClock, IconAlertTriangle, IconStack, IconTool, IconCamera, IconArrowsExchange, IconArrowBackUp } from '$lib/icons/lucide';
   import { t, translate } from '$lib/stores/i18n';
   import { isAdmin } from '$lib/stores/auth';
 
@@ -1624,7 +1624,7 @@
   footerMode="status"
 >
   {#snippet icon()}
-    <IconServer stroke={1.8} />
+    <IconServer strokeWidth={1.8} />
   {/snippet}
 
   {#if loading}
@@ -1632,13 +1632,13 @@
       <span class="sr-only">{$t('storage.analyzing_devices')}</span>
       <div class="grid grid-cols-2 @min-[880px]:grid-cols-4 gap-3" aria-hidden="true">
         {#each Array(4) as _, i}
-          <div class="flex flex-col gap-2 rounded-xl border border-border bg-card px-5 py-4 shadow-[var(--hv-shell-shadow-card)]">
+          <div class="flex flex-col gap-2 rounded-2xl border border-border bg-card px-5 py-4 shadow-[var(--hv-shell-shadow-card)]">
             <span class="hv-skeleton-text block" style="width: {55 + ((i * 31) % 25)}%"></span>
             <span class="hv-skeleton-text block" style="width: {35 + ((i * 17) % 30)}%; height: 1.5em"></span>
           </div>
         {/each}
       </div>
-      <div class="flex flex-col gap-3 rounded-xl border border-border bg-card px-5 py-4 shadow-[var(--hv-shell-shadow-card)]" aria-hidden="true">
+      <div class="flex flex-col gap-3 rounded-2xl border border-border bg-card px-5 py-4 shadow-[var(--hv-shell-shadow-card)]" aria-hidden="true">
         {#each Array(4) as _, i}
           <span class="hv-skeleton-text block" style="width: {45 + ((i * 31 + 17) % 36)}%"></span>
         {/each}
@@ -1660,12 +1660,12 @@
       {#if activeTab === 'disks'}
         {#if disks.length === 0}
           <EmptyState data-testid="storage-empty" title={$t('storage.no_disks_detected')} description={$t('storage.no_disks_hint')}>
-            {#snippet iconSnippet()}<IconServer size={32} stroke={1.8} />{/snippet}
+            {#snippet iconSnippet()}<IconServer size={32} strokeWidth={1.8} />{/snippet}
           </EmptyState>
         {:else}
           <div data-testid="storage-disk-grid" class="grid gap-4 [grid-template-columns:repeat(auto-fill,minmax(260px,1fr))]">
             {#each disks as disk}
-              <button data-testid="storage-disk-card" class="flex flex-col gap-4 px-4 py-4 rounded-lg bg-[var(--hv-shell-card)] border border-[var(--hv-shell-border)] shadow-[var(--hv-shell-shadow-card)] text-left cursor-pointer transition-colors hover:border-[var(--hv-shell-border-strong)]" onclick={() => openDiskDetail(disk)}>
+              <button data-testid="storage-disk-card" class="flex flex-col gap-4 px-4 py-4 rounded-lg bg-card border border-border shadow-[var(--hv-shell-shadow-card)] text-left cursor-pointer transition-colors hover:border-[var(--hv-shell-border-strong)]" onclick={() => openDiskDetail(disk)}>
                 <div class="flex items-center gap-3">
                   <span class={cn('w-2.5 h-2.5 rounded-full flex-none', disk.smart_status === 'Healthy' ? 'bg-[var(--hv-success)]' : disk.smart_status === 'Failed' ? 'bg-[var(--hv-error)]' : 'bg-[var(--hv-warning)]')}></span>
                   <div class="flex-1 min-w-0">
@@ -1726,7 +1726,7 @@
         {#if $isAdmin}
           <div
             data-testid="storage-raid-speed"
-            class="mb-4 px-5 py-4 rounded-2xl bg-[var(--hv-shell-card)] border border-[var(--hv-shell-border)] shadow-[var(--hv-shell-shadow-card)]"
+            class="mb-4 px-5 py-4 rounded-2xl bg-card border border-border shadow-[var(--hv-shell-shadow-card)]"
           >
             <h3 class="m-0 text-c-card-title font-bold text-[var(--hv-shell-text-strong)]">{$t('storage.raid_speed_title')}</h3>
             <p class="m-0 mt-1 text-xs text-[var(--hv-shell-text-2)]">{$t('storage.raid_speed_hint')}</p>
@@ -1751,7 +1751,7 @@
 
         {#if virtualDisks.length === 0}
           <EmptyState data-testid="storage-empty" title={$t('storage.no_virtual_disks')} description={$t('storage.no_virtual_disks_hint')}>
-            {#snippet iconSnippet()}<IconStack size={32} stroke={1.8} />{/snippet}
+            {#snippet iconSnippet()}<IconStack size={32} strokeWidth={1.8} />{/snippet}
             {#snippet action()}
               {#if isAdmin}
                 <Button variant="primary" onclick={() => showGuidedRedundancy = true}>
@@ -1763,7 +1763,7 @@
         {:else}
           <div class="flex flex-col gap-3">
             {#each virtualDisks as v (v.name)}
-              <div data-testid="storage-vd-card" class="px-5 py-4 rounded-2xl bg-[var(--hv-shell-card)] border border-[var(--hv-shell-border)] shadow-[var(--hv-shell-shadow-card)]">
+              <div data-testid="storage-vd-card" class="px-5 py-4 rounded-2xl bg-card border border-border shadow-[var(--hv-shell-shadow-card)]">
                 <div class="flex items-center gap-3 flex-wrap">
                   <span class={cn('grid place-items-center w-10 h-10 rounded-lg flex-none', vdHealthy(v) ? 'bg-[var(--hv-primary-light)] text-[var(--hv-primary)]' : 'bg-[var(--hv-warning-bg)] text-[var(--hv-warning)]')}><IconStack size={20} /></span>
                   <div class="flex-1 min-w-0">
@@ -1817,12 +1817,12 @@
       {:else if activeTab === 'partitions'}
         {#if partitions.length === 0}
           <EmptyState data-testid="storage-empty" title={$t('storage.no_partitions')} description={$t('storage.no_partitions_hint')}>
-            {#snippet iconSnippet()}<IconActivity size={32} stroke={1.8} />{/snippet}
+            {#snippet iconSnippet()}<IconActivity size={32} strokeWidth={1.8} />{/snippet}
           </EmptyState>
         {:else}
           <div class="flex flex-col gap-2.5">
             {#each partitions as p}
-              <div class="px-4 py-3 rounded-xl bg-[var(--hv-shell-card)] border border-[var(--hv-shell-border)]">
+              <div class="px-4 py-3 rounded-lg bg-[var(--hv-shell-card)] border border-[var(--hv-shell-border)]">
                 <div class="flex items-center gap-2.5 flex-wrap">
                   <span class="text-sm font-bold text-[var(--hv-shell-text-strong)] font-[family-name:var(--hv-font-mono)]">{p.device}</span>
                   {#if p.filesystem}<span class="text-micro font-bold uppercase px-2 py-0.5 rounded-full bg-[var(--hv-shell-border-soft)] text-[var(--hv-shell-text-2)]">{p.filesystem}</span>{/if}
@@ -1842,12 +1842,12 @@
       {:else if activeTab === 'removable'}
         {#if removable.length === 0}
           <EmptyState data-testid="storage-empty" title={$t('storage.no_removable')} description={$t('storage.no_removable_hint')}>
-            {#snippet iconSnippet()}<IconUsb size={32} stroke={1.8} />{/snippet}
+            {#snippet iconSnippet()}<IconUsb size={32} strokeWidth={1.8} />{/snippet}
           </EmptyState>
         {:else}
           <div class="grid gap-3 [grid-template-columns:repeat(auto-fill,minmax(220px,1fr))]">
             {#each removable as r}
-              <div data-testid="storage-rem-card" class="px-4 py-4 rounded-2xl bg-[var(--hv-shell-card)] border border-[var(--hv-shell-border)] shadow-[var(--hv-shell-shadow-card)]">
+              <div data-testid="storage-rem-card" class="px-4 py-4 rounded-2xl bg-card border border-border shadow-[var(--hv-shell-shadow-card)]">
                 <div class="flex items-center gap-2.5">
                   <span class={cn('w-2.5 h-2.5 rounded-full flex-none', r.mounted ? 'bg-[var(--hv-success)]' : 'bg-[var(--hv-shell-text-3)]')}></span>
                   <span class="flex-1 text-sm font-bold text-[var(--hv-shell-text-strong)] font-[family-name:var(--hv-font-mono)]">{r.device}</span>
@@ -1873,12 +1873,12 @@
         </div>
         {#if encryptedVolumes.length === 0}
           <EmptyState data-testid="storage-empty" title={$t('encryption.no_volumes')} description={$t('encryption.no_volumes_hint')}>
-            {#snippet iconSnippet()}<IconShieldCheckered size={32} stroke={1.8} />{/snippet}
+            {#snippet iconSnippet()}<IconShieldCheckered size={32} strokeWidth={1.8} />{/snippet}
           </EmptyState>
         {:else}
           <div class="grid gap-3 [grid-template-columns:repeat(auto-fill,minmax(220px,1fr))]">
             {#each encryptedVolumes as v (v.id)}
-              <div data-testid="storage-enc-card" class="px-4 py-4 rounded-2xl bg-[var(--hv-shell-card)] border border-[var(--hv-shell-border)] shadow-[var(--hv-shell-shadow-card)]">
+              <div data-testid="storage-enc-card" class="px-4 py-4 rounded-2xl bg-card border border-border shadow-[var(--hv-shell-shadow-card)]">
                 <div class="flex items-center gap-2.5">
                   <span class={cn('w-2.5 h-2.5 rounded-full flex-none', v.unlocked ? 'bg-[var(--hv-success)]' : 'bg-[var(--hv-shell-text-3)]')}></span>
                   <span class="flex-1 text-sm font-bold text-[var(--hv-shell-text-strong)]">{v.label}</span>
@@ -1913,7 +1913,7 @@
             <Alert variant="error">{cacheError}</Alert>
           {/if}
 
-          <div data-testid="storage-cache-card" class="px-5 py-4 rounded-2xl bg-[var(--hv-shell-card)] border border-[var(--hv-shell-border)] shadow-[var(--hv-shell-shadow-card)]">
+          <div data-testid="storage-cache-card" class="px-5 py-4 rounded-2xl bg-card border border-border shadow-[var(--hv-shell-shadow-card)]">
             <div class="flex items-center gap-2 mb-3"><IconBolt size={18} class="text-[var(--hv-primary)]" /><h3 class="m-0 text-c-card-title font-semibold text-[var(--hv-shell-text-strong)]">{$t('cache.config_title')}</h3></div>
             <div class="flex flex-col gap-3">
               <label class="flex flex-col gap-1.5 text-c-label text-[var(--hv-shell-text-2)]">
@@ -1942,7 +1942,7 @@
           <!-- ZFS-native accelerators. Distinct from the cache *tier* above:
                these are vdevs attached to an existing pool, they hold no data
                of their own, and the server refuses a spinning disk. -->
-          <div data-testid="storage-zfs-cache-card" class="px-5 py-4 rounded-2xl bg-[var(--hv-shell-card)] border border-[var(--hv-shell-border)] shadow-[var(--hv-shell-shadow-card)]">
+          <div data-testid="storage-zfs-cache-card" class="px-5 py-4 rounded-2xl bg-card border border-border shadow-[var(--hv-shell-shadow-card)]">
             <div class="flex items-center gap-2 mb-2"><IconBolt size={18} class="text-[var(--hv-primary)]" /><h3 class="m-0 text-c-card-title font-semibold text-[var(--hv-shell-text-strong)]">{$t('cache.zfs_title')}</h3></div>
             <p class="m-0 text-xs text-[var(--hv-shell-text)]">{$t('cache.zfs_hint')}</p>
 
@@ -2031,7 +2031,7 @@
             {/if}
           </div>
 
-          <div data-testid="storage-cache-card" class="px-5 py-4 rounded-2xl bg-[var(--hv-shell-card)] border border-[var(--hv-shell-border)] shadow-[var(--hv-shell-shadow-card)]">
+          <div data-testid="storage-cache-card" class="px-5 py-4 rounded-2xl bg-card border border-border shadow-[var(--hv-shell-shadow-card)]">
             <div class="flex items-center gap-2 mb-2"><IconPlayerPlay size={18} class="text-[var(--hv-primary)]" /><h3 class="m-0 text-c-card-title font-semibold text-[var(--hv-shell-text-strong)]">{$t('cache.mover_title')}</h3></div>
             <p class="m-0 text-xs text-[var(--hv-shell-text)]">{$t('cache.mover_hint')}</p>
             <div class="mt-3">
@@ -2072,14 +2072,14 @@
             {/if}
           </div>
 
-          <div data-testid="storage-cache-card" class="px-5 py-4 rounded-2xl bg-[var(--hv-shell-card)] border border-[var(--hv-shell-border)] shadow-[var(--hv-shell-shadow-card)]">
+          <div data-testid="storage-cache-card" class="px-5 py-4 rounded-2xl bg-card border border-border shadow-[var(--hv-shell-shadow-card)]">
             <div class="flex items-center gap-2 mb-3">
               <IconDatabase size={18} class="text-[var(--hv-primary)]" /><h3 class="m-0 flex-1 text-c-card-title font-semibold text-[var(--hv-shell-text-strong)]">{$t('cache.shares_title')}</h3>
               <Button variant="primary" onclick={openCacheShareModal}><IconPlus size={14} /> {$t('cache.add_share')}</Button>
             </div>
             {#if cacheShares.length === 0}
               <EmptyState data-testid="storage-empty" title={$t('cache.no_shares')} description={$t('cache.no_shares_hint')}>
-                {#snippet iconSnippet()}<IconBolt size={32} stroke={1.8} />{/snippet}
+                {#snippet iconSnippet()}<IconBolt size={32} strokeWidth={1.8} />{/snippet}
               </EmptyState>
             {:else}
               <div class="flex flex-col gap-2">
@@ -2114,7 +2114,7 @@
           <div class="flex items-center justify-between gap-3">
             <p class="m-0 text-c-label text-[var(--hv-shell-text)]">{$t('storage.snapshots.heading')}</p>
             <Button variant="primary" data-testid="snapshots-new-btn" onclick={openSnapCreate}>
-              <IconPlus size={16} stroke={2} /> {$t('storage.snapshots.new')}
+              <IconPlus size={16} strokeWidth={1.8} /> {$t('storage.snapshots.new')}
             </Button>
           </div>
 
@@ -2131,7 +2131,7 @@
           {:else}
             <div class="flex flex-col gap-3">
               {#each snapshotSchedules as row (row.id)}
-                <div data-testid="snapshots-schedule" class="px-5 py-4 rounded-2xl bg-[var(--hv-shell-card)] border border-[var(--hv-shell-border)] shadow-[var(--hv-shell-shadow-card)]">
+                <div data-testid="snapshots-schedule" class="px-5 py-4 rounded-2xl bg-card border border-border shadow-[var(--hv-shell-shadow-card)]">
                   <div class="flex items-start justify-between gap-3">
                     <div class="flex flex-col gap-1">
                       <span class="text-c-card-title font-semibold text-[var(--hv-shell-text-strong)]">{row.pool}{#if row.share}<span class="ml-2 text-caption font-bold uppercase text-[var(--hv-primary)]">{$t('storage.snapshots.share_target', { share: row.share })}</span>{/if}</span>
@@ -2145,16 +2145,16 @@
                     </div>
                     <div class="flex items-center gap-1">
                       <button type="button" class="grid place-items-center w-9 h-9 flex-none rounded-lg border-none bg-transparent text-[var(--hv-shell-text-2)] cursor-pointer hover:bg-[var(--hv-subtle-hover)] hover:text-[var(--hv-shell-text-strong)] hv-ic" data-testid="snapshots-run-{row.id}" aria-label={$t('storage.snapshots.run_now')} disabled={snapBusyId === row.id} onclick={() => runSnapNow(row)}>
-                        <IconPlayerPlay size={18} stroke={1.8} />
+                        <IconPlayerPlay size={18} strokeWidth={1.8} />
                       </button>
                       <button type="button" class="grid place-items-center w-9 h-9 flex-none rounded-lg border-none bg-transparent text-[var(--hv-shell-text-2)] cursor-pointer hover:bg-[var(--hv-subtle-hover)] hover:text-[var(--hv-shell-text-strong)] hv-ic" data-testid="snapshots-view-{row.id}" aria-label={$t('storage.snapshots.snapshots_title')} onclick={() => viewScheduleSnapshots(row)}>
-                        <IconCamera size={18} stroke={1.8} />
+                        <IconCamera size={18} strokeWidth={1.8} />
                       </button>
                       <button type="button" class="grid place-items-center w-9 h-9 flex-none rounded-lg border-none bg-transparent text-[var(--hv-shell-text-2)] cursor-pointer hover:bg-[var(--hv-subtle-hover)] hover:text-[var(--hv-shell-text-strong)] hv-ic" data-testid="snapshots-edit-{row.id}" aria-label={$t('tasks.edit', { name: row.pool })} onclick={() => openSnapEdit(row)}>
-                        <IconTool size={18} stroke={1.8} />
+                        <IconTool size={18} strokeWidth={1.8} />
                       </button>
                       <button type="button" class="grid place-items-center w-9 h-9 flex-none rounded-lg border-none bg-transparent text-[var(--hv-shell-text-2)] cursor-pointer hover:bg-[var(--hv-subtle-hover)] hover:text-[var(--hv-shell-text-strong)] hv-ic" data-testid="snapshots-delete-{row.id}" aria-label={$t('tasks.delete', { name: row.pool })} onclick={() => askSnapDelete(row)}>
-                        <IconTrash size={18} stroke={1.8} />
+                        <IconTrash size={18} strokeWidth={1.8} />
                       </button>
                     </div>
                   </div>
@@ -2169,7 +2169,7 @@
           {/if}
 
           {#if snapViewPool}
-            <div data-testid="snapshots-pool-list" class="px-5 py-4 rounded-2xl bg-[var(--hv-shell-card)] border border-[var(--hv-shell-border)] shadow-[var(--hv-shell-shadow-card)]">
+            <div data-testid="snapshots-pool-list" class="px-5 py-4 rounded-2xl bg-card border border-border shadow-[var(--hv-shell-shadow-card)]">
               <div class="flex items-center justify-between gap-2 mb-2">
                 <h3 class="m-0 text-c-card-title font-semibold text-[var(--hv-shell-text-strong)]">{$t('storage.snapshots.snapshots_title')} — {snapViewPool}</h3>
                 <button type="button" class="grid place-items-center w-9 h-9 flex-none rounded-lg border-none bg-transparent text-[var(--hv-shell-text-2)] cursor-pointer hover:bg-[var(--hv-subtle-hover)] hover:text-[var(--hv-shell-text-strong)] hv-ic" aria-label={$t('common.cancel')} onclick={() => { snapViewPool = ''; snapViewShare = null; snapViewRows = []; }}>✕</button>
@@ -2194,7 +2194,7 @@
                             aria-label={$t('storage.snapshots.restore_open', { snapshot: snap.name })}
                             onclick={() => openRestore(snap)}
                           >
-                            <IconArrowBackUp size={15} stroke={1.9} />
+                            <IconArrowBackUp size={15} strokeWidth={1.8} />
                           </button>
                         {/if}
                         {#if $isAdmin && !snapViewShare}
@@ -2205,7 +2205,7 @@
                             aria-label={$t('storage.snapshots.locks_lock_snapshot', { snapshot: snap.name })}
                             onclick={() => openLock(snapViewPool, snap.name)}
                           >
-                            <IconLock size={15} stroke={1.9} />
+                            <IconLock size={15} strokeWidth={1.8} />
                           </button>
                         {/if}
                         {#if $isAdmin && isBtrfsPoolView()}
@@ -2217,7 +2217,7 @@
                             aria-label={$t('storage.snapshots.btrfs_rollback', { snapshot: snap.name })}
                             onclick={() => rollbackBtrfsSnapshot(snap)}
                           >
-                            <IconArrowBackUp size={15} stroke={1.9} />
+                            <IconArrowBackUp size={15} strokeWidth={1.8} />
                           </button>
                         {/if}
                       </span>
@@ -2231,7 +2231,7 @@
           <!-- Quiescence hooks (P2-13): a configured database/VM pre/post
                command turns a crash-consistent snapshot into an
                application-consistent one; a failing hook only downgrades. -->
-          <div data-testid="snapshots-quiescence" class="px-5 py-4 rounded-2xl bg-[var(--hv-shell-card)] border border-[var(--hv-shell-border)] shadow-[var(--hv-shell-shadow-card)] flex flex-col gap-3">
+          <div data-testid="snapshots-quiescence" class="px-5 py-4 rounded-2xl bg-card border border-border shadow-[var(--hv-shell-shadow-card)] flex flex-col gap-3">
             <div>
               <h3 class="m-0 text-c-card-title font-semibold text-[var(--hv-shell-text-strong)]">{$t('storage.quiescence.title')}</h3>
               <p class="m-0 mt-1 text-xs text-[var(--hv-shell-text-2)] leading-relaxed">{$t('storage.quiescence.desc')}</p>
@@ -2272,7 +2272,7 @@
                         {hook.enabled ? $t('storage.quiescence.disable') : $t('storage.quiescence.enable')}
                       </Button>
                       <Button variant="ghost" size="sm" onclick={() => deleteQuiescenceHook(hook)} data-testid="quiescence-hook-delete">
-                        <IconTrash size={15} stroke={1.9} /> {$t('storage.quiescence.delete')}
+                        <IconTrash size={15} strokeWidth={1.8} /> {$t('storage.quiescence.delete')}
                       </Button>
                     </span>
                   </li>
@@ -2284,7 +2284,7 @@
           <!-- Immutable snapshots (P2.5): the locks are enforced by the
                filesystem, not by this screen, so a lock is never a promise
                the appliance cannot keep. -->
-          <div data-testid="snapshots-locks" class="px-5 py-4 rounded-2xl bg-[var(--hv-shell-card)] border border-[var(--hv-shell-border)] shadow-[var(--hv-shell-shadow-card)] flex flex-col gap-3">
+          <div data-testid="snapshots-locks" class="px-5 py-4 rounded-2xl bg-card border border-border shadow-[var(--hv-shell-shadow-card)] flex flex-col gap-3">
             <div>
               <h3 class="m-0 text-c-card-title font-semibold text-[var(--hv-shell-text-strong)]">{$t('storage.snapshots.locks_title')}</h3>
               <p class="m-0 mt-1 text-xs text-[var(--hv-shell-text-2)] leading-relaxed">{$t('storage.snapshots.locks_desc')}</p>
@@ -2316,7 +2316,7 @@
                     </div>
                     {#if $isAdmin}
                       <Button variant="ghost" data-testid="snapshots-lock-release-{lock.id}" disabled={lockBusyId === lock.id} onclick={() => releaseLock(lock)}>
-                        <IconLockOpen size={16} stroke={1.9} /> {$t('storage.snapshots.locks_release')}
+                        <IconLockOpen size={16} strokeWidth={1.8} /> {$t('storage.snapshots.locks_release')}
                       </Button>
                     {/if}
                   </li>
@@ -2336,7 +2336,7 @@
             <Alert variant="error">{btrfsPolicyError}</Alert>
           {/if}
 
-          <div class="px-5 py-4 rounded-2xl bg-[var(--hv-shell-card)] border border-[var(--hv-shell-border)] shadow-[var(--hv-shell-shadow-card)] flex flex-wrap items-end gap-3">
+          <div class="px-5 py-4 rounded-2xl bg-card border border-border shadow-[var(--hv-shell-shadow-card)] flex flex-wrap items-end gap-3">
             <label class="flex flex-col gap-1 text-xs text-[var(--hv-shell-text-2)]">
               {$t('storage.btrfs.path')}
               <input
@@ -2372,7 +2372,7 @@
           {:else}
             <div class="flex flex-col gap-3">
               {#each btrfsPolicies as policy (policy.path)}
-                <div data-testid="btrfs-policy" class="px-5 py-4 rounded-2xl bg-[var(--hv-shell-card)] border border-[var(--hv-shell-border)] shadow-[var(--hv-shell-shadow-card)]">
+                <div data-testid="btrfs-policy" class="px-5 py-4 rounded-2xl bg-card border border-border shadow-[var(--hv-shell-shadow-card)]">
                   <div class="flex items-start justify-between gap-3 flex-wrap">
                     <div class="flex flex-col gap-1 min-w-0">
                       <span class="font-mono text-c-card-title font-semibold text-[var(--hv-shell-text-strong)] truncate">{policy.path}</span>
@@ -2384,10 +2384,10 @@
                     </div>
                     <div class="flex items-center gap-1">
                       <Button variant="secondary" size="sm" onclick={() => applyBtrfsPolicy(policy.path)} disabled={btrfsPolicyBusy} data-testid="btrfs-policy-apply">
-                        <IconPlayerPlay size={15} stroke={1.9} /> {$t('storage.btrfs.apply')}
+                        <IconPlayerPlay size={15} strokeWidth={1.8} /> {$t('storage.btrfs.apply')}
                       </Button>
                       <Button variant="ghost" size="sm" onclick={() => removeBtrfsPolicy(policy.path)} data-testid="btrfs-policy-delete">
-                        <IconTrash size={15} stroke={1.9} /> {$t('storage.btrfs.delete')}
+                        <IconTrash size={15} strokeWidth={1.8} /> {$t('storage.btrfs.delete')}
                       </Button>
                     </div>
                   </div>
@@ -2512,7 +2512,7 @@
 <!-- SNAPSHOT LOCK MODAL (P2.5) -->
 <Modal open={lockModal} title={$t('storage.snapshots.locks_new_title')} size="md" onclose={() => (lockModal = false)}>
   {#snippet icon()}
-    <IconLock size={20} stroke={1.9} />
+    <IconLock size={20} strokeWidth={1.8} />
   {/snippet}
   <div class="flex flex-col gap-4 p-1">
     {#if lockError}
@@ -2580,7 +2580,7 @@
   {#if selectedDisk}
     <div>
       <div class="flex items-center gap-3 mb-4">
-        <span class="grid place-items-center w-11 h-11 rounded-xl bg-[var(--hv-primary-light)] text-[var(--hv-primary)] flex-none"><IconServer size={20} /></span>
+        <span class="grid place-items-center w-8 h-8 rounded-[9px] bg-[var(--hv-primary-light)] text-[var(--hv-primary)] flex-none"><IconServer size={20} /></span>
         <div class="min-w-0">
           <div class="text-sm font-semibold text-[var(--hv-shell-text-strong)] truncate">{selectedDisk.model || $t('health.unknown')}</div>
           <div class="text-xs text-[var(--hv-shell-text-2)] font-[family-name:var(--hv-font-mono)]">{selectedDisk.serial}</div>

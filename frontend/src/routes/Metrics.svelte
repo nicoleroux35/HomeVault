@@ -23,7 +23,7 @@
   import { onAppVisible } from '$lib/utils/autoRevalidate';
   import { t, languageStore } from '$lib/stores/i18n';
   import { PageLayout, EmptyState, SectionCard } from '$lib/components/app';
-  import { IconChartLine } from '@tabler/icons-svelte';
+  import { IconChartLine } from '$lib/icons/lucide';
 
   type Range = '1h' | '24h' | '7d';
   const RANGES: Range[] = ['1h', '24h', '7d'];
@@ -199,7 +199,7 @@
   data-testid="metrics-page"
 >
   {#snippet icon()}
-    <IconChartLine stroke={1.7} />
+    <IconChartLine strokeWidth={1.8} />
   {/snippet}
 
   {#snippet toolbarLeft()}
@@ -230,7 +230,7 @@
       <select
         id="metrics-retention"
         data-testid="metrics-retention"
-        class="h-9 rounded-lg border border-[var(--hv-shell-border)] bg-[var(--hv-shell-card)] px-2 text-c-base text-[var(--hv-shell-text-1)]"
+        class="h-9 rounded-lg border border-[var(--hv-shell-border)] bg-[var(--hv-shell-card)] px-2 text-c-base text-[var(--hv-shell-text-strong)]"
         bind:value={retentionDays}
         onchange={saveRetention}
         disabled={retentionBusy}
@@ -338,7 +338,7 @@
   }
   .metrics-line-tx {
     fill: none;
-    stroke: var(--hv-success, #16a34a);
+    stroke: var(--hv-success, #167A4D);
     stroke-width: 1.6;
     stroke-linejoin: round;
     vector-effect: non-scaling-stroke;
@@ -350,5 +350,5 @@
     border-radius: 50%;
   }
   .metrics-dot-rx { background: var(--hv-primary); }
-  .metrics-dot-tx { background: var(--hv-success, #16a34a); }
+  .metrics-dot-tx { background: var(--hv-success, #167A4D); }
 </style>

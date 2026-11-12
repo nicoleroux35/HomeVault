@@ -197,7 +197,7 @@ export const draft = $state<DraftValues>({
     },
   },
   update: { check_frequency: 'weekly', release_manifest: '' },
-  appearance: { wallpaper: '', accent_color: '#1E62AE' },
+  appearance: { wallpaper: '', accent_color: '#2E72C9' },
   autostart: { enabled: false },
   ai: { model: '' },
   widgets: { visible: {}, refreshMs: 5000 },

@@ -13,7 +13,7 @@
        action feedback.
 
      Dependencies:
-       - svelte (>= 5), date-fns, @tabler/icons-svelte,
+       - svelte (>= 5), date-fns, $lib/icons/lucide,
          stores/notifications, stores/i18n
 
      Usage:
@@ -25,7 +25,7 @@
   import { formatDistanceToNow } from 'date-fns';
   import { fr, de, es, enUS } from 'date-fns/locale';
   import { toast } from 'svelte-sonner';
-  import { IconCheck, IconX } from '@tabler/icons-svelte';
+  import { IconCheck, IconX } from '$lib/icons/lucide';
   import { Icon } from '$lib/components/theme';
   import NotificationBellIcon from '$lib/components/shared/NotificationBellIcon.svelte';
   import { t, languageStore } from '$lib/stores/i18n';
@@ -94,9 +94,9 @@
 
   function getTypeIcon(type: Notification['type']): string {
     switch (type) {
-      case 'success': return 'check_circle';
-      case 'error': return 'error';
-      case 'warning': return 'warning';
+      case 'success': return 'circle-check';
+      case 'error': return 'circle-alert';
+      case 'warning': return 'triangle-alert';
       default: return 'info';
     }
   }
@@ -216,7 +216,7 @@
 
       {#if $notificationsStore.notifications.length === 0}
         <div class="empty-state">
-          <NotificationBellIcon size={48} stroke={2} />
+          <NotificationBellIcon size={48} strokeWidth={1.8} />
           <p>{$t('notifications.empty')}</p>
         </div>
       {:else if filteredNotifications.length === 0}
@@ -249,7 +249,7 @@
                   title={$t('notifications.mark_read')}
                   aria-label={$t('notifications.mark_read')}
                 >
-                  <IconCheck size={18} stroke={2} />
+                  <IconCheck size={18} strokeWidth={1.8} />
                 </button>
               {/if}
               {#if $isAdmin}
@@ -259,7 +259,7 @@
                   title={$t('common.delete')}
                   aria-label={$t('common.delete')}
                 >
-                  <IconX size={18} stroke={2} />
+                  <IconX size={18} strokeWidth={1.8} />
                 </button>
               {/if}
             </div>

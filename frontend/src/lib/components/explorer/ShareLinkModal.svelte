@@ -40,7 +40,7 @@
     IconLock,
     IconWorld,
     IconClock,
-  } from '@tabler/icons-svelte';
+  } from '$lib/icons/lucide';
 
   interface ShareLink {
     id: number;

@@ -49,7 +49,7 @@
     IconEye,
     IconEyeOff,
     IconRefresh,
-  } from '@tabler/icons-svelte';
+  } from '$lib/icons/lucide';
 
   let dragging: string | null = null;
   /** The zone the pointer is currently over, for the drop highlight. */
@@ -131,7 +131,7 @@
 
 <PageLayout title={$t('edit_widgets.title')} data-testid="edit-widgets-page">
   {#snippet icon()}
-    <IconLayoutGrid stroke={1.8} />
+    <IconLayoutGrid strokeWidth={1.8} />
   {/snippet}
 
   <!-- Featured zone -->
@@ -173,15 +173,15 @@
           role="listitem"
           draggable="true"
           data-testid="edit-widgets-featured-tile"
-          class="flex items-center gap-2 px-3 py-2 rounded-lg bg-[var(--hv-shell-card)] border border-[var(--hv-shell-border)] shadow-[var(--hv-shell-shadow-card)] cursor-grab"
+          class="flex items-center gap-2 px-3 py-2 rounded-lg bg-card border border-border shadow-[var(--hv-shell-shadow-card)] cursor-grab"
           ondragstart={(e) => onDragStart(e, d.id)}
           ondragover={(e) => onDragOver(e, 'featured')}
           ondrop={(e) => { e.stopPropagation(); onDrop(e, 'featured', d.id); }}
           ondragend={onDragEnd}
         >
-          <IconGripVertical size={16} stroke={1.8} class="text-[var(--hv-shell-text-3)]" aria-hidden="true" />
+          <IconGripVertical size={16} strokeWidth={1.8} class="text-[var(--hv-shell-text-3)]" aria-hidden="true" />
           <span class="grid place-items-center w-8 h-8 rounded-lg flex-none" style="background:{d.color}">
-            <svelte:component this={d.icon} size={18} color="white" stroke={2} />
+            <svelte:component this={d.icon} size={18} color="white" strokeWidth={1.8} />
           </span>
           <span class="text-c-base font-semibold text-[var(--hv-shell-text-strong)]">{$t(d.nameKey)}</span>
           <button
@@ -217,7 +217,7 @@
           draggable="true"
           data-testid="edit-widgets-tile"
           class={cn(
-            'flex items-center gap-3 min-h-[60px] px-3 rounded-lg bg-[var(--hv-shell-card)] border border-[var(--hv-shell-border)] cursor-grab',
+            'flex items-center gap-3 min-h-[60px] px-3 rounded-lg bg-card border border-border cursor-grab',
             dragging === d.id && 'opacity-50',
           )}
           ondragstart={(e) => onDragStart(e, d.id)}
@@ -225,9 +225,9 @@
           ondrop={(e) => { e.stopPropagation(); onDrop(e, 'all', d.id); }}
           ondragend={onDragEnd}
         >
-          <IconGripVertical size={16} stroke={1.8} class="text-[var(--hv-shell-text-3)] flex-none" aria-hidden="true" />
+          <IconGripVertical size={16} strokeWidth={1.8} class="text-[var(--hv-shell-text-3)] flex-none" aria-hidden="true" />
           <span class="grid place-items-center w-10 h-10 rounded-lg flex-none" style="background:{d.color}">
-            <svelte:component this={d.icon} size={22} color="white" stroke={2} />
+            <svelte:component this={d.icon} size={22} color="white" strokeWidth={1.8} />
           </span>
           <div class="flex-1 min-w-0">
             <div class="text-c-base font-semibold text-[var(--hv-shell-text-strong)] truncate">{$t(d.nameKey)}</div>
@@ -243,7 +243,7 @@
               disabled={i === 0}
               onclick={() => move(d.id, -1)}
             >
-              <IconArrowUp size={17} stroke={1.8} />
+              <IconArrowUp size={17} strokeWidth={1.8} />
             </button>
             <button
               type="button"
@@ -253,7 +253,7 @@
               disabled={i === orderedDefs.length - 1}
               onclick={() => move(d.id, 1)}
             >
-              <IconArrowDown size={17} stroke={1.8} />
+              <IconArrowDown size={17} strokeWidth={1.8} />
             </button>
             <button
               type="button"
@@ -263,7 +263,7 @@
               aria-label={isFeatured(d.id) ? $t('edit_widgets.unfeature', { name: translate(d.nameKey) }) : $t('edit_widgets.feature', { name: translate(d.nameKey) })}
               onclick={() => toggleFeatured(d.id)}
             >
-              {#if isFeatured(d.id)}<IconStarFilled size={18} class="text-[var(--hv-warning)]" />{:else}<IconStar size={18} stroke={1.8} />{/if}
+              {#if isFeatured(d.id)}<IconStarFilled size={18} class="text-[var(--hv-warning)]" />{:else}<IconStar size={18} strokeWidth={1.8} />{/if}
             </button>
             <button
               type="button"
@@ -273,7 +273,7 @@
               aria-label={$monitorStore[d.visibleKey] ? $t('edit_widgets.hide', { name: translate(d.nameKey) }) : $t('edit_widgets.show', { name: translate(d.nameKey) })}
               onclick={() => d.setVisible(!$monitorStore[d.visibleKey])}
             >
-              {#if $monitorStore[d.visibleKey]}<IconEye size={18} stroke={1.8} />{:else}<IconEyeOff size={18} stroke={1.8} />{/if}
+              {#if $monitorStore[d.visibleKey]}<IconEye size={18} strokeWidth={1.8} />{:else}<IconEyeOff size={18} strokeWidth={1.8} />{/if}
             </button>
           </div>
         </div>
@@ -285,7 +285,7 @@
     <div class="flex w-full items-center justify-between gap-4">
       <span class="text-c-base text-[var(--hv-shell-text-2)]">{$t('edit_widgets.footer_hint')}</span>
       <Button variant="ghost" onclick={resetLayout} data-testid="edit-widgets-reset">
-        <IconRefresh size={18} stroke={2} />
+        <IconRefresh size={18} strokeWidth={1.8} />
         {$t('edit_widgets.reset')}
       </Button>
     </div>

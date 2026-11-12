@@ -39,7 +39,7 @@
     IconPlus,
     IconTrash,
     IconPlugOff
-  } from '@tabler/icons-svelte';
+  } from '$lib/icons/lucide';
 
   let {
     isAdmin = false,

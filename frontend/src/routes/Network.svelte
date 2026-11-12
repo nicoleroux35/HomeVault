@@ -27,7 +27,7 @@
   import { cn } from '$lib/utils.js';
   import { activateOnEnterOrSpace } from '$lib/utils/activateOnEnterOrSpace';
   import WindowHeader from '$lib/components/desktop/WindowHeader.svelte';
-  import { IconPlug, IconDownload, IconLoader, IconUpload, IconWifi, IconWifiOff, IconX, IconGlobe, IconActivity, IconRadio, IconGauge, IconLink, IconSitemap, IconTrash, IconPlus, IconRoute } from '@tabler/icons-svelte';
+  import { IconPlug, IconDownload, IconLoader, IconUpload, IconWifi, IconWifiOff, IconX, IconGlobe, IconActivity, IconRadio, IconGauge, IconLink, IconSitemap, IconTrash, IconPlus, IconRoute } from '$lib/icons/lucide';
   import { notificationsStore } from '$lib/stores/notifications';
 
   // ---------------------------------------------------------------------------
@@ -658,7 +658,7 @@
   footerMode="status"
 >
   {#snippet icon()}
-    <IconGlobe stroke={1.8} />
+    <IconGlobe strokeWidth={1.8} />
   {/snippet}
   <!-- Page-level actions: a WindowToolbar row under the header, never inside
        it (the header bar is icon + title + window controls only). -->
@@ -705,7 +705,7 @@
     </div>
 
     {#if connectionSummary}
-      <div data-testid="network-summary-card" class="px-5 py-4 rounded-2xl bg-[var(--hv-shell-card)] border border-[var(--hv-shell-border)] shadow-[var(--hv-shell-shadow-card)] mb-4">
+      <div data-testid="network-summary-card" class="px-5 py-4 rounded-2xl bg-card border border-border shadow-[var(--hv-shell-shadow-card)] mb-4">
         <div class="grid grid-cols-1 @min-[560px]:grid-cols-2 gap-2">
           <div class={detailRow}><span class={detailLabel}>{$t('network.conn_connection')}</span><span class={detailValue}>{connectionSummary.connection_type || '—'}</span></div>
           <div class={detailRow}><span class={detailLabel}>{$t('network.conn_interface')}</span><span class={detailValue}>{connectionSummary.primary_interface || '—'}</span></div>
@@ -735,10 +735,10 @@
       {:else}
         <div class="grid gap-4 [grid-template-columns:repeat(auto-fill,minmax(300px,1fr))]">
           {#each ethernetInterfaces as iface}
-            <div data-testid="network-card" class="rounded-2xl bg-[var(--hv-shell-card)] border border-[var(--hv-shell-border)] shadow-[var(--hv-shell-shadow-card)] overflow-hidden">
+            <div data-testid="network-card" class="rounded-2xl bg-card border border-border shadow-[var(--hv-shell-shadow-card)] overflow-hidden">
               <div class="flex items-center justify-between gap-3 px-4 pt-4">
                 <div class="flex items-center gap-3 min-w-0">
-                  <span class={cn('grid place-items-center w-11 h-11 rounded-xl flex-none', iface.status === 'up' ? 'bg-[var(--hv-success-bg)] text-[var(--hv-success)]' : 'bg-[var(--hv-shell-border-soft)] text-[var(--hv-shell-text-2)]')}><IconPlug size={20} /></span>
+                  <span class={cn('grid place-items-center w-8 h-8 rounded-[9px] flex-none', iface.status === 'up' ? 'bg-[var(--hv-success-bg)] text-[var(--hv-success)]' : 'bg-[var(--hv-shell-border-soft)] text-[var(--hv-shell-text-2)]')}><IconPlug size={20} /></span>
                   <div class="min-w-0">
                     <div class="text-sm font-bold text-[var(--hv-shell-text-strong)] truncate">{iface.name}</div>
                     <div class="text-xs text-[var(--hv-shell-text-2)] truncate">{iface.iface_type.charAt(0).toUpperCase() + iface.iface_type.slice(1)}{#if iface.driver} · {iface.driver}{/if}</div>
@@ -784,9 +784,9 @@
 
         <div class="grid gap-4 [grid-template-columns:repeat(auto-fill,minmax(320px,1fr))]">
           <!-- Bond -->
-          <div data-testid="network-bond-card" class="rounded-2xl bg-[var(--hv-shell-card)] border border-[var(--hv-shell-border)] shadow-[var(--hv-shell-shadow-card)] p-4">
+          <div data-testid="network-bond-card" class="rounded-2xl bg-card border border-border shadow-[var(--hv-shell-shadow-card)] p-4">
             <div class="flex items-center gap-3 mb-3">
-              <span class="grid place-items-center w-11 h-11 rounded-xl flex-none bg-[var(--hv-success-bg)] text-[var(--hv-primary)]"><IconLink size={20} /></span>
+              <span class="grid place-items-center w-8 h-8 rounded-[9px] flex-none bg-[var(--hv-success-bg)] text-[var(--hv-primary)]"><IconLink size={20} /></span>
               <div class="min-w-0">
                 <div class="text-sm font-bold text-[var(--hv-shell-text-strong)]">{$t('network.bonds')}</div>
                 <div class="text-xs text-[var(--hv-shell-text-2)]">{$t('network.bonds_hint')}</div>
@@ -849,9 +849,9 @@
           </div>
 
           <!-- VLAN -->
-          <div data-testid="network-vlan-card" class="rounded-2xl bg-[var(--hv-shell-card)] border border-[var(--hv-shell-border)] shadow-[var(--hv-shell-shadow-card)] p-4">
+          <div data-testid="network-vlan-card" class="rounded-2xl bg-card border border-border shadow-[var(--hv-shell-shadow-card)] p-4">
             <div class="flex items-center gap-3 mb-3">
-              <span class="grid place-items-center w-11 h-11 rounded-xl flex-none bg-[var(--hv-success-bg)] text-[var(--hv-primary)]"><IconSitemap size={20} /></span>
+              <span class="grid place-items-center w-8 h-8 rounded-[9px] flex-none bg-[var(--hv-success-bg)] text-[var(--hv-primary)]"><IconSitemap size={20} /></span>
               <div class="min-w-0">
                 <div class="text-sm font-bold text-[var(--hv-shell-text-strong)]">{$t('network.vlans')}</div>
                 <div class="text-xs text-[var(--hv-shell-text-2)]">{$t('network.vlans_hint')}</div>
@@ -901,9 +901,9 @@
           </div>
 
           <!-- Static routes -->
-          <div data-testid="network-routes-card" class="rounded-2xl bg-[var(--hv-shell-card)] border border-[var(--hv-shell-border)] shadow-[var(--hv-shell-shadow-card)] p-4">
+          <div data-testid="network-routes-card" class="rounded-2xl bg-card border border-border shadow-[var(--hv-shell-shadow-card)] p-4">
             <div class="flex items-center gap-3 mb-3">
-              <span class="grid place-items-center w-11 h-11 rounded-xl flex-none bg-[var(--hv-success-bg)] text-[var(--hv-primary)]"><IconRoute size={20} /></span>
+              <span class="grid place-items-center w-8 h-8 rounded-[9px] flex-none bg-[var(--hv-success-bg)] text-[var(--hv-primary)]"><IconRoute size={20} /></span>
               <div class="min-w-0">
                 <div class="text-sm font-bold text-[var(--hv-shell-text-strong)]">{$t('network.routes')}</div>
                 <div class="text-xs text-[var(--hv-shell-text-2)]">{$t('network.routes_hint')}</div>
@@ -963,10 +963,10 @@
 
     {:else if activeTab === 'wifi'}
       {#if wifiStatus?.connected}
-        <div data-testid="network-card" class="rounded-2xl bg-[var(--hv-shell-card)] border border-[var(--hv-shell-border)] shadow-[var(--hv-shell-shadow-card)] overflow-hidden mb-4">
+        <div data-testid="network-card" class="rounded-2xl bg-card border border-border shadow-[var(--hv-shell-shadow-card)] overflow-hidden mb-4">
           <div class="flex items-center justify-between gap-3 px-4 pt-4">
             <div class="flex items-center gap-3 min-w-0">
-              <span class="grid place-items-center w-11 h-11 rounded-xl flex-none bg-[var(--hv-success-bg)] text-[var(--hv-success)]"><IconWifi size={20} /></span>
+              <span class="grid place-items-center w-8 h-8 rounded-[9px] flex-none bg-[var(--hv-success-bg)] text-[var(--hv-success)]"><IconWifi size={20} /></span>
               <div class="min-w-0">
                 <div class="text-sm font-bold text-[var(--hv-shell-text-strong)]">{$t('network.connected')}</div>
                 <div class="text-xs text-[var(--hv-shell-text-2)]">{$t('network.current_wifi')}</div>
@@ -983,9 +983,9 @@
         </div>
       {/if}
 
-      <div data-testid="network-card" class="rounded-2xl bg-[var(--hv-shell-card)] border border-[var(--hv-shell-border)] shadow-[var(--hv-shell-shadow-card)] overflow-hidden">
+      <div data-testid="network-card" class="rounded-2xl bg-card border border-border shadow-[var(--hv-shell-shadow-card)] overflow-hidden">
         <div class="flex items-center gap-3 px-4 pt-4">
-          <span class="grid place-items-center w-11 h-11 rounded-xl flex-none bg-[var(--hv-primary-light)] text-[var(--hv-primary)]"><IconRadio size={20} /></span>
+          <span class="grid place-items-center w-8 h-8 rounded-[9px] flex-none bg-[var(--hv-primary-light)] text-[var(--hv-primary)]"><IconRadio size={20} /></span>
           <div class="flex-1 min-w-0">
             <div class="text-sm font-bold text-[var(--hv-shell-text-strong)]">{$t('network.available_networks')}</div>
             <div class="text-xs text-[var(--hv-shell-text-2)]">{$t('network.wifi_in_range')}</div>
@@ -995,7 +995,7 @@
         <div class="px-4 py-3">
           {#if wifiNetworks.length === 0}
             <EmptyState compact data-testid="network-empty-mini" title={$t('network.no_networks2')}>
-              {#snippet iconSnippet()}<IconWifiOff size={20} stroke={1.8} />{/snippet}
+              {#snippet iconSnippet()}<IconWifiOff size={20} strokeWidth={1.8} />{/snippet}
             </EmptyState>
           {:else}
             <div data-testid="network-wifi-list" class="flex flex-col gap-1.5">

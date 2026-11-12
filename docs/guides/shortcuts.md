@@ -67,8 +67,9 @@ unit-tested.
 - `frontend/src/lib/stores/shortcuts.ts` — the per-account store
   (`hv-shortcuts:<username>` in localStorage, namespaced like `monitorStore`).
   `MAX_SHORTCUTS` caps the set at 12; `add()` deduplicates by URL.
-- `frontend/src/lib/components/desktop/DesktopShortcuts.svelte` — the desktop
-  column of tiles. Each tile opens the URL in a new tab
+- `frontend/src/lib/components/desktop/DesktopShortcuts.svelte` — the
+  right-hand desktop column of 60px white squircle tiles with an ink label
+  underneath (v2). Each tile opens the URL in a new tab
   (`noopener,noreferrer`); the remove button is visible on hover **and**
   `focus-within`, with an `aria-label`, so removal is not hover-only. With no
   shortcut pinned the column is not rendered at all.

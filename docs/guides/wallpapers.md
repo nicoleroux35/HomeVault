@@ -1,8 +1,9 @@
 # Wallpapers
 
-**Purpose:** Pick the desktop wallpaper from the 44 images bundled into the
-binary. **There is no upload feature** — it was removed 2026-09-04 (explicit
-request: only a choice of pre-bundled wallpapers).
+**Purpose:** Pick the desktop wallpaper: the v2 built-in gradient (the default)
+or one of the 44 images bundled into the binary. **There is no upload
+feature** — it was removed 2026-09-04 (explicit request: only a choice of
+pre-bundled wallpapers).
 
 ## Backend
 
@@ -24,12 +25,14 @@ wallpaper_thumbnails_dir}`, the `user_wallpapers` table (migration `030`), and
 ## Frontend
 
 - `frontend/src/lib/stores/wallpaper.ts` — `WallpaperConfig` is
-  `{type:'default'} | {type:'image'; value:string}` only; `normalizeWallpaper()`
-  coerces any legacy value to `default`; `BUNDLED_WALLPAPERS` lists the 44. The
+  `{type:'default'} | {type:'image'; value:string}`; `{type:'default'}` is the
+  v2 gradient and the shipped default, and `normalizeWallpaper()` coerces any
+  unknown/legacy value back to it; `BUNDLED_WALLPAPERS` lists the 44 photos. The
   store only accepts a `/wallpapers/`-prefixed URL.
 - Picker: the **Appearance** section of `Settings.svelte` is a `settingsRowStacked`
   row inside the one appearance card (`Settings.svelte:940-961`) holding a
-  3-column thumbnail grid, dropping to 2 columns once the card is narrower than
+  first tile (the built-in gradient) followed by a 3-column thumbnail grid,
+  dropping to 2 columns once the card is narrower than
   380px. That is a **container query** (`@container` + `@max-[380px]:grid-cols-2`),
   not a viewport breakpoint — the grid follows the width the window actually
   gives it, which is the right thing in a resizable desktop window. 12px gap
@@ -46,7 +49,7 @@ wallpaper_thumbnails_dir}`, the `user_wallpapers` table (migration `030`), and
   decodes. `h-auto` stays: the `height="200"` attribute is a presentational
   hint (`height:200px`), and with *both* width and height definite
   `aspect-ratio` would be ignored. Any future asset of any shape lands in the
-  same box — E2E 4.7 asserts all 44 tiles share one width and height.
+  same box — E2E 4.7 asserts all 45 tiles share one width and height.
   The thumb carries **no**
   `box-shadow` at all — an outset shadow bled past each tile and made the rows
   look overlapping (2026-09-09). Selection is shown by the `aria-checked` /
@@ -57,8 +60,8 @@ wallpaper_thumbnails_dir}`, the `user_wallpapers` table (migration `030`), and
   carried at their loaded values; `--hv-primary` still hydrates at boot).
   Since 2026-09-15 the wallpaper pick stages into the `appearance` draft and
   only the sidebar-footer Save button PUTs `/api/settings/appearance`.
-- Wallpaper round-trips as `JSON.stringify($wallpaperStore)` through the generic
-  settings save.
+- Wallpaper round-trips through `serializeWallpaper()`: the built-in gradient is
+  sent as `""`, a photo as `JSON.stringify({type:'image',value})`.
 - Login / SetupWizard paint their own duplicated `defaultDesktopGradient` and do
   **not** read the wallpaper store — a photo wallpaper does not show on the login
   screen (out of scope for both screens).
@@ -82,10 +85,10 @@ The wallpaper is part of the appliance's single global look (see
 
 ### Validation (the server owns it now)
 
-`PUT /settings/appearance` accepts `""` (never picked), `/wallpapers/hv-NN.webp`,
+`PUT /settings/appearance` accepts `""` (the built-in gradient), `/wallpapers/hv-NN.webp`,
 `hv-NN`, a bare JSON string, or the `WallpaperConfig` JSON
-(`{"type":"image","value":…}`; the legacy `{"type":"default"}` becomes `hv-01`)
-— and stores the **bare** `/wallpapers/hv-NN.webp` URL. Anything else
+(`{"type":"image","value":…}`; `{"type":"default"}` becomes `""`)
+— and stores the **bare** `/wallpapers/hv-NN.webp` URL or `""`. Anything else
 (`hv-00`, `hv-45`, a custom upload, a data URL, a gradient, another host) is a
 `400` whose message starts `wallpaper:`. The same rule is applied on load
 (`apply_loaded_settings`), so a hand-edited `settings.json` cannot inject a
@@ -94,7 +97,7 @@ single implementation (unit-tested against every accepted and refused shape).
 
 The two frontend readers keep a `try/catch`, but as a **safety net**, not the
 only check: a value that is not JSON at all (a hand-edited export) still falls
-back to the default photo instead of breaking the desktop.
+back to the v2 gradient instead of breaking the desktop.
 
 Adding a wallpaper: drop `hv-NN.webp` + `hv-NN-thumb.webp` into
 `frontend/public/wallpapers/`, bump `BUNDLED_WALLPAPERS` in

@@ -21,7 +21,7 @@
   import { api } from '$lib/services/api';
   import { isAdmin } from '$lib/stores/auth';
   import { languageStore, t, translate } from '$lib/stores/i18n';
-  import { IconBrain, IconSend, IconSparkles, IconTrash, IconHistory, IconPlus, IconCopy, IconCheck, IconRefresh, IconSquare } from '@tabler/icons-svelte';
+  import { IconBrain, IconSend, IconSparkles, IconTrash, IconHistory, IconPlus, IconCopy, IconCheck, IconRefresh, IconSquare } from '$lib/icons/lucide';
   import WindowHeader from '$lib/components/desktop/WindowHeader.svelte';
   import { Button } from '$lib/components/theme';
   import { PageLayout, ConfirmDialog, EmptyState } from '$lib/components/app';
@@ -465,7 +465,7 @@
   data-testid="chat-page"
 >
   {#snippet icon()}
-    <IconBrain stroke={1.7} />
+    <IconBrain strokeWidth={1.8} />
   {/snippet}
   <!-- Connection status: a WindowToolbar row under the header, never inside
        it (the header bar is icon + title + window controls only). -->
@@ -484,15 +484,15 @@
           <span class="text-xs text-[var(--hv-shell-text-2)]">{$t('chat.saved_count', { count: String(conversations.length) })}</span>
         </div>
         <div class="px-4 pb-2 flex flex-col gap-2">
-          <Button variant="secondary" fullWidth onclick={() => { clearConversation(); showHistory = false; }}><IconPlus size={20} stroke={2} /> {$t('chat.new_conversation')}</Button>
+          <Button variant="secondary" fullWidth onclick={() => { clearConversation(); showHistory = false; }}><IconPlus size={20} strokeWidth={1.8} /> {$t('chat.new_conversation')}</Button>
           {#if conversations.length > 0}
-            <Button variant="danger" fullWidth onclick={deleteAllConversations}><IconTrash size={16} stroke={2} /> {$t('chat.delete_all')}</Button>
+            <Button variant="danger" fullWidth onclick={deleteAllConversations}><IconTrash size={16} strokeWidth={1.8} /> {$t('chat.delete_all')}</Button>
           {/if}
         </div>
         <div class="flex-1 min-h-0 overflow-y-auto px-2 pb-3 flex flex-col gap-1">
           {#if conversations.length === 0}
             <div class="flex flex-col items-center gap-2 py-8 text-center text-[var(--hv-shell-text-2)]">
-              <IconHistory size={32} stroke={1.5} />
+              <IconHistory size={32} strokeWidth={1.5} />
               <p class="m-0 text-xs">{$t('chat.no_conversations')}</p>
             </div>
           {:else}
@@ -502,7 +502,7 @@
                   <span class="block text-c-base font-semibold text-[var(--hv-shell-text-strong)] truncate">{conv.title}</span>
                   <span class="block text-c-xs text-[var(--hv-shell-text-2)]"><span>{$t('chat.messages_count', { count: String(conv.messages.length) })}</span> · <span>{formatDate(conv.lastUpdated)}</span></span>
                 </button>
-                <button class="flex-none grid place-items-center w-8 h-8 rounded-lg border-none bg-transparent text-[var(--hv-shell-text-2)] cursor-pointer opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 focus-visible:opacity-100 hover:text-[var(--hv-error)] hv-ic" onclick={(e) => deleteConversation(conv.id, e)} title={$t('chat.delete_conversation_title')} aria-label={$t('chat.delete_conversation_title')}><IconTrash size={16} stroke={2} /></button>
+                <button class="flex-none grid place-items-center w-8 h-8 rounded-lg border-none bg-transparent text-[var(--hv-shell-text-2)] cursor-pointer opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 focus-visible:opacity-100 hover:text-[var(--hv-error)] hv-ic" onclick={(e) => deleteConversation(conv.id, e)} title={$t('chat.delete_conversation_title')} aria-label={$t('chat.delete_conversation_title')}><IconTrash size={16} strokeWidth={1.8} /></button>
               </div>
             {/each}
           {/if}
@@ -514,7 +514,7 @@
       <div class="flex-1 min-h-0 overflow-y-auto" bind:this={messagesContainer}>
         {#if messages.length === 0}
           <EmptyState data-testid="chat-empty" title={$t('chat.empty_title')}>
-            {#snippet iconSnippet()}<IconBrain size={32} stroke={1.5} />{/snippet}
+            {#snippet iconSnippet()}<IconBrain size={32} strokeWidth={1.5} />{/snippet}
             {#snippet action()}
               <div class="flex flex-col items-center gap-3">
             {#if ollamaStatus === 'offline' || ollamaStatus === 'nomodel'}
@@ -533,7 +533,7 @@
             <div class="grid gap-2 w-full max-w-[420px] mt-2">
               {#each suggestions as suggestion}
                 <button data-testid="chat-suggestion" class="flex items-start gap-3 px-4 py-3 rounded-lg border border-[var(--hv-shell-border)] bg-[var(--hv-shell-card)] text-left cursor-pointer hover:border-[var(--hv-primary)]/50 transition-colors" onclick={() => useSuggestion(suggestion)}>
-                  <span class="text-[var(--hv-primary)] flex-none"><IconSparkles size={24} stroke={1.8} /></span>
+                  <span class="text-[var(--hv-primary)] flex-none"><IconSparkles size={24} strokeWidth={1.8} /></span>
                   <span data-testid="chat-suggestion-text" class="text-sm text-[var(--hv-shell-text-strong)]">{suggestion}</span>
                 </button>
               {/each}
@@ -547,8 +547,8 @@
             {#each messages as msg, i}
               {#if msg.role === 'assistant'}
                 <div data-testid="chat-row" class="hv-chat-row-bot flex items-start gap-2.5">
-                  <span class="grid place-items-center w-9 h-9 rounded-full flex-none bg-[var(--hv-app-chat-grad)] text-white"><IconBrain size={26} stroke={1.7} /></span>
-                  <div data-testid="chat-bubble" class="hv-chat-bubble-bot max-w-[85%] px-4 py-3 rounded-2xl rounded-tl-md bg-[var(--hv-shell-card)] border border-[var(--hv-shell-border)]">
+                  <span class="grid place-items-center w-9 h-9 rounded-full flex-none bg-[var(--hv-app-chat-grad)] text-white"><IconBrain size={26} strokeWidth={1.8} /></span>
+                  <div data-testid="chat-bubble" class="hv-chat-bubble-bot max-w-[85%] px-4 py-3 rounded-2xl rounded-tl-md bg-card border border-border">
                     {#if msg.content === '' && sending && i === messages.length - 1}
                       <div class="hv-chat-typing flex gap-1"><span></span><span></span><span></span></div>
                     {:else}
@@ -557,9 +557,9 @@
                         <span>{formatTime(msg.timestamp)}</span>
                         <span>{modelName}</span>
                         {#if msg.content}
-                          <button data-testid="chat-action" class="border-none bg-transparent cursor-pointer text-[var(--hv-shell-text-2)] hover:text-[var(--hv-shell-text-strong)]" onclick={() => copyMessage(i, msg.content)} title={$t('chat.copy_message')} aria-label={$t('chat.copy_message')}>{#if copiedIndex === i}<IconCheck size={14} stroke={2} />{:else}<IconCopy size={14} stroke={2} />{/if}</button>
+                          <button data-testid="chat-action" class="border-none bg-transparent cursor-pointer text-[var(--hv-shell-text-2)] hover:text-[var(--hv-shell-text-strong)]" onclick={() => copyMessage(i, msg.content)} title={$t('chat.copy_message')} aria-label={$t('chat.copy_message')}>{#if copiedIndex === i}<IconCheck size={14} strokeWidth={1.8} />{:else}<IconCopy size={14} strokeWidth={1.8} />{/if}</button>
                           {#if i === messages.length - 1 && !sending}
-                            <button data-testid="chat-action" class="border-none bg-transparent cursor-pointer text-[var(--hv-shell-text-2)] hover:text-[var(--hv-shell-text-strong)]" onclick={regenerateLast} title={$t('chat.regenerate')} aria-label={$t('chat.regenerate')}><IconRefresh size={14} stroke={2} /></button>
+                            <button data-testid="chat-action" class="border-none bg-transparent cursor-pointer text-[var(--hv-shell-text-2)] hover:text-[var(--hv-shell-text-strong)]" onclick={regenerateLast} title={$t('chat.regenerate')} aria-label={$t('chat.regenerate')}><IconRefresh size={14} strokeWidth={1.8} /></button>
                           {/if}
                         {/if}
                       </div>
@@ -591,14 +591,14 @@
           </div>
         {/if}
         <div class="flex items-center gap-2">
-          <button data-testid="chat-history-btn" class={cn('grid place-items-center w-12 h-12 flex-none rounded-lg border border-[var(--hv-shell-border-strong)] bg-[var(--hv-shell-fill)] text-[var(--hv-shell-text-strong)] cursor-pointer', showHistory && 'bg-[var(--hv-primary-light)] text-[var(--hv-primary)]')} class:active={showHistory} onclick={toggleHistory} title={$t('chat.history_title')} aria-label={$t('chat.history_title')}><IconHistory size={26} stroke={1.9} /></button>
+          <button data-testid="chat-history-btn" class={cn('grid place-items-center w-12 h-12 flex-none rounded-lg border border-[var(--hv-shell-border-strong)] bg-[var(--hv-shell-fill)] text-[var(--hv-shell-text-strong)] cursor-pointer', showHistory && 'bg-[var(--hv-primary-light)] text-[var(--hv-primary)]')} class:active={showHistory} onclick={toggleHistory} title={$t('chat.history_title')} aria-label={$t('chat.history_title')}><IconHistory size={26} strokeWidth={1.8} /></button>
           <div class="flex-1 min-w-0">
             <textarea data-testid="chat-input" class="w-full resize-none border border-[var(--hv-shell-border-strong)] rounded-md bg-[var(--hv-shell-border-soft)] px-4 py-3 text-sm text-[var(--hv-shell-text-strong)] outline-none focus:border-[var(--hv-primary)]" bind:value={input} onkeydown={handleKeydown} placeholder={$t('chat.input_placeholder')} rows="1" disabled={sending}></textarea>
           </div>
           {#if sending}
-            <button data-testid="chat-send" class="grid place-items-center w-12 h-12 flex-none rounded-lg border-none bg-[var(--hv-error)] text-white cursor-pointer hover:brightness-110" onclick={stopGenerating} title={$t('chat.stop_generating')} aria-label={$t('chat.stop_generating')}><IconSquare size={22} stroke={2} fill="currentColor" /></button>
+            <button data-testid="chat-send" class="grid place-items-center w-12 h-12 flex-none rounded-lg border-none bg-[var(--hv-error)] text-white cursor-pointer hover:brightness-110" onclick={stopGenerating} title={$t('chat.stop_generating')} aria-label={$t('chat.stop_generating')}><IconSquare size={22} strokeWidth={1.8} fill="currentColor" /></button>
           {:else}
-            <button data-testid="chat-send" class="grid place-items-center w-12 h-12 flex-none rounded-lg border-none bg-[var(--hv-app-chat-grad)] text-white cursor-pointer disabled:opacity-40 disabled:cursor-default" onclick={sendMessage} disabled={!input.trim()} title={$t('chat.send')} aria-label={$t('chat.send')}><IconSend size={26} stroke={1.9} /></button>
+            <button data-testid="chat-send" class="grid place-items-center w-12 h-12 flex-none rounded-lg border-none bg-[var(--hv-app-chat-grad)] text-white cursor-pointer disabled:opacity-40 disabled:cursor-default" onclick={sendMessage} disabled={!input.trim()} title={$t('chat.send')} aria-label={$t('chat.send')}><IconSend size={26} strokeWidth={1.8} /></button>
           {/if}
         </div>
         <div class="mt-1.5 text-center text-c-xs text-[var(--hv-shell-text-3)]">{$t('chat.local_note')}</div>

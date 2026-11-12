@@ -57,14 +57,14 @@
   const hasHeader = $derived(!!(title || titleSnippet || description || actions));
 </script>
 
-<section class={cn('hv-section-card rounded-xl bg-card border border-border shadow-[var(--hv-shell-shadow-card)]', extraClass)} data-testid={testId}>
+<section class={cn('hv-section-card rounded-2xl bg-card border border-border shadow-[var(--hv-shell-shadow-card)]', extraClass)} data-testid={testId}>
   {#if hasHeader}
-    <header class={cn('hv-section-card-header flex items-start justify-between gap-4 px-5 pt-5 pb-3', divider && 'border-b border-[var(--hv-shell-border-soft)]')}>
+    <header class={cn('hv-section-card-header flex items-start justify-between gap-4 px-4 pt-4 pb-3', divider && 'border-b border-[var(--hv-shell-border-soft)]')}>
       <div class="min-w-0">
         {#if titleSnippet}
           {@render titleSnippet()}
         {:else if title}
-          <h2 class="text-lg font-semibold leading-snug text-foreground truncate">
+          <h2 class="text-md font-semibold leading-snug text-foreground truncate">
             {title}
           </h2>
         {/if}
@@ -79,7 +79,7 @@
       {/if}
     </header>
   {/if}
-  <div class="hv-section-card-body px-5 pb-5 {hasHeader ? (divider ? 'pt-3' : 'pt-1') : 'pt-5'}">
+  <div class="hv-section-card-body px-4 pb-4 {hasHeader ? (divider ? 'pt-3' : 'pt-1') : 'pt-4'}">
     {@render children()}
   </div>
 </section>

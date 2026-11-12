@@ -33,7 +33,7 @@
   import { shortcutsStore } from '$lib/stores/shortcuts';
   import { api } from '$lib/services/api';
   import { Modal } from '$lib/components/theme';
-  import { IconPlus, IconWorld, IconLoader2 } from '@tabler/icons-svelte';
+  import { IconPlus, IconWorld, IconLoader2 } from '$lib/icons/lucide';
 
   let {
     open = false,
@@ -92,7 +92,7 @@
 </script>
 
 <Modal open={open} title={$t('shortcuts.add')} size="md" onclose={closeAdd}>
-  {#snippet icon()}<IconWorld size={22} stroke={1.75} />{/snippet}
+  {#snippet icon()}<IconWorld size={22} strokeWidth={1.8} />{/snippet}
   {#snippet children()}
     <p class="m-0 mb-3 text-sm text-[var(--hv-shell-text)]">{$t('shortcuts.add_hint')}</p>
     <label class="flex flex-col gap-1 text-c-base text-[var(--hv-shell-text-2)]">
@@ -119,7 +119,7 @@
       disabled={busy || !url.trim()}
       onclick={addShortcut}
     >
-      {#if busy}<IconLoader2 size={16} stroke={2} class="hv-spin" />{/if}
+      {#if busy}<IconLoader2 size={16} strokeWidth={1.8} class="hv-spin" />{/if}
       {$t('shortcuts.add')}
     </button>
   {/snippet}

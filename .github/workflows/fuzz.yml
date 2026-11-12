@@ -1,0 +1,56 @@
+# Fuzzing — real cargo-fuzz campaigns, nightly rather than per-push.
+#
+# The per-push gate runs `tests/fuzz_smoke.rs` on stable (deterministic hostile
+# inputs through the same public parsers). This workflow installs nightly +
+# cargo-fuzz and spends a bounded time per target, uploading any crash.
+#
+# Targets: /proc + SMART parsers, remote-mount validators, SMB/NFS config,
+# app manifests, Docker inputs, upload filenames and WS-Discovery.
+name: fuzz
+on:
+  schedule:
+    - cron: "43 2 * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: fuzz-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  fuzz:
+    name: cargo-fuzz (${{ matrix.target }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - proc_parsers
+          - remote_mounts
+          - share_config
+          - app_manifest
+          - docker_inputs
+          - upload_filename
+          - ws_discovery
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install nightly + cargo-fuzz
+        run: |
+          rustup toolchain install nightly --profile minimal
+          cargo install cargo-fuzz --locked
+      - name: Seed corpus
+        run: |
+          mkdir -p "fuzz/corpus/${{ matrix.target }}"
+          printf 'Name : host:test\nUUID : 1234\n0 8 1 0 active sync /dev/sda1\n' \
+            > "fuzz/corpus/${{ matrix.target }}/seed"
+      - name: Fuzz for 60 seconds
+        run: |
+          cd fuzz
+          cargo +nightly fuzz run ${{ matrix.target }} -- \
+            -max_total_time=60 -rss_limit_mb=2048
+      - name: Upload crashes
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: fuzz-crashes-${{ matrix.target }}
+          path: fuzz/artifacts/
+          retention-days: 30

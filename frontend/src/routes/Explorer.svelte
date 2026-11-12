@@ -37,7 +37,7 @@
   import { explorerIntent } from '$lib/stores/explorerIntent';
   import { get } from 'svelte/store';
   import FolderPicker from '$lib/components/theme/FolderPicker.svelte';
-  import { IconAlertCircle, IconArchive, IconArrowBackUp, IconArrowUp, IconBolt, IconClock, IconCloud, IconCloudCheck, IconCloudUpload, IconCopy, IconDatabase, IconDownload, IconHistory, IconInbox, IconPlayerEject, IconPencil, IconEye, IconFileZip, IconFolderMinus, IconFolderOpen, IconFolderPlus, IconLink, IconServer, IconHome, IconLayoutGrid, IconList, IconLoader, IconLock, IconPlus, IconRefresh, IconSearch, IconShare, IconShield, IconShieldCheckered, IconStar, IconStarFilled, IconTag, IconTrash, IconUpload, IconUsb, IconX, IconArrowsExchange, IconNetwork } from '@tabler/icons-svelte';
+  import { IconAlertCircle, IconArchive, IconArrowBackUp, IconArrowUp, IconBolt, IconClock, IconCloud, IconCloudCheck, IconCloudUpload, IconCopy, IconDatabase, IconDownload, IconHistory, IconInbox, IconPlayerEject, IconPencil, IconEye, IconFileZip, IconFolderMinus, IconFolderOpen, IconFolderPlus, IconLink, IconServer, IconHome, IconLayoutGrid, IconList, IconLoader, IconLock, IconPlus, IconRefresh, IconSearch, IconShare, IconShield, IconShieldCheckered, IconStar, IconStarFilled, IconTag, IconTrash, IconUpload, IconUsb, IconX, IconArrowsExchange, IconNetwork } from '$lib/icons/lucide';
   import ShareLinkModal from '$lib/components/explorer/ShareLinkModal.svelte';
   import FileRequestModal from '$lib/components/explorer/FileRequestModal.svelte';
   import TransferTray from '$lib/components/explorer/TransferTray.svelte';
@@ -342,8 +342,8 @@
     if (entry.is_directory) return 'folder';
     if (isImage(entry.name)) return 'image';
     if (isArchive(entry.name)) return 'archive';
-    if (isText(entry.name)) return 'description';
-    return 'insert_drive_file';
+    if (isText(entry.name)) return 'file-text';
+    return 'file';
   }
 
   function formatSize(bytes: number): string {
@@ -1825,7 +1825,7 @@
   footerMode="status"
 >
   {#snippet icon()}
-    <IconFolderOpen stroke={1.8} />
+    <IconFolderOpen strokeWidth={1.8} />
   {/snippet}
 
   {#snippet sidebar()}
@@ -1983,7 +1983,7 @@
             ondragleave={sidebarDragLeave}
             ondrop={mountPoint ? (e) => sidebarDrop(e, mountPoint) : undefined}
           >
-            {#snippet icon()}<Icon name={disk.connection_type === 'nvme' ? 'memory' : 'hard_drive'} size={18} class="text-[var(--hv-primary)]" />{/snippet}
+            {#snippet icon()}<Icon name={disk.connection_type === 'nvme' ? 'memory' : 'hard-drive'} size={18} class="text-[var(--hv-primary)]" />{/snippet}
           </WindowSidebarItem>
         {/each}
       {/if}
@@ -2060,7 +2060,7 @@
       <div data-testid="explorer-history" class="relative">
         <button class={cn(toolbarBtn, (showSnapshots || snapshotMode) && 'text-[var(--hv-primary)]')} data-testid="explorer-history-btn" class:active={showSnapshots || snapshotMode} onclick={toggleSnapshots} title={$t('explorer.history')} aria-label={$t('explorer.history')}><IconHistory size={16} /></button>
         {#if showSnapshots}
-          <div data-testid="explorer-history-menu" class="absolute top-full left-0 mt-1 z-[var(--hv-z-dropdown)] w-56 rounded-xl bg-[var(--hv-shell-glass)] border border-[var(--hv-shell-border)] shadow-[var(--hv-shell-shadow-card)] p-1.5">
+          <div data-testid="explorer-history-menu" class="absolute top-full left-0 mt-1 z-[var(--hv-z-dropdown)] w-56 rounded-2xl bg-[var(--hv-shell-glass)] border border-[var(--hv-shell-border)] shadow-[var(--hv-shell-shadow-card)] p-1.5">
             {#if snapshotsLoading}
               <div data-testid="explorer-history-empty" class="px-3 py-4 text-xs text-[var(--hv-shell-text-2)]">{$t('explorer.loading')}</div>
             {:else if snapshots.length === 0}
@@ -2299,7 +2299,12 @@
           </div>
           {#each visibleEntries as entry, vi (entry.path)}
             <div data-testid="explorer-file-row" data-path={entry.path} draggable="true" ondragstart={(e) => onRowDragStart(e, entry)} ondragend={endInternalDrag} ondragover={entry.is_directory ? onFolderDragOver : undefined} ondrop={entry.is_directory ? (e) => onFolderDrop(e, entry.path) : undefined} class:selected={selected.has(entry.path)} class="grid grid-cols-[minmax(0,1fr)_auto_auto_auto_auto] items-center gap-3 px-3 py-2 border-b border-[var(--hv-shell-border-soft)] cursor-pointer hover:bg-[var(--hv-subtle-hover)]" onclick={(e) => handleRowClick(entry, sortedEntries.indexOf(entry), e)} onkeydown={(e) => activateOnEnterOrSpace(e, () => navigateToEntry(entry))} role="button" tabindex="0" aria-label={entry.name}>
-              <span class="flex items-center gap-2 min-w-0"><Icon name={getFileIcon(entry)} size={18} className={entry.is_directory ? 'folder-icon' : ''} class="text-[var(--hv-shell-text-2)]" /><span class="text-c-base text-[var(--hv-shell-text-strong)] truncate">{entry.name}</span></span>
+              <span class="flex items-center gap-3 min-w-0">
+                <span class="grid place-items-center w-7 h-7 rounded-[9px] bg-[var(--hv-shell-card)] flex-none">
+                  <Icon name={getFileIcon(entry)} size={16} className={entry.is_directory ? 'folder-icon' : ''} class="text-[var(--hv-shell-text-2)]" />
+                </span>
+                <span class="text-c-base text-[var(--hv-shell-text-strong)] truncate">{entry.name}</span>
+              </span>
               <span class="text-xs text-[var(--hv-shell-text-2)]">{entry.is_directory ? '\u2014' : formatSize(entry.size_bytes)}</span>
               <span class="text-xs text-[var(--hv-shell-text-2)]">{entry.modified}</span>
               <span class="text-xs text-[var(--hv-shell-text-2)]">{entry.permissions}</span>

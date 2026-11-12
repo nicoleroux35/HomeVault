@@ -30,7 +30,7 @@
   import { t, translate } from '$lib/stores/i18n';
   import { SectionCard } from '$lib/components/app';
   import { Spinner } from '$lib/components/theme';
-  import { IconKey, IconPlus, IconTrash, IconUsers } from '@tabler/icons-svelte';
+  import { IconKey, IconPlus, IconTrash, IconUsers } from '$lib/icons/lucide';
   import { cn } from '$lib/utils.js';
 
   export let username: string;
@@ -196,7 +196,7 @@
 <SectionCard data-testid="users-access-card" divider>
   {#snippet titleSnippet()}
     <h2 class="text-c-card-title font-semibold text-[var(--hv-shell-text-strong)] flex items-center gap-2">
-      <IconKey size={17} stroke={1.8} aria-hidden="true" /> {$t('users.access_title')}
+      <IconKey size={17} strokeWidth={1.8} aria-hidden="true" /> {$t('users.access_title')}
     </h2>
   {/snippet}
 
@@ -229,7 +229,7 @@
               disabled={busy}
               onclick={() => remove(g)}
             >
-              <IconTrash size={17} stroke={1.8} />
+              <IconTrash size={17} strokeWidth={1.8} />
             </button>
           </li>
         {/each}
@@ -264,7 +264,7 @@
         class={cn('inline-flex items-center gap-1.5 h-9 px-3 rounded-md bg-[var(--hv-primary)] text-white text-c-base font-semibold', busy && 'opacity-60')}
         disabled={busy || !newResource.trim()}
       >
-        <IconPlus size={16} stroke={2} /> {$t('users.access_add')}
+        <IconPlus size={16} strokeWidth={1.8} /> {$t('users.access_add')}
       </button>
     </form>
 
@@ -297,7 +297,7 @@
   {#if !isAdmin}
     <div class="mt-5 border-t border-[var(--hv-shell-border-soft)] pt-4" data-testid="users-access-groups">
       <h3 class="m-0 flex items-center gap-2 text-c-card-title font-semibold text-[var(--hv-shell-text-strong)]">
-        <IconUsers size={16} stroke={1.8} aria-hidden="true" /> {$t('users.access_group_title')}
+        <IconUsers size={16} strokeWidth={1.8} aria-hidden="true" /> {$t('users.access_group_title')}
       </h3>
       <p class="m-0 mt-1 text-c-xs text-[var(--hv-shell-text)]">{$t('users.access_group_hint')}</p>
 
@@ -327,7 +327,7 @@
                   disabled={groupBusy}
                   onclick={() => removeGroupGrant(g)}
                 >
-                  <IconTrash size={17} stroke={1.8} />
+                  <IconTrash size={17} strokeWidth={1.8} />
                 </button>
               </li>
             {/each}
@@ -372,7 +372,7 @@
             class={cn('inline-flex items-center gap-1.5 h-9 px-3 rounded-md bg-[var(--hv-primary)] text-white text-c-base font-semibold', groupBusy && 'opacity-60')}
             disabled={groupBusy || !newGroupResource.trim() || !newGroup}
           >
-            <IconPlus size={16} stroke={2} /> {$t('users.access_group_add')}
+            <IconPlus size={16} strokeWidth={1.8} /> {$t('users.access_group_add')}
           </button>
         </form>
       {/if}

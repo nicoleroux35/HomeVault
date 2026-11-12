@@ -19,7 +19,7 @@
 <script lang="ts">
   import { t } from '$lib/stores/i18n';
   import { getSaveStatus, getDirtyCount, saveAll } from '$lib/stores/settingsDraft.svelte';
-  import { IconAlertTriangle, IconCheck } from '@tabler/icons-svelte';
+  import { IconAlertTriangle, IconCheck } from '$lib/icons/lucide';
   import { onDestroy } from 'svelte';
   import { cn } from '$lib/utils.js';
   import { settingsBtn, settingsBtnPrimary, settingsBtnDanger, settingsBtnSuccess } from './vocabulary';
@@ -39,7 +39,7 @@
      The label and the icon always change with the colour, so the state is
      never colour-alone (WCAG 1.4.1). White on the three fills measures
      6.15:1 (blue), 5.73:1 (red) and 5.14:1 (green): the blue is the live
-     `--hv-primary` accent, whose shipped default has been #1E62AE since
+     `--hv-primary` accent, whose shipped default has been #2E72C9 since
      2026-09-23 — the legacy #4a90d9 (3.34:1, fails §1.4.3) is rewritten
      server-side by `handlers::settings::normalize_accent`.
 
@@ -107,15 +107,15 @@
 {/snippet}
 
 <button
-  class={cn(settingsBtn, skin)}
+  class={cn(settingsBtn, 'rounded-full', skin)}
   onclick={onSave}
   disabled={status === 'saving'}
   data-testid="settings-save"
   data-state={phase}
 >
   {#if phase === 'saving'}<span class="set-save-spin"></span>
-  {:else if phase === 'dirty' || phase === 'error'}<IconAlertTriangle size={16} stroke={2.5} />
-  {:else}<IconCheck size={16} stroke={2.5} />
+  {:else if phase === 'dirty' || phase === 'error'}<IconAlertTriangle size={16} strokeWidth={2.5} />
+  {:else}<IconCheck size={16} strokeWidth={2.5} />
   {/if}{@render saveLabel()}
 </button>
 

@@ -144,7 +144,7 @@
     background: var(--hv-shell-fill);
     border-right: 1px solid var(--hv-shell-border);
     overflow: hidden;
-    transition: width var(--hv-chrome-dur, 180ms) ease;
+    transition: width var(--hv-chrome-dur-fast, 180ms) ease;
   }
 
   .hv-winsidebar-toggle {
@@ -292,8 +292,10 @@
   }
 
   .hv-winsidebar-body :global(.hv-winsidebar-item.is-rich.is-active) {
-    background: var(--hv-settings-hairline);
-    color: var(--hv-settings-title-strong);
+    /* v2 active rail row: the soft accent pill the design uses, with the
+       category colour still carried by the trailing bar + solid icon tile. */
+    background: var(--hv-primary-100);
+    color: var(--hv-primary-800);
   }
 
   /* The trailing 4x20 accent bar — a pseudo-element so the markup stays a

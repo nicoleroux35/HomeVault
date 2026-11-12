@@ -39,7 +39,7 @@
 			<DialogPrimitive.Close data-slot="dialog-close">
 				{#snippet child({ props })}
 					<Button variant="ghost" class="absolute top-4 right-4" size="icon-sm" {...props}>
-						<XIcon  />
+						<XIcon />
 						<span class="sr-only">{$t('common.close')}</span>
 					</Button>
 				{/snippet}

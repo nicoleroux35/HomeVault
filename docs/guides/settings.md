@@ -32,7 +32,7 @@ Handlers in `src/handlers/settings.rs`. Persistence via
 | `POST /settings/email/oauth/start` | admin | returns the provider authorization URL and sets the one-time `hv_email_oauth_state` cookie |
 | `GET /settings/email/oauth/callback` | public | the provider redirect; refuses a state that does not match the cookie or was already used. See [email-oauth](./email-oauth.md) |
 | `GET/PUT /settings/notifications` | auth / admin | alert email, threshold, `webhook_url`/`webhook_enabled`; the URL is validated at save time and again at dispatch |
-| `GET /settings/appearance` | **any session** | the appliance look: `wallpaper` (one of the 44 bundled — no upload) + `accent_color`. Read by every account's boot hydration (ROADMAP 26.1); carries nothing else — no e-mail, SMTP, update or notification field |
+| `GET /settings/appearance` | **any session** | the appliance look: `wallpaper` (`""` for the v2 gradient, otherwise one of the 44 bundled photos — no upload) + `accent_color`. Read by every account's boot hydration (ROADMAP 26.1); carries nothing else — no e-mail, SMTP, update or notification field |
 | `PUT /settings/appearance` | admin | same two fields, validated (see below). `theme` / `density` no longer exist (ROADMAP 26.2) |
 | `GET/PUT /settings/update` | auth / admin | update-check frequency — **default `Manual`** since 2026-09-07 (G2: no automatic outbound call to GitHub) |
 | `GET /settings/version` | auth | current version + last **cached** check + `last_update` (the installer's last result, read from `data/updates/last-result.json`, absent until one ran). Contacts the update endpoint only when the saved frequency says a scheduled check is due — opening Settings is never an outbound call by itself |
@@ -300,12 +300,12 @@ translate function as an argument instead of importing the i18n store.
 Three pieces, each with one job:
 
 - **Rail item** — `WindowSidebarItem.svelte` with `variant="rich"`, `subtitle`
-  and `accent`. The 28px **circular** icon tile (`--hv-settings-icon-tile`) is
+  and `accent`. The 28px **9px-squircle** icon tile (`--hv-settings-icon-tile`) is
   the category colour mixed to
   `--hv-settings-cat-tint` (9%) behind a 16px glyph in the full colour; when the item
-  is active the tile goes **solid** with a **white** glyph and the row gains a
-  trailing 4x20 pill (`::after` in `WindowSidebar.svelte:281`, coloured by
-  `--hv-row-accent`). Both tile states are contrast-governed (≥3:1, WCAG
+  is active the tile goes **solid** with a **white** glyph, the row takes the
+  soft accent pill (`--hv-primary-100`), and it gains a trailing 4x20 pill
+  (`::after` in `WindowSidebar.svelte:281`, coloured by `--hv-row-accent`). Both tile states are contrast-governed (≥3:1, WCAG
   1.4.11 — E2E 17.5 measures them live). `variant`/`accent`/`subtitle` are
   opt-in — the ~10 other `WindowSidebarItem` consumers are untouched.
 - **Rail typography is the compact scale** (2026-09-15): the two-line row uses
@@ -328,15 +328,15 @@ Three pieces, each with one job:
   props: a card's identity is its title, and the per-card tint only ever
   coloured the glyph it no longer renders. `py-4` → `py-2.5`: **measured
   83.5px → 57px**.
-- **One icon tile for the whole screen (2026-10-19)** — every decorative tile
-  is a circle at `--hv-settings-icon-tile` (28px) with a 16px glyph, through
-  `settingsIconTile` (`vocabulary.ts`) or the rail's rich CSS. The screen used
-  to mix 28px tiles with a 12px corner and 36px tiles with an 18px corner and a
-  20px glyph, so the Widgets rows, the Privacy rows and the rail read as three
-  components. Card *headers* carry no tile at all any more (see above); the
-  only other tile is the window-header icon, which is already a 28px circle.
-  E2E 23.12 pins the size, the shape and the 16/20 glyph ladder across all
-  eight categories.
+- **One icon tile for the whole screen (v2, 2026-11-10)** — every decorative
+  tile is a **9px squircle** at `--hv-settings-icon-tile` (28px) with a 16px
+  glyph, through `settingsIconTile` (`vocabulary.ts`) or the rail's rich CSS.
+  That is the same icon-pill shape as the widget headers and the in-window app
+  tile. The screen used to mix 28px tiles with a 12px corner and 36px tiles
+  with an 18px corner and a 20px glyph, so the Widgets rows, the Privacy rows
+  and the rail read as three components. Card *headers* carry no tile at all
+  any more (see above). E2E 23.12 pins the size, the 9px shape and the 16/20
+  glyph ladder across all eight categories.
 - **The subtitle's `mb-0!` is as load-bearing as the `!` on the heading** —
   `styles/theme/base.css` declares an unlayered
   `p { margin-bottom: var(--hv-space-4) }`, so the plain `m-0` the header
@@ -812,9 +812,9 @@ leaves the blob half-written:
   (`normalize_accent`).
 
 The same wallpaper rule runs on load (`apply_loaded_settings`): a stored value
-that does not name a bundled photo — a legacy custom upload, a hand-edited
-`settings.json` — is dropped to `""` instead of being handed to a desktop that
-would silently reset it.
+that does not name a bundled photo and is not the empty-string gradient — a
+legacy custom upload, a hand-edited `settings.json` — is dropped to `""`
+instead of being handed to a desktop that would silently reset it.
 
 ### `theme` and `density` are gone
 
@@ -859,7 +859,7 @@ screen:
   White on the three fills measures 6.15:1 (blue), 5.73:1 (red) and
   5.14:1 (green) ✓ for §1.4.3. The blue is the live `--hv-primary` accent,
   which `App.svelte` re-hydrates from `appearance.accent_color` at boot —
-  since 2026-09-23 that default is `#1E62AE` (HomeVault Blue, i.e. the
+  since 2026-09-23 that default is `#2E72C9` (HomeVault Blue, i.e. the
   token itself: 6.15:1 behind white, 4.99–5.68:1 as text on
   `--hv-surface` and the `--hv-primary-*` tints). The retired default
   `#4a90d9` failed both directions (≤3.34:1) and is rewritten on every
@@ -1006,7 +1006,7 @@ shows a state the host refused; the rail-footer Save button parks on
   token; the category accents are the eight `--hv-settings-cat-*` solids, and a
   tint is always derived from its solid via `--hv-settings-cat-tint` so the two
   cannot drift. Every accent clears ≥3:1 in both tile states — 2026-09-23:
-  widgets `#A78BFA`→`#7C3AED`, notifications `#F59E0B`→`#B45309`, ai
+  widgets `#A78BFA`→`#7C3AED`, notifications `#F59E0B`→`#96601A`, ai
   `#06B6D4`→`#0E7490`, monitoring `#10B981`→`#047857` (the violet-400 /
   amber-500 / cyan-500 / emerald-500 stops sat at 2.00–2.72:1); guarded by
   E2E 17.5.

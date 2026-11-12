@@ -1,0 +1,64 @@
+[package]
+name = "homevault-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+serde_json = "1"
+
+[dependencies.homevault]
+path = ".."
+
+[[bin]]
+name = "proc_parsers"
+path = "fuzz_targets/proc_parsers.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "remote_mounts"
+path = "fuzz_targets/remote_mounts.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "share_config"
+path = "fuzz_targets/share_config.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "app_manifest"
+path = "fuzz_targets/app_manifest.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "docker_inputs"
+path = "fuzz_targets/docker_inputs.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "upload_filename"
+path = "fuzz_targets/upload_filename.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "ws_discovery"
+path = "fuzz_targets/ws_discovery.rs"
+test = false
+doc = false
+bench = false

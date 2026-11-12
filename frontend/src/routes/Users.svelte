@@ -35,7 +35,7 @@
   import FolderPicker from '$lib/components/theme/FolderPicker.svelte';
   import MemberAccessCard from '$lib/components/users/MemberAccessCard.svelte';
   import type { AvailableHomeDisk } from '$lib/types/api';
-  import { IconSearch, IconPlus, IconMinus, IconLock, IconLockOpen, IconUsers, IconFolder, IconFolderOpen, IconKey, IconTrash, IconCheck, IconX, IconShield, IconShieldOff, IconGauge, IconArrowLeft, IconEye, IconEyeOff, IconLogout, IconDeviceDesktop, IconClock, IconAlertTriangle } from '@tabler/icons-svelte';
+  import { IconSearch, IconPlus, IconMinus, IconLock, IconLockOpen, IconUsers, IconFolder, IconFolderOpen, IconKey, IconTrash, IconCheck, IconX, IconShield, IconShieldOff, IconGauge, IconArrowLeft, IconEye, IconEyeOff, IconLogout, IconDeviceDesktop, IconClock, IconAlertTriangle } from '$lib/icons/lucide';
 
   interface User {
     username: string;
@@ -964,7 +964,7 @@
   {sidebarHidden}
 >
   {#snippet icon()}
-    <IconUsers stroke={1.7} />
+    <IconUsers strokeWidth={1.8} />
   {/snippet}
 
   {#snippet sidebarFooter()}
@@ -974,7 +974,7 @@
       class={cn(ghostBtn, 'w-full justify-center bg-transparent')}
       onclick={openQuotasApp}
     >
-      <IconGauge size={16} stroke={1.9} aria-hidden="true" /> {$t('users.quota_view')}
+      <IconGauge size={16} strokeWidth={1.8} aria-hidden="true" /> {$t('users.quota_view')}
     </button>
   {/snippet}
 
@@ -982,11 +982,11 @@
   {#snippet sidebar()}
     <div class="flex flex-col gap-2.5 pb-3 border-b border-[var(--hv-shell-border-soft)]">
       <button type="button" data-testid="users-tile-new" class={cn(primaryBtn, 'w-full justify-center')} onclick={startCreate}>
-        <IconPlus size={17} stroke={2} aria-hidden="true" /> {$t('users.new_user_btn')}
+        <IconPlus size={17} strokeWidth={1.8} aria-hidden="true" /> {$t('users.new_user_btn')}
       </button>
 
       <div data-testid="users-search" class="flex items-center gap-2.5 h-10 px-3 rounded-lg bg-[var(--hv-shell-border-soft)] border border-[var(--hv-shell-border)] text-[var(--hv-shell-text)]">
-        <IconSearch size={16} stroke={1.9} aria-hidden="true" />
+        <IconSearch size={16} strokeWidth={1.8} aria-hidden="true" />
         <input
           type="search"
           class="flex-1 min-w-0 border-none bg-transparent outline-none text-[var(--hv-shell-text-strong)] text-c-base placeholder:text-[var(--hv-shell-text-3)]"
@@ -1026,7 +1026,7 @@
       {:else}
         {#if filteredUsers.length === 0}
           <EmptyState data-testid="users-empty" title={search || currentFilter !== 'all' ? $t('users.empty_filter') : $t('users.empty_none')}>
-            {#snippet iconSnippet()}<IconUsers size={32} stroke={1.8} />{/snippet}
+            {#snippet iconSnippet()}<IconUsers size={32} strokeWidth={1.8} />{/snippet}
           </EmptyState>
         {/if}
 
@@ -1064,7 +1064,7 @@
               </span>
               {#if u.locked}
                 <span data-testid="users-state" class="locked inline-flex flex-none items-center gap-1 text-[var(--hv-warning)]">
-                  <IconLock size={13} stroke={2} aria-hidden="true" /><span class="sr-only">{$t('users.locked_label')}</span>
+                  <IconLock size={13} strokeWidth={1.8} aria-hidden="true" /><span class="sr-only">{$t('users.locked_label')}</span>
                 </span>
               {:else}
                 <span data-testid="users-state" class="ok inline-flex flex-none items-center gap-1 text-[var(--hv-shell-text-2)]">
@@ -1085,7 +1085,7 @@
         <div data-testid="users-view" class="flex w-full flex-col gap-3">
           <div data-testid="users-detail-topbar" class="flex items-center flex-wrap gap-3">
             <button type="button" data-testid="users-icon-btn" class={iconBtn} onclick={closeDetail} aria-label={$t('common.cancel')}>
-              <IconArrowLeft size={22} stroke={2} aria-hidden="true" />
+              <IconArrowLeft size={22} strokeWidth={1.8} aria-hidden="true" />
             </button>
             <div class="min-w-0">
               <h2 data-testid="users-detail-h1" class="m-0 truncate text-c-stat font-semibold leading-tight tracking-tight text-[var(--hv-shell-text-strong)]">{$t('users.sheet_create')}</h2>
@@ -1096,7 +1096,7 @@
           <form class="flex flex-col gap-3" onsubmit={(e) => { e.preventDefault(); handleCreate(); }}>
             <SectionCard data-testid="users-setting-row" divider>
               {#snippet titleSnippet()}
-                <h2 class={cardTitle}><IconUsers size={17} stroke={2} aria-hidden="true" /> {$t('users.identity')}</h2>
+                <h2 class={cardTitle}><IconUsers size={17} strokeWidth={1.8} aria-hidden="true" /> {$t('users.identity')}</h2>
               {/snippet}
               <div class="grid grid-cols-1 @min-[768px]:grid-cols-2 gap-3">
                 <div class={field}>
@@ -1113,7 +1113,7 @@
                   <div class={cn('flex items-center gap-2 h-11 px-3 border border-[var(--hv-shell-border-strong)] rounded-lg bg-[var(--hv-shell-border-soft)]', errors.password && 'border-[var(--hv-error)]')}>
                     <input id="c-password" class="flex-1 min-w-0 border-none bg-transparent h-10 font-[family-name:var(--hv-font-mono)] text-sm text-[var(--hv-shell-text-strong)] outline-none" type={createPasswordShown ? 'text' : 'password'} required autocomplete="new-password" aria-invalid={errors.password ? 'true' : undefined} aria-describedby={errors.password ? 'c-password-err' : undefined} bind:value={createForm.password} placeholder={$t('users.password_min')} />
                     <button type="button" data-testid="users-inp-btn" class="ghost grid place-items-center w-7 h-8 p-0 border-none bg-transparent text-[var(--hv-shell-text-2)] cursor-pointer hover:text-[var(--hv-shell-text-strong)]" onclick={() => (createPasswordShown = !createPasswordShown)} aria-pressed={createPasswordShown} aria-label={createPasswordShown ? $t('users.password_hide') : $t('users.password_show')}>
-                      {#if createPasswordShown}<IconEyeOff size={16} stroke={2} aria-hidden="true" />{:else}<IconEye size={16} stroke={2} aria-hidden="true" />{/if}
+                      {#if createPasswordShown}<IconEyeOff size={16} strokeWidth={1.8} aria-hidden="true" />{:else}<IconEye size={16} strokeWidth={1.8} aria-hidden="true" />{/if}
                     </button>
                     <button type="button" data-testid="users-inp-btn" class={cn(primaryBtn, 'h-8 px-3 flex-none text-c-label')} onclick={() => { createForm.password = generatePassword(); createPasswordShown = true; }}>{$t('users.generate')}</button>
                   </div>
@@ -1128,17 +1128,17 @@
 
             <SectionCard data-testid="users-setting-row" divider>
               {#snippet titleSnippet()}
-                <h2 class={cardTitle}><IconShield size={17} stroke={2} aria-hidden="true" /> {$t('users.role_label')}</h2>
+                <h2 class={cardTitle}><IconShield size={17} strokeWidth={1.8} aria-hidden="true" /> {$t('users.role_label')}</h2>
               {/snippet}
               <fieldset class="m-0 min-w-0 border-0 p-0">
                 <legend class="sr-only">{$t('users.role_label')}</legend>
                 <div class="grid grid-cols-1 @min-[640px]:grid-cols-2 gap-3">
                   <button type="button" data-testid="users-role" class:active={createForm.role === 'user'} aria-pressed={createForm.role === 'user'} onclick={() => (createForm.role = 'user')} class={cn('flex flex-col items-start gap-1.5 px-4 py-4 border rounded-lg bg-[var(--hv-shell-fill)] text-left cursor-pointer transition-colors hover:bg-[var(--hv-shell-border-soft)]', createForm.role === 'user' ? 'border-[var(--hv-primary)]/55 bg-[var(--hv-primary-light)]' : 'border-[var(--hv-shell-border)]')}>
-                    <span class="inline-flex items-center gap-2 text-sm font-semibold text-[var(--hv-shell-text-strong)]"><IconUsers size={15} stroke={2} aria-hidden="true" /> {$t('users.role_user2')}</span>
+                    <span class="inline-flex items-center gap-2 text-sm font-semibold text-[var(--hv-shell-text-strong)]"><IconUsers size={15} strokeWidth={1.8} aria-hidden="true" /> {$t('users.role_user2')}</span>
                     <span class="text-c-xs text-[var(--hv-shell-text-2)] leading-relaxed">{$t('users.role_user_desc')}</span>
                   </button>
                   <button type="button" data-testid="users-role" class:active={createForm.role === 'admin'} aria-pressed={createForm.role === 'admin'} onclick={() => (createForm.role = 'admin')} class={cn('flex flex-col items-start gap-1.5 px-4 py-4 border rounded-lg bg-[var(--hv-shell-fill)] text-left cursor-pointer transition-colors hover:bg-[var(--hv-shell-border-soft)]', createForm.role === 'admin' ? 'border-[var(--hv-primary)]/55 bg-[var(--hv-primary-light)]' : 'border-[var(--hv-shell-border)]')}>
-                    <span class="inline-flex items-center gap-2 text-sm font-semibold text-[var(--hv-shell-text-strong)]"><IconShield size={15} stroke={2} aria-hidden="true" /> {$t('users.role_admin2')}</span>
+                    <span class="inline-flex items-center gap-2 text-sm font-semibold text-[var(--hv-shell-text-strong)]"><IconShield size={15} strokeWidth={1.8} aria-hidden="true" /> {$t('users.role_admin2')}</span>
                     <span class="text-c-xs text-[var(--hv-shell-text-2)] leading-relaxed">{$t('users.role_admin_desc')}</span>
                   </button>
                 </div>
@@ -1147,7 +1147,7 @@
 
             <SectionCard data-testid="users-setting-row" divider>
               {#snippet titleSnippet()}
-                <h2 class={cardTitle}><IconUsers size={17} stroke={2} aria-hidden="true" /> {$t('users.groups_label')}</h2>
+                <h2 class={cardTitle}><IconUsers size={17} strokeWidth={1.8} aria-hidden="true" /> {$t('users.groups_label')}</h2>
               {/snippet}
               {#if loadingGroups}
                 <div class={hint}><Spinner size="sm" label={$t('users.loading_groups')} /></div>
@@ -1160,7 +1160,7 @@
                 <div data-testid="users-chips" class="flex flex-col gap-2" role="group" aria-label={$t('users.sheet_groups')}>
                   {#if adminGroup}
                     <button type="button" data-testid="users-chip" class:on={createForm.role === 'admin'} disabled aria-disabled="true" title={$t('users.admin_group_managed')} class={cn(chipRow, 'admin-locked cursor-not-allowed border-dashed bg-[var(--hv-shell-border-soft)] text-[var(--hv-shell-text-2)]', createForm.role === 'admin' && 'border-solid border-[var(--hv-primary)]/55 bg-[var(--hv-primary-light)]')}>
-                      <IconShield size={15} stroke={2} aria-hidden="true" />
+                      <IconShield size={15} strokeWidth={1.8} aria-hidden="true" />
                       {adminGroup.display_name}
                       <span class="text-c-xs font-medium opacity-80">· {$t('users.admin_group_managed')}</span>
                     </button>
@@ -1174,7 +1174,7 @@
                       onclick={() => toggleCreateGroup(g.display_name)}
                       class={cn(chipRow, createForm.groups.includes(g.display_name) && chipOn)}
                     >
-                      {#if createForm.groups.includes(g.display_name)}<IconCheck size={15} stroke={2.5} aria-hidden="true" />{:else}<IconPlus size={15} stroke={2} aria-hidden="true" />{/if}
+                      {#if createForm.groups.includes(g.display_name)}<IconCheck size={15} strokeWidth={2.5} aria-hidden="true" />{:else}<IconPlus size={15} strokeWidth={1.8} aria-hidden="true" />{/if}
                       {g.display_name}
                     </button>
                   {/each}
@@ -1187,7 +1187,7 @@
 
             <SectionCard data-testid="users-setting-row" divider>
               {#snippet titleSnippet()}
-                <h2 class={cardTitle}><IconFolder size={17} stroke={1.8} aria-hidden="true" /> {$t('users.home_toggle_title')}</h2>
+                <h2 class={cardTitle}><IconFolder size={17} strokeWidth={1.8} aria-hidden="true" /> {$t('users.home_toggle_title')}</h2>
               {/snippet}
               {#snippet actions()}
                 <button
@@ -1227,12 +1227,12 @@
                 </div>
                 <div class="flex flex-wrap items-center gap-2 mt-2.5">
                   <button type="button" data-testid="users-inp-btn" class={cn(ghostBtn, 'h-10')} onclick={() => (createHomePickerOpen = true)}>
-                    <IconFolderOpen size={15} stroke={1.9} aria-hidden="true" /> {$t('users.home_pick_folder')}
+                    <IconFolderOpen size={15} strokeWidth={1.8} aria-hidden="true" /> {$t('users.home_pick_folder')}
                   </button>
                   {#if createForm.home_path}
                     <span class="flex-1 min-w-0 text-xs text-[var(--hv-shell-text-strong)] px-2.5 py-1.5 rounded-lg bg-[var(--hv-primary-light)] border border-[var(--hv-primary)]/30 overflow-hidden text-ellipsis whitespace-nowrap font-[family-name:var(--hv-font-mono)]" title={createForm.home_path}>{createForm.home_path}</span>
                     <button type="button" data-testid="users-inp-btn" class="grid place-items-center w-7 h-8 p-0 border-none bg-transparent text-[var(--hv-shell-text-2)] cursor-pointer hover:text-[var(--hv-shell-text-strong)]" aria-label={$t('common.cancel')} onclick={() => { createForm.home_path = ''; }}>
-                      <IconX size={15} stroke={2} aria-hidden="true" />
+                      <IconX size={15} strokeWidth={1.8} aria-hidden="true" />
                     </button>
                   {/if}
                 </div>
@@ -1274,7 +1274,7 @@
 
             <div class="flex flex-wrap gap-2.5">
               <button type="submit" data-testid="users-btn" class={cn(primaryBtn, 'flex-1 h-12 justify-center text-c-md')} disabled={submitting}>
-                <IconCheck size={18} stroke={2.2} aria-hidden="true" /> {$t('users.create_account')}
+                <IconCheck size={18} strokeWidth={2.2} aria-hidden="true" /> {$t('users.create_account')}
               </button>
               <button type="button" data-testid="users-btn" class={cn(ghostBtn, 'h-12 justify-center text-c-md')} onclick={closeDetail} disabled={submitting}>{$t('common.cancel')}</button>
             </div>
@@ -1285,7 +1285,7 @@
         <div data-testid="users-view" class="flex w-full flex-col gap-3">
           <div data-testid="users-detail-topbar" class="flex items-center flex-wrap gap-3">
             <button type="button" data-testid="users-icon-btn" class={iconBtn} onclick={closeDetail} aria-label={$t('users.back')}>
-              <IconArrowLeft size={22} stroke={2} aria-hidden="true" />
+              <IconArrowLeft size={22} strokeWidth={1.8} aria-hidden="true" />
             </button>
             <span data-testid="users-detail-avatar" class="grid h-12 w-12 flex-none place-items-center rounded-full text-c-lg font-semibold text-white" style="background:{colorFor(selectedUser)}" aria-hidden="true">{initials(selectedUser)}</span>
             <div class="min-w-0 flex-1">
@@ -1307,10 +1307,10 @@
           <form onsubmit={(e) => { e.preventDefault(); saveProfile(); }}>
             <SectionCard data-testid="users-setting-row" divider>
               {#snippet titleSnippet()}
-                <h2 class={cardTitle}><IconUsers size={17} stroke={2} aria-hidden="true" /> {$t('users.identity')}</h2>
+                <h2 class={cardTitle}><IconUsers size={17} strokeWidth={1.8} aria-hidden="true" /> {$t('users.identity')}</h2>
               {/snippet}
               {#snippet actions()}
-                <button type="submit" data-testid="users-btn" class={primaryBtn} disabled={submitting}><IconCheck size={16} stroke={2.2} aria-hidden="true" /> {$t('users.save_profile')}</button>
+                <button type="submit" data-testid="users-btn" class={primaryBtn} disabled={submitting}><IconCheck size={16} strokeWidth={2.2} aria-hidden="true" /> {$t('users.save_profile')}</button>
               {/snippet}
               <div class="grid grid-cols-1 @min-[768px]:grid-cols-2 gap-3">
                 <div class={field}>
@@ -1335,16 +1335,16 @@
           <form onsubmit={(e) => { e.preventDefault(); saveExpiry(); }}>
             <SectionCard data-testid="users-setting-row" divider>
               {#snippet titleSnippet()}
-                <h2 class={cardTitle}><IconClock size={17} stroke={2} aria-hidden="true" /> {$t('users.expiry_title')}</h2>
+                <h2 class={cardTitle}><IconClock size={17} strokeWidth={1.8} aria-hidden="true" /> {$t('users.expiry_title')}</h2>
               {/snippet}
               {#snippet actions()}
                 {#if !expiryEditing}
                   <button type="button" data-testid="users-expiry-edit" class={cn(ghostBtn, 'h-9 px-3 text-c-label')} onclick={openExpiryEditor}>
-                    <IconClock size={16} stroke={1.9} aria-hidden="true" /> {$t('users.expiry_set_btn')}
+                    <IconClock size={16} strokeWidth={1.8} aria-hidden="true" /> {$t('users.expiry_set_btn')}
                   </button>
                 {:else}
                   <button type="submit" data-testid="users-expiry-save" class={primaryBtn} disabled={expirySaving}>
-                    <IconCheck size={16} stroke={2.2} aria-hidden="true" /> {$t('common.save')}
+                    <IconCheck size={16} strokeWidth={2.2} aria-hidden="true" /> {$t('common.save')}
                   </button>
                 {/if}
               {/snippet}
@@ -1369,7 +1369,7 @@
                     <input id="d-expiry" data-testid="users-expiry-input" class={inp} type="datetime-local" bind:value={expiryValue} />
                   </div>
                   <button type="button" data-testid="users-expiry-clear" class={cn(ghostBtn, 'h-11 px-3 text-c-label')} onclick={() => { expiryValue = ''; saveExpiry(); }} disabled={expirySaving}>
-                    <IconX size={16} stroke={2} aria-hidden="true" /> {$t('users.expiry_clear_btn')}
+                    <IconX size={16} strokeWidth={1.8} aria-hidden="true" /> {$t('users.expiry_clear_btn')}
                   </button>
                 </div>
                 <p class={cn(hint, 'mt-1.5')}>{$t('users.expiry_editor_hint')}</p>
@@ -1383,16 +1383,16 @@
           <form onsubmit={(e) => { e.preventDefault(); saveRoleAndGroups(); }}>
             <SectionCard data-testid="users-setting-row" divider>
               {#snippet titleSnippet()}
-                <h2 class={cardTitle}><IconShield size={17} stroke={2} aria-hidden="true" /> {$t('users.role_groups_title')}</h2>
+                <h2 class={cardTitle}><IconShield size={17} strokeWidth={1.8} aria-hidden="true" /> {$t('users.role_groups_title')}</h2>
               {/snippet}
               {#snippet actions()}
-                <button type="submit" data-testid="users-btn" class={primaryBtn} disabled={submitting}><IconCheck size={16} stroke={2.2} aria-hidden="true" /> {$t('common.save')}</button>
+                <button type="submit" data-testid="users-btn" class={primaryBtn} disabled={submitting}><IconCheck size={16} strokeWidth={2.2} aria-hidden="true" /> {$t('common.save')}</button>
               {/snippet}
               <fieldset class="m-0 min-w-0 border-0 p-0">
                 <legend class="mb-2 block p-0 text-c-label font-semibold text-[var(--hv-shell-text-2)]">{$t('users.role_label')}</legend>
                 <div data-testid="users-segment" class="flex gap-1.5 rounded-lg bg-[var(--hv-shell-fill)] p-1.5">
-                  <button type="button" data-testid="users-seg-btn" class:active={editForm.role === 'user'} aria-pressed={editForm.role === 'user'} onclick={() => (editForm.role = 'user')} class={cn(segBtn, editForm.role === 'user' && 'bg-[var(--hv-primary-light)] text-[var(--hv-shell-text-strong)]')}><IconUsers size={15} stroke={2} aria-hidden="true" /> {$t('users.role_user2')}</button>
-                  <button type="button" data-testid="users-seg-btn" class:active={editForm.role === 'admin'} aria-pressed={editForm.role === 'admin'} onclick={() => (editForm.role = 'admin')} class={cn(segBtn, editForm.role === 'admin' && 'bg-[var(--hv-primary-light)] text-[var(--hv-shell-text-strong)]')}><IconShield size={15} stroke={2} aria-hidden="true" /> {$t('users.role_admin2')}</button>
+                  <button type="button" data-testid="users-seg-btn" class:active={editForm.role === 'user'} aria-pressed={editForm.role === 'user'} onclick={() => (editForm.role = 'user')} class={cn(segBtn, editForm.role === 'user' && 'bg-[var(--hv-primary-light)] text-[var(--hv-shell-text-strong)]')}><IconUsers size={15} strokeWidth={1.8} aria-hidden="true" /> {$t('users.role_user2')}</button>
+                  <button type="button" data-testid="users-seg-btn" class:active={editForm.role === 'admin'} aria-pressed={editForm.role === 'admin'} onclick={() => (editForm.role = 'admin')} class={cn(segBtn, editForm.role === 'admin' && 'bg-[var(--hv-primary-light)] text-[var(--hv-shell-text-strong)]')}><IconShield size={15} strokeWidth={1.8} aria-hidden="true" /> {$t('users.role_admin2')}</button>
                 </div>
                 <p class={cn(hint, 'mt-1.5')}>{editForm.role === 'admin' ? $t('users.role_admin_desc') : $t('users.role_user_desc')}</p>
               </fieldset>
@@ -1408,7 +1408,7 @@
                   <div data-testid="users-chips" class="flex flex-col gap-2" role="group" aria-label={$t('users.sheet_groups')}>
                     {#if adminGroup}
                       <button type="button" data-testid="users-chip" class:on={editForm.role === 'admin'} disabled aria-disabled="true" title={$t('users.admin_group_managed')} class={cn(chipRow, 'admin-locked cursor-not-allowed border-dashed bg-[var(--hv-shell-border-soft)] text-[var(--hv-shell-text-2)]', editForm.role === 'admin' && 'border-solid border-[var(--hv-primary)]/55 bg-[var(--hv-primary-light)]')}>
-                        <IconShield size={15} stroke={2} aria-hidden="true" />
+                        <IconShield size={15} strokeWidth={1.8} aria-hidden="true" />
                         {adminGroup.display_name}
                         <span class="text-c-xs font-medium opacity-80">· {$t('users.admin_group_managed')}</span>
                       </button>
@@ -1422,7 +1422,7 @@
                         onclick={() => toggleGroupSel(g.display_name)}
                         class={cn(chipRow, groupsSelected.includes(g.display_name) && chipOn)}
                       >
-                        {#if groupsSelected.includes(g.display_name)}<IconCheck size={15} stroke={2.5} aria-hidden="true" />{:else}<IconPlus size={15} stroke={2} aria-hidden="true" />{/if}
+                        {#if groupsSelected.includes(g.display_name)}<IconCheck size={15} strokeWidth={2.5} aria-hidden="true" />{:else}<IconPlus size={15} strokeWidth={1.8} aria-hidden="true" />{/if}
                         {g.display_name}
                       </button>
                     {/each}
@@ -1438,11 +1438,11 @@
           <!-- 3. Personal folder -->
           <SectionCard data-testid="users-setting-row" divider>
             {#snippet titleSnippet()}
-              <h2 class={cardTitle}><IconFolder size={17} stroke={1.8} aria-hidden="true" /> {$t('users.sheet_home')}</h2>
+              <h2 class={cardTitle}><IconFolder size={17} strokeWidth={1.8} aria-hidden="true" /> {$t('users.sheet_home')}</h2>
             {/snippet}
             {#snippet actions()}
               <div class="flex items-center gap-2">
-                <button type="button" data-testid="users-home-save" class={primaryBtn} onclick={saveHome} disabled={submitting}><IconCheck size={16} stroke={2.2} aria-hidden="true" /> {$t('common.save')}</button>
+                <button type="button" data-testid="users-home-save" class={primaryBtn} onclick={saveHome} disabled={submitting}><IconCheck size={16} strokeWidth={2.2} aria-hidden="true" /> {$t('common.save')}</button>
                 <button
                   type="button"
                   data-testid="users-switch"
@@ -1469,12 +1469,12 @@
                 >
                   <span class={cn('inline-flex items-center gap-1.5 text-c-label font-semibold', q.enforced ? 'text-[var(--hv-success)]' : 'text-[var(--hv-warning)]')}>
                     {#if q.enforced}
-                      <IconCheck size={14} stroke={2.4} aria-hidden="true" />
+                      <IconCheck size={14} strokeWidth={2.4} aria-hidden="true" />
                       {q.limit_bytes
                         ? $t('users.home_quota_enforced', { size: formatBytes(q.limit_bytes), mount: q.mount_point })
                         : $t('users.home_quota_accounting_on', { mount: q.mount_point })}
                     {:else}
-                      <IconAlertTriangle size={14} stroke={2.2} aria-hidden="true" />
+                      <IconAlertTriangle size={14} strokeWidth={2.2} aria-hidden="true" />
                       {q.limit_bytes
                         ? $t('users.home_quota_not_enforced', { size: formatBytes(q.limit_bytes) })
                         : $t('users.home_quota_not_enforced_generic')}
@@ -1519,12 +1519,12 @@
               </div>
               <div class="flex flex-wrap items-center gap-2 mt-2.5">
                 <button type="button" data-testid="users-inp-btn" class={cn(ghostBtn, 'h-10')} onclick={() => (homePickerOpen = true)}>
-                  <IconFolderOpen size={15} stroke={1.9} aria-hidden="true" /> {$t('users.home_pick_folder')}
+                  <IconFolderOpen size={15} strokeWidth={1.8} aria-hidden="true" /> {$t('users.home_pick_folder')}
                 </button>
                 {#if homeForm.home_path}
                   <span class="flex-1 min-w-0 text-xs text-[var(--hv-shell-text-strong)] px-2.5 py-1.5 rounded-lg bg-[var(--hv-primary-light)] border border-[var(--hv-primary)]/30 overflow-hidden text-ellipsis whitespace-nowrap font-[family-name:var(--hv-font-mono)]" title={homeForm.home_path}>{homeForm.home_path}</span>
                   <button type="button" data-testid="users-inp-btn" class="grid place-items-center w-7 h-8 p-0 border-none bg-transparent text-[var(--hv-shell-text-2)] cursor-pointer hover:text-[var(--hv-shell-text-strong)]" aria-label={$t('common.cancel')} onclick={() => { homeForm.home_path = ''; }}>
-                    <IconX size={15} stroke={2} aria-hidden="true" />
+                    <IconX size={15} strokeWidth={1.8} aria-hidden="true" />
                   </button>
                 {/if}
               </div>
@@ -1566,7 +1566,7 @@
             {/if}
             {#if selectedUser.home_enabled && selectedUser.home_path}
               <div class="mt-3">
-                <button type="button" data-testid="users-btn" class="inline-flex items-center gap-2 h-10 px-4 border border-[var(--hv-error)]/40 rounded-lg bg-transparent text-[var(--hv-error)] text-c-base font-semibold cursor-pointer hover:bg-[var(--hv-error-bg)]" onclick={handleDeleteHome}><IconTrash size={15} stroke={2} aria-hidden="true" /> {$t('users.delete_home_folder')}</button>
+                <button type="button" data-testid="users-btn" class="inline-flex items-center gap-2 h-10 px-4 border border-[var(--hv-error)]/40 rounded-lg bg-transparent text-[var(--hv-error)] text-c-base font-semibold cursor-pointer hover:bg-[var(--hv-error-bg)]" onclick={handleDeleteHome}><IconTrash size={15} strokeWidth={1.8} aria-hidden="true" /> {$t('users.delete_home_folder')}</button>
               </div>
             {/if}
           </SectionCard>
@@ -1574,10 +1574,10 @@
           <!-- 4. Transfer quotas -->
           <SectionCard data-testid="users-setting-row" divider>
             {#snippet titleSnippet()}
-              <h2 class={cardTitle}><IconGauge size={17} stroke={1.8} aria-hidden="true" /> {$t('users.sheet_quota')}</h2>
+              <h2 class={cardTitle}><IconGauge size={17} strokeWidth={1.8} aria-hidden="true" /> {$t('users.sheet_quota')}</h2>
             {/snippet}
             {#snippet actions()}
-              <button type="button" data-testid="users-link-btn" class={cn(ghostBtn, 'h-9 px-3 text-c-label')} onclick={openQuotaOverview}><IconGauge size={14} stroke={2} aria-hidden="true" /> {$t('users.quota_overview_button')}</button>
+              <button type="button" data-testid="users-link-btn" class={cn(ghostBtn, 'h-9 px-3 text-c-label')} onclick={openQuotaOverview}><IconGauge size={14} strokeWidth={1.8} aria-hidden="true" /> {$t('users.quota_overview_button')}</button>
             {/snippet}
             {#if loadingQuota}
               <div class={hint}><Spinner size="sm" label={$t('users.loading')} /></div>
@@ -1629,7 +1629,7 @@
                 {/if}
 
                 {#if errors.quotaOk}<span data-testid="users-ok" class={okTxt} role="status">{errors.quotaOk}</span>{/if}
-                <button type="submit" data-testid="users-btn" class={cn(primaryBtn, 'mt-2.5')} disabled={submitting}><IconCheck size={16} stroke={2.2} aria-hidden="true" /> {$t('common.save')}</button>
+                <button type="submit" data-testid="users-btn" class={cn(primaryBtn, 'mt-2.5')} disabled={submitting}><IconCheck size={16} strokeWidth={2.2} aria-hidden="true" /> {$t('common.save')}</button>
               </form>
             {/if}
           </SectionCard>
@@ -1640,10 +1640,10 @@
           <!-- 5. Security -->
           <SectionCard data-testid="users-setting-row" divider>
             {#snippet titleSnippet()}
-              <h2 class={cardTitle}><IconShield size={17} stroke={2} aria-hidden="true" /> {$t('users.security')}</h2>
+              <h2 class={cardTitle}><IconShield size={17} strokeWidth={1.8} aria-hidden="true" /> {$t('users.security')}</h2>
             {/snippet}
             <div class="flex items-start gap-3">
-              <span class={settingIcoOk}><IconShield size={22} stroke={1.7} aria-hidden="true" /></span>
+              <span class={settingIcoOk}><IconShield size={22} strokeWidth={1.8} aria-hidden="true" /></span>
               <div class="flex-1 min-w-0">
                 <div class="flex items-baseline gap-1.5 flex-wrap">
                   <strong class="text-c-card-title font-semibold text-[var(--hv-shell-text-strong)]">{$t('users.twofa_title')}</strong>
@@ -1652,7 +1652,7 @@
               </div>
               <div class="flex items-center flex-wrap gap-2.5 ml-auto">
                 {#if selectedUser.two_fa_enabled}
-                  <button type="button" data-testid="users-btn" class={ghostBtn} onclick={handleDisable2FA}><IconShieldOff size={16} stroke={1.9} aria-hidden="true" /> {$t('users.reset_2fa_admin')}</button>
+                  <button type="button" data-testid="users-btn" class={ghostBtn} onclick={handleDisable2FA}><IconShieldOff size={16} strokeWidth={1.8} aria-hidden="true" /> {$t('users.reset_2fa_admin')}</button>
                 {/if}
                 <button
                   type="button"
@@ -1689,7 +1689,7 @@
                   {#each userSessions as s (s.id)}
                     <li data-testid="users-session-row" class="flex items-center gap-3 px-3 py-2.5 rounded-xl bg-[var(--hv-shell-border-soft)] border border-[var(--hv-shell-border)]">
                       <span class="flex-none grid place-items-center w-11 h-11 rounded-lg bg-[var(--hv-shell-border)] text-[var(--hv-shell-text-2)]">
-                        <IconDeviceDesktop size={20} stroke={1.9} aria-hidden="true" />
+                        <IconDeviceDesktop size={20} strokeWidth={1.8} aria-hidden="true" />
                       </span>
                       <div class="flex-1 min-w-0">
                         <strong class="font-[family-name:var(--hv-font-mono)] text-sm text-[var(--hv-shell-text-strong)]">{s.ip_address}</strong>
@@ -1710,7 +1710,7 @@
                   onclick={revokeAllUserSessions}
                   disabled={userSessionsBusy || userSessionsLoading || userSessions.length === 0}
                 >
-                  <IconLogout size={16} stroke={1.9} aria-hidden="true" /> {$t('users.sessions_revoke')}
+                  <IconLogout size={16} strokeWidth={1.8} aria-hidden="true" /> {$t('users.sessions_revoke')}
                 </button>
               </div>
             </div>
@@ -1725,24 +1725,24 @@
               <div class={cn('flex items-center gap-2 h-11 px-3 border border-[var(--hv-shell-border-strong)] rounded-lg bg-[var(--hv-shell-border-soft)] mt-2.5', errors.password && 'border-[var(--hv-error)]')}>
                 <input id="d-password" class="flex-1 min-w-0 border-none bg-transparent h-10 font-[family-name:var(--hv-font-mono)] text-sm text-[var(--hv-shell-text-strong)] outline-none" type={passwordShown ? 'text' : 'password'} autocomplete="new-password" aria-invalid={errors.password ? 'true' : undefined} aria-describedby={errors.password ? 'd-password-err' : undefined} bind:value={passwordValue} placeholder={$t('users.password_min')} />
                 <button type="button" data-testid="users-inp-btn" class="ghost grid place-items-center w-7 h-8 p-0 border-none bg-transparent text-[var(--hv-shell-text-2)] cursor-pointer hover:text-[var(--hv-shell-text-strong)]" onclick={() => (passwordShown = !passwordShown)} aria-pressed={passwordShown} aria-label={passwordShown ? $t('users.password_hide') : $t('users.password_show')}>
-                  {#if passwordShown}<IconEyeOff size={16} stroke={2} aria-hidden="true" />{:else}<IconEye size={16} stroke={2} aria-hidden="true" />{/if}
+                  {#if passwordShown}<IconEyeOff size={16} strokeWidth={1.8} aria-hidden="true" />{:else}<IconEye size={16} strokeWidth={1.8} aria-hidden="true" />{/if}
                 </button>
                 <button type="button" data-testid="users-inp-btn" class={cn(primaryBtn, 'h-8 px-3 flex-none text-c-label')} onclick={() => { passwordValue = generatePassword(); passwordShown = true; }}>{$t('users.generate')}</button>
               </div>
               {#if errors.password}<span id="d-password-err" data-testid="users-err" class={errTxt} role="alert">{errors.password}</span>{/if}
               {#if errors.passwordOk}<span data-testid="users-ok" class={okTxt} role="status">{errors.passwordOk}</span>{/if}
-              <button type="submit" data-testid="users-btn" class={cn(ghostBtn, 'mt-2.5')} disabled={submitting}><IconKey size={16} stroke={1.9} aria-hidden="true" /> {$t('users.change_password')}</button>
+              <button type="submit" data-testid="users-btn" class={cn(ghostBtn, 'mt-2.5')} disabled={submitting}><IconKey size={16} strokeWidth={1.8} aria-hidden="true" /> {$t('users.change_password')}</button>
             </form>
           </SectionCard>
 
           <!-- 6. Account actions -->
           <SectionCard divider>
             {#snippet titleSnippet()}
-              <h2 class={cardTitle}><IconLock size={17} stroke={2} aria-hidden="true" /> {$t('users.actions_title')}</h2>
+              <h2 class={cardTitle}><IconLock size={17} strokeWidth={1.8} aria-hidden="true" /> {$t('users.actions_title')}</h2>
             {/snippet}
             <div class="flex items-start gap-3">
               <span class={settingIco}>
-                {#if selectedUser.locked}<IconLockOpen size={22} stroke={1.8} aria-hidden="true" />{:else}<IconLock size={22} stroke={1.8} aria-hidden="true" />{/if}
+                {#if selectedUser.locked}<IconLockOpen size={22} strokeWidth={1.8} aria-hidden="true" />{:else}<IconLock size={22} strokeWidth={1.8} aria-hidden="true" />{/if}
               </span>
               <div class="flex-1 min-w-0">
                 <div class="text-c-base text-[var(--hv-shell-text-strong)]">{$t('users.lock_hint')}</div>
@@ -1756,15 +1756,15 @@
                 class={cn(ghostBtn, 'flex-none', selectedUser.locked && 'border-[var(--hv-warning)]/50 bg-[var(--hv-warning-bg)] text-[var(--hv-warning)]')}
               >
                 {#if selectedUser.locked}
-                  <IconLockOpen size={18} stroke={1.9} aria-hidden="true" /> <span>{$t('users.unlock_account')}</span>
+                  <IconLockOpen size={18} strokeWidth={1.8} aria-hidden="true" /> <span>{$t('users.unlock_account')}</span>
                 {:else}
-                  <IconLock size={18} stroke={1.9} aria-hidden="true" /> <span>{$t('users.lock_account')}</span>
+                  <IconLock size={18} strokeWidth={1.8} aria-hidden="true" /> <span>{$t('users.lock_account')}</span>
                 {/if}
               </button>
             </div>
 
             <div class="mt-4 flex items-start gap-3 border-t border-[var(--hv-shell-border-soft)] pt-4">
-              <span class={settingIcoDanger}><IconTrash size={22} stroke={1.9} aria-hidden="true" /></span>
+              <span class={settingIcoDanger}><IconTrash size={22} strokeWidth={1.8} aria-hidden="true" /></span>
               <div class="flex-1 min-w-0">
                 <div class="flex items-baseline gap-1.5 flex-wrap">
                   <strong class="text-c-card-title font-semibold text-[var(--hv-shell-text-strong)]">{$t('users.delete_account')}</strong>
@@ -1787,7 +1787,7 @@
                     onclick={() => (deleteHomeFolder = !deleteHomeFolder)}
                     class={cn(chip, 'danger-chip', deleteHomeFolder ? 'border-[var(--hv-error)]/55 bg-[var(--hv-error-bg)] text-[var(--hv-error-text)]' : '')}
                   >
-                    {#if deleteHomeFolder}<IconCheck size={15} stroke={2.5} aria-hidden="true" />{:else}<span class="w-[22px] h-[22px] flex-none rounded-md border-2 border-[var(--hv-shell-border-strong)] grid place-items-center"></span>{/if}
+                    {#if deleteHomeFolder}<IconCheck size={15} strokeWidth={2.5} aria-hidden="true" />{:else}<span class="w-[22px] h-[22px] flex-none rounded-md border-2 border-[var(--hv-shell-border-strong)] grid place-items-center"></span>{/if}
                     {deleteHomeFolder ? $t('users.erase_folder') : $t('users.keep_folder')}
                   </button>
                 {/if}
@@ -1798,10 +1798,10 @@
         </div>
       {:else}
         <div data-testid="users-noselect" class="flex flex-1 min-h-0 flex-col items-center justify-center gap-3 py-10 text-center text-[var(--hv-shell-text)]">
-          <IconUsers size={54} stroke={1.3} class="text-[var(--hv-shell-border-strong)]" aria-hidden="true" />
+          <IconUsers size={54} strokeWidth={1.3} class="text-[var(--hv-shell-border-strong)]" aria-hidden="true" />
           <div class="text-c-xl font-semibold text-[var(--hv-shell-text-strong)]">{$t('users.no_selection_title')}</div>
           <p class="m-0 mb-2 max-w-xs text-c-base">{$t('users.no_selection_desc')}</p>
-          <button type="button" class={primaryBtn} onclick={startCreate}><IconPlus size={18} stroke={2.2} aria-hidden="true" /> {$t('users.new_user_btn')}</button>
+          <button type="button" class={primaryBtn} onclick={startCreate}><IconPlus size={18} strokeWidth={2.2} aria-hidden="true" /> {$t('users.new_user_btn')}</button>
         </div>
       {/if}
     {/if}
@@ -1832,7 +1832,7 @@
      instance's overview). -->
 <Modal open={showQuotaOverview} title={$t('users.quota_overview_title')} size="lg" onclose={closeQuotaOverview}>
   {#snippet icon()}
-    <IconGauge size={20} stroke={2} aria-hidden="true" />
+    <IconGauge size={20} strokeWidth={1.8} aria-hidden="true" />
   {/snippet}
   {#snippet children()}
     {#if loadingQuotaOverview}

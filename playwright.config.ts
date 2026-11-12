@@ -2,6 +2,9 @@ import { defineConfig } from '@playwright/test';
 
 export default defineConfig({
   testDir: './tests/e2e',
+  // Visual baselines are width-specific and run through
+  // `playwright.visual.config.ts` (three projects), never this config.
+  testIgnore: ['**/visual.spec.ts'],
   timeout: 60_000,
   expect: { timeout: 10_000 },
   fullyParallel: false,

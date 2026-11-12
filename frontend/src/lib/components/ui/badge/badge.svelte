@@ -12,7 +12,7 @@
 				ghost: "hover:bg-muted hover:text-muted-foreground",
 				link: "text-primary underline-offset-4 hover:underline",
 				/* HomeVault soft status tints — the old `.hv-badge-*` look, from the
-				   `--hv-badge-*` tokens in tokens.css via the app.css @theme bridge. */
+				 `--hv-badge-*` tokens in tokens.css via the app.css @theme bridge. */
 				success: "bg-[var(--hv-badge-success-bg)] text-[var(--hv-badge-success-text)]",
 				warning: "bg-[var(--hv-badge-warning-bg)] text-[var(--hv-badge-warning-text)]",
 				error: "bg-[var(--hv-badge-error-bg)] text-[var(--hv-badge-error-text)]",

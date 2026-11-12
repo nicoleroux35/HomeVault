@@ -19,7 +19,7 @@
 <script lang="ts">
   import { searchStore, closeSearch } from '$lib/stores/search';
   import SearchItem from './SearchItem.svelte';
-  import { IconSearchOff } from '@tabler/icons-svelte';
+  import { IconSearchOff } from '$lib/icons/lucide';
   import { t } from '$lib/stores/i18n';
 
   /**
@@ -46,7 +46,7 @@
   </div>
 {:else if $searchStore.query}
   <div class="no-results" data-testid="search-no-results">
-    <IconSearchOff size={48} stroke={2} />
+    <IconSearchOff size={48} strokeWidth={1.8} />
     <p>{$t('search.no_results', { query: $searchStore.query })}</p>
   </div>
 {:else}

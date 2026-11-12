@@ -869,7 +869,7 @@ test.describe('5 — Applications launcher', () => {
     // `rgba(30, 98, 174, 0.9)` / `0.35`), and no ring on the field itself —
     // the wrapper owns it, so the capsule carries exactly one contour.
     expect(focused.barShadow, 'no brand-blue ring on the bar').not.toContain(
-      '30, 98, 174',
+      '46, 114, 201',
     );
     expect(focused.fieldShadow, 'the field paints no ring of its own').toBe('none');
 
@@ -1220,7 +1220,7 @@ test.describe('7 — Power menu', () => {
     await expect(page.locator('.hv-power-dialog')).toHaveCount(0);
   });
 
-  test('7.4 — the power dialog and the topbar popovers share the surface corner (--hv-radius-4xl, 18px)', async ({ page }) => {
+  test('7.4 — the power dialog and the topbar popovers share the surface corner (--hv-radius-4xl, 20px)', async ({ page }) => {
     await gotoDesktop(page, adminTokens);
 
     // The account menu is the shared `.hv-topbar-panel` chrome — the same
@@ -1242,8 +1242,8 @@ test.describe('7 — Power menu', () => {
 
     // 12px: the popover and the dialog are containers like a window or a
     // widget, so they take the single surface stop rather than a taller one.
-    expect(panelRadius, 'topbar popover surface corner').toBe(18);
-    expect(dialogRadius, 'power dialog surface corner').toBe(18);
+    expect(panelRadius, 'topbar popover surface corner').toBe(20);
+    expect(dialogRadius, 'power dialog surface corner').toBe(20);
   });
 
   test('7.5 — the power sheet wears the dock\'s circular tiles', async ({ page }) => {
@@ -1423,7 +1423,7 @@ test.describe('8 — Responsive', () => {
     }
   });
 
-  test('8.7 — the dock app icons are perfect circles of one uniform size', async ({ page }) => {
+  test('8.7 — the dock app icons are 16px squircles of one uniform size', async ({ page }) => {
     for (const w of [400, 768, 1440]) {
       await page.setViewportSize({ width: w, height: 900 });
       await gotoDesktop(page, adminTokens);
@@ -1448,8 +1448,7 @@ test.describe('8 — Responsive', () => {
           const b = el.getBoundingClientRect();
           const s = getComputedStyle(el);
           return {
-            // `50%` on a square tile is the only value that renders a perfect
-            // circle — a px radius would silently square it back on resize.
+            // v2 dock tiles are squircles, not circles.
             radius: s.borderRadius,
             width: b.width,
             height: b.height,
@@ -1460,7 +1459,7 @@ test.describe('8 — Responsive', () => {
       const sizes = new Set(tiles.map((t) => Math.round(t.width)));
       expect(sizes.size, `uniform icon size @${w}px`).toBe(1);
       for (const t of tiles) {
-        expect(t.radius, `icon radius @${w}px`).toBe('50%');
+        expect(t.radius, `icon radius @${w}px`).toBe('16px');
         expect(t.width, `icon width @${w}px`).toBe(t.height);
       }
     }
@@ -2160,13 +2159,13 @@ test.describe('14 — Chrome geometry & material', () => {
     // Opaque (rgb, no alpha component) — a dark wallpaper must never show
     // through the window the way the old transparent frame allowed.
     expect(s.bg, 'window surface is opaque paper').toBe('rgb(255, 255, 255)');
-    expect(s.border, 'window hairline is --hv-window-border (#CBD5E1)').toBe('rgb(203, 213, 225)');
+    expect(s.border, 'window hairline is --hv-window-border (#E3E8EF)').toBe('rgb(227, 232, 239)');
     expect(parseFloat(s.borderWidth), 'hairline width').toBe(1);
-    // The one surface corner (--hv-window-radius): the same 18px a monitor
+    // The one surface corner (--hv-window-radius): the same 20px a monitor
     // widget, a modal and a popover use, so the shell reads as one material.
-    expect(parseFloat(s.radius), 'window radius is the surface stop').toBe(18);
-    expect(s.shadow, 'mock shadow, both layers').toContain('rgba(0, 0, 0, 0.06)');
-    expect(s.shadow, 'mock shadow, both layers').toContain('rgba(0, 0, 0, 0.12)');
+    expect(parseFloat(s.radius), 'window radius is the surface stop').toBe(20);
+    expect(s.shadow, 'v2 window shadow, both layers').toContain('rgba(27, 42, 68, 0.16)');
+    expect(s.shadow, 'v2 window shadow, both layers').toContain('rgba(27, 42, 68, 0.08)');
     expect(s.backdrop, 'no blur behind a window').toBe('none');
   });
 
@@ -2212,8 +2211,8 @@ test.describe('14 — Chrome geometry & material', () => {
         bottom: el.getBoundingClientRect().bottom,
       };
     });
-    expect(wrap.color, 'header underline is --hv-winhdr-border (#E2E8F0)').toBe(
-      'rgb(226, 232, 240)',
+    expect(wrap.color, 'header underline is --hv-winhdr-border (#E3E8EF)').toBe(
+      'rgb(227, 232, 239)',
     );
     expect(parseFloat(wrap.width), 'header underline is a 1px hairline').toBe(1);
     // With no tab row the wrap *is* the bar, so the hairline must sit flush
@@ -2235,10 +2234,9 @@ test.describe('14 — Chrome geometry & material', () => {
     // control row and must read as the same size.
     expect(Math.round(tile.w), 'icon tile width matches the control trio').toBe(28);
     expect(Math.round(tile.h), 'icon tile height matches the control trio').toBe(28);
-    // A PERFECT CIRCLE since 2026-10-18 — the dock tiles' and topbar buttons'
-    // shape language. Computed `50%`, never a px stop: a px radius would
-    // square the tile back the moment --hv-winhdr-icon-size moves.
-    expect(tile.radius, 'icon tile is a perfect circle').toBe('50%');
+    // v2 app tile: a 10px squircle (DESIGN §4), not the old circle. The size
+    // still matches the window-control trio's control row.
+    expect(tile.radius, 'icon tile is the v2 10px app-tile squircle').toBe('10px');
     // The tile is never flat — it carries the app's own gradient.
     expect(tile.bg, 'icon tile is a gradient, not a flat fill').toContain('gradient');
 
@@ -2253,7 +2251,7 @@ test.describe('14 — Chrome geometry & material', () => {
     });
     expect(parseFloat(title.size), 'title font-size').toBe(15);
     expect(title.weight, 'title weight').toBe('600');
-    expect(title.color, 'title ink is --hv-winhdr-title (#314158)').toBe('rgb(49, 65, 88)');
+    expect(title.color, 'title ink is --hv-winhdr-title (#1F2733)').toBe('rgb(31, 39, 51)');
     expect(parseFloat(title.lineHeight), 'title line-height').toBe(20);
 
     // The mock draws a title-only bar, so its 44px must actually be the
@@ -2328,10 +2326,10 @@ test.describe('14 — Chrome geometry & material', () => {
       geometry.boxes[1].x - (geometry.boxes[0].x + geometry.boxes[0].w);
     expect(Math.round(gapBtw), 'measured gap between buttons').toBe(6);
 
-    // Amber minimize / blue maximize / red close — the mock's exact stops.
-    expect(geometry.styles[0].bg, 'minimize is amber').toBe('rgb(255, 185, 0)');
-    expect(geometry.styles[1].bg, 'maximize is blue').toBe('rgb(43, 127, 255)');
-    expect(geometry.styles[2].bg, 'close is red').toBe('rgb(255, 100, 103)');
+    // v2 controls: two neutral grey circles and the soft-red close.
+    expect(geometry.styles[0].bg, 'minimize is neutral grey').toBe('rgb(243, 246, 250)');
+    expect(geometry.styles[1].bg, 'maximize is neutral grey').toBe('rgb(243, 246, 250)');
+    expect(geometry.styles[2].bg, 'close is soft red').toBe('rgb(253, 236, 234)');
 
     // In the header bar on the mock's 8px / 12px insets — not floating over it.
     expect(
@@ -2502,9 +2500,9 @@ test.describe('14 — Chrome geometry & material', () => {
     ).toBeGreaterThan(0);
   });
   test('14.11 — every app header bar carries the icon + title only', async ({ page }) => {
-    // 24 apps, each opened + asserted + closed: ~4-5s apiece, well past the
-    // suite's default 60s budget (14.9 walks only 6).
-    test.setTimeout(300_000);
+    // 33 apps, each opened + asserted + closed: well past the suite's default
+    // 60s budget (14.9 walks only 6).
+    test.setTimeout(480_000);
     // The single standardized `<WindowHeader>` bar is [APP ICON] [WINDOW TITLE]
     // and nothing else — the min / max / close trio is a sibling of the bar
     // (owned by `WindowFrame`) and the tab row lives in `.hv-winhdr-wrap`,
@@ -2519,7 +2517,8 @@ test.describe('14 — Chrome geometry & material', () => {
       'terminal', 'chat', 'docker', 'dashboard', 'users', 'groups', 'shares', 'account',
       'settings', 'explorer', 'backup', 'health', 'network', 'vpn', 'rescue', 'downloader',
       'rclone', 'storage', 'raid', 'journal', 'syncthing', 'widgets', 'virtual-machines',
-      'quotas',
+      'quotas', 'destinations', 'directory', 'edit-widgets', 'iscsi', 'metrics',
+      'replication', 'tasks', 'traffic-control', 'usb-copy',
     ];
     // `hv-open-app` resolves against the `apps` registry, which does NOT hold
     // the two dock-only tools — `terminalApp` and `settingsApp` are appended
@@ -2637,12 +2636,13 @@ test.describe('14 — Chrome geometry & material', () => {
     //               a segmented control, which the group clips.
     // Anything else (12px on a button, an 8px leftover, a px literal) fails
     // here, for every app in the registry, in one pass.
-    test.setTimeout(300_000);
+    test.setTimeout(480_000);
     const APPS = [
       'terminal', 'chat', 'docker', 'dashboard', 'users', 'groups', 'shares',
       'settings', 'explorer', 'backup', 'health', 'network', 'vpn', 'rescue',
       'downloader', 'rclone', 'storage', 'raid', 'journal', 'syncthing', 'widgets',
-      'virtual-machines', 'quotas',
+      'virtual-machines', 'quotas', 'destinations', 'directory', 'edit-widgets',
+      'iscsi', 'metrics', 'replication', 'tasks', 'traffic-control', 'usb-copy',
     ];
     const DOCK_ONLY = ['terminal', 'settings'];
     const ALLOWED = new Set(['12px', '50%', '9999px', '0px']);

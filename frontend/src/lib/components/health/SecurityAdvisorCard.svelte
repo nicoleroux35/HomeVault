@@ -31,7 +31,7 @@
     IconAlertTriangle,
     IconCircleCheck,
     IconInfoCircle
-  } from '@tabler/icons-svelte';
+  } from '$lib/icons/lucide';
 
   type Severity = 'pass' | 'info' | 'warn' | 'fail';
 
@@ -169,14 +169,14 @@
 <section
   data-testid="advisor-card"
   aria-labelledby="advisor-heading"
-  class="rounded-xl bg-card border border-border shadow-[var(--hv-shell-shadow-card)] p-5 mb-5"
+  class="rounded-2xl bg-card border border-border shadow-[var(--hv-shell-shadow-card)] p-5 mb-5"
 >
   <div class="flex flex-wrap items-center gap-3 mb-4">
     <span
-      class="grid place-items-center w-11 h-11 rounded-xl flex-none"
+      class="grid place-items-center w-8 h-8 rounded-[9px] flex-none"
       style="background: var(--hv-success-light, rgba(30,126,52,0.12)); color: var(--hv-success)"
     >
-      <IconShieldCheck size={22} />
+      <IconShieldCheck size={18} />
     </span>
     <div class="min-w-0 flex-1">
       <h2 id="advisor-heading" class="m-0 text-c-md font-semibold text-foreground">

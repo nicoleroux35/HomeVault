@@ -123,6 +123,7 @@ methods, and notable invariants.
 | Fan and thermal control (hwmon channels, profiles, 20 % safety floor, failsafe) | [guides/fan-control.md](./guides/fan-control.md) |
 | UPS server mode (NUT server, client allowlist, orderly shutdown, skipped stages) | [guides/ups-server.md](./guides/ups-server.md) |
 | Guided redundancy (RAID layout suggestions, capacity/efficiency/risk) | [guides/guided-redundancy.md](./guides/guided-redundancy.md) |
+| Real-hardware testing (opt-in VM suite: rescue, SMB/NFS, VPN, netplan rollback, ACL revocation, app proxy; client-side proof scripts) | [guides/hardware-testing.md](./guides/hardware-testing.md) |
 | Design system (single UI identity — tokens, components, page anatomy) | [guides/design-system.md](./guides/design-system.md) |
 | Development workflow (multi-instance `.local`, real-VM tests, client contract) | [guides/development.md](./guides/development.md) |
 

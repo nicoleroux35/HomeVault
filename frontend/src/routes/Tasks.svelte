@@ -38,7 +38,7 @@
   import { Modal, Button, Input, Select, Switch, Badge } from '$lib/components/theme';
   import { createConfirmState } from '$lib/utils/confirmDialog.svelte';
   import { groupTimezones, timezoneIsListed, SERVER_TIMEZONE, type TimezoneGroup } from '$lib/utils/timezones';
-  import { IconClock, IconPlus, IconPlayerPlay, IconHistory, IconTrash } from '@tabler/icons-svelte';
+  import { IconClock, IconPlus, IconPlayerPlay, IconHistory, IconTrash } from '$lib/icons/lucide';
 
   type TaskType = 'command' | 'snapshot' | 'smart_test' | 'scrub' | 'restic_check' | 'power' | 'service';
 
@@ -458,7 +458,7 @@
   data-testid="tasks-page"
 >
   {#snippet icon()}
-    <IconClock stroke={1.7} />
+    <IconClock strokeWidth={1.8} />
   {/snippet}
 
   {#snippet toolbarRight()}
@@ -466,7 +466,7 @@
       data-testid="tasks-new-btn"
       onclick={openCreate}
     >
-      <IconPlus size={16} stroke={2} aria-hidden="true" />
+      <IconPlus size={16} strokeWidth={1.8} aria-hidden="true" />
       {$t('tasks.new')}
     </Button>
   {/snippet}
@@ -538,7 +538,7 @@
                   disabled={busyId === row.id}
                   onclick={() => runNow(row)}
                 >
-                  <IconPlayerPlay size={18} stroke={1.8} aria-hidden="true" />
+                  <IconPlayerPlay size={18} strokeWidth={1.8} aria-hidden="true" />
                 </button>
                 <button
                   type="button"
@@ -547,7 +547,7 @@
                   aria-label={$t('tasks.runs', { name: row.name })}
                   onclick={() => openRuns(row)}
                 >
-                  <IconHistory size={18} stroke={1.8} aria-hidden="true" />
+                  <IconHistory size={18} strokeWidth={1.8} aria-hidden="true" />
                 </button>
                 <button
                   type="button"
@@ -565,7 +565,7 @@
                   aria-label={$t('tasks.delete', { name: row.name })}
                   onclick={() => askDelete(row)}
                 >
-                  <IconTrash size={18} stroke={1.8} aria-hidden="true" />
+                  <IconTrash size={18} strokeWidth={1.8} aria-hidden="true" />
                 </button>
               </div>
             {/if}

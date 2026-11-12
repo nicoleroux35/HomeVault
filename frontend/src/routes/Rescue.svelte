@@ -25,7 +25,7 @@
   import PathField from '$lib/components/theme/PathField.svelte';
   import { PageLayout, SectionCard } from '$lib/components/app';
   import { cn } from '$lib/utils.js';
-  import { IconAlertTriangle, IconCircleCheck, IconCircleX, IconServer, IconRefresh, IconPlayerPlay, IconDownload, IconSearch, IconShield, IconSettings2 } from '@tabler/icons-svelte';
+  import { IconAlertTriangle, IconCircleCheck, IconCircleX, IconServer, IconRefresh, IconPlayerPlay, IconDownload, IconSearch, IconShield, IconSettings2 } from '$lib/icons/lucide';
 
   let activeTab = 'ddrescue';
 
@@ -397,7 +397,7 @@
   bind:activeTab
 >
   {#snippet icon()}
-    <IconShield stroke={1.8} />
+    <IconShield strokeWidth={1.8} />
   {/snippet}
 
   {#if loading}

@@ -68,7 +68,7 @@
     IconTrash,
     IconDots,
     IconContainer
-  } from '@tabler/icons-svelte';
+  } from '$lib/icons/lucide';
 
   interface Container {
     id: string;
@@ -212,7 +212,7 @@
   {#snippet titleSnippet()}
     <div class="flex items-center gap-3">
       <span class="grid place-items-center w-[52px] h-[52px] rounded-2xl flex-none bg-[var(--hv-primary-light)] text-[var(--hv-primary)]">
-        <IconContainer size={24} stroke={1.7} />
+        <IconContainer size={24} strokeWidth={1.8} />
       </span>
       <div class="flex-1 min-w-0">
         <div class="text-c-xl font-semibold text-[var(--hv-shell-text-strong)]">{$t('dashboard.usage_title')}</div>
@@ -229,7 +229,7 @@
       aria-label={$t('common.refresh')}
       onclick={() => refresh()}
     >
-      <IconRefresh size={18} stroke={1.8} />
+      <IconRefresh size={18} strokeWidth={1.8} />
     </button>
   {/snippet}
 
@@ -317,7 +317,7 @@
               data-testid="dashboard-usage-menu-btn"
               onclick={() => toggleMenu(c.name)}
             >
-              <IconDots size={18} stroke={1.8} />
+              <IconDots size={18} strokeWidth={1.8} />
             </button>
           {/if}
 
@@ -330,13 +330,13 @@
               class="absolute right-2 top-[calc(100%-4px)] z-20 min-w-[190px] py-1 rounded-lg border border-[var(--hv-shell-border)] bg-[var(--hv-shell-card)] shadow-[var(--hv-shell-shadow-card)]"
             >
               <button type="button" role="menuitem" class="hv-usage-menu-item" onclick={() => act(c.name, 'restart')}>
-                <IconRefresh size={16} stroke={1.8} /> {$t('dashboard.usage_restart')}
+                <IconRefresh size={16} strokeWidth={1.8} /> {$t('dashboard.usage_restart')}
               </button>
               <button type="button" role="menuitem" class="hv-usage-menu-item" onclick={() => act(c.name, 'stop')}>
-                <IconPlayerStop size={16} stroke={1.8} /> {$t('dashboard.usage_stop')}
+                <IconPlayerStop size={16} strokeWidth={1.8} /> {$t('dashboard.usage_stop')}
               </button>
               <button type="button" role="menuitem" class="hv-usage-menu-item hv-usage-menu-danger" onclick={() => act(c.name, 'uninstall')}>
-                <IconTrash size={16} stroke={1.8} /> {$t('dashboard.usage_uninstall')}
+                <IconTrash size={16} strokeWidth={1.8} /> {$t('dashboard.usage_uninstall')}
               </button>
             </div>
           {/if}

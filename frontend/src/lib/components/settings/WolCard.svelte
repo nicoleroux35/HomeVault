@@ -22,7 +22,7 @@
   import { onMount } from 'svelte';
   import { api } from '$lib/services/api';
   import { t } from '$lib/stores/i18n';
-  import { IconBolt, IconTrash, IconDeviceDesktop } from '@tabler/icons-svelte';
+  import { IconBolt, IconTrash, IconDeviceDesktop } from '$lib/icons/lucide';
   import SettingsCard from './SettingsCard.svelte';
   import { cn } from '$lib/utils.js';
   import {

@@ -45,7 +45,7 @@
   import DesktopShortcuts from '$lib/components/desktop/DesktopShortcuts.svelte';
   import ShortcutAddDialog from '$lib/components/desktop/ShortcutAddDialog.svelte';
   import { shortcutsStore, MAX_SHORTCUTS } from '$lib/stores/shortcuts';
-  import { IconServer, IconSettings as SettingsIcon, IconMoon, IconUser, IconActivity, IconCpu, IconThermometer, IconArrowUp, IconArrowDown, IconDatabase, IconPackage, IconTerminal as TerminalIcon, IconPower, IconShieldCheckered, IconLock, IconHome, IconLayoutGrid, IconMenu, IconSearch, IconPlus, IconDownload, IconUpload, IconTrash, IconPencil, IconCheck, IconAlertCircle, IconInfoCircle, IconAlertTriangle, IconBug, IconShield, IconRefresh, IconCalendar, IconChevronLeft, IconChevronRight, IconChevronsLeft, IconChevronsRight, IconPlayerPlay, IconSquare, IconContainer as ContainerIcon, IconSun, IconSun as Sun, IconCloud, IconCloudRain, IconSnowflake, IconCloudStorm, IconMapPin, IconUsers, IconHeartbeat, IconLogout, IconRobot, IconGlobe, IconSignal3g, IconCopy, IconCloudFog } from '@tabler/icons-svelte';
+  import { IconServer, IconSettings as SettingsIcon, IconMoon, IconUser, IconActivity, IconCpu, IconThermometer, IconArrowUp, IconArrowDown, IconDatabase, IconPackage, IconTerminal as TerminalIcon, IconPower, IconShieldCheckered, IconLock, IconHome, IconLayoutGrid, IconMenu, IconSearch, IconPlus, IconDownload, IconUpload, IconTrash, IconPencil, IconCheck, IconAlertCircle, IconInfoCircle, IconAlertTriangle, IconBug, IconShield, IconRefresh, IconCalendar, IconChevronLeft, IconChevronRight, IconChevronsLeft, IconChevronsRight, IconPlayerPlay, IconSquare, IconContainer as ContainerIcon, IconSun, IconSun as Sun, IconCloud, IconCloudRain, IconSnowflake, IconCloudStorm, IconMapPin, IconUsers, IconHeartbeat, IconLogout, IconRobot, IconGlobe, IconSignal3g, IconCopy, IconCloudFog } from '$lib/icons/lucide';
   import { subscribeWidget, type WidgetLoadResult } from '$lib/components/desktop/widgetData';
   import { launchpadIcons } from '$lib/assets/launchpadIcons';
   import HvLaunchpad from '$lib/components/desktop/HvLaunchpad.svelte';
@@ -517,7 +517,11 @@
   // if it isn't running yet (ensure_aria2_running in src/handlers/downloader.rs),
   // and a background desktop widget must never have the side effect of
   // starting a service on its own just by being visible.
-  type DownloaderData = { available: boolean; running: boolean; activeCount: number; downloadSpeed: number; uploadSpeed: number };
+  type DownloaderCurrent = { name: string; completed: number; total: number; speed: number };
+  type DownloaderData = {
+    available: boolean; running: boolean; activeCount: number; downloadSpeed: number; uploadSpeed: number;
+    current: DownloaderCurrent | null;
+  };
   let downloaderData: WidgetLoadResult<DownloaderData> = { status: 'idle' };
 
   function formatSpeed(bytesPerSec: number): string {
@@ -534,10 +538,29 @@
     }
     const { available, running } = statusRes.data;
     if (!available || !running) {
-      downloaderData = { status: 'ready', data: { available, running, activeCount: 0, downloadSpeed: 0, uploadSpeed: 0 } };
+      downloaderData = { status: 'ready', data: { available, running, activeCount: 0, downloadSpeed: 0, uploadSpeed: 0, current: null } };
       return;
     }
-    const statRes = await api.getDownloaderGlobalStat();
+    // Both endpoints are safe here: `ensure_aria2_running` only has a side
+    // effect when aria2 is stopped, and we already know it is running.
+    const [statRes, tasksRes] = await Promise.all([
+      api.getDownloaderGlobalStat(),
+      api.getDownloaderTasks(),
+    ]);
+    let current: DownloaderCurrent | null = null;
+    if (tasksRes.success && Array.isArray(tasksRes.data)) {
+      const task = (tasksRes.data as any[]).find((t) => t?.status === 'active');
+      if (task) {
+        const file = Array.isArray(task.files) ? task.files[0] : null;
+        const rawName = task.bittorrent?.name || file?.path || task.gid || '';
+        current = {
+          name: String(rawName).split('/').pop() || String(rawName),
+          completed: parseInt(task.completed_length, 10) || 0,
+          total: parseInt(task.total_length, 10) || 0,
+          speed: parseInt(task.download_speed, 10) || 0,
+        };
+      }
+    }
     if (statRes.success && statRes.data) {
       downloaderData = {
         status: 'ready',
@@ -547,10 +570,11 @@
           activeCount: parseInt(statRes.data.num_active, 10) || 0,
           downloadSpeed: parseInt(statRes.data.download_speed, 10) || 0,
           uploadSpeed: parseInt(statRes.data.upload_speed, 10) || 0,
+          current,
         },
       };
     } else {
-      downloaderData = { status: 'ready', data: { available, running, activeCount: 0, downloadSpeed: 0, uploadSpeed: 0 } };
+      downloaderData = { status: 'ready', data: { available, running, activeCount: 0, downloadSpeed: 0, uploadSpeed: 0, current } };
     }
   }
 
@@ -717,7 +741,7 @@
   // counts so an admin can see at a glance whether anything needs
   // attention without opening the full Health page.
   type HealthCheckStatus = 'healthy' | 'warning' | 'unhealthy' | 'unknown';
-  type HealthSummary = { healthy: number; warning: number; critical: number; unknown: number; overall: HealthCheckStatus };
+  type HealthSummary = { healthy: number; warning: number; critical: number; unknown: number; overall: HealthCheckStatus; checkedAt: number };
   let healthData: WidgetLoadResult<HealthSummary> = { status: 'idle' };
 
   async function loadHealthData() {
@@ -727,7 +751,7 @@
       return;
     }
     const checks: { status: HealthCheckStatus }[] = res.data.checks || [];
-    const summary: HealthSummary = { healthy: 0, warning: 0, critical: 0, unknown: 0, overall: res.data.overall_status || 'unknown' };
+    const summary: HealthSummary = { healthy: 0, warning: 0, critical: 0, unknown: 0, overall: res.data.overall_status || 'unknown', checkedAt: Date.now() };
     for (const check of checks) {
       if (check.status === 'healthy') summary.healthy++;
       else if (check.status === 'warning') summary.warning++;
@@ -735,6 +759,16 @@
       else summary.unknown++;
     }
     healthData = { status: 'ready', data: summary };
+  }
+
+  /** Human age of the last health poll ("Checked just now" / "… 2 min"). */
+  function healthCheckedLabel(checkedAt: number): string {
+    const seconds = Math.max(0, Math.floor((now - checkedAt) / 1000));
+    if (seconds < 60) return translate('desktop.checked_now');
+    const minutes = Math.floor(seconds / 60);
+    if (minutes < 60) return translate('desktop.checked_ago', { time: `${minutes} min` });
+    const hours = Math.floor(minutes / 60);
+    return translate('desktop.checked_ago', { time: `${hours} h` });
   }
 
   // ── Dock chrome — badges / attention / auto-hide ───────────────────────
@@ -916,11 +950,14 @@
     const today = new Date();
     const isSameDay = today.getFullYear() === year && today.getMonth() === month;
     const first = new Date(year, month, 1);
-    const startOffset = first.getDay(); // 0 = Sunday
+    // v2 calendar is Monday-first: shift Sunday (0) to the last column.
+    const startOffset = (first.getDay() + 6) % 7;
     const daysInMonth = new Date(year, month + 1, 0).getDate();
+    const prevMonthDays = new Date(year, month, 0).getDate();
     const cells: CalendarCell[] = [];
     for (let i = 0; i < startOffset; i++) {
-      cells.push({ key: `pad-${i}`, label: '', inMonth: false, isToday: false });
+      const day = prevMonthDays - startOffset + i + 1;
+      cells.push({ key: `prev-${day}`, label: String(day), inMonth: false, isToday: false });
     }
     for (let d = 1; d <= daysInMonth; d++) {
       cells.push({
@@ -930,8 +967,10 @@
         isToday: isSameDay && d === today.getDate(),
       });
     }
+    let nextDay = 1;
     while (cells.length % 7 !== 0) {
-      cells.push({ key: `tail-${cells.length}`, label: '', inMonth: false, isToday: false });
+      cells.push({ key: `next-${nextDay}`, label: String(nextDay), inMonth: false, isToday: false });
+      nextDay++;
     }
     return cells;
   })();
@@ -940,8 +979,6 @@
   // calendarMonthLabel reactive statements above and below recompute.
   function calendarGoToPrevMonth() { calendarNow = new Date(calendarNow.getFullYear(), calendarNow.getMonth() - 1, 1); }
   function calendarGoToNextMonth() { calendarNow = new Date(calendarNow.getFullYear(), calendarNow.getMonth() + 1, 1); }
-  function calendarGoToPrevYear() { calendarNow = new Date(calendarNow.getFullYear() - 1, calendarNow.getMonth(), 1); }
-  function calendarGoToNextYear() { calendarNow = new Date(calendarNow.getFullYear() + 1, calendarNow.getMonth(), 1); }
   function calendarGoToToday() { calendarNow = new Date(); }
 
   // Monitor drag handlers — table-driven so adding a new draggable monitor
@@ -959,9 +996,9 @@
   /* Per-monitor accent for the header icon tile — same colours as the
      `WIDGET_DEFS` catalogue so a monitor's tile matches its Settings row. */
   const MONITOR_COLOR: Record<MonitorKind, string> = {
-    resource: '#1E62AE', raid: '#6366f1', security: '#C22B21', vpn: '#059669',
-    downloader: '#22c55e', syncthing: '#0ea5e9', calendar: '#d97706', docker: '#2496ed',
-    weather: '#0284c7', sessions: '#7c3aed', health: '#e11d48',
+    resource: '#2E72C9', raid: '#6A45D6', security: '#C0392B', vpn: '#167A4D',
+    downloader: '#2560AC', syncthing: '#96601A', calendar: '#2E72C9', docker: '#6A45D6',
+    weather: '#0E7F92', sessions: '#6A45D6', health: '#167A4D',
   };
 
   function getMonitorPosition(pos: MonitorPositions, type: MonitorKind): { x: number; y: number } {
@@ -1780,6 +1817,9 @@
   // `usePhotoWallpaper` alone doesn't narrow the store's union for TS.
   $: photoWallpaperUrl = $wallpaperStore.type === 'image' ? $wallpaperStore.value : '';
   $: wallpaperStyle = usePhotoWallpaper ? '' : `background: ${defaultDesktopGradient};`;
+  // Host shown in the brand capsule — the same host the browser reached the
+  // appliance on, so it reads as "this box" rather than a second hostname.
+  $: brandHost = typeof window !== 'undefined' ? window.location.hostname : '';
 </script>
 
 <svelte:window
@@ -1805,6 +1845,26 @@
     <div class="hv-wallpaper-layer hv-wallpaper-layer-2"></div>
     <div class="hv-wallpaper-layer hv-wallpaper-layer-3"></div>
   {/if}
+  <!-- Brand capsule (v2 desktop): the product + the box it is running on,
+       anchored top-left, opposite the control capsule. -->
+  <header
+    class="hv-brandbar"
+    class:hv-chrome--idle={chromeIdle}
+    class:hv-menubar--hidden={menubarHidden}
+    data-testid="desktop-brandbar"
+  >
+    <span class="hv-brandbar-mark" aria-hidden="true">
+      <IconHome strokeWidth={1.8} />
+    </span>
+    <span class="hv-brandbar-text">
+      <span class="hv-brandbar-name">HomeVault</span>
+      <span class="hv-brandbar-sub">
+        {$t('desktop.app_dashboard_name')}{#if brandHost} · {brandHost}{/if}
+      </span>
+    </span>
+    <span class="hv-brandbar-status" aria-hidden="true"></span>
+  </header>
+
   <!-- Top Bar (floating pill) -->
   <header
     class="hv-menubar"
@@ -1931,7 +1991,7 @@
       <div class="hv-notifications-trigger">
         <button class="hv-topbar-btn hv-notif-btn" data-testid="topbar-notifications" class:hv-bell-swing={bellSwing} onclick={(e)=>toggleTopbarPanel('notifications', e)} aria-label={$t('desktop.notifications')}>
           <span class="hv-notif-bell-icon">
-            <NotificationBellIcon stroke={2} />
+            <NotificationBellIcon strokeWidth={1.8} />
           </span>
           {#if $notificationsStore.unreadCount > 0}
             <span class="hv-notification-badge">{$notificationsStore.unreadCount > 99 ? '99+' : $notificationsStore.unreadCount}</span>
@@ -1944,7 +2004,7 @@
            name is the longer `power_options`; with no visible label left there
            is no WCAG 2.5.3 pair to keep in sync any more. -->
       <button class="hv-topbar-btn" data-testid="topbar-power" onclick={() => (showPowerModal = true)} aria-label={$t('desktop.power_options')}>
-        <IconPower stroke={2} />
+        <IconPower strokeWidth={1.8} />
       </button>
 
       <!-- User Menu Dropdown -->
@@ -1962,12 +2022,12 @@
           </div>
           <div class="hv-user-menu-divider"></div>
           <button class="hv-user-menu-item" onclick={openAccount}>
-            <IconUser size={18} stroke={1.7} />
+            <IconUser size={18} strokeWidth={1.8} />
             <span>{$t('account.heading')}</span>
           </button>
           <div class="hv-user-menu-divider"></div>
           <button class="hv-user-menu-item hv-logout" onclick={handleLogout}>
-            <IconLogout size={18} stroke={1.8} />
+            <IconLogout size={18} strokeWidth={1.8} />
             <span>{$t('desktop.logout')}</span>
           </button>
         </div>
@@ -1988,7 +2048,13 @@
         color={MONITOR_COLOR.resource}
         label={$t('desktop.resources')}
       >
-        {#snippet icon()}<IconActivity stroke={1.8} />{/snippet}
+        {#snippet icon()}<IconActivity strokeWidth={1.8} />{/snippet}
+        {#snippet meta()}
+          <span class="inline-flex items-center gap-1.5">
+            <span class="w-1.5 h-1.5 rounded-full bg-[var(--hv-success)]" aria-hidden="true"></span>
+            {$t('desktop.live')}
+          </span>
+        {/snippet}
       </WidgetHeader>
 
       <div class="hv-gauge-row">
@@ -2012,7 +2078,6 @@
             </text>
           </svg>
           <div class="hv-gauge-label">
-            <IconCpu size={12} color="var(--hv-info)" stroke={2} />
             <span>{$t('desktop.cpu')}</span>
           </div>
         </div>
@@ -2037,7 +2102,6 @@
             </text>
           </svg>
           <div class="hv-gauge-label">
-            <IconServer size={12} color="var(--hv-primary)" stroke={2} />
             <span>{$t('desktop.ram')}</span>
           </div>
         </div>
@@ -2063,7 +2127,6 @@
             </text>
           </svg>
           <div class="hv-gauge-label">
-            <IconThermometer size={12} color="var(--hv-warning)" stroke={2} />
             <span>{$t('desktop.temp')}</span>
           </div>
         </div>
@@ -2072,7 +2135,6 @@
       <div class="hv-resource-network">
         <div class="hv-network-item">
           <div class="hv-network-label">
-            <IconArrowUp size={12} stroke={2} />
             <span>{$t('desktop.upload')}</span>
           </div>
           <div class="hv-network-value">
@@ -2085,7 +2147,6 @@
         </div>
         <div class="hv-network-item">
           <div class="hv-network-label">
-            <IconArrowDown size={12} stroke={2} />
             <span>{$t('desktop.download')}</span>
           </div>
           <div class="hv-network-value">
@@ -2099,12 +2160,11 @@
       </div>
 
       <div class="hv-system-update" class:available={systemUpdateAvailable}>
-        <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-          <path d="M21 12a9 9 0 0 0-9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/>
-          <path d="M3 3v5h5"/>
-          <path d="M3 12a9 9 0 0 0 9 9 9.75 9.75 0 0 0 6.74-2.74L21 16"/>
-          <path d="M16 16h5v5"/>
-        </svg>
+        {#if systemUpdateAvailable}
+          <IconAlertTriangle size={16} strokeWidth={1.8} />
+        {:else}
+          <IconCheck size={16} strokeWidth={2.4} />
+        {/if}
         <span class="hv-system-update-text">
           {#if systemUpdateAvailable}
             {$t('desktop.system_update_available')}
@@ -2129,7 +2189,7 @@
         color={MONITOR_COLOR.raid}
         label={$t('desktop.raid_arrays')}
       >
-        {#snippet icon()}<IconDatabase stroke={1.8} />{/snippet}
+        {#snippet icon()}<IconDatabase strokeWidth={1.8} />{/snippet}
       </WidgetHeader>
 
       {#if raidData.status === 'ready' && raidData.data.arrays && raidData.data.arrays.length > 0}
@@ -2139,7 +2199,7 @@
             <div class="hv-raid-item">
               <div class="hv-raid-header">
                 <div class="hv-raid-name">
-                  <IconServer size={18} stroke={2} />
+                  <IconServer size={18} strokeWidth={1.8} />
                   <span class="hv-raid-name-text">{array.name}</span>
                 </div>
                 <span class="hv-raid-type">{$t('desktop.raid_level', { level: array.level })}</span>
@@ -2153,8 +2213,7 @@
               </div>
               <div class="hv-raid-progress">
                 <div class="hv-raid-progress-label">
-                  <span class="hv-raid-progress-used">{array.used} {$t('desktop.used')}</span>
-                  <span class="hv-raid-progress-free">{array.free} {$t('desktop.free')}</span>
+                  <span class="hv-raid-progress-used">{array.used} {$t('desktop.used')} · {array.free} {$t('desktop.free')}</span>
                 </div>
                 <div class="hv-raid-progress-bar">
                   <div class="hv-raid-progress-fill" style="width: {array.used_percent}%"></div>
@@ -2172,6 +2231,13 @@
             <div class="hv-raid-total-capacity">{$t('desktop.of_capacity', { capacity: raidData.data.total_capacity })}</div>
           </div>
         </div>
+
+        {#if raidData.data.arrays.every((array) => array.status === 'healthy')}
+          <div class="hv-raid-ok">
+            <IconCheck size={16} strokeWidth={2.4} />
+            <span>{$t('desktop.no_issues_detected')}</span>
+          </div>
+        {/if}
       {:else if raidData.status === 'loading'}
         <div class="hv-raid-empty">{$t('desktop.loading_raid')}</div>
       {:else if raidData.status === 'error'}
@@ -2180,7 +2246,7 @@
         <div class="hv-raid-empty">
           <div class="hv-raid-empty-text">{$t('desktop.no_raid_created')}</div>
           <button class="hv-raid-create-btn" onclick={() => openApp(apps.find(a => a.id === 'raid')!)}>
-            <IconPlus size={14} stroke={2} />
+            <IconPlus size={14} strokeWidth={1.8} />
             {$t('desktop.create_raid')}
           </button>
         </div>
@@ -2201,7 +2267,22 @@
         color={MONITOR_COLOR.security}
         label={$t('desktop.security_monitor')}
       >
-        {#snippet icon()}<IconShieldCheckered stroke={1.8} />{/snippet}
+        {#snippet icon()}<IconShieldCheckered strokeWidth={1.8} />{/snippet}
+        {#snippet meta()}
+          {#if securityData.status === 'ready'}
+            {@const ok = securityData.data.avThreatCount === 0 && securityData.data.fwAvailable && securityData.data.fwEnabled && !securityData.data.ransomLastEvent}
+            <span
+              class="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-c-xs font-semibold"
+              class:bg-[var(--hv-success-bg)]={ok}
+              class:text-[var(--hv-success-text)]={ok}
+              class:bg-[var(--hv-warning-bg)]={!ok}
+              class:text-[var(--hv-warning-text)]={!ok}
+            >
+              <span class="w-1.5 h-1.5 rounded-full" class:bg-[var(--hv-success)]={ok} class:bg-[var(--hv-warning)]={!ok} aria-hidden="true"></span>
+              {ok ? $t('desktop.protected') : $t('desktop.attention')}
+            </span>
+          {/if}
+        {/snippet}
       </WidgetHeader>
 
       {#if securityData.status === 'loading' || securityData.status === 'idle'}
@@ -2213,22 +2294,20 @@
           <!-- Antivirus -->
           <div class="hv-security-item">
             <div class="hv-security-item-header">
-              <div class="hv-security-item-name">
-                <IconBug size={15} stroke={2} />
-                <span>{$t('desktop.antivirus')}</span>
-              </div>
-              <div class="hv-security-status" class:hv-security-status-ok={securityData.data.avThreatCount === 0} class:hv-security-status-warn={securityData.data.avThreatCount > 0}>
-                <span class="hv-security-status-dot"></span>
-                <span>
-                  {#if securityData.data.avThreatCount > 0}
-                    {$t('desktop.av_threats_found', { count: String(securityData.data.avThreatCount) })}
-                  {:else}
-                    {$t('desktop.av_no_threats')}
-                  {/if}
-                </span>
-              </div>
+              <div class="hv-security-item-name">{$t('desktop.antivirus')}</div>
+              <span
+                class="hv-security-check"
+                class:hv-security-check-ok={securityData.data.avThreatCount === 0}
+                class:hv-security-check-warn={securityData.data.avThreatCount > 0}
+              >
+                {#if securityData.data.avThreatCount === 0}<IconCheck size={12} strokeWidth={2.6} />{:else}<IconAlertTriangle size={12} strokeWidth={2.2} />{/if}
+              </span>
             </div>
             <div class="hv-security-item-detail">
+              {securityData.data.avThreatCount > 0
+                ? $t('desktop.av_threats_found', { count: String(securityData.data.avThreatCount) })
+                : $t('desktop.av_no_threats')}
+              ·
               {#if securityData.data.avLastScan}
                 {$t('desktop.av_last_scan', { date: formatShortDate(securityData.data.avLastScan.finishedAt ?? securityData.data.avLastScan.startedAt) })}
               {:else}
@@ -2240,55 +2319,44 @@
           <!-- Firewall -->
           <div class="hv-security-item">
             <div class="hv-security-item-header">
-              <div class="hv-security-item-name">
-                <IconShield size={15} stroke={2} />
-                <span>{$t('desktop.firewall')}</span>
-              </div>
-              <div
-                class="hv-security-status"
-                class:hv-security-status-ok={securityData.data.fwAvailable && securityData.data.fwEnabled}
-                class:hv-security-status-warn={securityData.data.fwAvailable && !securityData.data.fwEnabled}
-                class:hv-security-status-off={!securityData.data.fwAvailable}
+              <div class="hv-security-item-name">{$t('desktop.firewall')}</div>
+              <span
+                class="hv-security-check"
+                class:hv-security-check-ok={securityData.data.fwAvailable && securityData.data.fwEnabled}
+                class:hv-security-check-warn={securityData.data.fwAvailable && !securityData.data.fwEnabled}
+                class:hv-security-check-off={!securityData.data.fwAvailable}
               >
-                <span class="hv-security-status-dot"></span>
-                <span>
-                  {#if !securityData.data.fwAvailable}
-                    {$t('desktop.fw_unavailable')}
-                  {:else if securityData.data.fwEnabled}
-                    {$t('desktop.fw_active')}
-                  {:else}
-                    {$t('desktop.fw_inactive')}
-                  {/if}
-                </span>
-              </div>
+                {#if securityData.data.fwAvailable && securityData.data.fwEnabled}<IconCheck size={12} strokeWidth={2.6} />{:else if securityData.data.fwAvailable}<IconAlertTriangle size={12} strokeWidth={2.2} />{:else}<span class="w-1.5 h-1.5 rounded-full bg-[var(--hv-shell-text-3)]"></span>{/if}
+              </span>
             </div>
-            {#if securityData.data.fwAvailable}
-              <div class="hv-security-item-detail">
-                {$t('desktop.fw_rules', { count: String(securityData.data.fwRuleCount) })}
-              </div>
-            {/if}
+            <div class="hv-security-item-detail">
+              {#if !securityData.data.fwAvailable}
+                {$t('desktop.fw_unavailable')}
+              {:else if securityData.data.fwEnabled}
+                {$t('desktop.fw_active')} · {$t('desktop.fw_rules', { count: String(securityData.data.fwRuleCount) })}
+              {:else}
+                {$t('desktop.fw_inactive')} · {$t('desktop.fw_rules', { count: String(securityData.data.fwRuleCount) })}
+              {/if}
+            </div>
           </div>
 
           <!-- Anti-Ransomware -->
           <div class="hv-security-item">
             <div class="hv-security-item-header">
-              <div class="hv-security-item-name">
-                <IconLock size={15} stroke={2} />
-                <span>{$t('desktop.anti_ransomware')}</span>
-              </div>
-              <div class="hv-security-status" class:hv-security-status-ok={!securityData.data.ransomLastEvent} class:hv-security-status-warn={!!securityData.data.ransomLastEvent}>
-                <span class="hv-security-status-dot"></span>
-                <span>
-                  {#if securityData.data.ransomLastEvent}
-                    {$t('desktop.ransom_last_event', { type: securityData.data.ransomLastEvent.eventType })}
-                  {:else}
-                    {$t('desktop.ransom_no_events')}
-                  {/if}
-                </span>
-              </div>
+              <div class="hv-security-item-name">{$t('desktop.anti_ransomware')}</div>
+              <span
+                class="hv-security-check"
+                class:hv-security-check-ok={!securityData.data.ransomLastEvent}
+                class:hv-security-check-warn={!!securityData.data.ransomLastEvent}
+              >
+                {#if securityData.data.ransomLastEvent}<IconAlertTriangle size={12} strokeWidth={2.2} />{:else}<IconCheck size={12} strokeWidth={2.6} />{/if}
+              </span>
             </div>
             <div class="hv-security-item-detail">
-              {$t('desktop.ransom_protected_paths', { count: String(securityData.data.ransomProtectedCount) })}
+              {securityData.data.ransomLastEvent
+                ? $t('desktop.ransom_last_event', { type: securityData.data.ransomLastEvent.eventType })
+                : $t('desktop.ransom_no_events')}
+              · {$t('desktop.ransom_protected_paths', { count: String(securityData.data.ransomProtectedCount) })}
             </div>
           </div>
         </div>
@@ -2309,7 +2377,7 @@
         color={MONITOR_COLOR.vpn}
         label={$t('desktop.vpn_monitor')}
       >
-        {#snippet icon()}<IconLock stroke={1.8} />{/snippet}
+        {#snippet icon()}<IconLock strokeWidth={1.8} />{/snippet}
       </WidgetHeader>
 
       {#if vpnData.status === 'loading' || vpnData.status === 'idle'}
@@ -2320,7 +2388,11 @@
         <div class="hv-vpn-list">
           <div class="hv-vpn-row">
             <span class="hv-vpn-row-label">WireGuard</span>
-            <span class="hv-vpn-row-value">
+            <span
+              class="hv-vpn-row-value"
+              class:hv-vpn-pill-ok={vpnData.data.wireguardAvailable && vpnData.data.wireguardActive > 0}
+              class:hv-vpn-pill-muted={!vpnData.data.wireguardAvailable}
+            >
               {#if vpnData.data.wireguardAvailable}
                 {$t('desktop.vpn_active_count', { count: String(vpnData.data.wireguardActive) })}
               {:else}
@@ -2330,7 +2402,11 @@
           </div>
           <div class="hv-vpn-row">
             <span class="hv-vpn-row-label">OpenVPN</span>
-            <span class="hv-vpn-row-value">
+            <span
+              class="hv-vpn-row-value"
+              class:hv-vpn-pill-ok={vpnData.data.openvpnAvailable && vpnData.data.openvpnActive > 0}
+              class:hv-vpn-pill-muted={!vpnData.data.openvpnAvailable}
+            >
               {#if vpnData.data.openvpnAvailable}
                 {$t('desktop.vpn_active_count', { count: String(vpnData.data.openvpnActive) })}
               {:else}
@@ -2356,7 +2432,12 @@
         color={MONITOR_COLOR.downloader}
         label={$t('desktop.downloader_monitor')}
       >
-        {#snippet icon()}<IconDownload stroke={1.8} />{/snippet}
+        {#snippet icon()}<IconDownload strokeWidth={1.8} />{/snippet}
+        {#snippet meta()}
+          {#if downloaderData.status === 'ready' && downloaderData.data.running && downloaderData.data.activeCount > 0}
+            <span>{$t('desktop.active_badge', { count: String(downloaderData.data.activeCount) })}</span>
+          {/if}
+        {/snippet}
       </WidgetHeader>
 
       {#if downloaderData.status === 'loading' || downloaderData.status === 'idle'}
@@ -2369,17 +2450,32 @@
         {:else if !downloaderData.data.running}
           <div class="hv-downloader-empty">{$t('desktop.downloader_not_running')}</div>
         {:else}
-          <div class="hv-downloader-active">{$t('desktop.downloader_active_count', { count: String(downloaderData.data.activeCount) })}</div>
           <div class="hv-downloader-speeds">
             <div class="hv-downloader-speed-item">
-              <div class="hv-downloader-speed-label"><IconArrowDown size={12} stroke={2} /><span>{$t('desktop.download')}</span></div>
+              <div class="hv-downloader-speed-label">{$t('desktop.download')}</div>
               <div class="hv-downloader-speed-value">{formatSpeed(downloaderData.data.downloadSpeed)}</div>
             </div>
             <div class="hv-downloader-speed-item">
-              <div class="hv-downloader-speed-label"><IconArrowUp size={12} stroke={2} /><span>{$t('desktop.upload')}</span></div>
+              <div class="hv-downloader-speed-label">{$t('desktop.upload')}</div>
               <div class="hv-downloader-speed-value">{formatSpeed(downloaderData.data.uploadSpeed)}</div>
             </div>
           </div>
+          {#if downloaderData.data.current}
+            {@const current = downloaderData.data.current}
+            {@const pct = current.total > 0 ? Math.min(100, (current.completed / current.total) * 100) : 0}
+            <div class="hv-downloader-current">
+              <div class="hv-downloader-current-head">
+                <span class="hv-downloader-current-name" title={current.name}>{current.name}</span>
+                <span class="hv-downloader-current-pct">{pct.toFixed(0)}%</span>
+              </div>
+              <div class="hv-downloader-progress">
+                <div class="hv-downloader-progress-fill" style="width: {pct}%"></div>
+              </div>
+              <div class="hv-downloader-current-meta">
+                {formatBytes(current.completed)} / {formatBytes(current.total)} · {formatSpeed(current.speed)}
+              </div>
+            </div>
+          {/if}
         {/if}
       {/if}
     </div>
@@ -2398,7 +2494,21 @@
         color={MONITOR_COLOR.syncthing}
         label={$t('desktop.syncthing_monitor')}
       >
-        {#snippet icon()}<IconRefresh stroke={1.8} />{/snippet}
+        {#snippet icon()}<IconRefresh strokeWidth={1.8} />{/snippet}
+        {#snippet meta()}
+          {#if syncthingData.status === 'ready' && syncthingData.data.available}
+            <span
+              class="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-c-xs font-semibold"
+              class:bg-[var(--hv-warning-bg)]={syncthingData.data.pendingFiles > 0}
+              class:text-[var(--hv-warning-text)]={syncthingData.data.pendingFiles > 0}
+              class:bg-[var(--hv-success-bg)]={syncthingData.data.pendingFiles === 0}
+              class:text-[var(--hv-success-text)]={syncthingData.data.pendingFiles === 0}
+            >
+              <span class="w-1.5 h-1.5 rounded-full" class:bg-[var(--hv-warning)]={syncthingData.data.pendingFiles > 0} class:bg-[var(--hv-success)]={syncthingData.data.pendingFiles === 0} aria-hidden="true"></span>
+              {syncthingData.data.pendingFiles > 0 ? $t('desktop.syncthing_syncing') : $t('desktop.syncthing_up_to_date')}
+            </span>
+          {/if}
+        {/snippet}
       </WidgetHeader>
 
       {#if syncthingData.status === 'loading' || syncthingData.status === 'idle'}
@@ -2409,12 +2519,19 @@
         {#if !syncthingData.data.available}
           <div class="hv-syncthing-empty">{$t('desktop.syncthing_not_installed')}</div>
         {:else}
-          <div class="hv-syncthing-status" class:hv-syncthing-status-syncing={syncthingData.data.pendingFiles > 0}>
-            <span class="hv-syncthing-status-dot"></span>
-            <span>{syncthingData.data.pendingFiles > 0 ? $t('desktop.syncthing_syncing') : $t('desktop.syncthing_up_to_date')}</span>
-          </div>
           <div class="hv-syncthing-detail">
             {$t('desktop.syncthing_summary', { folders: String(syncthingData.data.folderCount), files: String(syncthingData.data.pendingFiles) })}
+          </div>
+          <div
+            class="hv-syncthing-progress"
+            class:hv-syncthing-progress-syncing={syncthingData.data.pendingFiles > 0}
+            role="progressbar"
+            aria-valuemin="0"
+            aria-valuemax="100"
+            aria-valuenow={syncthingData.data.pendingFiles > 0 ? undefined : 100}
+            aria-label={syncthingData.data.pendingFiles > 0 ? $t('desktop.syncthing_syncing') : $t('desktop.syncthing_up_to_date')}
+          >
+            <div class="hv-syncthing-progress-fill"></div>
           </div>
         {/if}
       {/if}
@@ -2433,11 +2550,30 @@
         color={MONITOR_COLOR.calendar}
         label={$t('desktop.calendar_monitor')}
       >
-        {#snippet icon()}<IconCalendar stroke={1.8} />{/snippet}
+        {#snippet icon()}<IconCalendar strokeWidth={1.8} />{/snippet}
       </WidgetHeader>
 
+      <div class="hv-calendar-head">
+        <button
+          class="hv-calendar-month"
+          onclick={calendarGoToToday}
+          aria-label={$t('desktop.calendar_today')}
+          title={$t('desktop.calendar_today')}
+        >
+          {calendarMonthLabel}
+        </button>
+        <div class="hv-calendar-nav-buttons">
+          <button class="hv-calendar-nav-btn hv-ic" onclick={calendarGoToPrevMonth} aria-label={$t('desktop.calendar_prev_month')} title={$t('desktop.calendar_prev_month')}>
+            <IconChevronLeft size={16} strokeWidth={1.8} />
+          </button>
+          <button class="hv-calendar-nav-btn hv-ic" onclick={calendarGoToNextMonth} aria-label={$t('desktop.calendar_next_month')} title={$t('desktop.calendar_next_month')}>
+            <IconChevronRight size={16} strokeWidth={1.8} />
+          </button>
+        </div>
+      </div>
+
       <div class="hv-calendar-weekdays">
-        {#each ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'] as wd}
+        {#each ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'] as wd}
           <div class="hv-calendar-weekday">{$t(`desktop.calendar_weekday_${wd}`)}</div>
         {/each}
       </div>
@@ -2453,23 +2589,6 @@
         {/each}
       </div>
 
-      <div class="hv-calendar-nav">
-        <button class="hv-calendar-nav-btn hv-ic" onclick={calendarGoToPrevYear} aria-label={$t('desktop.calendar_prev_year')} title={$t('desktop.calendar_prev_year')}>
-          <IconChevronsLeft size={18} stroke={2} />
-        </button>
-        <button class="hv-calendar-nav-btn hv-ic" onclick={calendarGoToPrevMonth} aria-label={$t('desktop.calendar_prev_month')} title={$t('desktop.calendar_prev_month')}>
-          <IconChevronLeft size={18} stroke={2} />
-        </button>
-        <button class="hv-calendar-nav-btn hv-calendar-nav-label hv-ic" onclick={calendarGoToToday} aria-label={$t('desktop.calendar_today')} title={$t('desktop.calendar_today')}>
-          {calendarMonthLabel}
-        </button>
-        <button class="hv-calendar-nav-btn hv-ic" onclick={calendarGoToNextMonth} aria-label={$t('desktop.calendar_next_month')} title={$t('desktop.calendar_next_month')}>
-          <IconChevronRight size={18} stroke={2} />
-        </button>
-        <button class="hv-calendar-nav-btn hv-ic" onclick={calendarGoToNextYear} aria-label={$t('desktop.calendar_next_year')} title={$t('desktop.calendar_next_year')}>
-          <IconChevronsRight size={18} stroke={2} />
-        </button>
-      </div>
     </div>
   {/if}
 
@@ -2486,7 +2605,15 @@
         color={MONITOR_COLOR.docker}
         label={$t('desktop.docker_monitor')}
       >
-        {#snippet icon()}<ContainerIcon stroke={1.8} />{/snippet}
+        {#snippet icon()}<ContainerIcon strokeWidth={1.8} />{/snippet}
+        {#snippet meta()}
+          {#if dockerData.status === 'ready' && dockerData.data.available}
+            <span>{$t('desktop.containers_up', {
+              running: String(dockerRunningCount),
+              total: String(dockerData.data.containers.length),
+            })}</span>
+          {/if}
+        {/snippet}
       </WidgetHeader>
 
       {#if dockerData.status === 'loading' || dockerData.status === 'idle'}
@@ -2510,6 +2637,16 @@
                   ></span>
                   <span class="hv-docker-item-name" title={c.name}>{c.name}</span>
                 </div>
+                <span
+                  class="hv-docker-item-state"
+                  class:hv-docker-state-on={c.state === 'Running'}
+                  class:hv-docker-state-warn={c.state === 'Restarting' || c.state === 'Paused'}
+                >
+                  {#if c.state === 'Running'}{$t('desktop.container_running')}
+                  {:else if c.state === 'Restarting'}{$t('desktop.container_restarting')}
+                  {:else if c.state === 'Paused'}{$t('desktop.container_paused')}
+                  {:else}{$t('desktop.container_stopped')}{/if}
+                </span>
                 <div class="hv-docker-item-actions">
                   <button
                     class="hv-docker-action-btn hv-ic"
@@ -2518,7 +2655,7 @@
                     aria-label={$t('desktop.docker_start', { name: c.name })}
                     title={$t('desktop.docker_start', { name: c.name })}
                   >
-                    <IconPlayerPlay size={20} stroke={2} />
+                    <IconPlayerPlay size={20} strokeWidth={1.8} />
                   </button>
                   <button
                     class="hv-docker-action-btn hv-ic"
@@ -2527,7 +2664,7 @@
                     aria-label={$t('desktop.docker_restart', { name: c.name })}
                     title={$t('desktop.docker_restart', { name: c.name })}
                   >
-                    <IconRefresh size={20} stroke={2} />
+                    <IconRefresh size={20} strokeWidth={1.8} />
                   </button>
                   <button
                     class="hv-docker-action-btn hv-ic"
@@ -2536,7 +2673,7 @@
                     aria-label={$t('desktop.docker_stop', { name: c.name })}
                     title={$t('desktop.docker_stop', { name: c.name })}
                   >
-                    <IconSquare size={20} stroke={2} />
+                    <IconSquare size={20} strokeWidth={1.8} />
                   </button>
                 </div>
               </div>
@@ -2559,7 +2696,12 @@
         color={MONITOR_COLOR.weather}
         label={$t('desktop.weather_monitor')}
       >
-        {#snippet icon()}<IconSun stroke={1.8} />{/snippet}
+        {#snippet icon()}<IconSun strokeWidth={1.8} />{/snippet}
+        {#snippet meta()}
+          {#if $weatherLocationStore}
+            <span class="truncate">{$weatherLocationStore.name}</span>
+          {/if}
+        {/snippet}
       </WidgetHeader>
 
       {#if !$weatherLocationStore}
@@ -2576,32 +2718,27 @@
       {:else if weatherData.status === 'ready'}
         {@const info = weatherCodeInfo(weatherData.data.weatherCode)}
         <div class="hv-weather-body">
-          <div class="hv-weather-location">
-            <IconMapPin size={12} stroke={2} />
-            <span>{$weatherLocationStore?.name}</span>
-          </div>
-          <div class="hv-weather-main">
-            <svelte:component this={info.icon} size={40} stroke={1.75} />
+          <div class="hv-weather-hero">
             <span class="hv-weather-temp">{weatherData.data.temperature}°C</span>
+            <svelte:component this={info.icon} size={44} strokeWidth={1.8} />
           </div>
-          <div class="hv-weather-condition">{$t(info.labelKey)}</div>
+          <div class="hv-weather-condition">
+            {$t(info.labelKey)}{#if $weatherDisplayPrefsStore.includes('feels_like')} · {$t('desktop.weather_feels_like')} {weatherData.data.feelsLike}°C{/if}
+          </div>
           <div class="hv-weather-details">
-            <span>{$t('desktop.weather_humidity')}: {weatherData.data.humidity}%</span>
-            <span>{$t('desktop.weather_wind')}: {weatherData.data.windSpeed} km/h</span>
-            {#if $weatherDisplayPrefsStore.includes('feels_like')}
-              <span>{$t('desktop.weather_feels_like')}: {weatherData.data.feelsLike}°C</span>
-            {/if}
+            <span>{$t('desktop.weather_humidity')} {weatherData.data.humidity}%</span>
+            <span>{$t('desktop.weather_wind')} {weatherData.data.windSpeed} km/h</span>
             {#if $weatherDisplayPrefsStore.includes('wind_gusts')}
-              <span>{$t('desktop.weather_wind_gusts')}: {weatherData.data.windGusts} km/h</span>
+              <span>{$t('desktop.weather_wind_gusts')} {weatherData.data.windGusts} km/h</span>
             {/if}
             {#if $weatherDisplayPrefsStore.includes('precipitation')}
-              <span>{$t('desktop.weather_precipitation')}: {weatherData.data.precipitation} mm</span>
+              <span>{$t('desktop.weather_precipitation')} {weatherData.data.precipitation} mm</span>
             {/if}
             {#if $weatherDisplayPrefsStore.includes('cloud_cover')}
-              <span>{$t('desktop.weather_cloud_cover')}: {weatherData.data.cloudCover}%</span>
+              <span>{$t('desktop.weather_cloud_cover')} {weatherData.data.cloudCover}%</span>
             {/if}
             {#if $weatherDisplayPrefsStore.includes('pressure')}
-              <span>{$t('desktop.weather_pressure')}: {weatherData.data.pressure} hPa</span>
+              <span>{$t('desktop.weather_pressure')} {weatherData.data.pressure} hPa</span>
             {/if}
           </div>
         </div>
@@ -2621,7 +2758,7 @@
         color={MONITOR_COLOR.sessions}
         label={$t('desktop.sessions_monitor')}
       >
-        {#snippet icon()}<IconUsers stroke={1.8} />{/snippet}
+        {#snippet icon()}<IconUsers strokeWidth={1.8} />{/snippet}
       </WidgetHeader>
 
       {#if sessionsData.status === 'loading' || sessionsData.status === 'idle'}
@@ -2649,7 +2786,24 @@
         color={MONITOR_COLOR.health}
         label={$t('desktop.health_monitor')}
       >
-        {#snippet icon()}<IconHeartbeat stroke={1.8} />{/snippet}
+        {#snippet icon()}<IconHeartbeat strokeWidth={1.8} />{/snippet}
+        {#snippet meta()}
+          {#if healthData.status === 'ready'}
+            {@const tone =
+              healthData.data.overall === 'healthy'
+                ? { bg: 'bg-[var(--hv-success-bg)]', fg: 'text-[var(--hv-success-text)]', dot: 'bg-[var(--hv-success)]' }
+                : healthData.data.overall === 'warning'
+                  ? { bg: 'bg-[var(--hv-warning-bg)]', fg: 'text-[var(--hv-warning-text)]', dot: 'bg-[var(--hv-warning)]' }
+                  : { bg: 'bg-[var(--hv-error-bg)]', fg: 'text-[var(--hv-error-text)]', dot: 'bg-[var(--hv-error)]' }}
+            <span class="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-c-xs font-semibold {tone.bg} {tone.fg}">
+              <span class="w-1.5 h-1.5 rounded-full {tone.dot}" aria-hidden="true"></span>
+              {#if healthData.data.overall === 'healthy'}{$t('health.healthy')}
+              {:else if healthData.data.overall === 'warning'}{$t('health.warning')}
+              {:else if healthData.data.overall === 'unhealthy'}{$t('health.critical')}
+              {:else}{$t('health.unknown')}{/if}
+            </span>
+          {/if}
+        {/snippet}
       </WidgetHeader>
 
       {#if healthData.status === 'loading' || healthData.status === 'idle'}
@@ -2657,14 +2811,15 @@
       {:else if healthData.status === 'error'}
         <div class="hv-health-empty">{healthData.error}</div>
       {:else if healthData.status === 'ready'}
-        <div class="hv-health-overall" class:hv-health-overall-ok={healthData.data.overall === 'healthy'} class:hv-health-overall-warn={healthData.data.overall === 'warning'} class:hv-health-overall-crit={healthData.data.overall === 'unhealthy'}>
-          <span class="hv-health-overall-dot"></span>
-          <span>
-            {#if healthData.data.overall === 'healthy'}{$t('health.healthy')}
-            {:else if healthData.data.overall === 'warning'}{$t('health.warning')}
-            {:else if healthData.data.overall === 'unhealthy'}{$t('health.critical')}
-            {:else}{$t('health.unknown')}{/if}
-          </span>
+        <div class="hv-health-summary">
+          <div class="hv-health-summary-title">
+            {#if healthData.data.warning + healthData.data.critical === 0}
+              {$t('desktop.all_operational')}
+            {:else}
+              {$t('desktop.checks_attention', { count: String(healthData.data.warning + healthData.data.critical) })}
+            {/if}
+          </div>
+          <div class="hv-health-summary-time">{healthCheckedLabel(healthData.data.checkedAt)}</div>
         </div>
         <div class="hv-health-stats">
           <div class="hv-health-stat hv-health-stat-ok">
@@ -2704,9 +2859,9 @@
         data-testid="power-notice"
       >
         {#if powerNotice.tone === 'ok'}
-          <IconCheck size={16} stroke={2} aria-hidden="true" />
+          <IconCheck size={16} strokeWidth={1.8} aria-hidden="true" />
         {:else}
-          <IconAlertCircle size={16} stroke={2} aria-hidden="true" />
+          <IconAlertCircle size={16} strokeWidth={1.8} aria-hidden="true" />
         {/if}
         <span>{powerNotice.text}</span>
         <button
@@ -2742,7 +2897,7 @@
           <!-- Never reached: every window opened by the app catalogue or the
                top bar carries a component by construction. -->
           <div class="hv-window-placeholder">
-            <IconPackage size={64} stroke={2} />
+            <IconPackage size={64} strokeWidth={1.8} />
             <h2>{window.title}</h2>
           </div>
         {/if}
@@ -2920,7 +3075,7 @@
         aria-label={$t('desktop.app_dashboard_name')}
       >
         <div class="hv-dock-icon hv-dock-icon-dashboard">
-          <IconHome size={28} stroke={1.8} />
+          <IconHome size={28} strokeWidth={1.8} />
         </div>
         {#if $windowManager && hasOpenWindow('dashboard')}<span class="hv-dock-dot"></span>{/if}
       </button>
@@ -2940,7 +3095,7 @@
           aria-label={$t('desktop.terminal')}
         >
           <div class="hv-dock-icon hv-dock-icon-terminal">
-            <TerminalIcon size={28} stroke={1.8} />
+            <TerminalIcon size={28} strokeWidth={1.8} />
           </div>
           {#if $windowManager && hasOpenWindow('terminal')}<span class="hv-dock-dot"></span>{/if}
         </button>
@@ -2959,7 +3114,7 @@
         aria-label={$t('desktop.app_docker_name')}
       >
         <div class="hv-dock-icon hv-dock-icon-containers">
-          <ContainerIcon size={28} stroke={1.8} />
+          <ContainerIcon size={28} strokeWidth={1.8} />
         </div>
         {#if dockerRunningCount > 0}
           <span class="hv-dock-badge" title={$t('desktop.dock_running', { count: String(dockerRunningCount) })}>
@@ -2984,7 +3139,7 @@
         aria-label={$t('desktop.app_health_name')}
       >
         <div class="hv-dock-icon hv-dock-icon-security">
-          <IconShieldCheckered size={28} stroke={1.8} />
+          <IconShieldCheckered size={28} strokeWidth={1.8} />
         </div>
         {#if healthIssueCount > 0}
           <span class="hv-dock-badge hv-dock-badge--alert" title={$t('desktop.dock_issues', { count: String(healthIssueCount) })}>
@@ -3006,7 +3161,7 @@
         aria-label={$t('desktop.ai_assistant')}
       >
         <div class="hv-dock-icon hv-dock-icon-assistant">
-          <IconRobot size={28} stroke={1.8} />
+          <IconRobot size={28} strokeWidth={1.8} />
         </div>
         {#if $windowManager && hasOpenWindow('chat')}<span class="hv-dock-dot"></span>{/if}
       </button>
@@ -3021,7 +3176,7 @@
         aria-label={$t('desktop.applications')}
       >
         <div class="hv-dock-icon hv-dock-icon-launchpad">
-           <IconLayoutGrid size={28} stroke={1.8} />
+           <IconLayoutGrid size={28} strokeWidth={1.8} />
         </div>
         {#if showAppsCenter}<span class="hv-dock-dot"></span>{/if}
       </button>
@@ -3040,7 +3195,7 @@
         aria-label={$t('desktop.settings_tooltip')}
       >
         <div class="hv-dock-icon hv-dock-icon-settings">
-          <SettingsIcon size={28} stroke={1.8} />
+          <SettingsIcon size={28} strokeWidth={1.8} />
         </div>
         {#if $windowManager && hasOpenWindow('settings')}<span class="hv-dock-dot"></span>{/if}
       </button>
@@ -3060,7 +3215,7 @@
           aria-haspopup="dialog"
         >
           <div class="hv-dock-icon hv-dock-icon-activity">
-            <IconActivity size={28} stroke={1.8} />
+            <IconActivity size={28} strokeWidth={1.8} />
           </div>
           {#if activityCount > 0}
             <span
@@ -3316,18 +3471,98 @@
     pointer-events: none;
   }
 
+  /* v2 wallpaper: three soft radial halos (blue / indigo / cyan) over the
+     diagonal canvas gradient, with a 32px dot grid on top. */
   .hv-wallpaper-layer-1 {
-    background: linear-gradient(160deg, rgba(70, 70, 70, 0.12) 0%, rgba(60, 60, 60, 0.06) 60%, var(--hv-primary-light) 100%);
-    clip-path: polygon(0% 30%, 41% 30%, 66% 100%, 0% 100%);
+    background:
+      radial-gradient(620px 620px at 16% 18%, rgba(46, 114, 201, 0.22), transparent 68%),
+      radial-gradient(520px 520px at 84% 12%, rgba(124, 108, 240, 0.18), transparent 68%),
+      radial-gradient(680px 680px at 54% 94%, rgba(34, 184, 207, 0.14), transparent 68%);
   }
 
   .hv-wallpaper-layer-2 {
-    background: linear-gradient(200deg, rgba(255, 255, 255, 0.5), rgba(70, 70, 70, 0.08));
-    clip-path: polygon(84% 0%, 100% 0%, 100% 100%, 71% 100%);
+    background-image: radial-gradient(circle, rgba(185, 197, 220, 0.55) 1px, transparent 1px);
+    background-size: 32px 32px;
+    opacity: 0.7;
   }
 
   .hv-wallpaper-layer-3 {
-    background: radial-gradient(60% 40% at 42% 24%, rgba(255, 255, 255, 0.65), rgba(255, 255, 255, 0) 70%);
+    background: radial-gradient(60% 40% at 42% 18%, rgba(255, 255, 255, 0.35), rgba(255, 255, 255, 0) 70%);
+  }
+
+  /* Brand capsule — v2's top-left identity pill. Same material and capsule
+     silhouette as the control pill on the right, so the chrome reads as one
+     family even though the two are separate anchors. */
+  .hv-brandbar {
+    position: fixed;
+    top: var(--hv-chrome-topbar-offset-y);
+    left: var(--hv-chrome-topbar-offset-x);
+    z-index: var(--hv-z-topbar);
+    display: flex;
+    align-items: center;
+    gap: var(--hv-space-3);
+    box-sizing: border-box;
+    height: var(--hv-chrome-topbar-h);
+    padding: 0 calc((var(--hv-chrome-topbar-h) - var(--hv-chrome-topbar-btn-size)) / 2);
+    border-radius: var(--hv-radius-full);
+    background: var(--hv-shell-glass);
+    border: 1px solid var(--hv-chrome-surface-border);
+    box-shadow: var(--hv-chrome-surface-shadow);
+    color: var(--hv-shell-text-strong);
+    transition:
+      transform var(--hv-chrome-dur-med) var(--hv-chrome-ease-out),
+      opacity var(--hv-chrome-dur-med) ease;
+  }
+
+  .hv-brandbar-mark {
+    display: grid;
+    place-items: center;
+    width: var(--hv-chrome-avatar-size);
+    height: var(--hv-chrome-avatar-size);
+    border-radius: 11px;
+    background: var(--hv-app-accent-grad);
+    color: var(--hv-on-primary);
+    flex: none;
+  }
+
+  .hv-brandbar-mark :global(svg) {
+    width: calc(var(--hv-chrome-avatar-size) / 2);
+    height: calc(var(--hv-chrome-avatar-size) / 2);
+  }
+
+  .hv-brandbar-text {
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+    min-width: 0;
+  }
+
+  .hv-brandbar-name {
+    font-size: var(--hv-text-md);
+    font-weight: var(--hv-font-weight-bold);
+    line-height: var(--hv-line-height-tight);
+    color: var(--hv-shell-text-strong);
+    white-space: nowrap;
+  }
+
+  .hv-brandbar-sub {
+    font-size: var(--hv-text-xs);
+    line-height: var(--hv-line-height-tight);
+    color: var(--hv-shell-text-3);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  /* Online marker — the v2 brand capsule's green status dot. */
+  .hv-brandbar-status {
+    width: 9px;
+    height: 9px;
+    margin-left: var(--hv-space-1);
+    border-radius: 50%;
+    background: var(--hv-success);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--hv-success) 16%, transparent);
+    flex: none;
   }
 
   /* Menu Bar — floating CAPSULE. Solid paper (`--hv-shell-glass`: opaque white,
@@ -3721,6 +3956,8 @@
 
   .hv-gauge {
     display: flex;
+    flex: 1 1 0;
+    min-width: 0;
     flex-direction: column;
     align-items: center;
     gap: var(--hv-space-1-5);
@@ -3746,7 +3983,7 @@
   }
 
   .hv-gauge-fill-ram {
-    stroke: #7c8cf0;
+    stroke: var(--hv-violet);
   }
 
   .hv-gauge-fill-temp {
@@ -3758,8 +3995,8 @@
   }
 
   .hv-gauge-value {
-    font-size: var(--hv-text-card-title);
-    font-weight: var(--hv-font-weight-semibold);
+    font-size: var(--hv-text-base);
+    font-weight: var(--hv-font-weight-bold);
     fill: var(--hv-text-primary);
     text-anchor: middle;
     font-variant-numeric: tabular-nums;
@@ -3768,12 +4005,16 @@
   .hv-gauge-label {
     display: flex;
     align-items: center;
-    gap: var(--hv-space-1);
-    font-size: var(--hv-font-size-micro);
-    font-weight: var(--hv-font-weight-medium);
-    color: var(--hv-neutral-500);
+    justify-content: center;
+    max-width: 100%;
+    font-size: var(--hv-text-xs);
+    font-weight: var(--hv-font-weight-semibold);
+    color: var(--hv-shell-text-3);
     text-transform: uppercase;
-    letter-spacing: 0.05em;
+    letter-spacing: 1px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
 
   .hv-gauge-label :global(svg) {
@@ -3789,7 +4030,8 @@
   }
 
   .hv-network-item {
-    flex: 1;
+    flex: 1 1 0;
+    min-width: 0;
     padding: var(--hv-space-2);
     background: var(--hv-surface);
     border-radius: var(--hv-radius-md);
@@ -3798,15 +4040,15 @@
   }
 
   .hv-network-label {
-    font-size: var(--hv-font-size-micro);
+    font-size: var(--hv-text-xs);
     font-weight: var(--hv-font-weight-semibold);
-    color: var(--hv-neutral-400);
+    color: var(--hv-shell-text-3);
     text-transform: uppercase;
-    letter-spacing: 0.05em;
+    letter-spacing: 1px;
     margin-bottom: var(--hv-space-1);
-    display: flex;
-    align-items: center;
-    gap: var(--hv-space-1);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
 
   .hv-network-label :global(svg) {
@@ -3824,38 +4066,39 @@
   /* System Update Indicator */
   .hv-system-update {
     padding: var(--hv-space-2) 12px;
-    background: var(--hv-info-light);
-    border: 1px solid var(--hv-primary-200);
-    border-radius: var(--hv-radius-md);
+    background: var(--hv-success-bg);
+    border: 1px solid transparent;
+    border-radius: var(--hv-radius-default);
     display: flex;
     align-items: center;
     gap: var(--hv-space-2);
   }
 
-  .hv-system-update svg {
+  .hv-system-update :global(svg) {
     width: 16px;
     height: 16px;
-    stroke: var(--hv-info);
+    stroke: var(--hv-success);
     flex-shrink: 0;
   }
 
   .hv-system-update-text {
     flex: 1;
-    font-size: var(--hv-font-size-xs);
-    color: var(--hv-info-text-alt);
+    font-size: var(--hv-text-xs);
+    font-weight: var(--hv-font-weight-semibold);
+    color: var(--hv-success-text);
   }
 
   .hv-system-update.available {
-    background: var(--hv-badge-warning-bg);
-    border-color: var(--hv-warning);
+    background: var(--hv-warning-bg);
+    border-color: transparent;
   }
 
-  .hv-system-update.available svg {
+  .hv-system-update.available :global(svg) {
     stroke: var(--hv-warning);
   }
 
   .hv-system-update.available .hv-system-update-text {
-    color: var(--hv-badge-warning-text);
+    color: var(--hv-warning-text);
   }
 
   /* RAID Monitor (draggable) */
@@ -3916,12 +4159,12 @@
 
   /* Raid type badge — matches reference .raid-type */
   .hv-raid-type {
-    font-size: var(--hv-font-size-xs);
+    font-size: var(--hv-text-xs);
     font-weight: var(--hv-font-weight-semibold);
-    padding: var(--hv-space-0-5) 8px;
-    border-radius: var(--hv-radius-default);
-    background: var(--hv-info-light);
-    color: var(--hv-info-text-alt);
+    padding: 2px 10px;
+    border-radius: var(--hv-radius-full);
+    background: var(--hv-violet-bg);
+    color: var(--hv-violet);
   }
 
   /* Raid info row — matches reference .raid-info */
@@ -3984,8 +4227,8 @@
 
   .hv-raid-progress-label {
     display: flex;
-    justify-content: space-between;
-    font-size: var(--hv-font-size-xs);
+    justify-content: flex-start;
+    font-size: var(--hv-text-xs);
     margin-bottom: var(--hv-space-1-5);
   }
 
@@ -3993,23 +4236,18 @@
     color: var(--hv-neutral-500);
   }
 
-  .hv-raid-progress-free {
-    color: var(--hv-success);
-    font-weight: var(--hv-font-weight-semibold);
-  }
-
   .hv-raid-progress-bar {
     width: 100%;
     height: 8px;
-    background: var(--hv-border);
-    border-radius: var(--hv-radius-default);
+    background: var(--hv-shell-border);
+    border-radius: var(--hv-radius-full);
     overflow: hidden;
   }
 
   .hv-raid-progress-fill {
     height: 100%;
-    background: linear-gradient(90deg, var(--hv-primary), var(--hv-primary-hover));
-    border-radius: var(--hv-radius-default);
+    background: var(--hv-primary);
+    border-radius: var(--hv-radius-full);
     transition: width 300ms ease;
   }
 
@@ -4017,8 +4255,8 @@
   .hv-raid-total {
     margin-top: var(--hv-space-3);
     padding: var(--hv-space-3);
-    background: linear-gradient(135deg, var(--hv-primary) 0%, var(--hv-primary-hover) 100%);
-    border-radius: var(--hv-radius-lg);
+    background: linear-gradient(135deg, var(--hv-primary-500) 0%, var(--hv-primary-700) 100%);
+    border-radius: var(--hv-radius-default);
     color: white;
   }
 
@@ -4043,6 +4281,24 @@
   .hv-raid-total-capacity {
     font-size: var(--hv-font-size-sm);
     opacity: 0.9;
+  }
+
+  .hv-raid-ok {
+    display: flex;
+    align-items: center;
+    gap: var(--hv-space-2);
+    margin-top: var(--hv-space-2);
+    padding: var(--hv-space-2) var(--hv-space-3);
+    border-radius: var(--hv-radius-default);
+    background: var(--hv-success-bg);
+    color: var(--hv-success-text);
+    font-size: var(--hv-text-xs);
+    font-weight: var(--hv-font-weight-semibold);
+  }
+
+  .hv-raid-ok :global(svg) {
+    stroke: var(--hv-success);
+    flex: none;
   }
 
   .hv-raid-empty {
@@ -4131,6 +4387,31 @@
     flex-shrink: 0;
   }
 
+  /* v2 security row marker: a 20px tinted circle with a check or warning. */
+  .hv-security-check {
+    display: grid;
+    place-items: center;
+    width: 20px;
+    height: 20px;
+    border-radius: var(--hv-radius-full);
+    flex: none;
+  }
+
+  .hv-security-check-ok {
+    background: var(--hv-success-bg);
+    color: var(--hv-success);
+  }
+
+  .hv-security-check-warn {
+    background: var(--hv-warning-bg);
+    color: var(--hv-warning);
+  }
+
+  .hv-security-check-off {
+    background: var(--hv-shell-fill);
+    color: var(--hv-shell-text-3);
+  }
+
   .hv-security-status {
     display: flex;
     align-items: center;
@@ -4208,6 +4489,44 @@
 	z-index: var(--hv-z-monitor);
   }
 
+  .hv-calendar-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--hv-space-2);
+    margin-bottom: var(--hv-space-3);
+  }
+
+  .hv-calendar-month {
+    min-height: var(--hv-touch-target-min);
+    padding: 0 var(--hv-space-1);
+    border: none;
+    background: transparent;
+    border-radius: var(--hv-radius-control);
+    color: var(--hv-shell-text-strong);
+    font: inherit;
+    font-size: var(--hv-text-base);
+    font-weight: var(--hv-font-weight-semibold);
+    text-transform: capitalize;
+    cursor: pointer;
+    white-space: nowrap;
+  }
+
+  .hv-calendar-month:hover {
+    background: var(--hv-subtle-hover);
+  }
+
+  .hv-calendar-month:focus-visible {
+    outline: none;
+    box-shadow: var(--hv-focus-ring);
+  }
+
+  .hv-calendar-nav-buttons {
+    display: flex;
+    align-items: center;
+    gap: var(--hv-space-0-5);
+  }
+
   .hv-calendar-weekdays {
     display: grid;
     grid-template-columns: repeat(7, 1fr);
@@ -4216,11 +4535,16 @@
   }
 
   .hv-calendar-weekday {
+    min-width: 0;
     text-align: center;
-    font-size: var(--hv-font-size-xs);
+    font-size: var(--hv-text-xs);
     font-weight: var(--hv-font-weight-semibold);
-    /* Secondary ink — the old neutral-400 was ~1.6:1 on white, unreadable. */
-    color: var(--hv-shell-text-2);
+    letter-spacing: 0.04em;
+    color: var(--hv-shell-text-3);
+    text-transform: uppercase;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
 
   .hv-calendar-grid {
@@ -4234,13 +4558,14 @@
     align-items: center;
     justify-content: center;
     aspect-ratio: 1 / 1;
-    font-size: var(--hv-font-size-sm);
-    color: var(--hv-text-primary);
-    border-radius: var(--hv-radius-default);
+    font-size: var(--hv-text-sm);
+    color: var(--hv-shell-text-strong);
+    border-radius: var(--hv-radius-full);
+    font-variant-numeric: tabular-nums;
   }
 
   .hv-calendar-cell-empty {
-    color: transparent;
+    color: var(--hv-neutral-700);
   }
 
   .hv-calendar-cell-today {
@@ -4259,22 +4584,20 @@
     border-top: 1px solid var(--hv-border);
   }
 
-  /* Compact 36px chrome: the 300px calendar can't fit five 44px targets
-     beside the month label without truncating it, so the nav row uses the
-     documented compact size (still ≥ WCAG 2.2 AA 24px). */
+  /* v2 month chevrons: a 28px visual circle; `.hv-ic` supplies the 44px hit. */
   .hv-calendar-nav-btn {
     display: flex;
     align-items: center;
     justify-content: center;
-    background: transparent;
+    background: var(--hv-shell-fill);
     border: none;
-    border-radius: var(--hv-radius-default);
-    color: var(--hv-shell-text-3);
+    border-radius: var(--hv-radius-full);
+    color: var(--hv-shell-text-2);
     cursor: pointer;
     transition: background 150ms, color 150ms;
     padding: 0;
-    width: 36px;
-    height: 36px;
+    width: 28px;
+    height: 28px;
     flex-shrink: 0;
   }
 
@@ -4361,18 +4684,49 @@
     text-overflow: ellipsis;
   }
 
+  /* State text is the row's primary right-hand marker (v2 design); the
+     three management actions stay available but step back until the row is
+     hovered or focused. `.hv-ic` still supplies their 44px hit square. */
+  .hv-docker-item-state {
+    margin-left: auto;
+    font-size: var(--hv-text-xs);
+    font-weight: var(--hv-font-weight-semibold);
+    color: var(--hv-shell-text-3);
+    white-space: nowrap;
+    flex: none;
+  }
+
+  .hv-docker-state-on {
+    color: var(--hv-success-text);
+  }
+
+  .hv-docker-state-warn {
+    color: var(--hv-warning-text);
+  }
+
   .hv-docker-item-actions {
     display: flex;
     align-items: center;
-    gap: var(--hv-space-1);
+    gap: 0;
     flex-shrink: 0;
+    opacity: 0;
+    transition: opacity 150ms ease;
+  }
+
+  .hv-docker-item:hover .hv-docker-item-actions,
+  .hv-docker-item:focus-within .hv-docker-item-actions {
+    opacity: 1;
+  }
+
+  @media (any-pointer: coarse) {
+    .hv-docker-item-actions {
+      opacity: 1;
+    }
   }
 
   .hv-docker-action-btn {
-    /* 44px touch targets — three fit beside the container name in the
-       300px panel (3 × 44 + gaps + flexible info column). */
-    width: 44px;
-    height: 44px;
+    width: 24px;
+    height: 24px;
     display: flex;
     align-items: center;
     justify-content: center;
@@ -4384,6 +4738,12 @@
     transition: background 150ms, color 150ms;
     padding: 0;
     flex-shrink: 0;
+    position: relative;
+  }
+
+  .hv-docker-action-btn :global(svg) {
+    width: 16px;
+    height: 16px;
   }
 
   .hv-docker-action-btn:hover:not(:disabled) {
@@ -4442,48 +4802,49 @@
   .hv-weather-body {
     display: flex;
     flex-direction: column;
-    align-items: center;
-    gap: var(--hv-space-1);
+    align-items: stretch;
+    gap: var(--hv-space-2);
   }
 
-  .hv-weather-location {
+  .hv-weather-hero {
     display: flex;
     align-items: center;
-    gap: var(--hv-space-1);
-    color: var(--hv-neutral-500);
-    font-size: var(--hv-font-size-xs);
-  }
-
-  .hv-weather-main {
-    display: flex;
-    align-items: center;
+    justify-content: space-between;
     gap: var(--hv-space-3);
-    margin: var(--hv-space-1) 0;
   }
 
-  .hv-weather-main :global(svg) {
-    stroke: var(--hv-primary);
+  .hv-weather-hero :global(svg) {
+    stroke: var(--hv-warning);
+    flex: none;
   }
 
   .hv-weather-temp {
     font-size: var(--hv-font-size-4xl);
-    font-weight: var(--hv-font-weight-semibold);
-    color: var(--hv-text-primary);
+    font-weight: var(--hv-font-weight-bold);
+    color: var(--hv-shell-text-strong);
+    line-height: 1;
+    font-variant-numeric: tabular-nums;
   }
 
   .hv-weather-condition {
-    font-size: var(--hv-font-size-sm);
-    color: var(--hv-text-primary);
+    font-size: var(--hv-text-sm);
+    color: var(--hv-shell-text-2);
   }
 
   .hv-weather-details {
     display: flex;
     flex-wrap: wrap;
-    justify-content: center;
-    gap: var(--hv-space-1) var(--hv-space-3);
+    gap: var(--hv-space-1-5);
     margin-top: var(--hv-space-2);
-    color: var(--hv-neutral-500);
-    font-size: var(--hv-font-size-xs);
+    font-size: var(--hv-text-xs);
+    color: var(--hv-shell-text-2);
+  }
+
+  .hv-weather-details span {
+    padding: 4px 10px;
+    border-radius: var(--hv-radius-full);
+    background: var(--hv-shell-card);
+    white-space: nowrap;
   }
 
   .hv-sessions-monitor {
@@ -4505,22 +4866,27 @@
 
   .hv-sessions-body {
     display: flex;
-    flex-direction: column;
-    align-items: center;
-    gap: var(--hv-space-1);
-    padding: var(--hv-space-2) 0;
+    align-items: baseline;
+    gap: var(--hv-space-2);
+    padding: var(--hv-space-2) 0 var(--hv-space-1);
   }
 
   .hv-sessions-count {
     font-size: var(--hv-font-size-4xl);
-    font-weight: var(--hv-font-weight-semibold);
-    color: var(--hv-text-primary);
+    font-weight: var(--hv-font-weight-bold);
+    color: var(--hv-shell-text-strong);
     line-height: 1;
+    font-variant-numeric: tabular-nums;
   }
 
   .hv-sessions-label {
-    font-size: var(--hv-font-size-sm);
-    color: var(--hv-neutral-500);
+    min-width: 0;
+    font-size: var(--hv-text-base);
+    font-weight: var(--hv-font-weight-semibold);
+    color: var(--hv-shell-text-strong);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
 
   .hv-health-monitor {
@@ -4566,9 +4932,25 @@
   .hv-health-overall-crit { color: var(--hv-error); }
   .hv-health-overall-crit .hv-health-overall-dot { background: var(--hv-error); }
 
+  .hv-health-summary {
+    margin-bottom: var(--hv-space-3);
+  }
+
+  .hv-health-summary-title {
+    font-size: var(--hv-text-base);
+    font-weight: var(--hv-font-weight-semibold);
+    color: var(--hv-shell-text-strong);
+  }
+
+  .hv-health-summary-time {
+    margin-top: 2px;
+    font-size: var(--hv-text-xs);
+    color: var(--hv-shell-text-3);
+  }
+
   .hv-health-stats {
     display: grid;
-    grid-template-columns: repeat(3, 1fr);
+    grid-template-columns: repeat(3, minmax(0, 1fr));
     gap: var(--hv-space-2);
   }
 
@@ -4576,19 +4958,34 @@
     display: flex;
     flex-direction: column;
     align-items: center;
+    justify-content: center;
     gap: 2px;
+    min-height: 64px;
+    padding: var(--hv-space-2);
+    border-radius: var(--hv-radius-default);
+    background: var(--hv-shell-fill);
   }
 
   .hv-health-stat-value {
     font-size: var(--hv-font-size-2xl);
-    font-weight: var(--hv-font-weight-semibold);
+    font-weight: var(--hv-font-weight-bold);
+    line-height: 1;
   }
 
   .hv-health-stat-label {
-    font-size: var(--hv-font-size-xs);
-    color: var(--hv-neutral-500);
+    max-width: 100%;
+    font-size: var(--hv-text-xs);
+    font-weight: var(--hv-font-weight-semibold);
+    color: var(--hv-shell-text-3);
+    text-align: center;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
 
+  .hv-health-stat-ok { background: var(--hv-success-bg); }
+  .hv-health-stat-warn { background: var(--hv-warning-bg); }
+  .hv-health-stat-crit { background: var(--hv-error-bg); }
   .hv-health-stat-ok .hv-health-stat-value { color: var(--hv-success); }
   .hv-health-stat-warn .hv-health-stat-value { color: var(--hv-warning); }
   .hv-health-stat-crit .hv-health-stat-value { color: var(--hv-error); }
@@ -4626,18 +5023,24 @@
   }
 
   .hv-vpn-row-value {
-    color: var(--hv-neutral-500);
+    color: var(--hv-shell-text-3);
     font-variant-numeric: tabular-nums;
   }
 
-  /* Downloader Monitor */
-  .hv-downloader-active {
-    font-size: var(--hv-font-size-sm);
+  .hv-vpn-pill-ok {
+    padding: 2px 8px;
+    border-radius: var(--hv-radius-full);
+    background: var(--hv-success-bg);
+    color: var(--hv-success-text);
+    font-size: var(--hv-text-xs);
     font-weight: var(--hv-font-weight-semibold);
-    color: var(--hv-text-primary);
-    margin-bottom: var(--hv-space-3);
   }
 
+  .hv-vpn-pill-muted {
+    color: var(--hv-shell-text-3);
+  }
+
+  /* Downloader Monitor */
   .hv-downloader-speeds {
     display: flex;
     gap: var(--hv-space-3);
@@ -4652,11 +5055,12 @@
   }
 
   .hv-downloader-speed-label {
-    display: flex;
-    align-items: center;
-    gap: var(--hv-space-1-5);
-    font-size: var(--hv-font-size-xs);
-    color: var(--hv-neutral-500);
+    display: block;
+    font-size: var(--hv-text-xs);
+    font-weight: var(--hv-font-weight-semibold);
+    letter-spacing: 1px;
+    text-transform: uppercase;
+    color: var(--hv-shell-text-3);
     margin-bottom: var(--hv-space-1);
   }
 
@@ -4664,6 +5068,60 @@
     font-size: var(--hv-font-size-sm);
     font-weight: var(--hv-font-weight-semibold);
     color: var(--hv-text-primary);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .hv-downloader-current {
+    margin-top: var(--hv-space-3);
+    padding: var(--hv-space-3);
+    background: var(--hv-shell-card);
+    border: 1px solid var(--hv-shell-border);
+    border-radius: var(--hv-radius-default);
+  }
+
+  .hv-downloader-current-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--hv-space-2);
+  }
+
+  .hv-downloader-current-name {
+    min-width: 0;
+    font-size: var(--hv-text-sm);
+    font-weight: var(--hv-font-weight-semibold);
+    color: var(--hv-shell-text-strong);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .hv-downloader-current-pct {
+    font-size: var(--hv-text-sm);
+    font-weight: var(--hv-font-weight-semibold);
+    color: var(--hv-primary);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .hv-downloader-progress {
+    height: 6px;
+    margin-top: var(--hv-space-2);
+    border-radius: var(--hv-radius-full);
+    background: var(--hv-shell-border);
+    overflow: hidden;
+  }
+
+  .hv-downloader-progress-fill {
+    height: 100%;
+    border-radius: var(--hv-radius-full);
+    background: var(--hv-primary);
+    transition: width 300ms ease;
+  }
+
+  .hv-downloader-current-meta {
+    margin-top: var(--hv-space-1-5);
+    font-size: var(--hv-text-xs);
+    color: var(--hv-shell-text-3);
     font-variant-numeric: tabular-nums;
   }
 
@@ -4697,8 +5155,37 @@
   }
 
   .hv-syncthing-detail {
-    font-size: var(--hv-font-size-xs);
-    color: var(--hv-neutral-500);
+    font-size: var(--hv-font-size-sm);
+    font-weight: var(--hv-font-weight-medium);
+    color: var(--hv-shell-text-strong);
+    margin-bottom: var(--hv-space-3);
+  }
+
+  .hv-syncthing-progress {
+    height: 6px;
+    border-radius: var(--hv-radius-full);
+    background: var(--hv-shell-border);
+    overflow: hidden;
+  }
+
+  .hv-syncthing-progress-fill {
+    height: 100%;
+    width: 100%;
+    border-radius: var(--hv-radius-full);
+    background: var(--hv-success);
+  }
+
+  /* Pending files: an indeterminate sweep, not a fabricated percentage — the
+     monitor only knows the count, not the remaining byte total. */
+  .hv-syncthing-progress-syncing .hv-syncthing-progress-fill {
+    width: 38%;
+    background: var(--hv-warning);
+    animation: hvSyncthingSweep 1.6s ease-in-out infinite;
+  }
+
+  @keyframes hvSyncthingSweep {
+    0% { transform: translateX(-100%); }
+    100% { transform: translateX(290%); }
   }
 
   /* Dragging state for monitors */
@@ -5017,7 +5504,8 @@
   .hv-dock-icon {
     width: var(--hv-dock-item-size);
     height: var(--hv-dock-item-size);
-    border-radius: 50%;
+    /* v2 dock tile: a squircle, not a circle (DESIGN §4 — 16px). */
+    border-radius: 16px;
     display: grid;
     place-items: center;
     background: var(--hv-app-accent-grad);
@@ -5321,6 +5809,13 @@
     pointer-events: none;
   }
 
+  /* The brand capsule follows the same fullscreen exit as the control pill. */
+  .hv-brandbar.hv-menubar--hidden {
+    transform: translateY(calc(-100% - var(--hv-chrome-topbar-offset-y) - var(--hv-space-3)));
+    opacity: 0;
+    pointer-events: none;
+  }
+
   .hv-topbar-btn,
   .hv-user-pill {
     transition:
@@ -5347,6 +5842,7 @@
   /* 10. Idle dim — dock + topbar fade back after inactivity; any click /
       key / wheel restores them (see markActivity in the script). */
   .hv-menubar.hv-chrome--idle,
+  .hv-brandbar.hv-chrome--idle,
   .hv-dock.hv-chrome--idle {
     opacity: var(--hv-chrome-idle-opacity);
   }
@@ -6002,9 +6498,8 @@
   .hv-downloader-empty,
   .hv-syncthing-empty,
   .hv-vpn-row-value,
-  .hv-downloader-speed-label,
-  .hv-syncthing-detail {
-    color: var(--hv-shell-text-2);
+  .hv-downloader-speed-label {
+    color: var(--hv-shell-text-3);
   }
 
   /* Inner cards / rows — raised white-on-white fill */
@@ -6060,17 +6555,17 @@
 
   /* Badges / callouts */
   .hv-raid-type {
-    background: var(--hv-primary-selected-bg);
-    color: var(--hv-primary);
+    background: var(--hv-violet-bg);
+    color: var(--hv-violet);
   }
 
   .hv-system-update {
-    background: var(--hv-primary-selected-bg);
-    border-color: var(--hv-primary-light);
+    background: var(--hv-success-bg);
+    border-color: transparent;
   }
 
   .hv-system-update-text {
-    color: var(--hv-primary);
+    color: var(--hv-success-text);
   }
 
   .hv-system-update.available {
@@ -6096,14 +6591,10 @@
   }
 
   /* Gauge readouts tinted to match their ring */
-  .hv-gauge-value-cpu {
-    fill: var(--hv-primary);
-  }
-  .hv-gauge-value-ram {
-    fill: #7c8cf0;
-  }
+  .hv-gauge-value-cpu,
+  .hv-gauge-value-ram,
   .hv-gauge-value-temp {
-    fill: var(--hv-warning);
+    fill: var(--hv-shell-text-strong);
   }
 
   /* Status indicators as tinted pills (light surfaces) */
@@ -6229,6 +6720,15 @@
      On a phone they can only pile up on top of each other and the content
      underneath — hide them (the Widgets app still toggles their state for
      when the window is wide again). */
+  /* The brand capsule is a desktop affordance; on tablet widths it would
+     compete with the control pill for the same top band, so it steps aside
+     while the product identity remains in the window headers. */
+  @media (max-width: 900px) {
+    .hv-brandbar {
+      display: none;
+    }
+  }
+
   @media (max-width: 640px) {
     .hv-resource-monitor,
     .hv-raid-monitor,

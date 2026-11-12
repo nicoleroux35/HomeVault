@@ -16,7 +16,7 @@
      Opened as a desktop window app.
      ======================================================================== -->
 <script lang="ts">
-  import { IconCircleCheck, IconLayoutGrid, IconCirclePlus, IconRefresh } from '@tabler/icons-svelte';
+  import { IconCircleCheck, IconLayoutGrid, IconCirclePlus, IconRefresh } from '$lib/icons/lucide';
   import { monitorStore } from '$lib/stores/monitorStore';
   import { WIDGET_DEFS } from '$lib/stores/widgetCatalog';
   import { t, translate } from '$lib/stores/i18n';
@@ -64,7 +64,7 @@
   data-testid="widgets-page"
 >
   {#snippet icon()}
-    <IconLayoutGrid stroke={1.8} />
+    <IconLayoutGrid strokeWidth={1.8} />
   {/snippet}
 
   <div
@@ -88,7 +88,7 @@
           class="grid place-items-center w-14 h-14 rounded-lg flex-none shadow-[0_2px_8px_var(--hv-overlay-hover)]"
           style="background: {widget.color};"
         >
-          <widget.icon size={32} color="white" stroke={2} />
+          <widget.icon size={32} color="white" strokeWidth={1.8} />
         </span>
         <span class="min-w-0 flex-1">
           <span data-testid="widgets-tile-name" class="block text-md font-semibold text-foreground truncate">
@@ -103,7 +103,7 @@
             data-testid="widgets-tile-badge"
             class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-[var(--hv-radius-default)] bg-[var(--hv-success)] text-white text-sm font-semibold flex-none"
           >
-            <IconCircleCheck size={16} stroke={2} />
+            <IconCircleCheck size={16} strokeWidth={1.8} />
             {$t('widgets.active')}
           </span>
         {:else}
@@ -111,7 +111,7 @@
             data-testid="widgets-tile-add"
             class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-[var(--hv-radius-default)] bg-[var(--hv-neutral-100)] text-[var(--hv-neutral-600)] text-sm font-semibold flex-none group-hover:bg-[var(--hv-primary)] group-hover:text-white"
           >
-            <IconCirclePlus size={16} stroke={2} />
+            <IconCirclePlus size={16} strokeWidth={1.8} />
             {$t('widgets.add')}
           </span>
         {/if}
@@ -122,11 +122,11 @@
   {#snippet footer()}
     <div class="flex w-full items-center justify-between gap-4">
       <div data-testid="widgets-stats" class="flex items-center gap-2 text-base text-muted-foreground">
-        <IconLayoutGrid size={20} stroke={2} class="text-[var(--hv-neutral-400)]" />
+        <IconLayoutGrid size={20} strokeWidth={1.8} class="text-[var(--hv-neutral-400)]" />
         <span>{translate('widgets.count_on_desktop', { count: String(totalActive) })}</span>
       </div>
       <Button variant="ghost" onclick={resetAll} data-testid="widgets-reset">
-        <IconRefresh size={18} stroke={2} />
+        <IconRefresh size={18} strokeWidth={1.8} />
         {$t('widgets.reset_button')}
       </Button>
     </div>

@@ -84,12 +84,6 @@
     return 'var(--hv-primary)';
   }
 
-  function ledColor(pct: number): string {
-    if (pct >= 90) return 'red';
-    if (pct >= 70) return 'amber';
-    return 'green';
-  }
-
   /**
    * One refresh tick.
    *
@@ -234,9 +228,11 @@
 
   // Shared shapes (appliance tokens only — the per-app CSS vocabulary is gone).
   const cardHead = 'flex items-center gap-3';
-  const cardIcon = 'grid place-items-center w-[52px] h-[52px] rounded-2xl flex-none';
-  const cardName = 'text-c-xl font-semibold text-[var(--hv-shell-text-strong)]';
-  const cardSub = 'text-c-base text-[var(--hv-shell-text-2)] mt-0.5';
+  // v2 card header: a 30px tinted squircle holding the card's 16-20px glyph,
+  // not a 52px hero tile.
+  const cardIcon = 'grid place-items-center w-[30px] h-[30px] rounded-[9px] flex-none';
+  const cardName = 'text-c-md font-semibold text-[var(--hv-shell-text-strong)]';
+  const cardSub = 'text-c-sm text-[var(--hv-shell-text-2)] mt-0.5';
   const kvRow = 'flex items-center justify-between min-h-[44px] border-t border-[var(--hv-shell-border-soft)] text-sm text-[var(--hv-shell-text-2)]';
   const mono = 'font-[family-name:var(--hv-font-mono)] text-sm text-[var(--hv-shell-text-strong)]';
   const iconBlue = cn(cardIcon, 'bg-[var(--hv-primary-light)] text-[var(--hv-primary)]');
@@ -245,15 +241,6 @@
   const iconCyan = cn(cardIcon, 'bg-[var(--hv-primary-selected-bg)] text-[var(--hv-primary)]');
   const iconCoral = cn(cardIcon, 'bg-[var(--hv-error-bg)] text-[var(--hv-error)]');
 
-  // LED "tile + dot" pair, tinted by severity (appliance tokens).
-  const LED: Record<string, [string, string]> = {
-    green: ['bg-[var(--hv-success-bg)]', 'bg-[var(--hv-success)] shadow-[0_0_14px_var(--hv-success)]'],
-    amber: ['bg-[var(--hv-warning-bg)]', 'bg-[var(--hv-warning)] shadow-[0_0_14px_var(--hv-warning)]'],
-    red: ['bg-[var(--hv-error-bg)]', 'bg-[var(--hv-error)] shadow-[0_0_14px_var(--hv-error)]'],
-    blue: ['bg-[var(--hv-primary-light)]', 'bg-[var(--hv-primary)] shadow-[0_0_14px_var(--hv-primary)]'],
-  };
-  const ledTile = (color: string) => cn('relative w-14 h-14 rounded-2xl grid place-items-center flex-none', (LED[color] ?? LED.blue)[0]);
-  const ledDot = (color: string) => cn('absolute w-4 h-4 rounded-full animate-pulse', (LED[color] ?? LED.blue)[1]);
 </script>
 
 <PageLayout
@@ -282,33 +269,29 @@
     <div data-testid="dashboard-content" class="@container">
       <div class="grid grid-cols-12 gap-5 items-stretch">
         <div data-testid="dashboard-stats-grid" class="grid grid-cols-4 gap-4 col-span-12 @max-[768px]:grid-cols-2 @max-[480px]:grid-cols-1">
-          <div data-testid="dashboard-stat-card" class="flex items-center gap-4 px-6 py-5 rounded-2xl bg-[var(--hv-shell-card)] border border-[var(--hv-shell-border)] shadow-[var(--hv-shell-shadow-card)] transition-colors hover:border-[var(--hv-shell-border-strong)]">
-            <span class={ledTile(ledColor(cpuPct))}><span class={ledDot(ledColor(cpuPct))}></span></span>
-            <div class="flex-1 min-w-0">
-              <div data-testid="dashboard-stat-label" class="text-sm text-[var(--hv-shell-text-2)]">{$t('dashboard.cpu')}</div>
-              <div data-testid="dashboard-stat-value" class="flex items-baseline gap-1.5 mt-1 text-4xl font-semibold tracking-tight text-[var(--hv-shell-text-strong)]">{cpuPct.toFixed(0)}<span class="text-c-base text-[var(--hv-shell-text)]">%</span></div>
+          <div data-testid="dashboard-stat-card" class="flex flex-col justify-between px-5 py-4 min-h-[112px] rounded-2xl bg-card border border-border shadow-[var(--hv-shell-shadow-card)] transition-colors hover:border-[var(--hv-shell-border-strong)]">
+            <div data-testid="dashboard-stat-label" class="flex items-center gap-2 text-c-xs font-semibold uppercase tracking-[1px] text-[var(--hv-shell-text-3)]">
+              <span class="w-2 h-2 rounded-full bg-[var(--hv-primary)]" aria-hidden="true"></span>{$t('dashboard.cpu')}
             </div>
+            <div data-testid="dashboard-stat-value" class="flex items-baseline gap-1.5 mt-2 text-2xl font-bold tracking-tight text-[var(--hv-shell-text-strong)]">{cpuPct.toFixed(0)}<span class="text-c-base font-medium text-[var(--hv-shell-text-3)]">%</span></div>
           </div>
-          <div data-testid="dashboard-stat-card" class="flex items-center gap-4 px-6 py-5 rounded-2xl bg-[var(--hv-shell-card)] border border-[var(--hv-shell-border)] shadow-[var(--hv-shell-shadow-card)] transition-colors hover:border-[var(--hv-shell-border-strong)]">
-            <span class={ledTile(ledColor(memPct))}><span class={ledDot(ledColor(memPct))}></span></span>
-            <div class="flex-1 min-w-0">
-              <div data-testid="dashboard-stat-label" class="text-sm text-[var(--hv-shell-text-2)]">{$t('dashboard.ram')}</div>
-              <div data-testid="dashboard-stat-value" class="flex items-baseline gap-1.5 mt-1 text-4xl font-semibold tracking-tight text-[var(--hv-shell-text-strong)]">{memPct.toFixed(0)}<span class="text-c-base text-[var(--hv-shell-text)]">%</span></div>
+          <div data-testid="dashboard-stat-card" class="flex flex-col justify-between px-5 py-4 min-h-[112px] rounded-2xl bg-card border border-border shadow-[var(--hv-shell-shadow-card)] transition-colors hover:border-[var(--hv-shell-border-strong)]">
+            <div data-testid="dashboard-stat-label" class="flex items-center gap-2 text-c-xs font-semibold uppercase tracking-[1px] text-[var(--hv-shell-text-3)]">
+              <span class="w-2 h-2 rounded-full bg-[var(--hv-violet)]" aria-hidden="true"></span>{$t('dashboard.ram')}
             </div>
+            <div data-testid="dashboard-stat-value" class="flex items-baseline gap-1.5 mt-2 text-2xl font-bold tracking-tight text-[var(--hv-shell-text-strong)]">{memPct.toFixed(0)}<span class="text-c-base font-medium text-[var(--hv-shell-text-3)]">%</span></div>
           </div>
-          <div data-testid="dashboard-stat-card" class="flex items-center gap-4 px-6 py-5 rounded-2xl bg-[var(--hv-shell-card)] border border-[var(--hv-shell-border)] shadow-[var(--hv-shell-shadow-card)] transition-colors hover:border-[var(--hv-shell-border-strong)]">
-            <span class={ledTile(ledColor(diskAvg))}><span class={ledDot(ledColor(diskAvg))}></span></span>
-            <div class="flex-1 min-w-0">
-              <div data-testid="dashboard-stat-label" class="text-sm text-[var(--hv-shell-text-2)]">{$t('dashboard.disk')}</div>
-              <div data-testid="dashboard-stat-value" class="flex items-baseline gap-1.5 mt-1 text-4xl font-semibold tracking-tight text-[var(--hv-shell-text-strong)]">{diskAvg.toFixed(0)}<span class="text-c-base text-[var(--hv-shell-text)]">%</span></div>
+          <div data-testid="dashboard-stat-card" class="flex flex-col justify-between px-5 py-4 min-h-[112px] rounded-2xl bg-card border border-border shadow-[var(--hv-shell-shadow-card)] transition-colors hover:border-[var(--hv-shell-border-strong)]">
+            <div data-testid="dashboard-stat-label" class="flex items-center gap-2 text-c-xs font-semibold uppercase tracking-[1px] text-[var(--hv-shell-text-3)]">
+              <span class="w-2 h-2 rounded-full" class:bg-[var(--hv-success)]={diskAvg < 70} class:bg-[var(--hv-warning)]={diskAvg >= 70 && diskAvg < 90} class:bg-[var(--hv-error)]={diskAvg >= 90} aria-hidden="true"></span>{$t('dashboard.disk')}
             </div>
+            <div data-testid="dashboard-stat-value" class="flex items-baseline gap-1.5 mt-2 text-2xl font-bold tracking-tight text-[var(--hv-shell-text-strong)]">{diskAvg.toFixed(0)}<span class="text-c-base font-medium text-[var(--hv-shell-text-3)]">%</span></div>
           </div>
-          <div data-testid="dashboard-stat-card" class="flex items-center gap-4 px-6 py-5 rounded-2xl bg-[var(--hv-shell-card)] border border-[var(--hv-shell-border)] shadow-[var(--hv-shell-shadow-card)] transition-colors hover:border-[var(--hv-shell-border-strong)]">
-            <span class={ledTile('blue')}><span class={ledDot('blue')}></span></span>
-            <div class="flex-1 min-w-0">
-              <div data-testid="dashboard-stat-label" class="text-sm text-[var(--hv-shell-text-2)]">{$t('dashboard.network')}</div>
-              <div data-testid="dashboard-stat-value" class="flex items-baseline gap-1.5 mt-1 text-4xl font-semibold tracking-tight text-[var(--hv-shell-text-strong)]">{netInterfaces.length > 0 ? netInterfaces.length : '0'}</div>
+          <div data-testid="dashboard-stat-card" class="flex flex-col justify-between px-5 py-4 min-h-[112px] rounded-2xl bg-card border border-border shadow-[var(--hv-shell-shadow-card)] transition-colors hover:border-[var(--hv-shell-border-strong)]">
+            <div data-testid="dashboard-stat-label" class="flex items-center gap-2 text-c-xs font-semibold uppercase tracking-[1px] text-[var(--hv-shell-text-3)]">
+              <span class="w-2 h-2 rounded-full bg-[var(--hv-info)]" aria-hidden="true"></span>{$t('dashboard.network')}
             </div>
+            <div data-testid="dashboard-stat-value" class="flex items-baseline gap-1.5 mt-2 text-2xl font-bold tracking-tight text-[var(--hv-shell-text-strong)]">{netInterfaces.length > 0 ? netInterfaces.length : '0'}</div>
           </div>
         </div>
         <!-- Live usage by app — stacked CPU/memory composition per container,

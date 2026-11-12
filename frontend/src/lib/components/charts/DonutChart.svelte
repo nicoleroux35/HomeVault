@@ -20,7 +20,7 @@
   /**
    * HOMEVAULT DESIGN SYSTEM - DonutChart
    * Reusable donut/gauge built on LayerChart's ArcChart (Svelte 5, d3).
-   * Colors come from `--hv-*` tokens by default (brand #1E62AE, semantic
+   * Colors come from `--hv-*` tokens by default (brand #2E72C9, semantic
    * success/warning/error); pass a `color` per segment to override.
    *
    * Two modes:

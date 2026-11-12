@@ -8,6 +8,38 @@ follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **Missing test and CI quality gates (2026-11-11).** Ten gaps that the
+  project's own audit listed are now enforced:
+  - **Frontend unit/component runner** — Vitest + Testing Library on jsdom
+    (`npm test`, 54 tests) covering stores, helpers and the shared page
+    composites, with a v8 coverage ratchet (`npm run test:coverage`);
+  - **Accessibility** — `@axe-core/playwright` runs WCAG 2.2 AA over the login
+    screen, the shell and every app window on Firefox and Chromium (66
+    checks); existing debt is frozen in `a11y-baseline.json` and any new
+    violation fails the build;
+  - **Visual regression** — the shell and all app windows are screenshotted at
+    360/768/1280 (96 committed baselines) and compared in CI;
+  - **i18n and design-token gates** — `npm run lint:ui` flags new hard-coded
+    user-visible strings and off-token colours/spacing/radius/transitions,
+    ratcheted against the current baseline;
+  - **Load/soak** — concurrent sessions, an 8 MiB transfer round-trip, a
+    1 000-file tree and an endurance window, plus a k6 HTTP profile;
+  - **Coverage** — `cargo-llvm-cov` (46.50 % lines on the lib) and the
+    frontend v8 report, published weekly;
+  - **Fuzzing** — seven cargo-fuzz targets (nightly) and a stable fuzz-smoke
+    suite; the first campaign found a NUL/newline injection in the
+    WS-Discovery unit's executable path, now sanitized by
+    `ws_discovery::sanitize_executable` and pinned by a unit test;
+  - **WebKit + mobile compatibility** — WebKit desktop, iPhone and Pixel
+    viewport projects, and a `browserslist` now actually consumed by the
+    LightningCSS targets;
+  - **Installer/upgrade/rollback in CI** — the three shell suites plus a new
+    upgrade → failed readiness → rollback rehearsal that restores the previous
+    binary and the pre-update database;
+  - **Real-hardware paths** — an opt-in VM suite (rescue, SMB/NFS, WireGuard,
+    netplan rollback, ACL revocation, app proxy/HTTPS) with client-side proof
+    scripts and a runbook.
+
 - **Kernel stability and explicit monitoring choice in the installer
   (2026-11-09, P1-28).** A NAS should reboot rather than hang, and must not
   double every alert:

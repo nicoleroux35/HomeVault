@@ -26,7 +26,7 @@
   import { createConfirmState } from '$lib/utils/confirmDialog.svelte';
   import { avatarColorFor } from '$lib/utils/avatars';
   import { cn } from '$lib/utils.js';
-  import { IconSearch, IconPlus, IconUsers, IconUserCog, IconTrash, IconCheck, IconX, IconShield, IconGauge, IconArrowLeft } from '@tabler/icons-svelte';
+  import { IconSearch, IconPlus, IconUsers, IconUserCog, IconTrash, IconCheck, IconX, IconShield, IconGauge, IconArrowLeft } from '$lib/icons/lucide';
 
   interface Group {
     name: string;
@@ -441,21 +441,21 @@
   {sidebarHidden}
 >
   {#snippet icon()}
-    <IconUsers stroke={1.7} />
+    <IconUsers strokeWidth={1.8} />
   {/snippet}
 
   <!-- Page-level primary action: a WindowToolbar row under the header, never
        inside it (the header bar is icon + title + window controls only). -->
   {#snippet toolbarRight()}
     <Button variant="primary" data-testid="groups-new" onclick={startCreate}>
-      <IconPlus size={17} stroke={2} /> {$t('groups.new')}
+      <IconPlus size={17} strokeWidth={1.8} /> {$t('groups.new')}
     </Button>
   {/snippet}
 
   {#snippet sidebar()}
     <div class="px-4 py-3 border-b border-[var(--hv-shell-border-soft)]">
       <div data-testid="groups-search" class="flex items-center gap-2.5 h-11 px-3 rounded-lg bg-[var(--hv-shell-border-soft)] border border-[var(--hv-shell-border)] text-[var(--hv-shell-text)]">
-        <IconSearch size={18} stroke={1.9} />
+        <IconSearch size={18} strokeWidth={1.8} />
         <input
           type="search"
           placeholder={$t('groups.search_placeholder')}
@@ -473,7 +473,7 @@
         </div>
       {:else if filteredGroups.length === 0}
         <EmptyState data-testid="groups-empty" title={search ? $t('groups.empty_filter') : $t('groups.no_groups')}>
-          {#snippet iconSnippet()}<IconUsers size={32} stroke={1.8} />{/snippet}
+          {#snippet iconSnippet()}<IconUsers size={32} strokeWidth={1.8} />{/snippet}
         </EmptyState>
       {:else}
         {#each filteredGroups as g (g.name)}
@@ -481,7 +481,7 @@
             data-testid="groups-row"
             class:selected={selectedGroup?.name === g.name && !creating}
             class={cn(
-              'flex items-center gap-3 w-full p-3 rounded-lg bg-[var(--hv-shell-card)] border text-left cursor-pointer transition-all',
+              'flex items-center gap-3 w-full p-3 rounded-lg bg-card border text-left cursor-pointer transition-all',
               selectedGroup?.name === g.name && !creating
                 ? 'border-[var(--hv-primary)] bg-[var(--hv-primary-selected-bg)]'
                 : 'border-[var(--hv-shell-border)] hover:border-[var(--hv-primary)] hover:bg-[var(--hv-primary-selected-bg-hover)]',
@@ -506,7 +506,7 @@
               </span>
               {#if isProtected(g)}
                 <span data-testid="groups-state" class="sys inline-flex items-center gap-1 text-c-xs text-[var(--hv-shell-text)]">
-                  <IconShield size={13} stroke={2} /> {$t('groups.system_badge')}
+                  <IconShield size={13} strokeWidth={1.8} /> {$t('groups.system_badge')}
                 </span>
               {/if}
             </span>
@@ -522,7 +522,7 @@
         <div class="flex items-center gap-3 mb-4">
           {#if narrow}
             <button data-testid="groups-icon-btn" class={cn('only-narrow', tileBtn)} onclick={closeDetail} aria-label={$t('common.cancel')}>
-              <IconArrowLeft size={20} stroke={2} />
+              <IconArrowLeft size={20} strokeWidth={1.8} />
             </button>
           {/if}
           <div class="min-w-0">
@@ -575,7 +575,7 @@
               <div data-testid="groups-hint" class="text-c-label text-[var(--hv-shell-text)] mt-1.5">{$t('groups.no_users_available')}</div>
             {:else}
               <div data-testid="groups-search" class="sub flex items-center gap-2 h-10 px-3 rounded-lg bg-[var(--hv-shell-border-soft)] border border-[var(--hv-shell-border)] text-[var(--hv-shell-text)] mt-2.5">
-                <IconSearch size={16} stroke={1.9} />
+                <IconSearch size={16} strokeWidth={1.8} />
                 <input type="search" placeholder={$t('groups.search_user_placeholder')} bind:value={createSearch} autocomplete="off" class="flex-1 min-w-0 bg-transparent border-none outline-none text-[var(--hv-shell-text-strong)] text-sm placeholder:text-[var(--hv-shell-text-3)]" />
               </div>
               <div data-testid="groups-member-count" class="text-xs font-semibold text-[var(--hv-primary)] mt-2">
@@ -596,7 +596,7 @@
                     onclick={() => toggleCreateMember(u)}
                   >
                     <span class={cn(check, createForm.members.includes(u) ? 'bg-[var(--hv-primary)] border-transparent' : 'border-[var(--hv-shell-border-strong)]')}>
-                      {#if createForm.members.includes(u)}<IconCheck size={14} stroke={3} />{/if}
+                      {#if createForm.members.includes(u)}<IconCheck size={14} strokeWidth={3} />{/if}
                     </span>
                     <span class="flex-1 min-w-0 truncate">@{u}</span>
                   </button>
@@ -610,7 +610,7 @@
 
           <div class="flex flex-wrap gap-2.5 mt-4">
             <Button variant="primary" onclick={handleCreate} disabled={submitting}>
-              <IconCheck size={18} stroke={2.2} /> {$t('groups.create_btn')}
+              <IconCheck size={18} strokeWidth={2.2} /> {$t('groups.create_btn')}
             </Button>
             {#if groups.length > 0}
               <Button variant="ghost" onclick={closeDetail} disabled={submitting} data-testid="groups-cancel">{$t('common.cancel')}</Button>
@@ -623,7 +623,7 @@
         <div class="flex items-center gap-3 mb-4">
           {#if narrow}
             <button data-testid="groups-icon-btn" class={cn('only-narrow', tileBtn)} onclick={closeDetail} aria-label={$t('users.back')}>
-              <IconArrowLeft size={20} stroke={2} />
+              <IconArrowLeft size={20} strokeWidth={1.8} />
             </button>
           {/if}
           <span data-testid="groups-detail-avatar" class="w-[60px] h-[60px] rounded-2xl grid place-items-center text-xl font-bold text-white flex-none" style="background:{colorFor(selectedGroup)}">{initials(selectedGroup)}</span>
@@ -636,7 +636,7 @@
           </div>
           {#if prot}
             <span data-testid="groups-state" class="sys lg inline-flex items-center gap-1.5 h-[30px] px-3 rounded-full bg-[var(--hv-shell-border-soft)] text-[var(--hv-shell-text)] text-xs flex-none">
-              <IconShield size={14} stroke={2} /> {$t('groups.system_badge')}
+              <IconShield size={14} strokeWidth={1.8} /> {$t('groups.system_badge')}
             </span>
           {/if}
         </div>
@@ -647,7 +647,7 @@
 
         <SectionCard data-testid="groups-meta-card" class="mb-4">
           <div class="flex items-center gap-2 text-c-card-title font-semibold text-[var(--hv-shell-text-strong)] mb-3">
-            <IconUserCog size={16} stroke={2} /> {$t('groups.meta_title')}
+            <IconUserCog size={16} strokeWidth={1.8} /> {$t('groups.meta_title')}
           </div>
 
           {#if prot}
@@ -691,14 +691,14 @@
             </div>
 
             <Button variant="primary" size="sm" class="mt-3" onclick={saveMeta} disabled={metaBusy}>
-              <IconCheck size={16} stroke={2.2} /> {$t('common.save')}
+              <IconCheck size={16} strokeWidth={2.2} /> {$t('common.save')}
             </Button>
           {/if}
         </SectionCard>
 
         <SectionCard data-testid="groups-card" class="mb-4">
           <div class="flex items-center justify-between gap-2.5 mb-3">
-            <div class="flex items-center gap-2 text-c-card-title font-semibold text-[var(--hv-shell-text-strong)]"><IconUserCog size={16} stroke={2} /> {$t('groups.members')}</div>
+            <div class="flex items-center gap-2 text-c-card-title font-semibold text-[var(--hv-shell-text-strong)]"><IconUserCog size={16} strokeWidth={1.8} /> {$t('groups.members')}</div>
             <span data-testid="groups-member-count" class="text-xs font-semibold text-[var(--hv-primary)]">{$t('groups.members_selected', { count: String(membersSelected.length) })}</span>
           </div>
 
@@ -710,7 +710,7 @@
             <div data-testid="groups-hint" class="text-c-label text-[var(--hv-shell-text)]">{$t('users.loading')}</div>
           {:else}
             <div data-testid="groups-search" class="sub flex items-center gap-2 h-10 px-3 rounded-lg bg-[var(--hv-shell-border-soft)] border border-[var(--hv-shell-border)] text-[var(--hv-shell-text)]">
-              <IconSearch size={16} stroke={1.9} />
+              <IconSearch size={16} strokeWidth={1.8} />
               <input type="search" placeholder={$t('groups.search_user_placeholder')} bind:value={memberSearch} autocomplete="off" class="flex-1 min-w-0 bg-transparent border-none outline-none text-[var(--hv-shell-text-strong)] text-sm placeholder:text-[var(--hv-shell-text-3)]" />
             </div>
             <div class="flex flex-col gap-1.5 mt-2.5 max-h-80 overflow-y-auto">
@@ -731,7 +731,7 @@
                   onclick={() => toggleMember(u)}
                 >
                   <span class={cn(check, membersSelected.includes(u) ? 'bg-[var(--hv-primary)] border-transparent' : 'border-[var(--hv-shell-border-strong)]')}>
-                    {#if membersSelected.includes(u)}<IconCheck size={14} stroke={3} />{/if}
+                    {#if membersSelected.includes(u)}<IconCheck size={14} strokeWidth={3} />{/if}
                   </span>
                   <span class="flex-1 min-w-0 truncate">@{u}</span>
                 </button>
@@ -743,14 +743,14 @@
             {#if errors.membersOk}<span data-testid="groups-ok" class="text-xs text-[var(--hv-success)]">{errors.membersOk}</span>{/if}
             {#if !prot}
               <Button variant="primary" size="sm" fullWidth class="mt-3" onclick={saveMembers} disabled={submitting}>
-                <IconCheck size={16} stroke={2.2} /> {$t('common.save')}
+                <IconCheck size={16} strokeWidth={2.2} /> {$t('common.save')}
               </Button>
             {/if}
           {/if}
         </SectionCard>
 
         <SectionCard data-testid="groups-card" class="mb-4">
-          <div class="flex items-center gap-2 text-c-card-title font-semibold text-[var(--hv-shell-text-strong)] mb-3"><IconGauge size={16} stroke={2} /> {$t('groups.sheet_quota')}</div>
+          <div class="flex items-center gap-2 text-c-card-title font-semibold text-[var(--hv-shell-text-strong)] mb-3"><IconGauge size={16} strokeWidth={1.8} /> {$t('groups.sheet_quota')}</div>
           {#if loadingQuota}
             <div data-testid="groups-hint" class="text-c-label text-[var(--hv-shell-text)]">{$t('users.loading')}</div>
           {:else}
@@ -843,14 +843,14 @@
 
             {#if errors.quotaOk}<span data-testid="groups-ok" class="text-xs text-[var(--hv-success)]">{errors.quotaOk}</span>{/if}
             <Button variant="primary" size="sm" fullWidth class="mt-3" onclick={saveQuota} disabled={submitting}>
-              <IconCheck size={16} stroke={2.2} /> {$t('common.save')}
+              <IconCheck size={16} strokeWidth={2.2} /> {$t('common.save')}
             </Button>
           {/if}
         </SectionCard>
 
         <SectionCard data-testid="groups-card" class="mb-4 bg-[var(--hv-error-bg)] border-[color:var(--hv-error)]/40">
           <div class="flex items-center gap-3 flex-wrap">
-            <span class="grid place-items-center w-11 h-11 rounded-xl bg-[var(--hv-error)]/25 text-[var(--hv-error)] flex-none"><IconTrash size={20} stroke={1.9} /></span>
+            <span class="grid place-items-center w-8 h-8 rounded-[9px] bg-[var(--hv-error)]/25 text-[var(--hv-error)] flex-none"><IconTrash size={20} strokeWidth={1.8} /></span>
             <div class="min-w-0 flex-1">
               <strong class="block text-sm font-semibold text-[var(--hv-shell-text-strong)]">{$t('groups.delete')}</strong>
               <small class="text-c-xs text-[var(--hv-shell-text)]">{prot ? $t('groups.protected_desc') : $t('groups.delete_action_desc')}</small>
@@ -861,11 +861,11 @@
 
       {:else}
         <div data-testid="groups-noselect" class="flex-1 min-h-0 flex flex-col items-center justify-center gap-3 py-10 text-center text-[var(--hv-shell-text)]">
-          <IconUsers size={54} stroke={1.3} class="text-[var(--hv-shell-border-strong)]" />
+          <IconUsers size={54} strokeWidth={1.3} class="text-[var(--hv-shell-border-strong)]" />
           <div data-testid="groups-noselect-title" class="text-c-xl font-semibold text-[var(--hv-shell-text-strong)]">{$t('groups.no_selection_title')}</div>
           <p class="m-0 mb-2 text-c-base max-w-xs">{$t('groups.no_selection_desc')}</p>
           <Button variant="primary" onclick={startCreate}>
-            <IconPlus size={18} stroke={2.2} /> {$t('groups.new')}
+            <IconPlus size={18} strokeWidth={2.2} /> {$t('groups.new')}
           </Button>
         </div>
       {/if}

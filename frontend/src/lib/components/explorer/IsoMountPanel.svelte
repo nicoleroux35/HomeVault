@@ -28,7 +28,7 @@
   import { api } from '$lib/services/api';
   import { t } from '$lib/stores/i18n';
   import { Button } from '$lib/components/theme';
-  import { IconDisc, IconPlayerEject } from '@tabler/icons-svelte';
+  import { IconDisc, IconPlayerEject } from '$lib/icons/lucide';
 
   let {
     selectedPath = null,

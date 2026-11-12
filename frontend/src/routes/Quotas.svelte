@@ -40,7 +40,7 @@
   import { PageLayout, DataTable, EmptyState } from '$lib/components/app';
   import { Modal, Button } from '$lib/components/theme';
   import { cn } from '$lib/utils.js';
-  import { IconGauge, IconUsers, IconShield, IconArrowRight } from '@tabler/icons-svelte';
+  import { IconGauge, IconUsers, IconShield, IconArrowRight } from '$lib/icons/lucide';
 
   type QuotaFilter = 'all' | 'user' | 'group';
 
@@ -237,7 +237,7 @@
   data-testid="quotas-page"
 >
   {#snippet icon()}
-    <IconGauge stroke={1.7} />
+    <IconGauge strokeWidth={1.8} />
   {/snippet}
 
   {#snippet toolbarRight()}
@@ -247,7 +247,7 @@
       class="inline-flex items-center gap-2 h-11 px-4 border border-[var(--hv-shell-border-strong)] rounded-lg bg-[var(--hv-shell-fill)] text-[var(--hv-shell-text-strong)] text-c-base font-semibold cursor-pointer transition-colors hover:bg-[var(--hv-shell-border)]"
       onclick={editInUsers}
     >
-      {$t('quotas.manage_in_users')} <IconArrowRight size={16} stroke={2} aria-hidden="true" />
+      {$t('quotas.manage_in_users')} <IconArrowRight size={16} strokeWidth={1.8} aria-hidden="true" />
     </button>
   {/snippet}
 
@@ -299,15 +299,15 @@
           { id: 'history', label: '' },
         ]}
         label={$t('quotas.heading')}
-        class="rounded-xl bg-card border border-border shadow-[var(--hv-shell-shadow-card)] p-2"
+        class="rounded-2xl bg-card border border-border shadow-[var(--hv-shell-shadow-card)] p-2"
       >
         {#snippet cell({ row, column })}
           {#if column.id === 'type'}
             <span class="inline-flex items-center gap-1.5 text-c-xs font-bold uppercase tracking-wide text-[var(--hv-shell-text)]">
               {#if row.subjectType === 'user'}
-                <IconUsers size={14} stroke={2} aria-hidden="true" /> {$t('quotas.type_user')}
+                <IconUsers size={14} strokeWidth={1.8} aria-hidden="true" /> {$t('quotas.type_user')}
               {:else}
-                <IconShield size={14} stroke={2} aria-hidden="true" /> {$t('quotas.type_group')}
+                <IconShield size={14} strokeWidth={1.8} aria-hidden="true" /> {$t('quotas.type_group')}
               {/if}
             </span>
           {:else if column.id === 'name'}

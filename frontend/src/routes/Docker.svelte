@@ -23,7 +23,7 @@
      Opened as a desktop window app (admin only).
      ======================================================================== -->
 <script lang="ts">
-  import { IconSearch, IconX, IconRefresh, IconTrash, IconPlayerPlay, IconPlayerPause, IconSquare, IconDownload, IconCheck, IconCopy, IconPhoto as ImageIcon, IconAlertTriangle, IconContainer, IconPlus, IconTerminal, IconExternalLink, IconDeviceTv, IconCloud, IconShield, IconLock, IconHome, IconGlobe, IconDatabase, IconActivity, IconPackage, IconPackages, IconServer, IconNetwork, IconKey, IconShieldOff, IconGitBranch, IconRss, IconTextScan2, IconBook, IconLayoutDashboard, IconMusic, IconListCheck, IconPipeline, IconBoxMultiple, IconBox, IconPencil, IconStar, IconInfoCircle, IconTool, IconSettings, IconBolt, IconFolder, IconCalendar } from '@tabler/icons-svelte';
+  import { IconSearch, IconX, IconRefresh, IconTrash, IconPlayerPlay, IconPlayerPause, IconSquare, IconDownload, IconCheck, IconCopy, IconPhoto as ImageIcon, IconAlertTriangle, IconContainer, IconPlus, IconTerminal, IconExternalLink, IconDeviceTv, IconCloud, IconShield, IconLock, IconHome, IconGlobe, IconDatabase, IconActivity, IconPackage, IconPackages, IconServer, IconNetwork, IconKey, IconShieldOff, IconGitBranch, IconRss, IconTextScan2, IconBook, IconLayoutDashboard, IconMusic, IconListCheck, IconPipeline, IconBoxMultiple, IconBox, IconPencil, IconStar, IconInfoCircle, IconTool, IconSettings, IconBolt, IconFolder, IconCalendar } from '$lib/icons/lucide';
   import { api } from '$lib/services/api';
   import { t, translate } from '$lib/stores/i18n';
   import { onAppVisible } from '$lib/utils/autoRevalidate';
@@ -1537,7 +1537,7 @@
   sidebarTestId="docker-sidebar"
 >
   {#snippet icon()}
-    <IconContainer stroke={1.7} />
+    <IconContainer strokeWidth={1.8} />
   {/snippet}
 
   {#snippet sidebar()}
@@ -1585,7 +1585,7 @@
     <div data-testid="docker-main-toolbar" class="flex items-center gap-2 px-3 py-2 border-b border-[var(--hv-shell-border)] bg-[var(--hv-shell-fill)] flex-wrap">
       {#if tab === 'containers' && containers.length > 0}
         <div data-testid="docker-search" class="flex items-center gap-2 h-10 px-3 rounded-lg bg-[var(--hv-shell-glass)] border border-[var(--hv-shell-border)] text-[var(--hv-shell-text-2)]">
-          <IconSearch size={20} stroke={1.9} />
+          <IconSearch size={20} strokeWidth={1.8} />
           <input type="text" class="flex-1 min-w-[140px] border-none bg-transparent text-sm text-[var(--hv-shell-text-strong)] outline-none" bind:value={cSearch} placeholder={$t('docker.filter_placeholder')}>
         </div>
         <div class="flex gap-1" role="group" aria-label={$t('docker.filter_placeholder')}>
@@ -1596,16 +1596,16 @@
       {/if}
       <div data-testid="docker-toolbar-actions" class="ml-auto flex gap-2">
         {#if tab === 'containers'}
-          <Button variant="secondary" onclick={openDaemonConfig}><IconSettings size={18} stroke={1.9} /> {$t('docker.daemon_config')}</Button>
-          <Button variant="primary" data-testid="docker-top-btn" onclick={() => openCreateModal()}><IconPlus size={18} stroke={2} /> {$t('docker.new_container')}</Button>
+          <Button variant="secondary" onclick={openDaemonConfig}><IconSettings size={18} strokeWidth={1.8} /> {$t('docker.daemon_config')}</Button>
+          <Button variant="primary" data-testid="docker-top-btn" onclick={() => openCreateModal()}><IconPlus size={18} strokeWidth={1.8} /> {$t('docker.new_container')}</Button>
         {:else if tab === 'images'}
-          <Button variant="secondary" onclick={openRegistries}><IconLock size={18} stroke={1.9} /> {$t('docker.registries')}</Button>
-          <Button variant="secondary" onclick={openBuildModal}><IconTool size={18} stroke={1.9} /> {$t('docker.build_image')}</Button>
-          <Button variant="primary" data-testid="docker-top-btn" onclick={openPullModal}><IconDownload size={18} stroke={2} /> {$t('docker.pull_image2')}</Button>
+          <Button variant="secondary" onclick={openRegistries}><IconLock size={18} strokeWidth={1.8} /> {$t('docker.registries')}</Button>
+          <Button variant="secondary" onclick={openBuildModal}><IconTool size={18} strokeWidth={1.8} /> {$t('docker.build_image')}</Button>
+          <Button variant="primary" data-testid="docker-top-btn" onclick={openPullModal}><IconDownload size={18} strokeWidth={1.8} /> {$t('docker.pull_image2')}</Button>
         {:else if tab === 'volumes'}
-          <Button variant="primary" data-testid="docker-top-btn" onclick={openVolumeModal}><IconPlus size={18} stroke={2} /> {$t('docker.new_volume')}</Button>
+          <Button variant="primary" data-testid="docker-top-btn" onclick={openVolumeModal}><IconPlus size={18} strokeWidth={1.8} /> {$t('docker.new_volume')}</Button>
         {:else if tab === 'networks'}
-          <Button variant="primary" data-testid="docker-top-btn" onclick={openNetModal}><IconPlus size={18} stroke={2} /> {$t('docker.create_network')}</Button>
+          <Button variant="primary" data-testid="docker-top-btn" onclick={openNetModal}><IconPlus size={18} strokeWidth={1.8} /> {$t('docker.create_network')}</Button>
         {/if}
       </div>
     </div>
@@ -1619,29 +1619,29 @@
 
   {#if dockerAvailable === false}
     <div data-testid="docker-daemon-down" class="flex flex-col items-center gap-3 py-16 text-center px-6">
-      <IconAlertTriangle size={56} stroke={1.5} class="text-[var(--hv-warning)]" />
+      <IconAlertTriangle size={56} strokeWidth={1.5} class="text-[var(--hv-warning)]" />
       <div class="text-lg font-semibold text-[var(--hv-shell-text-strong)]">{$t('docker.unavailable')}</div>
       <p class="m-0 text-sm text-[var(--hv-shell-text)]">{$t('docker.unavailable_desc')}</p>
       <div class="flex gap-2">
-        <Button variant="primary" onclick={startDaemon} disabled={daemonStarting}><IconPlayerPlay size={18} stroke={1.9} /> {daemonStarting ? $t('docker.daemon_starting') : $t('docker.daemon_start')}</Button>
-        <Button variant="secondary" onclick={openDaemonLogs}><IconTerminal size={18} stroke={1.9} /> {$t('docker.daemon_logs')}</Button>
+        <Button variant="primary" onclick={startDaemon} disabled={daemonStarting}><IconPlayerPlay size={18} strokeWidth={1.8} /> {daemonStarting ? $t('docker.daemon_starting') : $t('docker.daemon_start')}</Button>
+        <Button variant="secondary" onclick={openDaemonLogs}><IconTerminal size={18} strokeWidth={1.8} /> {$t('docker.daemon_logs')}</Button>
       </div>
     </div>
 
   {:else if tab === 'containers'}
     {#if containers.length === 0}
       <EmptyState data-testid="docker-empty" title={$t('docker.no_containers2')} description={$t('docker.no_containers_desc')}>
-        {#snippet iconSnippet()}<IconContainer size={32} stroke={1.5} />{/snippet}
-        {#snippet action()}<Button variant="primary" onclick={() => openCreateModal()}><IconPlus size={16} stroke={2} /> {$t('docker.new_container')}</Button>{/snippet}
+        {#snippet iconSnippet()}<IconContainer size={32} strokeWidth={1.5} />{/snippet}
+        {#snippet action()}<Button variant="primary" onclick={() => openCreateModal()}><IconPlus size={16} strokeWidth={1.8} /> {$t('docker.new_container')}</Button>{/snippet}
       </EmptyState>
     {:else}
       <div data-testid="docker-card-grid" class="grid gap-3 p-3 [grid-template-columns:repeat(auto-fill,minmax(340px,1fr))]">
         {#each filteredContainers as c (c.id)}
           {@const ic = iconFor(c.image)}
-          <div data-testid="docker-ctr-card" class="rounded-2xl bg-[var(--hv-shell-card)] border border-[var(--hv-shell-border)] shadow-[var(--hv-shell-shadow-card)] overflow-hidden">
+          <div data-testid="docker-ctr-card" class="rounded-2xl bg-card border border-border shadow-[var(--hv-shell-shadow-card)] overflow-hidden">
             <div class="px-4 pt-3">
               <div class="flex items-center gap-3">
-                <span class="grid place-items-center w-11 h-11 rounded-xl flex-none bg-[var(--hv-primary-light)] text-[var(--hv-primary)]"><ic.icon size={22} stroke={1.9} /></span>
+                <span class="grid place-items-center w-8 h-8 rounded-[9px] flex-none bg-[var(--hv-primary-light)] text-[var(--hv-primary)]"><ic.icon size={22} strokeWidth={1.8} /></span>
                 <div class="flex-1 min-w-0">
                   <div class="flex items-center gap-2 flex-wrap">
                     <span class="text-sm font-bold text-[var(--hv-shell-text-strong)] truncate">{c.name}</span>
@@ -1655,7 +1655,7 @@
                       <span class="inline-flex items-center gap-1 text-c-xs font-bold text-[var(--hv-shell-text-2)]"><span class="w-1.5 h-1.5 rounded-full bg-[var(--hv-shell-text-3)]"></span>{$t('docker.state_stopped')}</span>
                     {/if}
                     {#if c.update_available}
-                      <span class="inline-flex items-center gap-1 text-c-xs font-bold text-[var(--hv-warning)]"><IconDownload size={12} stroke={2} />{$t('docker.update_available')}</span>
+                      <span class="inline-flex items-center gap-1 text-c-xs font-bold text-[var(--hv-warning)]"><IconDownload size={12} strokeWidth={1.8} />{$t('docker.update_available')}</span>
                     {/if}
                   </div>
                   <div class="text-xs text-[var(--hv-shell-text-2)] truncate">{c.image}</div>
@@ -1673,23 +1673,23 @@
             {#if c.ports.length}
               {@const url = `http://${location.hostname}:${c.ports[0].host_port}`}
               <div class="flex items-center gap-2 px-4 py-2 mt-2 border-t border-[var(--hv-shell-border-soft)]">
-                <IconGlobe size={20} stroke={1.8} class="text-[var(--hv-shell-text-2)]" />
+                <IconGlobe size={20} strokeWidth={1.8} class="text-[var(--hv-shell-text-2)]" />
                 <span class="flex-1 text-c-base text-[var(--hv-shell-text-2)] font-[family-name:var(--hv-font-mono)] truncate">{url}</span>
                 <div class="relative">
-                  <button class="inline-flex items-center gap-1 h-8 px-2.5 rounded-lg border-none bg-transparent text-[var(--hv-primary)] text-xs font-semibold cursor-pointer hover:bg-[var(--hv-primary-light)]" aria-haspopup="menu" aria-expanded={urlMenuFor === c.id} onclick={(e) => { e.stopPropagation(); if (urlMenuFor === c.id) { urlMenuFor = null; return; } ctrMenuFor = null; urlMenuFor = c.id; menuPos = menuAnchor(e.currentTarget as HTMLElement, 176, 92); }}><IconExternalLink size={17} stroke={2} /> {$t('docker.open_app')}</button>
+                  <button class="inline-flex items-center gap-1 h-8 px-2.5 rounded-lg border-none bg-transparent text-[var(--hv-primary)] text-xs font-semibold cursor-pointer hover:bg-[var(--hv-primary-light)]" aria-haspopup="menu" aria-expanded={urlMenuFor === c.id} onclick={(e) => { e.stopPropagation(); if (urlMenuFor === c.id) { urlMenuFor = null; return; } ctrMenuFor = null; urlMenuFor = c.id; menuPos = menuAnchor(e.currentTarget as HTMLElement, 176, 92); }}><IconExternalLink size={17} strokeWidth={1.8} /> {$t('docker.open_app')}</button>
                   {#if urlMenuFor === c.id && menuPos}
                     <button type="button" class="fixed inset-0 z-40 cursor-default" aria-label={$t('common.close')} onclick={() => urlMenuFor = null}></button>
-                    <div style="top: {menuPos.top}px; left: {menuPos.left}px" class="fixed z-50 w-44 rounded-xl bg-[var(--hv-shell-glass)] border border-[var(--hv-shell-border)] shadow-[var(--hv-shell-shadow-card)] p-1" role="menu">
+                    <div style="top: {menuPos.top}px; left: {menuPos.left}px" class="fixed z-50 w-44 rounded-2xl bg-[var(--hv-shell-glass)] border border-[var(--hv-shell-border)] shadow-[var(--hv-shell-shadow-card)] p-1" role="menu">
                       <button type="button" role="menuitem" class="w-full px-3 py-2 rounded-lg text-left text-c-base cursor-pointer hover:bg-[var(--hv-subtle-hover)]" onclick={() => openContainerUrl(url, 'tab')}>{$t('docker.open_in_new_tab')}</button>
                       <button type="button" role="menuitem" class="w-full px-3 py-2 rounded-lg text-left text-c-base cursor-pointer hover:bg-[var(--hv-subtle-hover)]" onclick={() => openContainerUrl(url, 'window')}>{$t('docker.open_in_new_window')}</button>
                     </div>
                   {/if}
                 </div>
-                <button class="hv-ic grid place-items-center w-7 h-7 rounded-lg border-none bg-transparent text-[var(--hv-shell-text-2)] cursor-pointer hover:text-[var(--hv-shell-text-strong)]" onclick={() => copyText(url)} aria-label={$t('docker.copy_address')}><IconCopy size={17} stroke={1.9} /></button>
+                <button class="hv-ic grid place-items-center w-7 h-7 rounded-lg border-none bg-transparent text-[var(--hv-shell-text-2)] cursor-pointer hover:text-[var(--hv-shell-text-strong)]" onclick={() => copyText(url)} aria-label={$t('docker.copy_address')}><IconCopy size={17} strokeWidth={1.8} /></button>
               </div>
             {:else}
               <div class="flex items-center gap-2 px-4 py-2 mt-2 border-t border-[var(--hv-shell-border-soft)] text-c-base text-[var(--hv-shell-text-3)]">
-                <IconGlobe size={20} stroke={1.8} />
+                <IconGlobe size={20} strokeWidth={1.8} />
                 <span>{$t('docker.no_web_ui')}</span>
               </div>
             {/if}
@@ -1717,7 +1717,7 @@
                 ><IconBolt size={17} /></button>
                 {#if ctrMenuFor === c.id && menuPos}
                   <button type="button" class="fixed inset-0 z-40 cursor-default" aria-label={$t('common.close')} onclick={() => ctrMenuFor = null}></button>
-                  <div style="top: {menuPos.top}px; left: {menuPos.left}px" class="fixed z-50 w-56 rounded-xl bg-[var(--hv-shell-glass)] border border-[var(--hv-shell-border)] shadow-[var(--hv-shell-shadow-card)] p-1" role="menu">
+                  <div style="top: {menuPos.top}px; left: {menuPos.left}px" class="fixed z-50 w-56 rounded-2xl bg-[var(--hv-shell-glass)] border border-[var(--hv-shell-border)] shadow-[var(--hv-shell-shadow-card)] p-1" role="menu">
                     <button type="button" role="menuitem" class="w-full px-3 py-2 rounded-lg text-left text-c-base cursor-pointer hover:bg-[var(--hv-subtle-hover)]" onclick={() => openInspect(c.name)}>{$t('docker.inspect')}</button>
                     {#if c.state === 'Paused'}
                       <button type="button" role="menuitem" class="w-full px-3 py-2 rounded-lg text-left text-c-base cursor-pointer hover:bg-[var(--hv-subtle-hover)]" onclick={() => { ctrMenuFor = null; containerExtra(c.name, 'unpause'); }}>{$t('docker.unpause')}</button>
@@ -1742,16 +1742,16 @@
   {:else if tab === 'images'}
     {#if images.length === 0}
       <EmptyState data-testid="docker-empty" title={$t('docker.no_images2')} description={$t('docker.pull_image_desc')}>
-        {#snippet iconSnippet()}<ImageIcon size={32} stroke={1.5} />{/snippet}
-        {#snippet action()}<Button variant="primary" onclick={openPullModal}><IconDownload size={16} stroke={2} /> {$t('docker.pull_image2')}</Button>{/snippet}
+        {#snippet iconSnippet()}<ImageIcon size={32} strokeWidth={1.5} />{/snippet}
+        {#snippet action()}<Button variant="primary" onclick={openPullModal}><IconDownload size={16} strokeWidth={1.8} /> {$t('docker.pull_image2')}</Button>{/snippet}
       </EmptyState>
     {:else}
       <div data-testid="docker-panel" class="p-3">
         <div class="flex items-center gap-2 px-1 pb-2"><span class="text-sm font-semibold text-[var(--hv-shell-text-strong)]">{$t('docker.local_images')}</span><span class="text-xs text-[var(--hv-shell-text-2)]">{images.length}</span></div>
         <div class="flex flex-col gap-1.5">
           {#each images as img (img.id)}
-            <div data-testid="docker-row" class="flex items-center gap-3 px-3 py-2.5 rounded-xl bg-[var(--hv-shell-card)] border border-[var(--hv-shell-border)]">
-              <ImageIcon size={24} stroke={1.7} class="text-[var(--hv-shell-text-2)] flex-none" />
+            <div data-testid="docker-row" class="flex items-center gap-3 px-3 py-2.5 rounded-lg bg-[var(--hv-shell-card)] border border-[var(--hv-shell-border)]">
+              <ImageIcon size={24} strokeWidth={1.8} class="text-[var(--hv-shell-text-2)] flex-none" />
               <div class="flex-1 min-w-0">
                 <div class="text-c-base font-semibold text-[var(--hv-shell-text-strong)] truncate">{img.repository}:{img.tag}</div>
                 <div class="text-c-xs text-[var(--hv-shell-text-2)]">{img.id} · {img.created}</div>
@@ -1770,9 +1770,9 @@
          "what is taking space"; the prune buttons sit right next to it so the
          number and the fix are in the same place. -->
     <div data-testid="docker-panel" class="p-3">
-      <div class="rounded-2xl bg-[var(--hv-shell-card)] border border-[var(--hv-shell-border)] shadow-[var(--hv-shell-shadow-card)] overflow-hidden">
+      <div class="rounded-2xl bg-card border border-border shadow-[var(--hv-shell-shadow-card)] overflow-hidden">
         <div class="flex items-center gap-2 px-4 py-3 border-b border-[var(--hv-shell-border-soft)]">
-          <IconDatabase size={20} stroke={1.8} class="text-[var(--hv-shell-text-2)]" />
+          <IconDatabase size={20} strokeWidth={1.8} class="text-[var(--hv-shell-text-2)]" />
           <span class="text-sm font-semibold text-[var(--hv-shell-text-strong)]">{$t('docker.disk_usage')}</span>
           {#if diskUsage}
             <span class="ml-auto text-xs text-[var(--hv-shell-text-2)]">
@@ -1820,7 +1820,7 @@
       <div class="grid gap-3 p-3 [grid-template-columns:repeat(auto-fill,minmax(300px,1fr))]" role="status">
         <span class="sr-only">{$t('common.loading')}</span>
         {#each Array(3) as _}
-          <div class="flex flex-col gap-1.5 p-4 rounded-2xl bg-[var(--hv-shell-card)] border border-[var(--hv-shell-border)]" aria-hidden="true">
+          <div class="flex flex-col gap-1.5 p-4 rounded-2xl bg-card border border-border" aria-hidden="true">
             <span class="hv-skeleton-text block w-1/2"></span>
             <span class="hv-skeleton-text block w-3/4"></span>
           </div>
@@ -1828,15 +1828,15 @@
       </div>
     {:else if volumes.length === 0}
       <EmptyState data-testid="docker-empty" title={$t('docker.no_volumes')} description={$t('docker.no_volumes_desc')}>
-        {#snippet iconSnippet()}<IconDatabase size={32} stroke={1.5} />{/snippet}
-        {#snippet action()}<Button variant="primary" onclick={openVolumeModal}><IconPlus size={16} stroke={2} /> {$t('docker.new_volume')}</Button>{/snippet}
+        {#snippet iconSnippet()}<IconDatabase size={32} strokeWidth={1.5} />{/snippet}
+        {#snippet action()}<Button variant="primary" onclick={openVolumeModal}><IconPlus size={16} strokeWidth={1.8} /> {$t('docker.new_volume')}</Button>{/snippet}
       </EmptyState>
     {:else}
       <div class="px-3 pb-3">
         <div class="flex flex-col gap-1.5">
           {#each volumes as v (v.name)}
-            <div data-testid="docker-row" class="flex items-center gap-3 px-3 py-2.5 rounded-xl bg-[var(--hv-shell-card)] border border-[var(--hv-shell-border)]">
-              <IconDatabase size={22} stroke={1.7} class="text-[var(--hv-shell-text-2)] flex-none" />
+            <div data-testid="docker-row" class="flex items-center gap-3 px-3 py-2.5 rounded-lg bg-[var(--hv-shell-card)] border border-[var(--hv-shell-border)]">
+              <IconDatabase size={22} strokeWidth={1.8} class="text-[var(--hv-shell-text-2)] flex-none" />
               <div class="flex-1 min-w-0">
                 <div class="flex items-center gap-2">
                   <span class="text-c-base font-semibold text-[var(--hv-shell-text-strong)] truncate">{v.name}</span>
@@ -1862,15 +1862,15 @@
   {:else if tab === 'networks'}
     {#if networks.length === 0}
       <EmptyState data-testid="docker-empty" title={$t('docker.no_networks')} description={$t('docker.create_network_title')}>
-        {#snippet iconSnippet()}<IconNetwork size={32} stroke={1.5} />{/snippet}
-        {#snippet action()}<Button variant="primary" onclick={openNetModal}><IconPlus size={16} stroke={2} /> {$t('docker.create_network')}</Button>{/snippet}
+        {#snippet iconSnippet()}<IconNetwork size={32} strokeWidth={1.5} />{/snippet}
+        {#snippet action()}<Button variant="primary" onclick={openNetModal}><IconPlus size={16} strokeWidth={1.8} /> {$t('docker.create_network')}</Button>{/snippet}
       </EmptyState>
     {:else}
       <div class="grid gap-3 p-3 [grid-template-columns:repeat(auto-fill,minmax(280px,1fr))]">
         {#each networks as net (net.id)}
-          <div data-testid="docker-net-card" class="rounded-2xl bg-[var(--hv-shell-card)] border border-[var(--hv-shell-border)] shadow-[var(--hv-shell-shadow-card)] overflow-hidden">
+          <div data-testid="docker-net-card" class="rounded-2xl bg-card border border-border shadow-[var(--hv-shell-shadow-card)] overflow-hidden">
             <div class="flex items-center gap-3 px-4 pt-4">
-              <span class="grid place-items-center w-10 h-10 rounded-xl flex-none bg-[var(--hv-primary-light)] text-[var(--hv-primary)]"><IconNetwork size={24} stroke={1.7} /></span>
+              <span class="grid place-items-center w-8 h-8 rounded-[9px] flex-none bg-[var(--hv-primary-light)] text-[var(--hv-primary)]"><IconNetwork size={20} strokeWidth={1.8} /></span>
               <div class="min-w-0">
                 <div class="text-sm font-bold text-[var(--hv-shell-text-strong)] truncate">{net.name}</div>
                 <div class="text-xs text-[var(--hv-shell-text-2)]">{net.driver}</div>
@@ -1889,18 +1889,18 @@
   {:else if tab === 'discover'}
     <div class="flex items-center gap-2 p-3">
       <div class="flex items-center gap-2 h-10 px-3 flex-1 max-w-md rounded-lg bg-[var(--hv-shell-card)] border border-[var(--hv-shell-border)] text-[var(--hv-shell-text-2)]">
-        <IconSearch size={20} stroke={1.9} />
+        <IconSearch size={20} strokeWidth={1.8} />
         <input type="text" class="flex-1 min-w-0 border-none bg-transparent text-sm text-[var(--hv-shell-text-strong)] outline-none" bind:value={hubQuery} onkeydown={(e) => { if (e.key === 'Enter') searchHub(); }} placeholder={$t('docker.search_placeholder')}>
       </div>
       <button class={cn('h-10 px-4 rounded-lg border border-[var(--hv-shell-border)] bg-[var(--hv-shell-card)] text-c-base font-medium cursor-pointer inline-flex items-center gap-1.5', 'bg-[var(--hv-primary-light)] border-[var(--hv-primary)]/50 text-[var(--hv-primary)]')} onclick={searchHub} disabled={hubLoading}>
-        <IconSearch size={15} stroke={2} /> {hubLoading ? $t('docker.searching') : $t('common.search')}
+        <IconSearch size={15} strokeWidth={1.8} /> {hubLoading ? $t('docker.searching') : $t('common.search')}
       </button>
     </div>
     {#if hubLoading}
       <div data-testid="docker-empty" class="grid gap-3 p-3 [grid-template-columns:repeat(auto-fill,minmax(240px,1fr))]" role="status">
         <span class="sr-only">{$t('docker.searching')}</span>
         {#each Array(6) as _, i}
-          <div class="flex flex-col gap-1.5 p-4 rounded-2xl bg-[var(--hv-shell-card)] border border-[var(--hv-shell-border)] shadow-[var(--hv-shell-shadow-card)]" aria-hidden="true">
+          <div class="flex flex-col gap-1.5 p-4 rounded-2xl bg-card border border-border shadow-[var(--hv-shell-shadow-card)]" aria-hidden="true">
             <span class="hv-skeleton-rect block w-11 h-11"></span>
             <span class="hv-skeleton-text block" style="width: {55 + ((i * 31) % 30)}%"></span>
             <span class="hv-skeleton-text block" style="width: {70 + ((i * 17) % 25)}%"></span>
@@ -1912,8 +1912,8 @@
     {:else}
       <div class="grid gap-3 p-3 [grid-template-columns:repeat(auto-fill,minmax(240px,1fr))]">
         {#each hubResults as r (r.name)}
-          <div data-testid="docker-app-card" class="flex flex-col gap-1.5 p-4 rounded-2xl bg-[var(--hv-shell-card)] border border-[var(--hv-shell-border)] shadow-[var(--hv-shell-shadow-card)]">
-            <span class="grid place-items-center w-11 h-11 rounded-xl bg-[var(--hv-primary-light)] text-[var(--hv-primary)]"><ImageIcon size={26} stroke={1.7} /></span>
+          <div data-testid="docker-app-card" class="flex flex-col gap-1.5 p-4 rounded-2xl bg-card border border-border shadow-[var(--hv-shell-shadow-card)]">
+            <span class="grid place-items-center w-8 h-8 rounded-[9px] bg-[var(--hv-primary-light)] text-[var(--hv-primary)]"><ImageIcon size={20} strokeWidth={1.8} /></span>
             <div class="text-sm font-bold text-[var(--hv-shell-text-strong)]">{r.name}{#if r.is_official}<span class="ml-1 px-1.5 py-0.5 rounded bg-[var(--hv-success-bg)] text-[var(--hv-success)] text-micro font-bold uppercase">{$t('docker.official')}</span>{/if}</div>
             <div class="text-c-xs text-[var(--hv-shell-text-2)]"><IconStar size={12} fill="currentColor" /> {r.star_count} · {r.pull_count}</div>
             <p class="m-0 text-xs text-[var(--hv-shell-text)] leading-relaxed flex-1">{r.description || $t('docker.no_description')}</p>
@@ -1926,13 +1926,13 @@
   {:else if tab === 'catalog'}
     <div class="flex items-center gap-2 p-3">
       <div class="flex items-center gap-2 h-10 px-3 flex-1 max-w-md rounded-lg bg-[var(--hv-shell-card)] border border-[var(--hv-shell-border)] text-[var(--hv-shell-text-2)]">
-        <IconSearch size={16} stroke={1.9} />
+        <IconSearch size={16} strokeWidth={1.8} />
         <input type="search" class="flex-1 min-w-0 border-none bg-transparent text-sm text-[var(--hv-shell-text-strong)] outline-none" placeholder={$t('docker.catalog_search')} bind:value={catalogSearch} aria-label={$t('docker.catalog_search')} />
       </div>
-      <button type="button" class="hv-btn hv-btn-secondary" aria-expanded={showStoresPanel} onclick={() => { showStoresPanel = !showStoresPanel; if (showStoresPanel) loadStores(); }}><IconPackage size={17} stroke={1.9} /> {$t('docker.stores_title')}</button>
+      <button type="button" class="hv-btn hv-btn-secondary" aria-expanded={showStoresPanel} onclick={() => { showStoresPanel = !showStoresPanel; if (showStoresPanel) loadStores(); }}><IconPackage size={17} strokeWidth={1.8} /> {$t('docker.stores_title')}</button>
     </div>
     <!-- P1: advanced, opt-in scheduled updates, collapsed by default. -->
-    <details class="mx-3 mb-2 rounded-xl bg-[var(--hv-shell-card)] border border-[var(--hv-shell-border)]" data-testid="docker-schedule">
+    <details class="mx-3 mb-2 rounded-lg bg-[var(--hv-shell-card)] border border-[var(--hv-shell-border)]" data-testid="docker-schedule">
       <summary class="cursor-pointer px-3 py-2 text-sm font-semibold text-[var(--hv-shell-text-strong)]">
         {$t('docker.schedule_title')}
       </summary>
@@ -1986,16 +1986,16 @@
       </div>
     </details>
     {#if Object.keys(catalogUpdates).length > 0}
-      <div class="flex items-center gap-2 mx-3 px-3 py-2 rounded-lg bg-[var(--hv-warning-bg)] text-[var(--hv-warning)] text-xs font-semibold"><IconDownload size={16} stroke={2} /> {$t('docker.catalog_updates_pending', { count: String(Object.keys(catalogUpdates).length) })}
+      <div class="flex items-center gap-2 mx-3 px-3 py-2 rounded-lg bg-[var(--hv-warning-bg)] text-[var(--hv-warning)] text-xs font-semibold"><IconDownload size={16} strokeWidth={1.8} /> {$t('docker.catalog_updates_pending', { count: String(Object.keys(catalogUpdates).length) })}
         <button class={cn(actionBtn, 'ml-auto')} disabled={updateAllBusy} onclick={updateAllCatalogApps}>{updateAllBusy ? $t('docker.catalog_updating_all') : $t('docker.catalog_update_all')}</button>
       </div>
     {/if}
     {#if showStoresPanel}
-      <div class="mx-3 p-3 rounded-xl bg-[var(--hv-shell-card)] border border-[var(--hv-shell-border)]">
+      <div class="mx-3 p-3 rounded-lg bg-[var(--hv-shell-card)] border border-[var(--hv-shell-border)]">
         <p class="m-0 text-xs text-[var(--hv-shell-text)]">{$t('docker.stores_desc')}</p>
         <form class="flex gap-2 mt-2" onsubmit={(e) => { e.preventDefault(); addStore(); }}>
           <input type="url" class={textInput} placeholder={$t('docker.stores_url_placeholder')} bind:value={storeUrl} aria-label={$t('docker.stores_add')} />
-          <Button type="submit" variant="primary" disabled={storeBusy || !storeUrl.trim()}><IconPlus size={16} stroke={2} /> {$t('docker.stores_add')}</Button>
+          <Button type="submit" variant="primary" disabled={storeBusy || !storeUrl.trim()}><IconPlus size={16} strokeWidth={1.8} /> {$t('docker.stores_add')}</Button>
         </form>
         <div class="flex flex-col gap-1.5 mt-2">
           <div class="flex items-center gap-2 px-3 py-2 rounded-lg bg-[var(--hv-shell-border-soft)] border border-[var(--hv-shell-border)]">
@@ -2030,7 +2030,7 @@
       <div data-testid="docker-empty" class="grid gap-3 p-3 [grid-template-columns:repeat(auto-fill,minmax(240px,1fr))]" role="status">
         <span class="sr-only">{$t('common.loading')}</span>
         {#each Array(6) as _, i}
-          <div class="flex flex-col gap-1.5 p-4 rounded-2xl bg-[var(--hv-shell-card)] border border-[var(--hv-shell-border)] shadow-[var(--hv-shell-shadow-card)]" aria-hidden="true">
+          <div class="flex flex-col gap-1.5 p-4 rounded-2xl bg-card border border-border shadow-[var(--hv-shell-shadow-card)]" aria-hidden="true">
             <span class="hv-skeleton-rect block w-11 h-11"></span>
             <span class="hv-skeleton-text block" style="width: {55 + ((i * 31) % 30)}%"></span>
             <span class="hv-skeleton-text block" style="width: {70 + ((i * 17) % 25)}%"></span>
@@ -2041,9 +2041,9 @@
       <div class="grid gap-3 p-3 [grid-template-columns:repeat(auto-fill,minmax(240px,1fr))]">
         {#each filteredCatalog as app (app.id)}
           {@const CatalogIcon = catalogIconFor(app.icon)}
-          <div data-testid="docker-app-card" class="flex flex-col gap-1.5 p-4 rounded-2xl bg-[var(--hv-shell-card)] border border-[var(--hv-shell-border)] shadow-[var(--hv-shell-shadow-card)]">
-            <span class="grid place-items-center w-11 h-11 rounded-xl bg-[var(--hv-primary-light)] text-[var(--hv-primary)]">
-              {#if app.has_icon}<img src={`/api/docker/catalog/${encodeURIComponent(app.id)}/icon`} alt="" width="26" height="26" />{:else}<CatalogIcon size={26} stroke={1.7} />{/if}
+          <div data-testid="docker-app-card" class="flex flex-col gap-1.5 p-4 rounded-2xl bg-card border border-border shadow-[var(--hv-shell-shadow-card)]">
+            <span class="grid place-items-center w-8 h-8 rounded-[9px] bg-[var(--hv-primary-light)] text-[var(--hv-primary)]">
+              {#if app.has_icon}<img src={`/api/docker/catalog/${encodeURIComponent(app.id)}/icon`} alt="" width="20" height="20" />{:else}<CatalogIcon size={20} strokeWidth={1.8} />{/if}
             </span>
             <div class="text-sm font-bold text-[var(--hv-shell-text-strong)]">{app.name}</div>
             <div class="flex items-center gap-1.5 text-c-xs text-[var(--hv-shell-text-2)]">
@@ -2055,33 +2055,33 @@
             {#if app.gallery_count > 0}
               <div class="flex gap-1 overflow-hidden">{#each Array(app.gallery_count) as _, i}<img src={`/api/docker/catalog/${encodeURIComponent(app.id)}/gallery/${i + 1}`} alt={`${app.name} ${i + 1}`} loading="lazy" class="w-8 h-8 object-cover rounded" />{/each}</div>
             {/if}
-            {#if app.incompatibility_reason}<span class="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-[var(--hv-error-bg)] text-[var(--hv-error)] text-c-xs font-bold"><IconAlertTriangle size={13} stroke={2} />{$t('docker.catalog_incompatible', { reason: app.incompatibility_reason })}</span>
-            {:else if app.unsupported_on_host}<span class="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-[var(--hv-error-bg)] text-[var(--hv-error)] text-c-xs font-bold"><IconAlertTriangle size={13} stroke={2} />{$t('docker.catalog_arch_unsupported')}</span>{/if}
-            {#if app.missing_dependencies.length}<span class="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-[var(--hv-error-bg)] text-[var(--hv-error)] text-c-xs font-bold"><IconAlertTriangle size={13} stroke={2} />{$t('docker.catalog_dep_missing', { deps: app.missing_dependencies.join(', ') })}</span>{/if}
+            {#if app.incompatibility_reason}<span class="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-[var(--hv-error-bg)] text-[var(--hv-error)] text-c-xs font-bold"><IconAlertTriangle size={13} strokeWidth={1.8} />{$t('docker.catalog_incompatible', { reason: app.incompatibility_reason })}</span>
+            {:else if app.unsupported_on_host}<span class="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-[var(--hv-error-bg)] text-[var(--hv-error)] text-c-xs font-bold"><IconAlertTriangle size={13} strokeWidth={1.8} />{$t('docker.catalog_arch_unsupported')}</span>{/if}
+            {#if app.missing_dependencies.length}<span class="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-[var(--hv-error-bg)] text-[var(--hv-error)] text-c-xs font-bold"><IconAlertTriangle size={13} strokeWidth={1.8} />{$t('docker.catalog_dep_missing', { deps: app.missing_dependencies.join(', ') })}</span>{/if}
             {#if app.installed}
               {#if catalogUpdates[app.id]}
-                <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-[var(--hv-warning-bg)] text-[var(--hv-warning)] text-c-xs font-bold"><IconDownload size={13} stroke={2} />{$t('docker.catalog_update_available')}</span>
+                <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-[var(--hv-warning-bg)] text-[var(--hv-warning)] text-c-xs font-bold"><IconDownload size={13} strokeWidth={1.8} />{$t('docker.catalog_update_available')}</span>
               {:else}
                 <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-[var(--hv-success-bg)] text-[var(--hv-success)] text-c-xs font-bold"><span class="w-1.5 h-1.5 rounded-full bg-[var(--hv-success)]"></span>{$t('docker.catalog_installed_badge')}</span>
               {/if}
               {#if app.installed_share}
-                <span data-testid="docker-app-library" class="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-[var(--hv-shell-border-soft)] text-[var(--hv-shell-text-2)] text-c-xs font-semibold"><IconFolder size={13} stroke={2} />{$t('docker.catalog_library')}: {app.installed_share}</span>
+                <span data-testid="docker-app-library" class="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-[var(--hv-shell-border-soft)] text-[var(--hv-shell-text-2)] text-c-xs font-semibold"><IconFolder size={13} strokeWidth={1.8} />{$t('docker.catalog_library')}: {app.installed_share}</span>
               {/if}
               <div class="flex flex-wrap gap-1.5 mt-1">
                 {#if catalogUpdates[app.id]}
-                  <button class={cn(actionBtn, 'text-c-base')} disabled={updateBusyId === app.id} onclick={() => updateCatalogApp(app)}><IconDownload size={15} stroke={2} /> {updateBusyId === app.id ? $t('docker.catalog_updating') : $t('docker.catalog_update_now')}</button>
+                  <button class={cn(actionBtn, 'text-c-base')} disabled={updateBusyId === app.id} onclick={() => updateCatalogApp(app)}><IconDownload size={15} strokeWidth={1.8} /> {updateBusyId === app.id ? $t('docker.catalog_updating') : $t('docker.catalog_update_now')}</button>
                 {/if}
                 {#if app.running && appOpenUrl(app)}
-                  <a class={cn(actionBtn, 'no-underline')} href={appOpenUrl(app)} target="_blank" rel="noopener noreferrer"><IconExternalLink size={15} stroke={2} /> {$t('docker.open_app')}</a>
+                  <a class={cn(actionBtn, 'no-underline')} href={appOpenUrl(app)} target="_blank" rel="noopener noreferrer"><IconExternalLink size={15} strokeWidth={1.8} /> {$t('docker.open_app')}</a>
                 {/if}
                 {#if app.proxy_port}
                   <label class="flex items-center gap-1.5 text-c-sm text-[var(--hv-shell-text-2)] cursor-pointer"><input type="checkbox" class="accent-[var(--hv-primary)]" checked={app.proxy_auth_required} onchange={() => toggleAppProxyAuth(app)} /> {$t('docker.proxy_require_login')}</label>
                 {/if}
-                <button class={cn(actionBtn, 'text-c-base')} onclick={() => openAppLogs(app)}><IconTerminal size={15} stroke={2} /> {$t('docker.catalog_app_logs')}</button>
-                <button class={cn(actionBtn, dangerHover, 'text-c-base')} disabled={catalogBusyId === app.id} onclick={() => uninstallCatalogApp(app)}><IconTrash size={15} stroke={2} /> {$t('docker.catalog_uninstall')}</button>
+                <button class={cn(actionBtn, 'text-c-base')} onclick={() => openAppLogs(app)}><IconTerminal size={15} strokeWidth={1.8} /> {$t('docker.catalog_app_logs')}</button>
+                <button class={cn(actionBtn, dangerHover, 'text-c-base')} disabled={catalogBusyId === app.id} onclick={() => uninstallCatalogApp(app)}><IconTrash size={15} strokeWidth={1.8} /> {$t('docker.catalog_uninstall')}</button>
               </div>
             {:else}
-              <button class={cn(actionBtn, 'mt-1 bg-[var(--hv-primary)] border-[var(--hv-primary)] text-white hover:brightness-110')} disabled={catalogBusyId === app.id || app.unsupported_on_host || !!app.incompatibility_reason} onclick={() => openCatalogInstall(app)}><IconDownload size={15} stroke={2} /> {$t('docker.catalog_install')}</button>
+              <button class={cn(actionBtn, 'mt-1 bg-[var(--hv-primary)] border-[var(--hv-primary)] text-white hover:brightness-110')} disabled={catalogBusyId === app.id || app.unsupported_on_host || !!app.incompatibility_reason} onclick={() => openCatalogInstall(app)}><IconDownload size={15} strokeWidth={1.8} /> {$t('docker.catalog_install')}</button>
             {/if}
           </div>
         {/each}
@@ -2091,7 +2091,7 @@
   {:else if tab === 'compose'}
     {#if composeAvailable === false}
       <EmptyState data-testid="docker-empty" title={$t('docker.unavailable_desc')}>
-        {#snippet iconSnippet()}<IconAlertTriangle size={30} stroke={1.5} />{/snippet}
+        {#snippet iconSnippet()}<IconAlertTriangle size={30} strokeWidth={1.5} />{/snippet}
       </EmptyState>
     {/if}
     <div class="grid grid-cols-1 @min-[900px]:grid-cols-[1fr_260px] gap-3 p-3">
@@ -2107,8 +2107,8 @@
           <label class={fieldLabel} for="composeName">{$t('docker.stack_name')}</label>
           <input type="text" id="composeName" class={textInput} bind:value={composeName} disabled={composeAvailable === false}>
         </div>
-        <Button variant="primary" onclick={deployCompose} disabled={composeDeploying || composeAvailable === false}><IconCheck size={18} stroke={2} /> {$t('docker.deploy')}</Button>
-        <Button variant="secondary" data-testid="docker-compose-validate" onclick={validateCompose} disabled={composeValidating || composeAvailable === false}><IconCheck size={18} stroke={2} /> {composeValidating ? $t('docker.validating') : $t('docker.validate_syntax')}</Button>
+        <Button variant="primary" onclick={deployCompose} disabled={composeDeploying || composeAvailable === false}><IconCheck size={18} strokeWidth={1.8} /> {$t('docker.deploy')}</Button>
+        <Button variant="secondary" data-testid="docker-compose-validate" onclick={validateCompose} disabled={composeValidating || composeAvailable === false}><IconCheck size={18} strokeWidth={1.8} /> {composeValidating ? $t('docker.validating') : $t('docker.validate_syntax')}</Button>
         {#if composeStatus}<div data-testid="docker-compose-status" style="color:{composeStatus.color};">{composeStatus.text}</div>{/if}
         <div class="p-3 rounded-xl bg-[var(--hv-shell-border-soft)] border border-[var(--hv-shell-border)]">
           <div class="text-c-base font-semibold text-[var(--hv-shell-text-strong)]">{$t('docker.deploy_title')}</div>
@@ -2121,7 +2121,7 @@
       <div class="px-3 pb-3">
         <div data-testid="docker-panel" class="flex flex-col gap-1.5">
           {#each projects as p (p.name)}
-            <div data-testid="docker-row" class="flex items-center gap-3 px-3 py-2.5 rounded-xl bg-[var(--hv-shell-card)] border border-[var(--hv-shell-border)]">
+            <div data-testid="docker-row" class="flex items-center gap-3 px-3 py-2.5 rounded-lg bg-[var(--hv-shell-card)] border border-[var(--hv-shell-border)]">
               <div class="flex-1 min-w-0">
                 <div class="text-c-base font-semibold text-[var(--hv-shell-text-strong)]">{p.name}</div>
                 <div class="text-c-xs text-[var(--hv-shell-text-2)]">{p.services.join(', ') || '—'}</div>
@@ -2150,7 +2150,7 @@
 {#if catalogPortModal}
   {@const cp = catalogPortModal}
   <Modal open={!!cp} title={$t('docker.catalog_install_title', { name: cp.name })} size="md" onclose={() => catalogPortModal = null}>
-    {#snippet icon()}<IconDownload size={22} stroke={1.75} />{/snippet}
+    {#snippet icon()}<IconDownload size={22} strokeWidth={1.8} />{/snippet}
     {#snippet children()}
       <p class="m-0 mb-3 text-sm text-[var(--hv-shell-text)]">{$t('docker.catalog_install_desc')}</p>
       <div class={field}>
@@ -2236,7 +2236,7 @@
     {#snippet footer()}
       <div class="flex gap-2.5 justify-end">
         <Button variant="secondary" onclick={() => catalogPortModal = null}>{$t('common.cancel')}</Button>
-        <Button variant="primary" disabled={catalogBusyId === cp.id || portHint(cp.port).kind === 'bad' || cp.reviewLoading || !!cp.review?.incompatibility_reason} onclick={confirmCatalogInstall}><IconCheck size={14} stroke={2} /> {$t('docker.catalog_install')}</Button>
+        <Button variant="primary" disabled={catalogBusyId === cp.id || portHint(cp.port).kind === 'bad' || cp.reviewLoading || !!cp.review?.incompatibility_reason} onclick={confirmCatalogInstall}><IconCheck size={14} strokeWidth={1.8} /> {$t('docker.catalog_install')}</Button>
       </div>
     {/snippet}
   </Modal>
@@ -2245,7 +2245,7 @@
 <!-- CONTAINER LOGS MODAL (live tail over SSE) -->
 {#if logContainerName}
   <Modal open={!!logContainerName} title={$t('docker.title_logs', { name: logContainerName ?? '' })} size="lg" onclose={closeLogs}>
-    {#snippet icon()}<IconTerminal size={22} stroke={1.75} />{/snippet}
+    {#snippet icon()}<IconTerminal size={22} strokeWidth={1.8} />{/snippet}
     {#snippet children()}
       <div class="flex flex-wrap items-end gap-3 mb-2">
         <div class={cn(field, 'w-32')}>
@@ -2289,7 +2289,7 @@
     {/snippet}
     {#snippet footer()}
       <div class="flex gap-2.5 justify-end">
-        <Button variant="secondary" type="button" disabled={containerLogs.length === 0} onclick={downloadLogs}><IconDownload size={15} stroke={2} /> {$t('docker.logs_download')}</Button>
+        <Button variant="secondary" type="button" disabled={containerLogs.length === 0} onclick={downloadLogs}><IconDownload size={15} strokeWidth={1.8} /> {$t('docker.logs_download')}</Button>
         <Button variant="secondary" type="button" onclick={startLogStream}>{$t('docker.logs_refresh')}</Button>
         <Button variant="primary" type="button" onclick={closeLogs}>{$t('common.close')}</Button>
       </div>
@@ -2301,7 +2301,7 @@
 {#if appLogsModal}
   {@const al = appLogsModal}
   <Modal open={!!al} title={$t('docker.catalog_logs_title', { name: al.name })} size="lg" onclose={() => appLogsModal = null}>
-    {#snippet icon()}<IconTerminal size={22} stroke={1.75} />{/snippet}
+    {#snippet icon()}<IconTerminal size={22} strokeWidth={1.8} />{/snippet}
     {#snippet children()}
       {#if al.loading}
         <p class="m-0 text-sm text-[var(--hv-shell-text-2)]" role="status">{$t('common.loading')}</p>
@@ -2320,7 +2320,7 @@
 {#if editCompose}
   {@const ec = editCompose}
   <Modal open={!!ec} title={$t('docker.edit_compose_title', { name: ec.project })} size="lg" onclose={closeEditCompose}>
-    {#snippet icon()}<IconPencil size={22} stroke={1.75} />{/snippet}
+    {#snippet icon()}<IconPencil size={22} strokeWidth={1.8} />{/snippet}
     {#snippet children()}
       <p class="m-0 mb-3 text-sm text-[var(--hv-shell-text)]">{ec.container} · docker-compose.yml</p>
       {#if ec.loading}
@@ -2346,7 +2346,7 @@
           <Button variant="secondary" onclick={closeEditCompose} disabled={ec.busy}>{$t('common.cancel')}</Button>
           <Button variant="secondary" onclick={validateEditCompose} disabled={ec.busy}>{$t('docker.validate_syntax')}</Button>
           <Button variant="secondary" onclick={() => saveEditCompose(false)} disabled={ec.busy}>{$t('common.save')}</Button>
-          <Button variant="primary" onclick={() => saveEditCompose(true)} disabled={ec.busy}><IconCheck size={14} stroke={2} /> {$t('docker.save_redeploy')}</Button>
+          <Button variant="primary" onclick={() => saveEditCompose(true)} disabled={ec.busy}><IconCheck size={14} strokeWidth={1.8} /> {$t('docker.save_redeploy')}</Button>
         {/if}
       </div>
     {/snippet}
@@ -2356,7 +2356,7 @@
 <!-- DAEMON LOGS MODAL -->
 {#if daemonLogsOpen}
   <Modal open={daemonLogsOpen} title={$t('docker.daemon_logs_title')} size="lg" onclose={closeDaemonLogs}>
-    {#snippet icon()}<IconTerminal size={22} stroke={1.75} />{/snippet}
+    {#snippet icon()}<IconTerminal size={22} strokeWidth={1.8} />{/snippet}
     {#snippet children()}
       <p class="m-0 mb-2 text-xs text-[var(--hv-shell-text-2)]">{$t('docker.daemon_logs_cmd')}</p>
       <div class="h-72 overflow-auto p-3 rounded-xl bg-[var(--hv-shell-border-soft)] border border-[var(--hv-shell-border)] font-[family-name:var(--hv-font-mono)] text-c-sm text-[var(--hv-shell-text-strong)]">
@@ -2369,7 +2369,7 @@
 <!-- CREATE CONTAINER MODAL -->
 {#if modalOpen}
   <Modal open={modalOpen} title={$t('docker.modal_new_container')} size="lg" onclose={closeModal}>
-    {#snippet icon()}<IconContainer size={22} stroke={1.75} />{/snippet}
+    {#snippet icon()}<IconContainer size={22} strokeWidth={1.8} />{/snippet}
     {#snippet children()}
       <p class="m-0 mb-3 text-sm text-[var(--hv-shell-text)]">{modalImagePreset ? modalImagePreset : $t('docker.modal_config')}</p>
       <div class="flex flex-col gap-3">
@@ -2381,7 +2381,7 @@
           <label class={fieldLabel} for="cImage">{$t('docker.image')}</label>
           <input type="text" id="cImage" class={textInput} bind:value={cImage} placeholder={$t('docker.ph_image')}>
         </div>
-        <div data-testid="docker-section" class="flex items-center gap-2 text-sm font-semibold text-[var(--hv-shell-text-strong)]">{$t('docker.ports_section')} <Button variant="secondary" size="sm" type="button" onclick={addPort}><IconPlus size={12} stroke={2} /> {$t('docker.add_port2')}</Button></div>
+        <div data-testid="docker-section" class="flex items-center gap-2 text-sm font-semibold text-[var(--hv-shell-text-strong)]">{$t('docker.ports_section')} <Button variant="secondary" size="sm" type="button" onclick={addPort}><IconPlus size={12} strokeWidth={1.8} /> {$t('docker.add_port2')}</Button></div>
         {#each cPorts as p, i}
           {@const ph = portHint(p.host_port, cPorts.map(x => x.host_port))}
           <div data-testid="docker-row3" class={row3}>
@@ -2392,7 +2392,7 @@
           </div>
           {#if ph.kind !== 'none'}<span class={cn('text-c-xs', ph.kind === 'bad' ? 'text-[var(--hv-error)]' : 'text-[var(--hv-warning)]')}>{ph.text}</span>{/if}
         {/each}
-        <div data-testid="docker-section" class="flex items-center gap-2 text-sm font-semibold text-[var(--hv-shell-text-strong)]">{$t('docker.volumes_section')} <Button variant="secondary" size="sm" type="button" onclick={addVolume}><IconPlus size={12} stroke={2} /> {$t('docker.add_volume2')}</Button></div>
+        <div data-testid="docker-section" class="flex items-center gap-2 text-sm font-semibold text-[var(--hv-shell-text-strong)]">{$t('docker.volumes_section')} <Button variant="secondary" size="sm" type="button" onclick={addVolume}><IconPlus size={12} strokeWidth={1.8} /> {$t('docker.add_volume2')}</Button></div>
         {#each cVolumes as v, i}
           <div class={cn(row3, 'grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto_auto]')}>
             <PathField bind:value={v.host_path} mode="folder" placeholder={$t('docker.ph_host_path')} />
@@ -2401,7 +2401,7 @@
             <button data-testid="docker-icon-btn" class={iconBtn} type="button" onclick={() => removeVolume(i)} aria-label={$t('common.delete')}><IconX size={14} /></button>
           </div>
         {/each}
-        <div data-testid="docker-section" class="flex items-center gap-2 text-sm font-semibold text-[var(--hv-shell-text-strong)]">{$t('docker.env_section')} <Button variant="secondary" size="sm" type="button" onclick={addEnv}><IconPlus size={12} stroke={2} /> {$t('docker.add_env2')}</Button></div>
+        <div data-testid="docker-section" class="flex items-center gap-2 text-sm font-semibold text-[var(--hv-shell-text-strong)]">{$t('docker.env_section')} <Button variant="secondary" size="sm" type="button" onclick={addEnv}><IconPlus size={12} strokeWidth={1.8} /> {$t('docker.add_env2')}</Button></div>
         {#each cEnv as e, i}
           <div data-testid="docker-row3" class={row3}>
             <input type="text" class={textInput} bind:value={e.key} placeholder={$t('docker.ph_key')} />
@@ -2466,7 +2466,7 @@
     {/snippet}
   </Modal>
   <Modal open={netModalOpen} title={$t('docker.create_network_title')} size="md" onclose={() => netModalOpen = false}>
-    {#snippet icon()}<IconNetwork size={22} stroke={1.75} />{/snippet}
+    {#snippet icon()}<IconNetwork size={22} strokeWidth={1.8} />{/snippet}
     {#snippet children()}
       <p class="m-0 mb-3 text-sm text-[var(--hv-shell-text)]">{$t('docker.modal_config')}</p>
       <div class="flex flex-col gap-3">
@@ -2502,7 +2502,7 @@
 <!-- CREATE VOLUME MODAL -->
 {#if volumeModalOpen}
   <Modal open={volumeModalOpen} title={$t('docker.new_volume')} size="sm" onclose={() => volumeModalOpen = false}>
-    {#snippet icon()}<IconDatabase size={22} stroke={1.75} />{/snippet}
+    {#snippet icon()}<IconDatabase size={22} strokeWidth={1.8} />{/snippet}
     {#snippet children()}
       <div class="flex flex-col gap-3">
         <div class={field}>
@@ -2529,7 +2529,7 @@
 {#if detailModal}
   {@const dm = detailModal}
   <Modal open={!!dm} title={$t('docker.inspect_title', { name: dm.name })} size="lg" onclose={() => detailModal = null}>
-    {#snippet icon()}<IconInfoCircle size={22} stroke={1.75} />{/snippet}
+    {#snippet icon()}<IconInfoCircle size={22} strokeWidth={1.8} />{/snippet}
     {#snippet children()}
       {#if dm.loading}
         <p class="m-0 text-sm text-[var(--hv-shell-text-2)]" role="status">{$t('common.loading')}</p>
@@ -2631,7 +2631,7 @@
 {#if execModal}
   {@const ex = execModal}
   <Modal open={!!ex} title={$t('docker.exec_title', { name: ex.name })} size="lg" onclose={() => execModal = null}>
-    {#snippet icon()}<IconTerminal size={22} stroke={1.75} />{/snippet}
+    {#snippet icon()}<IconTerminal size={22} strokeWidth={1.8} />{/snippet}
     {#snippet children()}
       <form class="flex flex-col gap-3" onsubmit={(e) => { e.preventDefault(); runExec(); }}>
         <div class={field}>
@@ -2670,7 +2670,7 @@
 {#if renameModal}
   {@const rn = renameModal}
   <Modal open={!!rn} title={$t('docker.rename_title', { name: rn.name })} size="sm" onclose={() => renameModal = null}>
-    {#snippet icon()}<IconPencil size={22} stroke={1.75} />{/snippet}
+    {#snippet icon()}<IconPencil size={22} strokeWidth={1.8} />{/snippet}
     {#snippet children()}
       <div class={field}>
         <label class={fieldLabel} for="renameValue">{$t('docker.new_name')}</label>
@@ -2690,7 +2690,7 @@
 {#if limitsModal}
   {@const lm = limitsModal}
   <Modal open={!!lm} title={$t('docker.update_limits')} size="md" onclose={() => limitsModal = null}>
-    {#snippet icon()}<IconBolt size={22} stroke={1.75} />{/snippet}
+    {#snippet icon()}<IconBolt size={22} strokeWidth={1.8} />{/snippet}
     {#snippet children()}
       <p class="m-0 mb-3 text-sm text-[var(--hv-shell-text)]">{$t('docker.update_limits_desc', { name: lm.name })}</p>
       <div class="flex flex-col gap-3">
@@ -2727,7 +2727,7 @@
 {#if buildModal}
   {@const bd = buildModal}
   <Modal open={!!bd} title={$t('docker.build_image')} size="md" onclose={() => buildModal = null}>
-    {#snippet icon()}<IconTool size={22} stroke={1.75} />{/snippet}
+    {#snippet icon()}<IconTool size={22} strokeWidth={1.8} />{/snippet}
     {#snippet children()}
       <div class="flex flex-col gap-3">
         <div class={field}>
@@ -2768,7 +2768,7 @@
 {#if registryModal}
   {@const rg = registryModal}
   <Modal open={!!rg} title={$t('docker.registries')} size="md" onclose={() => registryModal = null}>
-    {#snippet icon()}<IconLock size={22} stroke={1.75} />{/snippet}
+    {#snippet icon()}<IconLock size={22} strokeWidth={1.8} />{/snippet}
     {#snippet children()}
       <p class="m-0 mb-3 text-sm text-[var(--hv-shell-text)]">{$t('docker.registries_desc')}</p>
       {#if rg.loading}
@@ -2814,7 +2814,7 @@
 {#if daemonConfigModal}
   {@const dc = daemonConfigModal}
   <Modal open={!!dc} title={$t('docker.daemon_config')} size="lg" onclose={() => daemonConfigModal = null}>
-    {#snippet icon()}<IconSettings size={22} stroke={1.75} />{/snippet}
+    {#snippet icon()}<IconSettings size={22} strokeWidth={1.8} />{/snippet}
     {#snippet children()}
       <p class="m-0 mb-2 text-sm text-[var(--hv-shell-text)]">{$t('docker.daemon_config_desc')}</p>
       <p class="m-0 mb-2 text-xs text-[var(--hv-warning)] font-semibold">{$t('docker.daemon_config_warning')}</p>

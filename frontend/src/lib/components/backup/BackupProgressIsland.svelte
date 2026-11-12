@@ -19,7 +19,7 @@
 <script lang="ts">
   import { trackedJobs, dismissJob } from '$lib/stores/backupJobs.svelte';
   import { t } from '$lib/stores/i18n';
-  import { IconCheck, IconLoader, IconX, IconAlertCircle } from '@tabler/icons-svelte';
+  import { IconCheck, IconLoader, IconX, IconAlertCircle } from '$lib/icons/lucide';
 
   /** Floating persistent island for backup/restore progress. Lives outside the
    *  Backup window so a long run stays visible while doing something else. */

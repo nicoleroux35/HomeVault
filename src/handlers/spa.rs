@@ -9,8 +9,8 @@
  *   Static-asset and SPA serving. The whole static/ tree (built frontend,
  *   sounds) is embedded in the binary at compile time, so the binary alone
  *   is a runnable artifact. Each file gets a strong ETag validator and a
- *   cache policy — one year immutable for content-hashed bundles, one day
- *   plus ETag for the regenerated icon sprites — and when the build
+ *   cache policy — one year immutable for content-hashed bundles, plus one
+ *   ETag per content coding — and when the build
  *   produced pre-compressed siblings, their brotli/gzip bytes are served
  *   directly, with one ETag per encoding. Public: static assets carry no
  *   session data.
@@ -61,16 +61,6 @@ static STATIC_DIR: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/static");
 /// ones change name when they change at all, so a year of `immutable` can
 /// never pin a stale body.
 const CACHE_IMMUTABLE: &str = "public, max-age=31536000, immutable";
-
-/// Cache policy for the generated icon sprites.
-///
-/// Their URL is fixed (`/sprite-unified.svg`) but their content is regenerated
-/// from the frontend sources on every build, so a release *can* add or drop
-/// symbols under the same path. A year of `immutable` would then pin the old
-/// sprite in every browser — the new icons would silently stay blank. One day
-/// of freshness plus the `ETag` below keeps the steady-state cost at a `304`
-/// while still letting an upgrade land.
-const CACHE_REVALIDATE: &str = "public, max-age=86400";
 
 /// One embedded file, plus the pre-compressed variants the build emitted next
 /// to it (see `frontend/scripts/precompress-dist.mjs`).
@@ -301,11 +291,6 @@ fn asset_response(
         out.insert(header::CACHE_CONTROL, HeaderValue::from_static(cc));
     }
     res
-}
-
-/// Serve the unified sprite with all icon libraries (Lucide + Phosphor + Tabler)
-pub async fn serve_sprite_unified(headers: HeaderMap) -> Response {
-    serve("dist/sprite-unified.svg", &headers, Some(CACHE_REVALIDATE))
 }
 
 /// Serve a single named file from the embedded `dist/` root (favicon,

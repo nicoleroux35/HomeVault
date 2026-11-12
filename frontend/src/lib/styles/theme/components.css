@@ -284,7 +284,7 @@
 /* ============================================
    CARDS
    ============================================ */
-/* Card geometry follows Apple ref §2/§4/§5: 18px surface corner
+/* Card geometry follows the v2 design: 20px surface corner
    (--hv-radius-xl → the surface stop), 32px internal padding (the reference's
    default card padding; `--hv-card-padding-sm` 24px is the compact step for
    dense in-window lists), and the reference's two-layer card shadow — the

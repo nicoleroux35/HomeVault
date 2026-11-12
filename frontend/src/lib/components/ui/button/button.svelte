@@ -14,8 +14,8 @@
 				destructive: "bg-destructive/10 hover:bg-destructive/20 focus-visible:ring-destructive/20 text-destructive focus-visible:border-destructive/40",
 				link: "text-primary underline-offset-4 hover:underline",
 				/* HomeVault solid semantic fills — the old `.hv-btn-{success,danger,warning}`
-				   look, using the `--hv-*`-mapped tokens from app.css. Text stays white on
-				   every colored background (HomeVault rule). */
+				 look, using the `--hv-*`-mapped tokens from app.css. Text stays white on
+				 every colored background (HomeVault rule). */
 				success: "bg-success text-white hover:bg-[color-mix(in_oklch,var(--success),black_10%)]",
 				danger: "bg-destructive text-white hover:bg-[color-mix(in_oklch,var(--destructive),black_10%)]",
 				warning: "bg-warning text-white hover:bg-[color-mix(in_oklch,var(--warning),black_10%)]",

@@ -14,8 +14,8 @@ the look are:
 
 | Element | Where it is stored | Who writes it | Who reads it |
 |---|---|---|---|
-| **Wallpaper** (one of the 44 bundled photos) | `appearance.wallpaper` in `data/settings.json` (+ a per-origin `localStorage` copy `hv-wallpaper`) | admin — `PUT /settings/appearance` | every account's boot hydration (`App.svelte`) |
-| **Accent colour** (`--hv-primary`) | `appearance.accent_color` | admin — same endpoint (no editing UI; the shipped value is `#1E62AE`) | `App.svelte` sets `--hv-primary` on `<html>` at boot |
+| **Wallpaper** (the v2 gradient or one of the 44 bundled photos) | `appearance.wallpaper` in `data/settings.json` (+ a per-origin `localStorage` copy `hv-wallpaper`) | admin — `PUT /settings/appearance` | every account's boot hydration (`App.svelte`) |
+| **Accent colour** (`--hv-primary`) | `appearance.accent_color` | admin — same endpoint (no editing UI; the shipped value is `#2E72C9`) | `App.svelte` sets `--hv-primary` on `<html>` at boot |
 | **Nothing else** | — | — | — |
 
 `theme` and `density` no longer exist: they were persisted no-ops (saved and
@@ -45,8 +45,9 @@ files that still carry them keep loading — the reader ignores them.
   `document.documentElement` from the server value — `App.svelte`
   (`hydrateAppearanceFromServer`) at boot, `Settings.svelte` after a load.
 - **Wallpaper at runtime:** `frontend/src/lib/stores/wallpaper.ts`
-  (`WallpaperConfig` = `{type:'image'; value:'/wallpapers/hv-NN.webp'}` only;
-  `normalizeWallpaper()` coerces anything else to a bundled photo). Painted by
+  (`WallpaperConfig` = `{type:'default'}` (the v2 gradient, the default) or
+  `{type:'image'; value:'/wallpapers/hv-NN.webp'}`; `normalizeWallpaper()`
+  coerces anything else to the gradient). Painted by
   `Desktop.svelte`.
 - **UI primitives:** `frontend/src/lib/components/theme/` (barrel:
   `index.ts`) — Button, Input, Select, Switch, Modal, Drawer, Toast, … There is
@@ -67,7 +68,7 @@ files that still carry them keep loading — the reader ignores them.
   accent override and is a bug.
 - Any future palette (a dark theme, a second skin) must be contrast-checked
   before it ships: text ≥ 4.5:1 on its surface, focus ring / boundaries ≥ 3:1
-  (WCAG 2.2 AA). `#1E62AE` is the only palette blue that passes in both
+  (WCAG 2.2 AA). `#2E72C9` is the only palette blue that passes in both
   directions (white on it 6.15:1; it as text on the light surfaces/tints
   4.99–5.68:1) — see the `DEFAULT_ACCENT` doc comment in
   `src/handlers/settings.rs`.

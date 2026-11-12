@@ -1,0 +1,357 @@
+{
+  "src/lib/components/LazyLoad.svelte": {
+    "text::Loading ...": 1,
+    "text::Reload": 1
+  },
+  "src/lib/components/account/PasskeysCard.svelte": {
+    "text::= max}": 1
+  },
+  "src/lib/components/account/RescueEmailCard.svelte": {
+    "attr:placeholder::you@example.com": 2
+  },
+  "src/lib/components/desktop/WindowSidebarItem.svelte": {
+    "text::99 ? '99+' : count}": 1
+  },
+  "src/lib/components/explorer/RemoteMountPanel.svelte": {
+    "attr:placeholder::photos-nas": 1,
+    "attr:placeholder::nas.example.com": 1,
+    "attr:placeholder::WORKGROUP": 1
+  },
+  "src/lib/components/explorer/ShareLinkModal.svelte": {
+    "attr:alt::QR": 1
+  },
+  "src/lib/components/search/SearchBar.svelte": {
+    "text::ESC": 1,
+    "text::0 || selectedTag}": 1
+  },
+  "src/lib/components/settings/AcmeCard.svelte": {
+    "attr:placeholder::home.example.com": 1,
+    "attr:placeholder::admin@example.com": 1
+  },
+  "src/lib/components/settings/AntivirusCard.svelte": {
+    "text::!th.resolved_at).length})": 1,
+    "text::!th.resolved_at) as threat (threat.id)}": 1
+  },
+  "src/lib/components/settings/ConfigBackupCard.svelte": {
+    "text::f.archive.replace('configs/', '')).join(', ') })}": 1
+  },
+  "src/lib/components/settings/ContentIndexCard.svelte": {
+    "attr:placeholder::node_modules, *.bak": 1,
+    "attr:placeholder::iso, mp4, pdf": 1
+  },
+  "src/lib/components/settings/DdnsCard.svelte": {
+    "attr:placeholder::myhome.duckdns.org": 1,
+    "attr:placeholder::example.com": 1,
+    "text::DuckDNS": 1,
+    "text::dynv6": 1,
+    "text::Cloudflare": 1,
+    "text::OVHcloud DynHost": 1,
+    "text::Namecheap": 1,
+    "text::deSEC": 1
+  },
+  "src/lib/components/settings/DhcpServerCard.svelte": {
+    "attr:placeholder::eth0": 1,
+    "attr:placeholder::aa:bb:cc:dd:ee:ff": 1,
+    "attr:placeholder::pxelinux.0": 1
+  },
+  "src/lib/components/settings/LocalDnsCard.svelte": {
+    "attr:placeholder::eth0": 1,
+    "attr:placeholder::nas.lan": 1,
+    "text::0 && config.forwarders.length === 0}": 1
+  },
+  "src/lib/components/settings/McpCard.svelte": {
+    "attr:placeholder::all": 2
+  },
+  "src/lib/components/settings/ProxyCard.svelte": {
+    "attr:placeholder::example.com, 192.168.1.0/24": 1
+  },
+  "src/lib/components/settings/PushCard.svelte": {
+    "text::device.id === thisDeviceId)}": 1
+  },
+  "src/lib/components/settings/ReachabilityCard.svelte": {
+    "text::ok · warn · fail": 1
+  },
+  "src/lib/components/settings/ReverseProxyCard.svelte": {
+    "attr:placeholder::homeassistant.home.lan": 1
+  },
+  "src/lib/components/settings/SnmpCard.svelte": {
+    "text::v1": 1,
+    "text::v2c": 1
+  },
+  "src/lib/components/settings/SyslogCard.svelte": {
+    "text::RFC 5424": 1,
+    "text::RFC 3164": 1
+  },
+  "src/lib/components/settings/UpsCard.svelte": {
+    "attr:placeholder::rack-ups": 1
+  },
+  "src/lib/components/settings/UpsServerCard.svelte": {
+    "attr:placeholder::eth0": 1,
+    "attr:placeholder::client1": 1,
+    "attr:placeholder::monitor": 1
+  },
+  "src/lib/components/settings/WolCard.svelte": {
+    "attr:placeholder::AA:BB:CC:DD:EE:FF": 1
+  },
+  "src/lib/components/theme/UserAvatar.svelte": {
+    "text::{ // Graceful fallback to a neutral SVG so we never break the layout. (e.currentTarget as HTMLImageElement).src = 'data:image/svg+xml;utf8,' + encodeURIComponent( '": 1
+  },
+  "src/lib/components/ui/sheet/sheet-content.svelte": {
+    "text::Close": 1
+  },
+  "src/lib/components/vm/VmScreen.svelte": {
+    "attr:title::Ctrl+Alt+Del": 1,
+    "text::Ctrl+Alt+Del": 1
+  },
+  "src/routes/CloudSync.svelte": {
+    "attr:placeholder::e.g., gdrive, dropbox, s3backup": 1,
+    "attr:placeholder::[remote_name] type = google drive ...": 1
+  },
+  "src/routes/Dashboard.svelte": {
+    "text::= 70 && diskAvg": 1,
+    "text::0 ? netInterfaces.length : '0'}": 1,
+    "text::0 ? tempAvg.toFixed(0) + ' °C' : '—'}": 1,
+    "text::· MT/s": 1,
+    "text::Go": 1,
+    "text::Swap": 1,
+    "text::Date BIOS": 1,
+    "text::Chipset": 1,
+    "text::IPv4": 1,
+    "text::Driver": 1
+  },
+  "src/routes/Desktop.svelte": {
+    "text::99 ? '99+' : $notificationsStore.unreadCount}": 1,
+    "text::array.status === 'healthy')}": 1,
+    "text::0 ? $t('desktop.av_threats_found', ) : $t('desktop.av_no_threats')} ·": 1,
+    "text::0 ? Math.min(100, (current.completed / current.total) * 100) : 0}": 1,
+    "text::0 ? $t('desktop.syncthing_syncing') : $t('desktop.syncthing_up_to_date')}": 1,
+    "text::km/h": 2,
+    "text::mm": 1,
+    "text::hPa": 1,
+    "text::99 ? '99+' : dockerRunningCount}": 1,
+    "text::99 ? '99+' : healthIssueCount}": 1,
+    "text::99 ? '99+' : activityCount}": 1,
+    "text::(showShortcutAdd = true)} canAddShortcut={$shortcutsStore.length": 1
+  },
+  "src/routes/Destinations.svelte": {
+    "attr:placeholder::family-nas": 1,
+    "text::0 ? bytes(tenant.quota_bytes) : $t('destinations.quota_unlimited') })}": 1
+  },
+  "src/routes/Directory.svelte": {
+    "attr:placeholder::ldap://192.168.1.10:389": 1,
+    "attr:placeholder::dc=example,dc=com": 1,
+    "attr:placeholder::cn=homevault,dc=example,dc=com": 1,
+    "attr:placeholder::cn=admins,ou=groups,dc=example,dc=com": 1,
+    "attr:placeholder::Sign in with Authentik": 1,
+    "attr:placeholder::admins": 1,
+    "attr:placeholder::-----BEGIN CERTIFICATE-----": 1,
+    "text::0 ? translate('directory.break_glass', ) : translate('directory.break_glass_none')}": 1,
+    "text::0 ? translate('oidc.break_glass', ) : translate('directory.break_glass_none')}": 1
+  },
+  "src/routes/Docker.svelte": {
+    "attr:placeholder::bridge": 1,
+    "attr:placeholder::my-data": 1,
+    "attr:placeholder::local": 1,
+    "attr:placeholder::ls -la /config": 1,
+    "attr:placeholder::Dockerfile": 1,
+    "attr:placeholder::myapp:1.0": 1,
+    "attr:placeholder::ghcr.io": 1,
+    "text::`$:$`).join(' · ')}": 1,
+    "text::a.store_id === 'homevault').length) })}": 1,
+    "text::v": 1,
+    "text::docker-compose.yml": 2,
+    "text::· docker-compose.yml": 1,
+    "text::x.host_port))}": 1,
+    "text::bridge": 1,
+    "text::macvlan": 1,
+    "text::overlay": 1,
+    "text::0} · CPU ·": 1,
+    "text::→ (ro)": 1
+  },
+  "src/routes/Downloader.svelte": {
+    "text::sudo apt install aria2": 1
+  },
+  "src/routes/Explorer.svelte": {
+    "text::0 || (currentPath && currentPath !== '/')}": 1,
+    "text::!onlyThisFolder || tagIsInCurrentFolder(item.path)) as item (`$:$`)}": 1,
+    "text::{#if visibleLimit": 2,
+    "text::tar.gz": 1,
+    "text::zip": 1,
+    "text::/dev/…": 1,
+    "text::ext4 / exFAT": 1,
+    "text::ext4": 1,
+    "text::exFAT": 1
+  },
+  "src/routes/Groups.svelte": {
+    "attr:placeholder::ex. developpeurs": 1,
+    "text::@ · GID": 2
+  },
+  "src/routes/Health.svelte": {
+    "text::— (r² ) —": 1
+  },
+  "src/routes/Iscsi.svelte": {
+    "attr:placeholder::before-upgrade": 1,
+    "attr:placeholder::iqn.2026-11.local.client:laptop": 1,
+    "text::0 ? $t('iscsi.backstore_in_use', ) : $t('iscsi.backstore_unused')}": 1,
+    "text::0 && storeDraft.id === null}": 1
+  },
+  "src/routes/Journal.svelte": {
+    "text::pid": 1,
+    "text::AUDIT_PAGE_SIZE}": 1
+  },
+  "src/routes/Network.svelte": {
+    "attr:placeholder::2001:db8::1": 1,
+    "attr:placeholder::fe80::1": 1,
+    "text::0 ? connectionSummary.dns_servers.join(', ') : '—'}": 1,
+    "text::802.3ad": 1,
+    "text::active-backup": 1,
+    "text::dBm": 1,
+    "text::14 ? '5 GHz' : '2.4 GHz'}": 1
+  },
+  "src/routes/Raid.svelte": {
+    "text::s.n && 'bg-[var(--hv-success-bg)] text-[var(--hv-success)] border-[var(--hv-success)]', currentStep": 1,
+    "text::s.n}": 1,
+    "text::0 && selectedRaid && jobId === null}": 1,
+    "text::minDisks && sparesPossible}": 1,
+    "text::0 && selectedDevices.length": 1,
+    "text::0 && minDisks - selectedDevices.length": 1,
+    "text::0 ? Math.round((estimatedCapacity / totalRaw) * 100) : 0}": 1,
+    "text::{#if currentStep": 1
+  },
+  "src/routes/Replication.svelte": {
+    "attr:placeholder::nightly-to-nas2": 1,
+    "attr:placeholder::tank/data": 1,
+    "attr:placeholder::backup/data": 1,
+    "attr:placeholder::nas2.lan": 1,
+    "attr:placeholder::backup": 1,
+    "text::job.enabled).length}": 1,
+    "text::Btrfs": 1
+  },
+  "src/routes/Rescue.svelte": {
+    "attr:placeholder::e.g. md0, /dev/md0": 1,
+    "text::!d.removable) as dev}": 1,
+    "text::Intel (MBR)": 1,
+    "text::EFI GPT": 1,
+    "text::Apple Mac": 1,
+    "text::Sun": 1
+  },
+  "src/routes/Restic.svelte": {
+    "attr:placeholder::*.tmp&#10;*.log&#10;node_modules": 1,
+    "attr:placeholder::zpool": 1,
+    "attr:placeholder::zpool/data": 1,
+    "attr:placeholder::*.log&#10;*.tmp": 1,
+    "attr:placeholder::*.tmp": 1,
+    "text::sudo apt install restic # Debian/Ubuntu": 1,
+    "text::sudo pacman -S restic # Arch": 1,
+    "text::brew install restic # macOS": 1
+  },
+  "src/routes/Settings.svelte": {
+    "attr:placeholder::smtp.example.com": 1,
+    "attr:placeholder::user@example.com": 1,
+    "attr:placeholder::noreply@example.com": 1,
+    "attr:placeholder::admin@example.com": 1,
+    "attr:placeholder::gemma3:4b, qwen3.5:2b...": 1,
+    "attr:placeholder::sda": 1,
+    "text::v": 3,
+    "text::VRAM GB": 1,
+    "text::m.name === rec.name)}": 1,
+    "text::Linux x64": 1,
+    "text::HomeVault v": 1,
+    "text::APM ·": 1
+  },
+  "src/routes/SetupWizard.svelte": {
+    "text::{#if i": 2,
+    "text::0 && !showRecovery && !showTwoFactorSummary}": 1,
+    "text::{#if currentStep": 1
+  },
+  "src/routes/Shares.svelte": {
+    "attr:placeholder::EXAMPLE.LAN": 1,
+    "attr:placeholder::192.168.1.0/24 ro sync": 1,
+    "attr:placeholder::ssh-ed25519 AAAA...": 1,
+    "attr:placeholder::mon-partage": 1,
+    "attr:placeholder::media": 1,
+    "text::= 80 && quotaOf(share)!.percent": 1,
+    "text::(smbMode = m))}": 1,
+    "text::(smbConfig.allow_guest = v))}": 1,
+    "text::(smbConfig.multichannel = v))}": 1,
+    "text::(smbConfig.ws_discovery = v))}": 1,
+    "text::(smbConfig.durable_handles = v))}": 1,
+    "text::(smbConfig.strict_sync = v))}": 1,
+    "text::(smbConfig.use_sendfile = v))}": 1,
+    "text::(smbConfig.level2_oplocks = v))}": 1,
+    "text::s.share_type.toLowerCase() === 'smb') as share (share.name)}": 3,
+    "text::share.share_type.toLowerCase() === 'smb') as share (share.name)}": 1,
+    "text::updateSmbShareFlag(share.name, ))}": 1,
+    "text::(nfsMode = m))}": 1,
+    "text::NFS v3": 1,
+    "text::NFS v4": 1,
+    "text::NFS v4.1": 1,
+    "text::NFS v4.2": 1,
+    "text::krb5": 1,
+    "text::krb5i": 1,
+    "text::krb5p": 1,
+    "text::AUTH_SYS": 1,
+    "text::Kerberos (krb5)": 1,
+    "text::Kerberos integrity (krb5i)": 1,
+    "text::Kerberos privacy (krb5p)": 1,
+    "text::share.share_type.toLowerCase() === 'nfs') as share (share.name)}": 1,
+    "text::(ftpMode = m))}": 1,
+    "text::(ftpConfig.allow_anonymous = v))}": 1,
+    "text::(webdavMode = m))}": 1,
+    "text::(webdavConfig.require_ssl = v))}": 1,
+    "text::Port": 1,
+    "text::(webdavConfig.locking = v))}": 1,
+    "text::0 ? grantee.shares.join(', ') : $t('shares.sftp_no_shares_yet')}": 1,
+    "text::0 ? module.users.join(', ') : $t('shares.rsync_no_users')}": 1,
+    "text::void)}": 2,
+    "text::(newGrant.recursive = v))}": 1
+  },
+  "src/routes/Storage.svelte": {
+    "attr:placeholder::*.partial, .fuse_hidden*": 1,
+    "attr:placeholder::postgres": 1,
+    "attr:placeholder::tank/data": 1,
+    "attr:placeholder::hv-auto": 1,
+    "attr:placeholder::photos/2024/image.jpg": 1,
+    "attr:placeholder::photos": 1,
+    "text::1 ? $t('storage.unit_disks') : $t('storage.unit_disk')}": 1,
+    "text::H": 1,
+    "text::D": 1,
+    "text::M": 1,
+    "text::Y": 1,
+    "text::Test": 1,
+    "text::ext4": 1,
+    "text::xfs": 1,
+    "text::btrfs": 1
+  },
+  "src/routes/Syncthing.svelte": {
+    "attr:placeholder::photos": 1,
+    "attr:placeholder::AAAAAAA-BBBBBBB-…": 1,
+    "text::0 ? Math.round((totalSynced / totalFiles) * 100) : 100}%": 1,
+    "text::0 && syncPercent(folder)": 1,
+    "text::0 ? translate('syncthing.folder_pending_badge', ) : $t('syncthing.synced_badge')}": 1,
+    "text::0 && syncPercent(selectedFolder)": 1,
+    "text::0 ? $t('syncthing.connected_badge') : $t('syncthing.disconnected_badge')}": 1
+  },
+  "src/routes/Tasks.svelte": {
+    "attr:placeholder::tank/data": 2,
+    "attr:placeholder::sda": 1,
+    "attr:placeholder::repository id": 1
+  },
+  "src/routes/Terminal.svelte": {
+    "text::{#if tabs.length": 1,
+    "text::· local": 1
+  },
+  "src/routes/VPN.svelte": {
+    "attr:placeholder::my-openvpn": 1,
+    "attr:placeholder::username": 2,
+    "attr:placeholder::password": 2,
+    "attr:placeholder::home.example.com": 1,
+    "attr:placeholder::my-provider": 1,
+    "attr:placeholder::[Interface]&#10;PrivateKey = …&#10;Address = …": 1
+  },
+  "src/routes/VirtualMachines.svelte": {
+    "attr:placeholder::ubuntu-1": 1,
+    "attr:placeholder::avant-mise-a-jour": 1,
+    "text::ssh @": 1
+  }
+}

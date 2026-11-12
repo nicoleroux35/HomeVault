@@ -151,12 +151,31 @@ pub fn workgroup_name(raw: &str) -> String {
     }
 }
 
+/// The executable field of the unit. A path with a newline, a NUL or a space
+/// could otherwise end the `ExecStart=` line or add an argument; the real
+/// caller passes a fixed absolute path, this is defense in depth.
+fn sanitize_executable(raw: &str) -> String {
+    let cleaned: String = raw
+        .trim()
+        .chars()
+        .filter(|character| !character.is_control() && !character.is_whitespace())
+        .collect();
+    if cleaned.is_empty() {
+        "wsdd2".to_string()
+    } else {
+        cleaned
+    }
+}
+
 /// The unit body. `wsdd2` binds only 3702 (UDP multicast) and 5357 (HTTP), so
 /// it never needs root; the sandbox is the same conservative set used for the
 /// main unit, minus what a network daemon needs.
 pub fn render_unit(binary: &str, host: &str, workgroup: &str) -> String {
     // Sanitize here too: the unit is a root-owned file, and a caller that
-    // forgot the helpers must not be able to add a second directive.
+    // forgot the helpers must not be able to add a second directive. The
+    // executable is a fixed path in `apply`, but `render_unit` is public and
+    // a newline/NUL in it would corrupt the unit.
+    let binary = sanitize_executable(binary);
     let host = netbios_name(host);
     let workgroup = workgroup_name(workgroup);
     format!(
@@ -286,5 +305,22 @@ mod tests {
         );
         assert!(!unit.contains("ExecStart=/bin/evil"));
         assert!(unit.contains("ExecStart=/usr/sbin/wsdd2 -n hostExecStartbi -w WORKGROUPExecSt"));
+    }
+
+    #[test]
+    fn test_render_unit_cannot_be_broken_by_a_hostile_executable() {
+        let unit = render_unit(
+            "/usr/sbin/wsdd2\0\n[Service]\nExecStart=/bin/evil",
+            "homevault",
+            "WORKGROUP",
+        );
+        assert!(!unit.contains('\0'));
+        assert_eq!(
+            unit.lines()
+                .filter(|line| line.starts_with("ExecStart="))
+                .count(),
+            1,
+            "a hostile executable path added an ExecStart line: {unit}"
+        );
     }
 }

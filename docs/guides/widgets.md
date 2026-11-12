@@ -151,11 +151,10 @@ the keyboard path.
 ## Invariants
 
 - **Shared panel geometry** — the 11 panels share one visual vocabulary from
-  `tokens.css`: corner `--hv-radius-card` (18px, a floating-card corner — not
+  `tokens.css`: corner `--hv-radius-card` (20px, a floating-card corner — not
   the 12px control radius), header `--hv-widget-header-h` (44px, the app-header
-  bar: a 28px accent icon tile (a **perfect circle** — `--hv-winhdr-icon-radius:
-  50%`, same shape as the dock tiles / topbar buttons / app header) + 14px
-  semibold title, **no close/action
+  bar: a 28px tinted icon pill (a **9px squircle**, the v2 icon-pill shape
+  shared with the header) + 14px semibold title, **no close/action
   button** — monitor visibility is managed from Settings > Widgets), and the
   width stops `--hv-monitor-w-compact` (280px: Resources/VPN/Downloader/
   Syncthing), `--hv-monitor-w` (300px: Security/Calendar/Docker/Weather/
@@ -164,8 +163,9 @@ the keyboard path.
 
   The header's icon tile follows the **same contract as the in-window
   `WindowHeader`** (2026-10-18), because the two bars are the same object seen
-  from two places: 28px tile (= `--hv-winctrl-size`), `border-radius: 50%`,
-  white glyph **clamped to 16px by `.hv-widget-tile :global(svg)`** — so a
+  from two places: 28px tile (= `--hv-winctrl-size`), the **9px icon-pill
+  squircle** tinted with 12% of the monitor's accent, the accent itself as the
+  glyph colour, **clamped to 16px by `.hv-widget-tile :global(svg)`** — so a
   monitor's icon snippet must **not** pass `size` (a stylesheet beats the SVG
   attribute; the 11 snippets carried `size={16}` until 2026-10-18 and had it
   removed) while `stroke` stays explicit at **1.8**, the app-header weight, so
@@ -174,10 +174,44 @@ the keyboard path.
   one-colour-per-app rule), monitors are **flat accents** from
   `MONITOR_COLOR` in `Desktop.svelte` — a monitor is not an app, so it has no
   gradient token and must not borrow one. E2E `widgets.spec.ts` `2.2` pins the
-  bar height, the 28×28 tile and its `50%` radius.
+  bar height, the 28×28 tile and its `9px` icon-pill radius.
 
   The
   geometry is locked by `tests/e2e/widgets/widgets.spec.ts` test 2.2.
+- **v2 body anatomy (2026-11-10).** Each panel follows
+  `Nouveau_design/homevault-widgets-v2.svg`:
+  - the header's optional `meta` slot carries the trailing status the mock
+    draws — a green `live` dot on Resources, `x / y up` on Docker,
+    `Protected` / `Attention` on Security, `Syncing` / `Up to date` on
+    Syncthing, the location on Weather, the active count on Downloader and
+    the overall status on Health. It is never interactive; the whole header
+    remains the drag handle.
+  - Resources: three circular gauges, micro uppercase CPU/RAM/TEMP labels,
+    the two network fills and a
+    green "System up to date" bar (amber only when an update exists).
+  - RAID: violet `RAID n` badge, usage bar, blue total-storage block and a
+    green "No issues detected" strip when every array is healthy.
+  - Security: three rows with the check/warning circle on the right; the
+    status detail is spelled out under the title instead of a second badge.
+  - Docker: state text (`Running` / `Restarting` / `Paused` / `Stopped`) is
+    always visible, while the start/restart/stop buttons step back until the
+    row is hovered or focus-within (always visible under a coarse pointer,
+    each keeping its 44px `.hv-ic` hit square).
+  - Calendar: Monday-first grid (leading/trailing days shown muted), month
+    label + two chevrons at the TOP, today as the blue circle, no bottom
+    navigation row. The label is the "jump to today" control.
+  - Downloader: the two speed fills plus the first active aria2 task's name,
+    progress bar and `done / total · speed` line — fetched only after
+    `/downloader/status` has confirmed aria2 is already running.
+  - Weather: location in the header, left-aligned 34px temperature with the
+    condition icon on the right, and the optional detail chips below.
+  - Health: overall status in the header, "All systems operational" / callout,
+    a relative "Checked just now / X min ago" line and the three tinted
+    Healthy/Warning/Critical tiles.
+  - Sessions: the large count and "Users connected" sit on one baseline. The
+    mock's LAN/VPN split and avatar stack are omitted because the only
+    audited datum is `GET /security/active-sessions-count`; the panel never
+    invents a breakdown.
 - There is no second place to keep monitors in sync — see the three-file
   list above. Missing one leaves either a dead store field, a panel that
   never renders, or a catalog tile that toggles nothing.

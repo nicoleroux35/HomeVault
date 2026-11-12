@@ -13,7 +13,7 @@
  *   written through each entry's setVisible.
  *
  * Dependencies:
- *   - @tabler/icons-svelte, svelte (>= 5), stores/monitorStore
+ *   - $lib/icons/lucide, svelte (>= 5), stores/monitorStore
  *
  * Usage:
  *   WIDGET_DEFS in routes/Widgets.svelte, Settings.svelte, widgetLayout.
@@ -32,7 +32,7 @@ import {
   IconShieldCheckered,
   IconSun,
   IconUsers
-} from '@tabler/icons-svelte';
+} from '$lib/icons/lucide';
 import { monitorStore, type MonitorVisibilityKey } from './monitorStore';
 
 /**
@@ -69,7 +69,7 @@ export const WIDGET_DEFS: WidgetDef[] = [
   {
     id: 'resource',
     icon: IconActivity,
-    color: '#1E62AE',
+    color: '#2E72C9',
     nameKey: 'widgets.resource_monitor_name',
     descKey: 'widgets.resource_monitor_desc',
     visibleKey: 'resourceMonitorVisible',
@@ -78,7 +78,7 @@ export const WIDGET_DEFS: WidgetDef[] = [
   {
     id: 'raid',
     icon: IconDatabase,
-    color: '#6366f1',
+    color: '#6A45D6',
     nameKey: 'widgets.raid_monitor_name',
     descKey: 'widgets.raid_monitor_desc',
     visibleKey: 'raidMonitorVisible',
@@ -87,7 +87,7 @@ export const WIDGET_DEFS: WidgetDef[] = [
   {
     id: 'security',
     icon: IconShieldCheckered,
-    color: '#C22B21',
+    color: '#C0392B',
     nameKey: 'widgets.security_monitor_name',
     descKey: 'widgets.security_monitor_desc',
     visibleKey: 'securityMonitorVisible',
@@ -96,7 +96,7 @@ export const WIDGET_DEFS: WidgetDef[] = [
   {
     id: 'vpn',
     icon: IconLock,
-    color: '#059669',
+    color: '#167A4D',
     nameKey: 'widgets.vpn_monitor_name',
     descKey: 'widgets.vpn_monitor_desc',
     visibleKey: 'vpnMonitorVisible',
@@ -105,7 +105,7 @@ export const WIDGET_DEFS: WidgetDef[] = [
   {
     id: 'downloader',
     icon: IconDownload,
-    color: '#22c55e',
+    color: '#2560AC',
     nameKey: 'widgets.downloader_monitor_name',
     descKey: 'widgets.downloader_monitor_desc',
     visibleKey: 'downloaderMonitorVisible',
@@ -114,7 +114,7 @@ export const WIDGET_DEFS: WidgetDef[] = [
   {
     id: 'syncthing',
     icon: IconRefresh,
-    color: '#0ea5e9',
+    color: '#96601A',
     nameKey: 'widgets.syncthing_monitor_name',
     descKey: 'widgets.syncthing_monitor_desc',
     visibleKey: 'syncthingMonitorVisible',
@@ -123,7 +123,7 @@ export const WIDGET_DEFS: WidgetDef[] = [
   {
     id: 'calendar',
     icon: IconCalendar,
-    color: '#d97706',
+    color: '#2E72C9',
     nameKey: 'widgets.calendar_monitor_name',
     descKey: 'widgets.calendar_monitor_desc',
     visibleKey: 'calendarMonitorVisible',
@@ -132,7 +132,7 @@ export const WIDGET_DEFS: WidgetDef[] = [
   {
     id: 'docker',
     icon: ContainerIcon,
-    color: '#2496ed',
+    color: '#6A45D6',
     nameKey: 'widgets.docker_monitor_name',
     descKey: 'widgets.docker_monitor_desc',
     visibleKey: 'dockerMonitorVisible',
@@ -141,7 +141,7 @@ export const WIDGET_DEFS: WidgetDef[] = [
   {
     id: 'weather',
     icon: IconSun,
-    color: '#0284c7',
+    color: '#0E7F92',
     nameKey: 'widgets.weather_monitor_name',
     descKey: 'widgets.weather_monitor_desc',
     visibleKey: 'weatherMonitorVisible',
@@ -150,7 +150,7 @@ export const WIDGET_DEFS: WidgetDef[] = [
   {
     id: 'sessions',
     icon: IconUsers,
-    color: '#7c3aed',
+    color: '#6A45D6',
     nameKey: 'widgets.sessions_monitor_name',
     descKey: 'widgets.sessions_monitor_desc',
     visibleKey: 'sessionsMonitorVisible',
@@ -159,7 +159,7 @@ export const WIDGET_DEFS: WidgetDef[] = [
   {
     id: 'health',
     icon: IconHeartbeat,
-    color: '#e11d48',
+    color: '#167A4D',
     nameKey: 'widgets.health_monitor_name',
     descKey: 'widgets.health_monitor_desc',
     visibleKey: 'healthMonitorVisible',

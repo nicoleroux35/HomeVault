@@ -198,11 +198,11 @@ const size = formatBytes(1024000); // '1 MB'
 
 ### Colors
 
-- **Primary**: `--hv-primary` (#1E62AE — "HomeVault Blue", the product's one accent)
+- **Primary**: `--hv-primary` (#2E72C9 — "HomeVault Blue", the product's one accent)
 - **Secondary**: `--hv-secondary` (#454F5B)
-- **Success**: `--hv-success` (#1E7E34)
-- **Error**: `--hv-error` (#C22B21)
-- **Warning**: `--hv-warning` (#B45309)
+- **Success**: `--hv-success` (#167A4D)
+- **Error**: `--hv-error` (#C0392B)
+- **Warning**: `--hv-warning` (#96601A)
 
 ### Spacings
 
@@ -217,7 +217,7 @@ const size = formatBytes(1024000); // '1 MB'
 
 ### Border Radius
 
-- `--hv-radius-sm` (4px) to `--hv-radius-4xl` (24px)
+- `--hv-radius-badge` (8px), `--hv-radius-control` (12px), `--hv-radius-2xl` (20px) and `--hv-radius-pill` (980px) — one corner per role, never ad-hoc values.
 - `--hv-radius-full` (9999px) for circles
 
 ### Shadows

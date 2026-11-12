@@ -22,7 +22,7 @@
   import { onMount } from 'svelte';
   import { api } from '$lib/services/api';
   import { t } from '$lib/stores/i18n';
-  import { IconPlugConnected, IconPlugOff, IconRefresh } from '@tabler/icons-svelte';
+  import { IconPlugConnected, IconPlugOff, IconRefresh } from '$lib/icons/lucide';
   import SettingsCard from './SettingsCard.svelte';
   import { cn } from '$lib/utils.js';
   import {
@@ -283,7 +283,7 @@
   }
 
   .clients-dot-off {
-    background: var(--hv-settings-border-strong);
+    background: var(--hv-shell-border-strong);
   }
 
   .clients-row {

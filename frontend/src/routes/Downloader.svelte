@@ -23,7 +23,7 @@
   import { PageLayout, iconBtn, iconBtnDanger, StatCard } from '$lib/components/app';
   import { cn } from '$lib/utils.js';
   import type { DownloaderFeedItem, DownloaderRssFeed } from '$lib/types/downloader';
-  import { IconDownload, IconLink, IconPlayerPlay, IconPlayerPause, IconTrash, IconLoader, IconArrowDown, IconArrowUp, IconFile, IconCircleCheck, IconCircleX, IconClock, IconAlertCircle, IconActivity, IconPower, IconRss, IconPlus, IconRefresh, IconPackage } from '@tabler/icons-svelte';
+  import { IconDownload, IconLink, IconPlayerPlay, IconPlayerPause, IconTrash, IconLoader, IconArrowDown, IconArrowUp, IconFile, IconCircleCheck, IconCircleX, IconClock, IconAlertCircle, IconActivity, IconPower, IconRss, IconPlus, IconRefresh, IconPackage } from '$lib/icons/lucide';
 
   interface Aria2Task {
     gid: string;
@@ -454,7 +454,7 @@
   footerMode="status"
 >
   {#snippet icon()}
-    <IconDownload stroke={1.8} />
+    <IconDownload strokeWidth={1.8} />
   {/snippet}
 
   <!-- Page-level primary action: a WindowToolbar row under the header, never
@@ -525,7 +525,7 @@
     {/if}
 
     {#if showAddForm}
-      <div data-testid="downloader-add-form" class="px-4 py-3 rounded-2xl bg-[var(--hv-shell-card)] border border-[var(--hv-shell-border)] shadow-[var(--hv-shell-shadow-card)] mb-4">
+      <div data-testid="downloader-add-form" class="px-4 py-3 rounded-2xl bg-card border border-border shadow-[var(--hv-shell-shadow-card)] mb-4">
         <div class="flex flex-wrap gap-2.5 items-center">
           <input
             data-testid="downloader-input"
@@ -587,7 +587,7 @@
                 {#each activeTasks as task (task.gid)}
                   <div
                     data-testid="downloader-card"
-                    class={cn('px-3 py-2.5 rounded-xl bg-[var(--hv-shell-card)] border transition-colors hover:border-[var(--hv-primary)]/40', selectedTask?.gid === task.gid ? 'border-[var(--hv-primary)]' : 'border-[var(--hv-shell-border)]')}
+                    class={cn('px-3 py-2.5 rounded-lg bg-card border transition-colors hover:border-[var(--hv-primary)]/40', selectedTask?.gid === task.gid ? 'border-[var(--hv-primary)]' : 'border-[var(--hv-shell-border)]')}
                   >
                     <!-- The card is a container, not a button: the selectable
                          part is a real <button> so it never wraps the action
@@ -635,7 +635,7 @@
                 {#each completedTasks as task (task.gid)}
                   <div
                     data-testid="downloader-card"
-                    class={cn('flex items-center gap-3 px-3 py-2.5 rounded-xl bg-[var(--hv-shell-card)] border transition-colors hover:border-[var(--hv-primary)]/40', selectedTask?.gid === task.gid ? 'border-[var(--hv-primary)]' : 'border-[var(--hv-shell-border)]')}
+                    class={cn('flex items-center gap-3 px-3 py-2.5 rounded-lg bg-card border transition-colors hover:border-[var(--hv-primary)]/40', selectedTask?.gid === task.gid ? 'border-[var(--hv-primary)]' : 'border-[var(--hv-shell-border)]')}
                   >
                     <button
                       type="button"
@@ -667,7 +667,7 @@
 
       {#if selectedTask}
         <div data-testid="downloader-detail-pane" class="flex-1 min-w-0 min-h-0 overflow-y-auto px-5">
-          <div class="px-4 py-4 rounded-2xl bg-[var(--hv-shell-card)] border border-[var(--hv-shell-border)] shadow-[var(--hv-shell-shadow-card)]">
+          <div class="px-4 py-4 rounded-2xl bg-card border border-border shadow-[var(--hv-shell-shadow-card)]">
             <div class="flex items-center justify-between gap-3">
               <div class="flex items-center gap-3 min-w-0">
                 <IconFile size={20} class="text-[var(--hv-shell-text-2)] flex-none" />
@@ -728,7 +728,7 @@
   size="lg"
   onclose={() => (showRss = false)}
 >
-  {#snippet icon()}<IconRss size={22} stroke={1.75} />{/snippet}
+  {#snippet icon()}<IconRss size={22} strokeWidth={1.8} />{/snippet}
   {#snippet children()}
     <div class="flex flex-col gap-4" data-testid="downloader-rss">
       {#if rssNotice}
@@ -803,7 +803,7 @@
       {:else}
         <ul class="m-0 p-0 list-none flex flex-col gap-2" data-testid="downloader-rss-list">
           {#each feeds as feed (feed.id)}
-            <li class="px-3 py-2.5 rounded-xl bg-[var(--hv-shell-card)] border border-[var(--hv-shell-border)]" data-testid="downloader-rss-feed">
+            <li class="px-3 py-2.5 rounded-lg bg-card border border-[var(--hv-shell-border)]" data-testid="downloader-rss-feed">
               <div class="flex items-start justify-between gap-3">
                 <div class="min-w-0">
                   <div class="text-sm font-bold text-[var(--hv-shell-text-strong)] truncate">{feed.name}</div>

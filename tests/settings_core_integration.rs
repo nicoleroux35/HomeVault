@@ -832,7 +832,7 @@ async fn test_a_malformed_wallpaper_is_refused_and_leaves_the_stored_value() {
         "a refused save must not touch the stored wallpaper"
     );
     assert_eq!(
-        got["data"]["accent_color"], "#1E62AE",
+        got["data"]["accent_color"], "#2E72C9",
         "a refused save must not touch the stored accent"
     );
 }
@@ -1061,7 +1061,7 @@ async fn test_settings_reset_restores_the_shipped_defaults() {
         None,
     )
     .await;
-    assert_eq!(appearance["data"]["accent_color"], "#1E62AE");
+    assert_eq!(appearance["data"]["accent_color"], "#2E72C9");
     assert_eq!(
         appearance["data"]["wallpaper"], "",
         "the look is back to default"
@@ -1106,7 +1106,7 @@ async fn test_appearance_put_rewrites_the_legacy_default_accent() {
         None,
     )
     .await;
-    assert_eq!(appearance["data"]["accent_color"], "#1E62AE");
+    assert_eq!(appearance["data"]["accent_color"], "#2E72C9");
 
     // The aggregate every Settings window seeds from agrees.
     let (_, all) = send(
@@ -1117,7 +1117,7 @@ async fn test_appearance_put_rewrites_the_legacy_default_accent() {
         None,
     )
     .await;
-    assert_eq!(all["data"]["appearance"]["accent_color"], "#1E62AE");
+    assert_eq!(all["data"]["appearance"]["accent_color"], "#2E72C9");
 }
 
 // ---------------------------------------------------------------------------

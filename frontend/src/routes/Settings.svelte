@@ -26,7 +26,7 @@
   import type { DbBackupStatus, RestoreDrillReport } from '$lib/types/api';
   import { notificationsStore } from '$lib/stores/notifications';
   import { isAdmin } from '$lib/stores/auth';
-  import { wallpaperStore, BUNDLED_WALLPAPERS } from '$lib/stores/wallpaper';
+  import { wallpaperStore, BUNDLED_WALLPAPERS, serializeWallpaper } from '$lib/stores/wallpaper';
   import { monitorStore, REFRESH_INTERVAL_OPTIONS } from '$lib/stores/monitorStore';
   import { WIDGET_DEFS } from '$lib/stores/widgetCatalog';
   import { languageStore, t, translate } from '$lib/stores/i18n';
@@ -111,7 +111,7 @@
   import PushCard from '$lib/components/settings/PushCard.svelte';
   import ContentIndexCard from '$lib/components/settings/ContentIndexCard.svelte';
   import FanControlCard from '$lib/components/settings/FanControlCard.svelte';
-  import { IconAlertTriangle, IconCookie, IconShield, IconCheck, IconSettings, IconWifiOff, IconRefresh, IconMapPin, IconPencil, IconLock } from '@tabler/icons-svelte';
+  import { IconAlertTriangle, IconCookie, IconShield, IconCheck, IconSettings, IconWifiOff, IconRefresh, IconMapPin, IconPencil, IconLock } from '$lib/icons/lucide';
 
   // Sidebar categories — 8 grouped entries instead of a 12-item flat list.
   // The list itself is the single source of truth in
@@ -499,20 +499,18 @@
         };
         draft.appearance = {
           wallpaper: '',
-          accent_color: data.appearance?.accent_color || '#1E62AE'
+          accent_color: data.appearance?.accent_color || '#2E72C9'
         };
 
         // Apply the persisted accent color and wallpaper live — the desktop
         // updates immediately, but the server only gets the new value on Save.
         document.documentElement.style.setProperty('--hv-primary', draft.appearance.accent_color);
-        if (data.appearance?.wallpaper) {
-          // `normalizeWallpaper` accepts the bare path the API stores and the
-          // legacy JSON-encoded object.
-          wallpaperStore.applyRaw(data.appearance.wallpaper);
-        }
-        // The wallpaper draft is the live store's JSON — the same value the
-        // appearance saver sends — so the baseline matches what is on screen.
-        draft.appearance.wallpaper = JSON.stringify($wallpaperStore);
+        // `normalizeWallpaper` accepts the bare path the API stores, the
+        // empty string that means "built-in gradient", and legacy JSON.
+        wallpaperStore.applyRaw(data.appearance?.wallpaper ?? '');
+        // The wallpaper draft is the live store's serialized value — the same
+        // value the appearance saver sends — so the baseline matches the screen.
+        draft.appearance.wallpaper = serializeWallpaper($wallpaperStore);
 
         // Baseline every seeded group so a fresh load never reads as dirty.
         setSavedLanguage(draft.general.language);
@@ -559,19 +557,19 @@
 
   // Wallpaper choice is applied live (the desktop behind the window updates
   // immediately); the server only persists it when the user clicks Save (the
-  // `appearance` group). The default-gradient tile was removed (explicit
-  // request) — every wallpaper offered here is now a bundled photo.
+  // `appearance` group). The first tile is the v2 built-in gradient, then the
+  // bundled photos.
   //
   // `selectedWpUrl` is a reactive `$:` (not a helper fn) so the tile's
   // `class:is-selected`, `aria-checked` AND the check-badge `{#if}` all
   // re-evaluate when the store changes — calling a function that reads
   // `$wallpaperStore` only re-ran the `class:` directive.
-  $: selectedWpUrl = $wallpaperStore.type === 'image' ? $wallpaperStore.value : '';
+  $: selectedWpUrl = $wallpaperStore.type === 'image' ? $wallpaperStore.value : 'default';
 
   // Mirror the live wallpaper into the `appearance` draft so picking a tile
   // marks that group dirty — but only after the initial load has baselined it.
   let wallpaperDirtySync = false;
-  $: if (wallpaperDirtySync) draft.appearance.wallpaper = JSON.stringify($wallpaperStore);
+  $: if (wallpaperDirtySync) draft.appearance.wallpaper = serializeWallpaper($wallpaperStore);
   // ROADMAP 26.1 (option A): the appliance look is one global value an admin
   // saves. A non-admin reads it (the boot hydration paints it) but cannot
   // write it — the grid is shown read-only with an explanatory line instead
@@ -1060,7 +1058,7 @@
   bodyClass="p-0! overflow-hidden! flex flex-col bg-[var(--hv-settings-canvas)]"
 >
   {#snippet icon()}
-    <IconSettings stroke={1.7} />
+    <IconSettings strokeWidth={1.8} />
   {/snippet}
 
   {#snippet sidebar()}
@@ -1287,7 +1285,7 @@
                  reason, never a control that appears to save and does not. -->
             {#if appearanceReadOnly}
               <p class="settings-hint text-xs leading-4 text-[var(--hv-settings-label)]" data-testid="appearance-read-only">
-                <IconLock size={16} stroke={2} class="inline-block align-[-2px] mr-1" />
+                <IconLock size={16} strokeWidth={1.8} class="inline-block align-[-2px] mr-1" />
                 {$t('settings.wallpaper_managed_by_admin')}
               </p>
             {/if}
@@ -1296,8 +1294,12 @@
                  2 once the card is narrower than 380px. -->
             <div class="@container">
               <div class="settings-wallpaper-grid grid grid-cols-3 @max-[380px]:grid-cols-2 gap-3 mt-1" role="radiogroup" aria-labelledby="wallpaperLabel" aria-readonly={appearanceReadOnly} aria-disabled={appearanceReadOnly} data-readonly={appearanceReadOnly}>
+                <button type="button" data-wallpaper-id="default" class="settings-wallpaper-tile relative block w-full p-0 border-0 bg-transparent cursor-pointer" class:is-selected={selectedWpUrl === 'default'} role="radio" aria-checked={selectedWpUrl === 'default'} aria-disabled={appearanceReadOnly} disabled={appearanceReadOnly} aria-label={$t('settings.wallpaper_default')} onclick={() => wallpaperStore.setWallpaper({ type: 'default' })}>
+                  <span class="settings-wallpaper-thumb block w-full aspect-[8/5] rounded-lg border-[1.45px] border-[var(--hv-settings-border)]" style="background: var(--hv-desktop-bg);"></span>
+                  {#if selectedWpUrl === 'default'}<span class="settings-wallpaper-check absolute top-1.5 right-1.5 grid place-items-center w-6 h-6 rounded-full bg-[var(--hv-primary)] text-[var(--hv-on-primary)]"><IconCheck size={16} strokeWidth={3} /></span>{/if}
+                </button>
                 {#each BUNDLED_WALLPAPERS as w, i (w.id)}
-                  <button type="button" class="settings-wallpaper-tile relative block w-full p-0 border-0 bg-transparent cursor-pointer" class:is-selected={w.url === selectedWpUrl} role="radio" aria-checked={w.url === selectedWpUrl} aria-disabled={appearanceReadOnly} disabled={appearanceReadOnly} aria-label={`${$t('settings.wallpaper')} ${i + 1}`} onclick={() => wallpaperStore.setWallpaper({ type: 'image', value: w.url })}>
+                  <button type="button" data-wallpaper-id={w.id} class="settings-wallpaper-tile relative block w-full p-0 border-0 bg-transparent cursor-pointer" class:is-selected={w.url === selectedWpUrl} role="radio" aria-checked={w.url === selectedWpUrl} aria-disabled={appearanceReadOnly} disabled={appearanceReadOnly} aria-label={`${$t('settings.wallpaper')} ${i + 1}`} onclick={() => wallpaperStore.setWallpaper({ type: 'image', value: w.url })}>
                     <!-- `aspect-[8/5]` is the equaliser: the bundled thumbs are
                          not all the same shape (3:2, 4:3 and 16:9 all occur,
                          they follow the source photo), so a height derived
@@ -1310,7 +1312,7 @@
                          `block` kills the inline baseline gap under the
                          image, which otherwise pads the tile by ~4px. -->
                     <img class="settings-wallpaper-thumb block w-full h-auto aspect-[8/5] rounded-lg object-cover border-[1.45px] border-[var(--hv-settings-border)]" src={w.thumb} alt="" decoding="async" width="320" height="200" />
-                    {#if w.url === selectedWpUrl}<span class="settings-wallpaper-check absolute top-1.5 right-1.5 grid place-items-center w-6 h-6 rounded-full bg-[var(--hv-primary)] text-[var(--hv-on-primary)]"><IconCheck size={16} stroke={3} /></span>{/if}
+                    {#if w.url === selectedWpUrl}<span class="settings-wallpaper-check absolute top-1.5 right-1.5 grid place-items-center w-6 h-6 rounded-full bg-[var(--hv-primary)] text-[var(--hv-on-primary)]"><IconCheck size={16} strokeWidth={3} /></span>{/if}
                   </button>
                 {/each}
               </div>
@@ -1635,7 +1637,7 @@
                       </div>
                       <div class="mt-2">
                         {#if aiModels.some(m => m.name === rec.name)}
-                          <span class="inline-flex items-center gap-1 text-xs font-semibold text-[var(--hv-success)]"><IconCheck size={16} stroke={2.5} /> {$t('settings.ai_installed')}</span>
+                          <span class="inline-flex items-center gap-1 text-xs font-semibold text-[var(--hv-success)]"><IconCheck size={16} strokeWidth={2.5} /> {$t('settings.ai_installed')}</span>
                         {:else}
                           <button class={cn(settingsBtn, settingsBtnGhost)} onclick={() => handleInstallAndLoad(rec.name)} disabled={aiPulling}>{aiPulling && newModelName === rec.name ? $t('settings.ai_installing') : $t('settings.ai_install_activate')}</button>
                         {/if}

@@ -25,7 +25,7 @@
    */
   import { onMount, onDestroy } from 'svelte';
   import RFB from '@novnc/novnc';
-  import { IconX, IconRefresh, IconMaximize, IconKeyboard, IconExternalLink } from '@tabler/icons-svelte';
+  import { IconX, IconRefresh, IconMaximize, IconKeyboard, IconExternalLink } from '$lib/icons/lucide';
   import { t, translate } from '$lib/stores/i18n';
 
   interface Props { vmName: string; onClose: () => void }
@@ -131,14 +131,14 @@
       </div>
       <div class="scr-actions">
         <button class="scr-btn" onclick={ctrlAltDel} disabled={status !== 'connected'} title="Ctrl+Alt+Del">
-          <IconKeyboard size={15} stroke={2} /> Ctrl+Alt+Del
+          <IconKeyboard size={15} strokeWidth={1.8} /> Ctrl+Alt+Del
         </button>
-        <button class="scr-btn" onclick={fullscreen} aria-label={$t('vm.screen_fullscreen')}><IconMaximize size={16} stroke={2} /></button>
-        <button class="scr-btn" data-testid="vm-screen-new-tab" onclick={openNewTab} aria-label={$t('vm.screen_new_tab')} title={$t('vm.screen_new_tab')}><IconExternalLink size={16} stroke={2} /></button>
+        <button class="scr-btn" onclick={fullscreen} aria-label={$t('vm.screen_fullscreen')}><IconMaximize size={16} strokeWidth={1.8} /></button>
+        <button class="scr-btn" data-testid="vm-screen-new-tab" onclick={openNewTab} aria-label={$t('vm.screen_new_tab')} title={$t('vm.screen_new_tab')}><IconExternalLink size={16} strokeWidth={1.8} /></button>
         {#if status === 'closed' || status === 'error'}
-          <button class="scr-btn" onclick={reconnect}><IconRefresh size={15} stroke={2} /> {$t('vm.console_reconnect')}</button>
+          <button class="scr-btn" onclick={reconnect}><IconRefresh size={15} strokeWidth={1.8} /> {$t('vm.console_reconnect')}</button>
         {/if}
-        <button class="scr-btn scr-btn-close" onclick={onClose} aria-label={$t('common.close')}><IconX size={18} stroke={2} /></button>
+        <button class="scr-btn scr-btn-close" onclick={onClose} aria-label={$t('common.close')}><IconX size={18} strokeWidth={1.8} /></button>
       </div>
     </header>
 

@@ -216,7 +216,7 @@ dedicated destination of the Users rail's **Quota view** button, and it fronts
   screen renders its own `<PageLayout>`/`<WindowHeader>`, and that set is what
   tells `WindowFrame` not to *also* stack its fallback header on top. `quotas`
   was missing from it on 2026-09-14 and the window shipped **two** bars — the
-  real one plus a blank duplicate (the fallback's `win.icon` sprite name has no
+  real one plus a blank duplicate (the fallback's `win.icon` name has no
   glyph). Fixed 2026-09-14 by adding `'quotas'`; E2E `desktop.spec.ts` `14.9`
   now walks a sample of the registry asserting one `.hv-winhdr` per window, so
   the next new app can't repeat it. **Add every new app id to that set.**

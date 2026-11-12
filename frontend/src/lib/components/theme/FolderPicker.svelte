@@ -12,7 +12,7 @@
        FloatingPathPicker.
 
      Dependencies:
-       - svelte (>= 5), @tabler/icons-svelte, $lib/utils/focusTrap,
+       - svelte (>= 5), $lib/icons/lucide, $lib/utils/focusTrap,
          $lib/services/api
 
      Usage:
@@ -23,7 +23,7 @@
   import { api } from '$lib/services/api';
   import { focusTrap } from '$lib/utils/focusTrap';
   import { t, translate } from '$lib/stores/i18n';
-  import { IconFolderOpen, IconFolder, IconServer, IconChevronRight, IconHome, IconArrowUp, IconLoader, IconShieldCheckered, IconUsb, IconCloud, IconX, IconFile as FileIcon } from '@tabler/icons-svelte';
+  import { IconFolderOpen, IconFolder, IconServer, IconChevronRight, IconHome, IconArrowUp, IconLoader, IconShieldCheckered, IconUsb, IconCloud, IconX, IconFile as FileIcon } from '$lib/icons/lucide';
 
   let {
     open = false,

@@ -106,28 +106,6 @@ async function gotoLogin(page: Page) {
   );
 }
 
-/**
- * Wait until `main.ts` → `loadIconSprite()` has finished injecting the 4 MB
- * `sprite-unified.svg` (a 31 291-node `aria-hidden` container inserted as
- * body's first child). The function fetches asynchronously after mount, so
- * the memory guards must baseline AFTER it — otherwise the one-time mount
- * lands inside their window and counts as a bogus regression (that is
- * exactly the phantom Δ 31 292 nodes test 19.2 used to report; per-cycle
- * growth was 0). Non-fatal on timeout: behaviour degrades to the old race.
- */
-async function waitForIconSprite(page: Page) {
-  await page
-    .waitForFunction(
-      () => {
-        const box = document.querySelector('body > div[aria-hidden="true"]');
-        return !!box && box.querySelectorAll('*').length > 1000;
-      },
-      undefined,
-      { timeout: 15_000 },
-    )
-    .catch(() => {});
-}
-
 async function fillAndSubmit(page: Page, username: string, password: string) {
   await page.fill('#username', username);
   await page.fill('#password', password);
@@ -1287,7 +1265,7 @@ test.describe('13 — Accessibility', () => {
       const cardRadius = await setupCard.evaluate((el) =>
         parseFloat(getComputedStyle(el).borderRadius),
       );
-      expect(cardRadius, 'setup card corner (--hv-radius-2xl, the surface stop)').toBe(18);
+      expect(cardRadius, 'setup card corner (--hv-radius-2xl, the surface stop)').toBe(20);
       return;
     }
 
@@ -1316,17 +1294,13 @@ test.describe('14 — Performance', () => {
     expect(elapsed).toBeLessThan(5_000);
   });
 
-  test('14.2 — interactive DOM node count is small (excludes inlined icon sprite)', async ({
+  test('14.2 — interactive DOM node count is small (excludes SVG glyphs)', async ({
     page,
   }) => {
     await gotoLogin(page);
-    // index.html inlines a multi-thousand-node icon sprite inside a
-    // 0×0 aria-hidden container. It is not part of the login UI's working
-    // DOM, so measure everything except that subtree.
     const count = await page.evaluate(() => {
-      // Exclude every SVG subtree: the inlined icon sprite is one giant SVG
-      // (thousands of <symbol>/<path> nodes) and individual Lucide glyphs are
-      // small SVGs too — none are meaningful "UI" nodes for this budget.
+      // Icon components are SVGs: their paths are not meaningful "UI" nodes
+      // for this budget, so measure everything except SVG subtrees.
       const total = document.querySelectorAll('*').length;
       const svgNodes = document.querySelectorAll('svg, svg *').length;
       return total - svgNodes;
@@ -1685,7 +1659,6 @@ test.describe('19 — Memory regression', () => {
 
   test('19.1 — repeated login attempts do not leak heap (> 3 MB)', async ({ page }) => {
     await gotoLogin(page);
-    await waitForIconSprite(page);
     const baseline = await getHeapMB(page);
 
     for (let i = 0; i < 8; i++) {
@@ -1707,10 +1680,7 @@ test.describe('19 — Memory regression', () => {
     await gotoLogin(page);
     if ((await detectState(page)) !== 'login') return;
 
-    // Let the async icon-sprite mount land before the baseline (see
-    // `waitForIconSprite`), then settle once so the count baseline already
-    // includes any other one-time nodes.
-    await waitForIconSprite(page);
+    // Settle once so the count baseline already includes one-time nodes.
     await failLoginThenDismiss(page, 'ghost_user_zzz', 'WrongPass123');
     const before = await page.evaluate(() => document.querySelectorAll('*').length);
 
