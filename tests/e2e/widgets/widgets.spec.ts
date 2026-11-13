@@ -262,8 +262,10 @@ test.describe('2 — Tile / desktop consistency', () => {
     // A 1px rounding difference between engines is not a geometry regression.
     expect(geo.headerH).toBeGreaterThanOrEqual(42);
     expect(geo.headerH).toBeLessThanOrEqual(45);
-    expect(geo.tileW).toBe(28);
-    expect(geo.tileH).toBe(28);
+    expect(geo.tileW).toBeGreaterThanOrEqual(27);
+    expect(geo.tileW).toBeLessThanOrEqual(28);
+    expect(geo.tileH).toBeGreaterThanOrEqual(27);
+    expect(geo.tileH).toBeLessThanOrEqual(28);
     expect(geo.tileRadius, 'widget header icon tile is the 9px icon pill').toBe('9px');
     expect(geo.tileCentered).toBeLessThanOrEqual(2);
     expect(geo.metaCount, 'the v2 header carries its trailing status slot').toBe(1);

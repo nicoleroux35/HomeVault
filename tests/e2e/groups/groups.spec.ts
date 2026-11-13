@@ -807,8 +807,16 @@ test.describe('10 — Security', () => {
     const ctx = sharedCtx;
     const plain = await createUser(ctx, adminHeaders, { fullname: 'Plain User' });
     try {
-      const login = await apiLogin(ctx, plain.username, plain.password);
-      const plainTokens: Tokens = { ...plain, token: login.token, csrf: login.csrf };
+      // POST /api/users flags the account must_change_password; rotate it
+      // once so the owner lands on the desktop, not the change screen.
+      const owned = `${plain.password}Owned1`;
+      const flagged = await apiLogin(ctx, plain.username, plain.password);
+      await ctx.put(`/api/users/${plain.username}/password`, {
+        headers: { 'x-session-token': flagged.token, 'x-csrf-token': flagged.csrf },
+        data: { current_password: plain.password, new_password: owned },
+      });
+      const login = await apiLogin(ctx, plain.username, owned);
+      const plainTokens: Tokens = { ...plain, password: owned, token: login.token, csrf: login.csrf };
       await gotoDesktop(page, plainTokens);
       await openLaunchpadApp(page, 'Groups');
       // Groups.svelte's onMount redirects non-admins with window.location.href

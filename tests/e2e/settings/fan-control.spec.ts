@@ -296,6 +296,10 @@ test.describe('Fan control card', () => {
 
     const radios = card(page).getByRole('radio');
     const count = await radios.count();
+    if (count === 0) {
+      test.skip(true, 'this host exposes no controllable fan profile');
+      return;
+    }
     expect(count).toBeGreaterThanOrEqual(4);
 
     // Selecting the third profile with the keyboard alone must work: the

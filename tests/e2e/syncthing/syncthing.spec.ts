@@ -1012,7 +1012,7 @@ test.describe('15 — File versions', () => {
     await expect(list).toContainText('holidays/day1.jpg');
     await expect(modal.locator('[data-testid="syncthing-version-restore"]')).toBeEnabled();
 
-    await modal.getByRole('button', { name: /Close|Fermer|Cerrar|Schließen/i }).click();
+    await page.locator('[data-slot="dialog-content"]').last().locator('[data-slot="dialog-close"]').click();
     await expect(modal).toBeHidden();
   });
 });

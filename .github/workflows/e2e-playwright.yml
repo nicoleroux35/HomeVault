@@ -190,11 +190,12 @@ jobs:
               *) printf '%s ' "$d" ;;
             esac
           done)
-          # Login last: its deliberate wrong-password and rate-limit tests
-          # exhaust the per-IP limiter for a minute, which used to make the
-          # next specs' e2eadmin login fail in a wave.
-          E2E_DIRS="$E2E_DIRS tests/e2e/login/"
           npx playwright test $E2E_DIRS --workers=1 --reporter=html --retries=1
+      # Login really last, after the Chromium stage-B pass: its deliberate
+      # wrong-password and rate-limit tests exhaust the per-IP limiter for a
+      # minute, which used to make the next project's e2eadmin login fail.
+      - name: E2E stage B — login suite last
+        run: npx playwright test tests/e2e/login --workers=1 --reporter=line --retries=1
       # D2 — WCAG 2.2 AA (plus the existing typography and UI-kit guards).
       # The baseline freezes existing debt and fails on any new axe violation.
       - name: Design gates — axe-core, typography, UI kit

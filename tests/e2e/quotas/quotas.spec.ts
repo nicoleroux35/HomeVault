@@ -796,7 +796,17 @@ test.describe('15 — Counting period and read scoping', () => {
       createdBody?.success,
       `member creation must succeed: ${JSON.stringify(createdBody)}`,
     ).toBe(true);
-    const login = await apiLogin(memberCtx, memberName, MEMBER_PASS);
+    // POST /api/users flags the account must_change_password; rotate it so
+    // the member can read its own quota instead of being refused by the gate.
+    const ownedPass = `${MEMBER_PASS}Owned1`;
+    const flagged = await apiLogin(memberCtx, memberName, MEMBER_PASS);
+    await memberCtx
+      .put(`/api/users/${memberName}/password`, {
+        headers: { 'x-session-token': flagged.token, 'x-csrf-token': flagged.csrf },
+        data: { current_password: MEMBER_PASS, new_password: ownedPass },
+      })
+      .catch(() => {});
+    const login = await apiLogin(memberCtx, memberName, ownedPass);
     memberToken = login.token;
     expect(memberToken, 'the created member must be able to log in').toBeTruthy();
   });

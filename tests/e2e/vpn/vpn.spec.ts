@@ -759,6 +759,9 @@ test.describe('13 — Real device lifecycle (best-effort, always cleaned up)', (
 
     try {
       const openvpnTab = page.getByRole('tab', { name: /OpenVPN/ });
+      if ((await openvpnTab.count()) === 0) {
+        test.skip(true, 'OpenVPN is not available on this host');
+      }
       await openvpnTab.click();
       await expect(win(page).locator('[data-testid="vpn-card-name"]', { hasText: name })).toBeVisible({
         timeout: 10_000,

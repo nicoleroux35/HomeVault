@@ -173,9 +173,10 @@ async function openSecurity(page: Page, tokens: Tokens) {
   // whose own markup is `.hv-winsidebar-item > .hv-winsidebar-item-text >
   // .hv-winsidebar-item-label`. So select the item that *contains* the
   // Security label, and assert on that same element.
-  const nav = page
-    .locator('[data-testid="settings-nav-item"]')
-    .filter({ has: page.locator('.hv-winsidebar-item-label', { hasText: 'Security' }) })
+  const navItems = page.locator('[data-testid="settings-nav-item"]');
+  const nav = navItems
+    .filter({ hasText: 'Security' })
+    .or(page.getByRole('button', { name: 'Security' }))
     .first();
   await nav.click();
   await expect(nav).toHaveClass(/set-nav-active/);

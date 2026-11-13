@@ -2652,6 +2652,9 @@ test.describe('23 — Redesigned shell', () => {
   test('23.7 — flipping a monitor switch stages it; the Save button POSTs /api/monitor-layout', async ({ page }) => {
     await openSettings(page, admin);
     await openCategory(page, 'widgets');
+    // Let the initial monitor-layout hydration and its 800 ms debounce settle
+    // before listening: only the staged flip must be observed below.
+    await page.waitForTimeout(1_000);
     const row = set(page).locator('.settings-widget-row[data-widget="weather"]');
     const input = row.locator('input[type="checkbox"]');
     const before = await input.isChecked();
@@ -2699,6 +2702,7 @@ test.describe('23 — Redesigned shell', () => {
   test('23.8 — the refresh select offers 2/5/10/30/60s, defaults to 5s and persists on Save', async ({ page }) => {
     await openSettings(page, admin);
     await openCategory(page, 'widgets');
+    await page.waitForTimeout(1_000);
     const select = set(page).locator('#refreshInterval');
     await expect(select).toBeVisible();
 
