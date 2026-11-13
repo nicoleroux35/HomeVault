@@ -438,7 +438,7 @@
                     <button
                       type="button"
                       class={cn(
-                        'min-w-11 h-11 px-2 rounded-lg border text-c-label font-semibold cursor-pointer focus-visible:shadow-[var(--hv-focus-ring)]',
+                        'w-11 h-11 px-0 grid place-items-center rounded-lg border text-c-label font-semibold cursor-pointer focus-visible:shadow-[var(--hv-focus-ring)]',
                         window.days.includes(day)
                           ? 'bg-[var(--hv-primary)] border-[var(--hv-primary)] text-white'
                           : 'bg-transparent border-[var(--hv-shell-border-strong)] text-[var(--hv-shell-text-2)]',

@@ -52,6 +52,7 @@ let member: string;
 let group: string;
 /** `false` when the host has no NOPASSWD sudo — the inheritance half is skipped. */
 let groupAvailable = false;
+let memberPassword = MEMBER_PASS;
 const NO_SUDO = 'requires NOPASSWD sudo for groupadd (see TESTING.md)';
 
 test.beforeAll(async ({ playwright }) => {
@@ -76,6 +77,20 @@ test.beforeAll(async ({ playwright }) => {
   });
   const createdBody = await created.json().catch(() => ({}));
   expect(createdBody?.success, `create must succeed: ${JSON.stringify(createdBody)}`).toBe(true);
+  // The admin-chosen password flags the account must_change_password; rotate
+  // it once so the member's own reads are not refused by the gate.
+  const flaggedLogin = await sharedCtx.post('/api/auth/login', {
+    data: { username: member, password: MEMBER_PASS },
+  });
+  const flaggedBody = await flaggedLogin.json().catch(() => ({}));
+  memberPassword = `${MEMBER_PASS}Owned1`;
+  await sharedCtx.put(`/api/users/${member}/password`, {
+    headers: {
+      'x-session-token': flaggedBody?.data?.token || '',
+      'x-csrf-token': flaggedBody?.data?.csrf_token || '',
+    },
+    data: { current_password: MEMBER_PASS, new_password: memberPassword },
+  });
 
   // A throwaway HomeVault group with the member in it — best effort: the OS
   // call needs sudo, which the test host may not grant.
@@ -173,7 +188,7 @@ test.describe('Group-level resource access', () => {
 
     // A member cannot grant to a group, nor read the group listing.
     const login = await sharedCtx.post('/api/auth/login', {
-      data: { username: member, password: MEMBER_PASS },
+      data: { username: member, password: memberPassword },
     });
     const body = await login.json().catch(() => ({}));
     const memberHeaders = {
@@ -224,7 +239,7 @@ test.describe('Group-level resource access', () => {
     expect(granted.ok(), 'group grant must succeed').toBe(true);
 
     const login = await sharedCtx.post('/api/auth/login', {
-      data: { username: member, password: MEMBER_PASS },
+      data: { username: member, password: memberPassword },
     });
     const body = await login.json().catch(() => ({}));
     const mine = await sharedCtx.get('/api/shares/access/mine', {
@@ -261,7 +276,7 @@ test.describe('Group-level resource access', () => {
 
     // Server-side truth: the member no longer inherits it.
     const login = await sharedCtx.post('/api/auth/login', {
-      data: { username: member, password: MEMBER_PASS },
+      data: { username: member, password: memberPassword },
     });
     const body = await login.json().catch(() => ({}));
     const mine = await sharedCtx.get('/api/shares/access/mine', {

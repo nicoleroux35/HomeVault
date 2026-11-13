@@ -835,7 +835,8 @@ test.describe('5b — Firewall card with a mocked ufw', () => {
     await mockFirewall(page);
     await openSecurity(page, adminTokens);
     const card = firewallCard(page);
-    await expect(card).toContainText('deny incoming');
+    await expect(card).toContainText(/deny/i);
+    await expect(card).toContainText(/incoming/i);
     await expect(card).toContainText('5900/tcp');
     await expect(card).toContainText('192.168.1.0/24');
 

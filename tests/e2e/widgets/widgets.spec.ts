@@ -341,6 +341,9 @@ test.describe('3 — Toggling a widget', () => {
     // `savedAt` is at least as new as the local one; without the stamp a login
     // on a second origin silently reverted the layout (ROADMAP 15.3).
     await openWidgets(page, adminTokens);
+    // Let the monitor-layout hydration settle before the edit that stamps
+    // `savedAt`; otherwise the late server copy can overwrite the click.
+    await page.waitForTimeout(1_000);
     await tile(page, /Calendar/i).click();
 
     const readLayout = () =>
