@@ -1568,7 +1568,7 @@ test.describe('17 — Resource access', () => {
     await expect(win(page).locator('[data-testid="users-access-empty"]')).toBeVisible();
     // An admin account: the read-only note replaces the editor. Filter to
     // Admins first so the tile is in the rendered list.
-    await win(page).locator('[data-testid="users-filter"]', { hasText: /admin/i }).click();
+    await win(page).locator('[data-testid="users-filter"]').nth(3).click();
     await win(page).locator('[data-testid="users-tile"]').filter({ hasText: sharedAdmin2.username }).click();
     await expect(win(page).locator('[data-testid="users-access-admin-note"]')).toBeVisible({ timeout: 8_000 });
   });

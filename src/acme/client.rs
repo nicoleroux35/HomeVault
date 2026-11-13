@@ -1212,7 +1212,7 @@ mod tests {
                     "status": "pending",
                     "challenges": [{
                         "type": "http-01",
-                        "token": "test-token",
+                        "token": "test-token-http01-ok",
                         "url": "https://ca.example/challenge/1",
                     }],
                 }),
@@ -1358,7 +1358,7 @@ wdX9wOkaJXLiDm3RvJeoS2HofTrQ9D15dWvzyFjpVTszgtcQVFeykjJj\n\
             );
         }
         assert!(
-            super::super::challenge_answer("test-token").is_none(),
+            super::super::challenge_answer("test-token-http01-ok").is_none(),
             "the answer is dropped after validation"
         );
 
