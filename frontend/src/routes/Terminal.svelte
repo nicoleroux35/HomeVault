@@ -345,10 +345,14 @@
 
     ws.onmessage = (event) => {
       if (!tab.terminal || !(event.data instanceof ArrayBuffer)) return;
-      // New output means the cursor is about to move — clear any in-flight
-      // ghost/popup first so stale suggestions never corrupt the display.
+      // New output means the cursor is about to move, so an inline ghost has
+      // to go now (it writes into the buffer). The candidate popup is an
+      // overlay anchored to the line being completed, and it must survive the
+      // PTY echo of the very characters that opened it: hiding it on every
+      // frame used to dismiss the popup a few milliseconds after Tab. It is
+      // closed by the next keystroke (Escape included), a click, a tab switch
+      // or a resize instead.
       clearGhost(tab);
-      hidePopup();
       tab.terminal.write(textDecoder.decode(event.data));
     };
 

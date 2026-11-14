@@ -137,6 +137,32 @@ test.afterEach(async ({ page }, testInfo) => {
       console.warn(`[MEM] "${testInfo.title}" grew heap by ${delta.toFixed(1)} MB`);
     }
   }
+
+  // Close the PTY tabs this test opened. The server keeps an unattached shell
+  // alive for 30 minutes (by design: reopening the window resumes it), so one
+  // random tab id per test would exhaust `MAX_TABS_PER_USER` (8) partway
+  // through this ~50-test suite. Every later upgrade is then accepted and
+  // closed immediately, which is why 19.2's completion popup never appeared:
+  // its tab had no live shell behind it.
+  const tabIds: string[] = await page
+    .evaluate(() => {
+      try {
+        const raw = JSON.parse(localStorage.getItem('hv-terminal-tabs') || '{}');
+        return Array.isArray(raw?.tabs)
+          ? raw.tabs.map((t: { id?: unknown }) => t?.id).filter((id: unknown) => typeof id === 'string')
+          : [];
+      } catch {
+        return [];
+      }
+    })
+    .catch(() => []);
+  for (const tabId of tabIds) {
+    await page
+      .request.post(`${BASE}/api/terminal/close?tab=${encodeURIComponent(tabId)}`, {
+        headers: { 'x-session-token': token, 'x-csrf-token': csrf },
+      })
+      .catch(() => {});
+  }
 });
 
 // ---------------------------------------------------------------------------
@@ -1218,8 +1244,32 @@ test.describe('18 — Window management', () => {
 test.describe('19 — Completion', () => {
   /** Focus the xterm textarea so keystrokes land in the shell. */
   async function focusTerminal(page: Page) {
-    const body = page.locator('[data-testid="terminal-body"] .hv-terminal-content').first();
+    // Completion is a client-side layer over a live shell: while the ticket is
+    // still being redeemed there is no PTY, so Tab falls through to
+    // `sendInput` and no popup can appear. Wait for the connection badge
+    // before typing (the CI runner's cold debug build made this race real).
+    await expect(page.locator('[data-testid="terminal-info-badge"]')).toHaveClass(/connected/, {
+      timeout: 20_000,
+    });
+    // Only the active tab's content is rendered; a persisted extra tab would
+    // otherwise give `.first()` a hidden element that swallows the click.
+    const body = page.locator('[data-testid="terminal-body"] .hv-terminal-content:not([hidden])').first();
+    await body.waitFor({ state: 'visible', timeout: 15_000 });
     await body.click({ position: { x: 120, y: 40 } });
+    // xterm takes the keyboard through its hidden helper textarea. Firefox can
+    // deliver the click before that textarea owns focus, and then the typed
+    // keys never reach the shell (19.2 saw no popup at all). Wait for the
+    // focus to actually land instead of relying on a fixed delay.
+    await expect
+      .poll(
+        () =>
+          page.evaluate(() => {
+            const el = document.activeElement as HTMLElement | null;
+            return el?.classList.contains('xterm-helper-textarea') ?? false;
+          }),
+        { timeout: 5_000 },
+      )
+      .toBe(true);
     await page.waitForTimeout(300);
   }
 

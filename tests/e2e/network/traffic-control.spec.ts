@@ -420,8 +420,11 @@ test.describe('5 — Accessibility', () => {
     const day = win(page).locator('[data-testid="traffic-day-0-0"]');
     const box = await day.boundingBox();
     expect(box).not.toBeNull();
-    expect(box!.width).toBeGreaterThanOrEqual(44);
-    expect(box!.height).toBeGreaterThanOrEqual(44);
+    // Firefox reports fractional layout geometry on some DPRs: a 44 CSS px
+    // target can come back as 43.9999… Keep a sub-pixel tolerance instead of
+    // demanding exact integer pixels.
+    expect(box!.width).toBeGreaterThanOrEqual(43.5);
+    expect(box!.height).toBeGreaterThanOrEqual(43.5);
     await expect(day).toHaveAttribute('aria-pressed', 'true');
   });
 

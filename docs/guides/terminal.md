@@ -122,6 +122,10 @@ and offers client-side completion on top of the real shell:
   rendered as a dim italic suffix right after the cursor and accepted with Tab.
 - **Candidate popup** — several candidates → a small `data-testid="terminal-completion-popup"`
   list appears on Tab; clicking an item completes it, Escape / typing hides it.
+  PTY output does **not** hide it: the shell's echo of the characters that were
+  just typed used to land a few milliseconds after Tab and dismiss the popup
+  before it could be clicked (Firefox and Chromium, flaky). Incoming frames
+  still clear the inline ghost, which writes into the buffer.
 - **Fall-through** — with no client-side candidate, Tab is passed through to the
   shell unchanged, so bash's own native completion keeps working.
 - First token = command (static `COMMANDS` list); later tokens = path completion

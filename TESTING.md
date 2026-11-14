@@ -91,7 +91,20 @@ The last four were:
   admin-chosen password once so `must_change_password` no longer refuses the
   member's own reads.
 - **Product — Traffic Control** weekday toggles are a real 44×44 target
-  (5.1 was measuring 43 px), covered by the local 22/22 run.
+  (5.1 was measuring 43 px), covered by the local 22/22 run. Firefox reports
+  fractional geometry (`43.9999…`), so the assertion keeps a 0.5 px tolerance.
+- **Product — Terminal completion popup.** The shell's echo of the just-typed
+  characters arrived a few milliseconds *after* Tab and `ws.onmessage` hid the
+  popup, so 19.2 could never click a candidate. Incoming output now clears the
+  inline ghost only; the popup survives until the next keystroke / Escape /
+  click / tab switch / resize.
+- **Harness — Terminal PTY tabs.** Each of the ~50 tests opened a random tab id
+  and the server keeps an unattached shell for 30 min, so the suite itself
+  exhausted `MAX_TABS_PER_USER` (8): later upgrades are accepted then closed
+  immediately, leaving a terminal with no shell (263 refusals in the stage-B
+  server log). The spec now closes its tabs in `afterEach`, and 19.x waits for
+  the connection badge before typing. Full terminal spec locally: **162
+  passed**, 2 expected cap refusals from the max-tabs test.
 
 ## 2026-11-11 — quality gates added (executed)
 
