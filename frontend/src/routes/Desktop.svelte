@@ -3111,7 +3111,9 @@
         class:hv-dock-item-multi={openWindowCount('docker') > 1}
         onclick={() => handleDockAppClick('docker')}
         data-testid="dock-docker"
-        aria-label={$t('desktop.app_docker_name')}
+        aria-label={dockerRunningCount > 0
+          ? `${$t('desktop.app_docker_name')} — ${$t('desktop.dock_running', { count: String(dockerRunningCount) })}`
+          : $t('desktop.app_docker_name')}
       >
         <div class="hv-dock-icon hv-dock-icon-containers">
           <ContainerIcon size={28} strokeWidth={1.8} />
@@ -3136,7 +3138,9 @@
         class:hv-dock-attention={dockAttention['health']}
         onclick={() => handleDockAppClick('health')}
         data-testid="dock-health"
-        aria-label={$t('desktop.app_health_name')}
+        aria-label={healthIssueCount > 0
+          ? `${$t('desktop.app_health_name')} — ${$t('desktop.dock_issues', { count: String(healthIssueCount) })}`
+          : $t('desktop.app_health_name')}
       >
         <div class="hv-dock-icon hv-dock-icon-security">
           <IconShieldCheckered size={28} strokeWidth={1.8} />
@@ -3210,7 +3214,9 @@
           class:hv-dock-item-active={showActivityPanel}
           onclick={(e) => { e.stopPropagation(); toggleActivityPanel(); }}
           data-testid="dock-activity"
-          aria-label={$t('desktop.activity_title')}
+          aria-label={activityCount > 0
+            ? `${$t('desktop.activity_title')} — ${$t('desktop.activity_badge', { count: String(activityCount) })}`
+            : $t('desktop.activity_title')}
           aria-expanded={showActivityPanel}
           aria-haspopup="dialog"
         >

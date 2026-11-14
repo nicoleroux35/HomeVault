@@ -106,6 +106,32 @@ The last four were:
   the connection badge before typing. Full terminal spec locally: **162
   passed**, 2 expected cap refusals from the max-tabs test.
 
+### Design gates after stage B went green (2026-11-14)
+
+Stage B (**all screens**) and the login suite passed on `4e3d52c`; the run
+stopped at the design gates with two failures, both closed:
+
+- **axe race, not a contrast bug.** Chromium reported
+  `color-contrast::.hv-winhdr-tab-active` on Storage. Scanning a window mid
+  open-fade blends every colour with the backdrop: removing the fixed 600 ms
+  wait reproduces 8 such violations locally, and they disappear once the
+  window is opaque. `designGates.settleWindow()` now waits for
+  `document.getAnimations()` to settle and every `.hv-window` to reach
+  `opacity: 1` before axe runs (login and desktop shell too).
+- **2.5.3 label in name (product).** The dock's Docker, Health and background
+  activity buttons show a count badge inside an `aria-label`ed button, so on a
+  host with issues the name omitted visible text (`label-content-name-mismatch`
+  on `dock-health`). The name now carries the count from the same i18n key as
+  the badge tooltip.
+- **Login suite moved after every gate.** The Firefox axe `beforeAll` could not
+  log in because the login suite had just exhausted its deliberate wrong-password
+  lockout — that step now runs last, after design, visual and compatibility.
+
+Local after the fixes: a11y + typography + ui-kit **108 passed**, compatibility
+(WebKit desktop/mobile + Chromium mobile) **9 passed**. The visual runner showed
+2 data-driven dashboard/docker diffs on this workstation (live CPU/RAM counters
+and local container names, absorbed by the 1 % budget on the CI runner).
+
 ## 2026-11-11 — quality gates added (executed)
 
 The ten missing gates from the test/CI audit are now implemented and were run

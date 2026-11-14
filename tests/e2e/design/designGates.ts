@@ -106,10 +106,41 @@ export async function openApp(page: Page, appId: AppId): Promise<void> {
     await tile.click();
   }
   await expect(page.locator('.hv-window').last()).toBeVisible({ timeout: 15_000 });
+  await settleWindow(page);
   // Give the window's first API round-trip a chance to settle so axe measures
   // the loaded state, not the skeleton. Bounded, never networkidle (the app
   // keeps SSE/polling sockets open).
   await page.waitForTimeout(600);
+}
+
+/**
+ * Wait until the window is fully opaque and no animation is running.
+ *
+ * axe measures the colours it finds *right now*: a window caught mid-fade (or
+ * a launchpad scrim still fading over it) blends every text colour with the
+ * backdrop, and the accessibility gate then reports colour-contrast
+ * violations that do not exist once the screen has settled. The CI runner
+ * hit exactly that — one `color-contrast::.hv-winhdr-tab-active` on Storage
+ * with the fixed 600 ms wait, 8 of them when the wait was removed locally.
+ */
+export async function settleWindow(page: Page): Promise<void> {
+  await page
+    .waitForFunction(
+      () => document.getAnimations().every((animation) => animation.playState !== 'running'),
+      undefined,
+      { timeout: 5_000 },
+    )
+    .catch(() => {});
+  await page
+    .waitForFunction(
+      () => {
+        const windows = Array.from(document.querySelectorAll('.hv-window'));
+        return windows.every((win) => getComputedStyle(win).opacity === '1');
+      },
+      undefined,
+      { timeout: 5_000 },
+    )
+    .catch(() => {});
 }
 
 /** Close the most recently opened window. */

@@ -1240,6 +1240,12 @@ These are correctness rules, enforced by review and by the E2E
   (an `i18n` key — never a hardcoded string, never `title` alone, which
   touch users never see). Forms: every input has a `<label for>` or
   `aria-label` (the 2FA digit boxes name themselves per-field).
+- **Label in name (2.5.3).** When an icon button also shows a visible count
+  (the dock's Docker/Health/activity badges), the number is part of the
+  accessible name: `Docker — 3 running`, `Health — 3 need attention`. An
+  `aria-label` that omits visible text fails axe's
+  `label-content-name-mismatch` and breaks voice control; the name is built
+  from the same i18n keys as the badge tooltip.
 - **No nested interactives.** A container with `role="button"` must not
   contain `<button>` children (Explorer rows are named via `aria-label`;
   prefer a separate control when restructuring).

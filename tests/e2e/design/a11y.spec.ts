@@ -28,6 +28,7 @@ import {
   closeLastWindow,
   gotoDesktop,
   openApp,
+  settleWindow,
   type Tokens,
 } from './designGates';
 
@@ -112,6 +113,7 @@ test('login screen has no new axe violations', async ({ browser }) => {
   await page.goto('/login');
   await page.waitForSelector('#username', { timeout: 20_000 });
   await page.waitForTimeout(400);
+  await settleWindow(page);
 
   compare('login', violationKeys(await scan(page)));
   await ctx.close();
@@ -120,6 +122,7 @@ test('login screen has no new axe violations', async ({ browser }) => {
 test('desktop shell has no new axe violations', async ({ page }) => {
   await gotoDesktop(page, tokens);
   await page.waitForTimeout(400);
+  await settleWindow(page);
   compare('desktop', violationKeys(await scan(page)));
 });
 
