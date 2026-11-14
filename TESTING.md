@@ -67,6 +67,32 @@ after the last three fixes), 7/7 for the read-only/contrast group, 11/13 then
 the `groupadd` paths, which need root and are covered by the CI runner. A
 fresh full stage B is still required to confirm the whole suite.
 
+### Stage-B triage continued (2026-11-14)
+
+Stage B went **102 → 33 → 12 → 7 → 4** failures over the successive batches.
+The last four were:
+
+- **Product — monitor layout.** `monitorStore`'s subscriber published every
+  store change after `hydrated` flipped true, and Svelte queues store
+  notifications: the login hydration's `set()` reached the subscriber *after*
+  the flag flipped, so a page load POSTed the pristine all-off layout
+  (`savedAt: 0`) 800 ms later and clobbered the account's real layout. Widgets
+  3.6 caught it (`savedAt` stayed 0 on the server) and Health 8.2 caught the
+  same POST during a read-only screen load. The subscriber now publishes only
+  stamped layouts (`savedAt > 0`); a pristine default has nothing to say.
+  Verified locally on both browsers (widgets + edit-widgets 70/70, health 8.2
+  2/2, settings 23.2–23.9 16/16).
+- **Harness — firewall card.** `FirewallCard` now exposes its own
+  `data-testid="firewall-card"` (the generic `settings-card` matched two
+  cards), so 5.1/5.2b use it like 5.11–5.15 already did. The full Security
+  spec is **72 passed / 16 skipped** locally.
+- **Harness — Users 17.1** reopens the Users window before filtering to
+  Admins (the detail pane replaces the grid), and **Group Access** rotates the
+  admin-chosen password once so `must_change_password` no longer refuses the
+  member's own reads.
+- **Product — Traffic Control** weekday toggles are a real 44×44 target
+  (5.1 was measuring 43 px), covered by the local 22/22 run.
+
 ## 2026-11-11 — quality gates added (executed)
 
 The ten missing gates from the test/CI audit are now implemented and were run

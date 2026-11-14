@@ -105,6 +105,13 @@ in on a second origin silently reverted a layout the user had just changed.
 A blob saved before the field existed normalises to `0`, so the server copy
 still wins exactly once.
 
+Only a **stamped** layout is ever published. Svelte queues store
+notifications, so the hydration `set()` can reach the store's subscriber
+after `hydrated` flipped true; publishing it then POSTed the pristine
+all-off default (`savedAt: 0`) 800 ms after every load and overwrote the
+account's real layout. The subscriber now calls `scheduleServerPush` only
+when `positions.savedAt > 0` — "never edited" means "nothing to publish".
+
 ### The layout blob is validated before it is stored (ROADMAP 15.1)
 
 `POST /monitor-layout` stores `layout_json` **verbatim** (never re-serialised —

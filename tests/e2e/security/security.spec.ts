@@ -598,7 +598,8 @@ test.describe('5 — Firewall card', () => {
     page,
   }) => {
     await openSecurity(page, adminTokens);
-    const card = set(page).locator('[data-testid="settings-card"]', { hasText: /firewall|pare-feu/i });
+    const card = set(page).locator('[data-testid="firewall-card"]');
+    await expect(card).toHaveCount(1);
     const warn = await card.locator('.fw-warning').count();
     if (!ufwAvailable) {
       expect(warn).toBeGreaterThan(0);
@@ -623,7 +624,7 @@ test.describe('5 — Firewall card', () => {
   test('5.2b — the card shows the default policy', async ({ page }) => {
     test.skip(!ufwAvailable, 'ufw not reachable on this host — the card shows the warning instead');
     await openSecurity(page, adminTokens);
-    const card = set(page).locator('[data-testid="settings-card"]', { hasText: /firewall|pare-feu/i });
+    const card = set(page).locator('[data-testid="firewall-card"]');
     await expect(card).toContainText(/incoming|entrant|eingehend/i);
   });
 

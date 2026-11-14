@@ -283,7 +283,13 @@ function createMonitorStore() {
     currentPositions = p
     if (hydrated && currentUsername && !suppressPush) {
       saveToStorage(currentUsername, p)
-      scheduleServerPush(currentUsername, p)
+      // Never publish a pristine default. Svelte queues store
+      // notifications, so the hydration `set()` below can reach this
+      // subscriber *after* `hydrated` flipped true — that late callback
+      // used to POST an all-off layout stamped `savedAt: 0`, which then
+      // overwrote the account's real layout on every page load. A layout
+      // with no stamp has never been edited, so it has nothing to publish.
+      if (p.savedAt > 0) scheduleServerPush(currentUsername, p)
     }
   })
 
