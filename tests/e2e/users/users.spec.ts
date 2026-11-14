@@ -1566,8 +1566,10 @@ test.describe('17 — Resource access', () => {
     await win(page).locator('[data-testid="users-tile"]').filter({ hasText: sharedActive.username }).click();
     await expect(win(page).locator('[data-testid="users-access-card"]')).toBeVisible({ timeout: 8_000 });
     await expect(win(page).locator('[data-testid="users-access-empty"]')).toBeVisible();
-    // An admin account: the read-only note replaces the editor. Filter to
-    // Admins first so the tile is in the rendered list.
+    // An admin account: the read-only note replaces the editor. Reopen the
+    // Users window so the list/filter bar is visible again (the detail pane
+    // took over the narrow window), then filter to Admins.
+    await gotoUsers(page, adminTokens);
     await win(page).locator('[data-testid="users-filter"]').nth(3).click();
     await win(page).locator('[data-testid="users-tile"]').filter({ hasText: sharedAdmin2.username }).click();
     await expect(win(page).locator('[data-testid="users-access-admin-note"]')).toBeVisible({ timeout: 8_000 });

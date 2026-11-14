@@ -330,7 +330,7 @@
   The server enforces the same gates (a `{"confirmed":true}` body, a 404 for a
   rule that no longer exists, a 403 for a mandatory rule).
 -->
-<SettingsCard title={$t('firewall.title')} subtitle={$t('firewall.subtitle')} class={klass}>
+<SettingsCard title={$t('firewall.title')} subtitle={$t('firewall.subtitle')} class={klass} data-testid="firewall-card">
   {#if loading}
     <p class={settingsHint}>{$t('firewall.loading')}</p>
   {:else if !available}

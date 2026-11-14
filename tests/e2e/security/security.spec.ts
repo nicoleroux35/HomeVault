@@ -825,7 +825,7 @@ async function mockFirewall(
 }
 
 function firewallCard(page: Page) {
-  return set(page).locator('[data-testid="settings-card"]', { hasText: /firewall|pare-feu/i }).first();
+  return set(page).locator('[data-testid="firewall-card"]');
 }
 
 test.describe('5b — Firewall card with a mocked ufw', () => {
