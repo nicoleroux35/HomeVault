@@ -165,6 +165,25 @@ pub struct AuthService {
     login_ip_hourly_limiter: Arc<crate::middleware::rate_limit::RateLimitState>,
 }
 
+/// Parse a debug-only E2E ceiling override. Anything unusable (absent, not a
+/// number, zero) falls back to the shipped constant, so a typo can never make
+/// the limiter stricter or unlimited by accident.
+fn parse_override(raw: Option<&str>, fallback: u32) -> u32 {
+    raw.and_then(|v| v.trim().parse::<u32>().ok())
+        .filter(|v| *v > 0)
+        .unwrap_or(fallback)
+}
+
+/// Debug builds read `var` and let the E2E harness raise one ceiling; release
+/// builds always return `fallback`, so a stray environment variable can never
+/// loosen authentication in production.
+fn debug_override(var: &str, fallback: u32) -> u32 {
+    if !cfg!(debug_assertions) {
+        return fallback;
+    }
+    parse_override(std::env::var(var).ok().as_deref(), fallback)
+}
+
 impl AuthService {
     /// Authentication attempts allowed per client IP inside one minute.
     pub const LOGIN_IP_MAX_PER_MINUTE: u32 = 30;
@@ -173,23 +192,22 @@ impl AuthService {
 
     pub fn new(db: Database) -> Self {
         // The full E2E suite logs in hundreds of times from one IP in a
-        // single run; the production hourly ceiling (120) would lock the
-        // suite out of its own server. Debug builds honour an explicit
-        // override so the harness can raise only that ceiling; release
-        // builds always use the constant.
-        let hourly_max = if cfg!(debug_assertions) {
-            std::env::var("HOMEVAULT_E2E_LOGIN_IP_MAX_PER_HOUR")
-                .ok()
-                .and_then(|v| v.parse::<u32>().ok())
-                .filter(|v| *v > 0)
-                .unwrap_or(Self::LOGIN_IP_MAX_PER_HOUR)
-        } else {
-            Self::LOGIN_IP_MAX_PER_HOUR
-        };
+        // single run; the production ceilings (30/minute, 120/hour) lock the
+        // suite out of its own server. Debug builds honour explicit overrides
+        // so the harness can raise exactly those ceilings; release builds
+        // always use the constants.
+        let per_minute_max = debug_override(
+            "HOMEVAULT_E2E_LOGIN_IP_MAX_PER_MINUTE",
+            Self::LOGIN_IP_MAX_PER_MINUTE,
+        );
+        let hourly_max = debug_override(
+            "HOMEVAULT_E2E_LOGIN_IP_MAX_PER_HOUR",
+            Self::LOGIN_IP_MAX_PER_HOUR,
+        );
         Self {
             pool: db.pool(),
             login_ip_limiter: Arc::new(crate::middleware::rate_limit::RateLimitState::new(
-                Self::LOGIN_IP_MAX_PER_MINUTE,
+                per_minute_max,
                 60,
             )),
             login_ip_hourly_limiter: Arc::new(crate::middleware::rate_limit::RateLimitState::new(
@@ -1816,7 +1834,7 @@ except Exception as e:
 
 #[cfg(test)]
 mod base32_totp_tests {
-    use super::AuthService;
+    use super::{debug_override, parse_override, AuthService};
 
     // Regression test for a bug where `decode_base32`'s lookup table mapped
     // 'W'/'X'/'Y'/'Z' to -1 (invalid) instead of 22-25, silently dropping
@@ -1921,6 +1939,28 @@ mod base32_totp_tests {
             &secret,
             &wrong.to_string()
         ));
+    }
+
+    #[test]
+    fn parse_override_accepts_only_a_positive_integer() {
+        assert_eq!(parse_override(None, 30), 30);
+        assert_eq!(parse_override(Some("100000"), 30), 100000);
+        assert_eq!(parse_override(Some(" 42 "), 30), 42);
+        for bad in ["", "0", "-1", "abc", "30.5"] {
+            assert_eq!(parse_override(Some(bad), 30), 30, "{bad:?} must fall back");
+        }
+    }
+
+    #[test]
+    fn debug_override_reads_the_environment_in_debug_builds() {
+        let var = "HOMEVAULT_TEST_LOGIN_OVERRIDE_UNIQUE";
+        std::env::remove_var(var);
+        assert_eq!(debug_override(var, 7), 7);
+        std::env::set_var(var, "99");
+        assert_eq!(debug_override(var, 7), 99);
+        std::env::set_var(var, "nope");
+        assert_eq!(debug_override(var, 7), 7);
+        std::env::remove_var(var);
     }
 
     #[test]

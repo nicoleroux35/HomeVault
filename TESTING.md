@@ -162,6 +162,14 @@ That was the same built-in debt `iscsi` and `metrics` had frozen. `PageLayout`
 now adds `tabindex="0"` to the body **only while it scrolls** (with a focus
 ring), so both keys left the baseline — the a11y suite stays at **66/66**.
 
+One stage-B failure on `df74fd6` was not a regression at all: five settings
+specs could not log in as `e2eadmin` because the **per-minute** login ceiling
+(30/IP) was exhausted by the suite's own `beforeAll` logins — the harness only
+raised the hourly ceiling. Debug builds now honour
+`HOMEVAULT_E2E_LOGIN_IP_MAX_PER_MINUTE` exactly like the hourly one (release
+builds ignore both), and the workflow sets it to 100000. Verified locally: 45
+burst logins → 45×200 with the override, and 30×200 then 15×429 without it.
+
 Local after the fixes: a11y + typography + ui-kit **108 passed**, compatibility
 (WebKit desktop/mobile + Chromium mobile) **9 passed**. The visual runner showed
 2 data-driven dashboard/docker diffs on this workstation (live CPU/RAM counters
