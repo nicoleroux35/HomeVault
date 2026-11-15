@@ -66,9 +66,9 @@ export const SHIPPED_ACCENT = '#2E72C9';
 /**
  * Restore the shipped appearance before a gate measures colours.
  *
- * The settings spec saves a custom accent (`#e2725b`, 3.08:1 on white) to prove
- * the server value wins over this origin's localStorage, and the server keeps
- * it. A gate that then scans the app reports the active window tab
+ * The settings spec saves a custom accent to prove the server value wins over
+ * this origin's localStorage, and the server keeps it. Before accents were
+ * clamped on write, a pale one made a gate report the active window tab
  * (`color: var(--hv-primary)`) as a contrast failure that does not exist with
  * the shipped accent — exactly what happened to the Storage screen. The gates
  * measure the look the product ships, so they reset it first.

@@ -551,6 +551,9 @@ async fn test_appearance_put_then_get_round_trips_the_two_fields() {
     let mut router = settings_router(state);
     let token = login(&mut router, "admin1", "Password123!").await;
 
+    // A pale accent is stored darkened to a text-safe shade (§1.4.3): the
+    // accent paints window-tab labels, so the round trip returns the clamped
+    // value rather than the byte-identical input.
     let payload = json!({
         "wallpaper": "/wallpapers/hv-09.webp",
         "accent_color": "#e2725b"
@@ -575,7 +578,7 @@ async fn test_appearance_put_then_get_round_trips_the_two_fields() {
     )
     .await;
     assert_eq!(got["data"]["wallpaper"], "/wallpapers/hv-09.webp");
-    assert_eq!(got["data"]["accent_color"], "#e2725b");
+    assert_eq!(got["data"]["accent_color"], "#B75C4A");
     // ROADMAP 26.2: the two no-ops are gone from the wire, not just ignored.
     assert!(got["data"].get("theme").is_none(), "{got}");
     assert!(got["data"].get("density").is_none(), "{got}");
@@ -589,7 +592,7 @@ async fn test_appearance_put_then_get_round_trips_the_two_fields() {
         None,
     )
     .await;
-    assert_eq!(all["data"]["appearance"]["accent_color"], "#e2725b");
+    assert_eq!(all["data"]["appearance"]["accent_color"], "#B75C4A");
     assert_eq!(
         all["data"]["appearance"]["wallpaper"],
         "/wallpapers/hv-09.webp"
@@ -1000,7 +1003,9 @@ async fn test_export_then_import_round_trips_and_keeps_the_password() {
         None,
     )
     .await;
-    assert_eq!(got["data"]["accent_color"], "#abcdef");
+    // `#abcdef` is 1.9:1 on white, so it was stored darkened (`#63778B`);
+    // the export/import round trip carries the clamped value, not the input.
+    assert_eq!(got["data"]["accent_color"], "#63778B");
     assert!(got["data"].get("density").is_none(), "{got}");
 
     // …and re-exporting still shows the email server (importing a redacted

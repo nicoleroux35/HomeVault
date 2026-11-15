@@ -946,11 +946,18 @@ test.describe('4 — Appearance', () => {
       const created = await createMember(ctx, sharedCtx, adminHeaders, 'e2eap', memberPass);
       memberName = created.name;
 
-      // The appliance look an admin saved (restored by afterAll).
+      // The appliance look an admin saved (restored by afterAll). A pale
+      // accent is darkened on write so labels painted with it stay
+      // AA-readable (WCAG 1.4.3), so assert what the server actually stored.
       await sharedCtx.put('/api/settings/appearance', {
         headers: adminHeaders,
         data: { accent_color: '#e2725b', wallpaper: '/wallpapers/hv-07.webp' },
       });
+      const stored = await sharedCtx
+        .get('/api/settings/appearance', { headers: adminHeaders })
+        .then((r) => r.json());
+      const accent = String(stored?.data?.accent_color ?? '');
+      expect(accent, 'a pale accent must be clamped to a text-safe shade').toBe('#B75C4A');
       // …and a stale copy this browser already holds, which must lose.
       await page.addInitScript(() => {
         try {
@@ -967,7 +974,7 @@ test.describe('4 — Appearance', () => {
           () => page.evaluate(() => getComputedStyle(document.documentElement).getPropertyValue('--hv-primary').trim()),
           { timeout: 15_000 },
         )
-        .toBe('#e2725b');
+        .toBe(accent);
 
       const applied = await page.evaluate(() => localStorage.getItem('hv-wallpaper'));
       expect(applied, 'the server wallpaper replaces the stale local one').toContain('/wallpapers/hv-07.webp');

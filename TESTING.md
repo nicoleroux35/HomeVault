@@ -134,9 +134,10 @@ stopped at the design gates with two failures, both closed:
   through the API. `resetShippedAppearance()` now restores `#2E72C9` in the
   a11y and visual `beforeAll`. This is a gate-state artefact, not a shipped
   defect: the accent has no editing UI, and the shipped accent is 4.78:1.
-  (Known limitation: the API still accepts an arbitrary accent, and any value
-  below 4.5:1 weakens text painted with `--hv-primary`; see
-  `docs/guides/design-system.md` §7.1.)
+  The underlying hazard is closed on the server side too — `normalize_accent()`
+  now darkens any accent below 4.5:1 (hue kept, `#e2725b` → `#B75C4A`) on
+  every write/load path, so a pale value saved by an older release cannot make
+  window-tab labels unreadable.
 
 Local after the fixes: a11y + typography + ui-kit **108 passed**, compatibility
 (WebKit desktop/mobile + Chromium mobile) **9 passed**. The visual runner showed

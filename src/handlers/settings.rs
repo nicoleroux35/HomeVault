@@ -692,18 +692,85 @@ pub fn validate_accent_color_field(raw: &str) -> Result<String, String> {
     Ok(trimmed.to_string())
 }
 
+/// Smallest contrast ratio `--hv-primary` needs against white, because the
+/// accent paints real labels (the active window tab), not just decoration —
+/// WCAG 2.2 AA §1.4.3 normal text.
+pub const MIN_ACCENT_CONTRAST: f64 = 4.5;
+
+/// Parse a `#rgb` / `#rrggbb` / `#rrggbbaa` colour into its effective RGB over
+/// white (an alpha channel is composited, so the contrast maths describes what
+/// the user actually sees on a panel). Validation already rejects anything
+/// that is not hex, so `None` here only means "defensive fallback".
+fn parse_accent_rgb(accent: &str) -> Option<(u8, u8, u8)> {
+    let hex = accent.trim().strip_prefix('#')?;
+    if !hex.chars().all(|c| c.is_ascii_hexdigit()) {
+        return None;
+    }
+    let (body, alpha) = match hex.len() {
+        3 => {
+            let expanded: String = hex.chars().flat_map(|c| [c, c]).collect();
+            (expanded, 255u8)
+        }
+        6 => (hex.to_string(), 255u8),
+        8 => (hex[..6].to_string(), u8::from_str_radix(&hex[6..], 16).ok()?),
+        _ => return None,
+    };
+    let channel = |range: std::ops::Range<usize>| u8::from_str_radix(&body[range], 16).ok();
+    let (r, g, b) = (channel(0..2)?, channel(2..4)?, channel(4..6)?);
+    let mix = |c: u8| {
+        let a = alpha as f64 / 255.0;
+        (c as f64 * a + 255.0 * (1.0 - a)).round().clamp(0.0, 255.0) as u8
+    };
+    Some((mix(r), mix(g), mix(b)))
+}
+
+/// WCAG 2.x contrast ratio of an opaque colour against pure white.
+fn contrast_on_white(rgb: (u8, u8, u8)) -> f64 {
+    let linear = |c: u8| {
+        let s = c as f64 / 255.0;
+        if s <= 0.040_45 {
+            s / 12.92
+        } else {
+            ((s + 0.055) / 1.055).powf(2.4)
+        }
+    };
+    let luminance = 0.2126 * linear(rgb.0) + 0.7152 * linear(rgb.1) + 0.0722 * linear(rgb.2);
+    1.05 / (luminance + 0.05)
+}
+
 /// Rewrite the legacy default accents on every path that can introduce them
 /// (shipped default, persisted load, import, `PUT /settings/appearance`).
 /// `#4a90d9` failed WCAG 1.4.3 in both directions and `#1E62AE` is the
-/// pre-v2 brand stop; both become the shipped default. Any other value is
-/// returned untouched (the accent has no editing UI, so nothing an operator
-/// actually chose is overridden).
+/// pre-v2 brand stop; both become the shipped default.
+///
+/// Any *other* accent that would paint below [`MIN_ACCENT_CONTRAST`] against
+/// white is darkened (hue kept) until it passes: the accent has no editing UI,
+/// but an older release saved one, and the same value is also accepted through
+/// the API — a stored pale accent must not make window-tab labels unreadable.
+/// A value that already passes is returned untouched, byte for byte.
 pub fn normalize_accent(accent: &str) -> String {
     if accent.eq_ignore_ascii_case("#4a90d9") || accent.eq_ignore_ascii_case("#1E62AE") {
-        DEFAULT_ACCENT.to_string()
-    } else {
-        accent.to_string()
+        return DEFAULT_ACCENT.to_string();
     }
+    let Some(rgb) = parse_accent_rgb(accent) else {
+        return DEFAULT_ACCENT.to_string();
+    };
+    if contrast_on_white(rgb) >= MIN_ACCENT_CONTRAST {
+        return accent.trim().to_string();
+    }
+    // Darken toward black in 1 % steps: the first step that passes is the
+    // lightest value that still reads, so the hue stays recognisable. Black is
+    // 21:1, so the loop always terminates.
+    let mut scale = 0.99_f64;
+    while scale > 0.0 {
+        let shade = |c: u8| (c as f64 * scale).round().clamp(0.0, 255.0) as u8;
+        let candidate = (shade(rgb.0), shade(rgb.1), shade(rgb.2));
+        if contrast_on_white(candidate) >= MIN_ACCENT_CONTRAST {
+            return format!("#{:02X}{:02X}{:02X}", candidate.0, candidate.1, candidate.2);
+        }
+        scale -= 0.01;
+    }
+    DEFAULT_ACCENT.to_string()
 }
 
 /// The result of a version check against the GitHub releases API.
@@ -2461,7 +2528,7 @@ mod tests {
     }
 
     #[test]
-    fn test_normalize_accent_rewrites_only_the_legacy_default() {
+    fn test_normalize_accent_rewrites_the_legacy_defaults() {
         // The legacy default fails §1.4.3 both ways and must never reach a
         // client again, in any letter case…
         assert_eq!(normalize_accent("#4a90d9"), DEFAULT_ACCENT);
@@ -2469,9 +2536,34 @@ mod tests {
         // The pre-v2 brand stop migrates to the v2 default too.
         assert_eq!(normalize_accent("#1E62AE"), DEFAULT_ACCENT);
         assert_eq!(normalize_accent("#1e62ae"), DEFAULT_ACCENT);
-        // …while every other value (round-tripped export, operator-set) is kept.
-        assert_eq!(normalize_accent("#e2725b"), "#e2725b");
+    }
+
+    #[test]
+    fn test_normalize_accent_clamps_accents_that_fail_text_contrast() {
+        // The shipped accent is 4.8:1 and comes back byte for byte, as does
+        // any other readable colour (a round-tripped export must not churn).
+        assert_eq!(normalize_accent(DEFAULT_ACCENT), DEFAULT_ACCENT);
         assert_eq!(normalize_accent("#123456"), "#123456");
+        assert_eq!(normalize_accent("#000"), "#000");
+
+        // A pale accent saved by an older release is darkened until labels
+        // painted with it are AA-readable, keeping the hue.
+        assert_eq!(normalize_accent("#e2725b"), "#B75C4A");
+        let clamped = parse_accent_rgb(&normalize_accent("#e2725b")).unwrap();
+        assert!(
+            contrast_on_white(clamped) >= MIN_ACCENT_CONTRAST,
+            "a clamped accent must meet §1.4.3"
+        );
+        assert!(clamped.0 > clamped.1 && clamped.1 > clamped.2, "hue preserved");
+
+        // Short and alpha forms composite over white before the maths, so the
+        // near-white accent lands on the same readable grey.
+        assert_eq!(normalize_accent("#fff"), "#757575");
+        assert_eq!(normalize_accent("#ffffff80"), "#757575");
+        assert_eq!(normalize_accent("#efefef"), "#757575");
+
+        // Only a corrupted blob can reach the parser with junk; fall back.
+        assert_eq!(normalize_accent("red"), DEFAULT_ACCENT);
     }
 
     #[test]
