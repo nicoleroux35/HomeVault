@@ -139,6 +139,14 @@ stopped at the design gates with two failures, both closed:
   every write/load path, so a pale value saved by an older release cannot make
   window-tab labels unreadable.
 
+One more gate-state lesson from `deeb830`: the Explorer baseline froze one key
+per filesystem entry (`div[data-path="/boot"]`, …), so the CI image gaining
+`/__e`, `/__t`, `/__w`, `/github` and `/ms-playwright` looked like 8 new
+violations. `violationKeys()` now collapses `[data-path="…"]` to
+`[data-path="*"]`: the baseline still freezes the *rule* every row breaks
+(`nested-interactive`, `label-content-name-mismatch`) without depending on the
+host's root listing.
+
 Local after the fixes: a11y + typography + ui-kit **108 passed**, compatibility
 (WebKit desktop/mobile + Chromium mobile) **9 passed**. The visual runner showed
 2 data-driven dashboard/docker diffs on this workstation (live CPU/RAM counters

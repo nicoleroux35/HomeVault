@@ -57,7 +57,13 @@ function violationKeys(result: Awaited<ReturnType<AxeBuilder['analyze']>>): stri
         .join(' ')
         // Generated ids (window-1, lp-info-…) would make the baseline churn.
         .replace(/#window-\d+/g, '#window-N')
-        .replace(/#lp-(info|state)-[^ ]+/g, '#lp-$1-X');
+        .replace(/#lp-(info|state)-[^ ]+/g, '#lp-$1-X')
+        // Explorer rows are one element per fileystem entry, so their
+        // `data-path` makes the key depend on the machine's root listing:
+        // the CI image gained /__e, /__t, /__w, /github and /ms-playwright and
+        // the gate called them new violations. Collapse the path to "*": the
+        // baseline still freezes the *rule* every row breaks, on any host.
+        .replace(/\[data-path="[^"]*"\]/g, '[data-path="*"]');
       keys.push(`${violation.id}::${target}`);
     }
   }
