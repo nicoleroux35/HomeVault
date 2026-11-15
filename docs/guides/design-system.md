@@ -1249,6 +1249,13 @@ These are correctness rules, enforced by review and by the E2E
   an accent saved by an older release can never make labels unreadable. The
   design gates still reset the shipped accent before scanning, because they
   measure the look the product ships and not the last spec's choice.
+- **Scrollable regions are keyboard-reachable (2.1.1).** A page body that
+  overflows must be scrollable without a mouse. `PageLayout` measures its
+  `<main class="hv-page-body">` and adds `tabindex="0"` **only while it
+  actually scrolls** (`scrollFocusable`, with a focus ring), so a short page
+  never grows a dead tab stop and an overflowing one passes axe's
+  `scrollable-region-focusable`. Any hand-rolled `overflow: auto` container
+  needs the same treatment.
 - **Label in name (2.5.3).** When an icon button also shows a visible count
   (the dock's Docker/Health/activity badges), the number is part of the
   accessible name: `Docker — 3 running`, `Health — 3 need attention`. An

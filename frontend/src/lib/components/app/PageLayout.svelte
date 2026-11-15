@@ -42,6 +42,33 @@
   import WindowFooter from '$lib/components/desktop/WindowFooter.svelte';
   import { cn } from '$lib/utils.js';
 
+  /**
+   * Keep the scrolling body keyboard-reachable only when it actually scrolls.
+   *
+   * A `main` with `overflow-y: auto` that overflows is a scrollable region, and
+   * WCAG 2.1.1 / axe `scrollable-region-focusable` requires a keyboard path to
+   * it — a keyboard-only user cannot scroll a mouse-only region. Making every
+   * page body a tab stop would add a dead stop on short pages, so the tabindex
+   * appears with the overflow and disappears when the window is tall enough.
+   */
+  function scrollFocusable(node: HTMLElement) {
+    const sync = () => {
+      if (node.scrollHeight > node.clientHeight + 1) node.setAttribute('tabindex', '0');
+      else node.removeAttribute('tabindex');
+    };
+    sync();
+    const resize = new ResizeObserver(sync);
+    resize.observe(node);
+    const mutations = new MutationObserver(sync);
+    mutations.observe(node, { childList: true, subtree: true });
+    return {
+      destroy() {
+        resize.disconnect();
+        mutations.disconnect();
+      },
+    };
+  }
+
   interface Tab {
     id: string;
     label: string;
@@ -186,7 +213,7 @@
             {#snippet right()}{#if toolbarRight}{@render toolbarRight()}{/if}{/snippet}
           </WindowToolbar>
         {/if}
-        <main class="@container {cn('hv-page-body flex-1 min-h-0 overflow-y-auto p-6', bodyClass)}">
+        <main class="@container {cn('hv-page-body flex-1 min-h-0 overflow-y-auto p-6', bodyClass)}" use:scrollFocusable aria-label={title}>
           {@render children()}
         </main>
         {#if footer}
@@ -202,7 +229,7 @@
           {#snippet right()}{#if toolbarRight}{@render toolbarRight()}{/if}{/snippet}
         </WindowToolbar>
       {/if}
-      <main class="@container {cn('hv-page-body flex-1 min-h-0 overflow-y-auto p-6', bodyClass)}">
+      <main class="@container {cn('hv-page-body flex-1 min-h-0 overflow-y-auto p-6', bodyClass)}" use:scrollFocusable aria-label={title}>
         {@render children()}
       </main>
       {#if footer}
@@ -211,3 +238,12 @@
     </div>
   {/if}
 </div>
+
+<style>
+  /* The page body only becomes focusable while it scrolls (see
+     `scrollFocusable`); when it does, the focus ring must be visible. */
+  .hv-page-body:focus-visible {
+    outline: 2px solid var(--hv-primary);
+    outline-offset: -2px;
+  }
+</style>

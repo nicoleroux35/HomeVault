@@ -25,9 +25,7 @@
   "destinations": [],
   "replication": [],
   "traffic-control": [],
-  "iscsi": [
-    "scrollable-region-focusable::.\\@container"
-  ],
+  "iscsi": [],
   "directory": [],
   "users": [
     "color-contrast::.bg-\\[var\\(--hv-primary-selected-bg\\)\\]",
@@ -67,8 +65,7 @@
   "virtual-machines": [],
   "tasks": [],
   "metrics": [
-    "color-contrast::.bg-\\[var\\(--hv-primary-selected-bg\\)\\]",
-    "scrollable-region-focusable::.\\@container"
+    "color-contrast::.bg-\\[var\\(--hv-primary-selected-bg\\)\\]"
   ],
   "settings": []
 }

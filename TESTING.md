@@ -155,6 +155,13 @@ settles the grid and, on an empty *successful* answer, skips with the reason
 also stopped showing the loading hint forever: an empty list now says no
 writable disk is available (`users.no_disks`, four locales), covered by 16.7.
 
+On `36c2a1a` the Backup screen overflowed (`scrollable-region-focusable` on the
+shared `.hv-page-body`): the CI database listed enough backups to make the page
+body scroll, and a scrollable region with no keyboard path fails WCAG 2.1.1.
+That was the same built-in debt `iscsi` and `metrics` had frozen. `PageLayout`
+now adds `tabindex="0"` to the body **only while it scrolls** (with a focus
+ring), so both keys left the baseline — the a11y suite stays at **66/66**.
+
 Local after the fixes: a11y + typography + ui-kit **108 passed**, compatibility
 (WebKit desktop/mobile + Chromium mobile) **9 passed**. The visual runner showed
 2 data-driven dashboard/docker diffs on this workstation (live CPU/RAM counters
