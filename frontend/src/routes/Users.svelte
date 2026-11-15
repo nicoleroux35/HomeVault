@@ -1208,7 +1208,7 @@
                   {#if loadingDisks}
                     <div class={hint}><Spinner size="sm" label={$t('users.loading_disks')} /></div>
                   {:else if availableDisks.length === 0}
-                    <div class={hint}>{$t('users.loading_disks')}</div>
+                    <div class={hint} data-testid="users-no-disks">{$t('users.no_disks')}</div>
                   {:else}
                     {#each availableDisks as d (d.mount_point)}
                       <button
@@ -1500,7 +1500,7 @@
                 {#if loadingDisks}
                   <div class={hint}><Spinner size="sm" label={$t('users.loading_disks')} /></div>
                 {:else if availableDisks.length === 0}
-                  <div class={hint}>{$t('users.loading_disks')}</div>
+                  <div class={hint} data-testid="users-no-disks">{$t('users.no_disks')}</div>
                 {:else}
                   {#each availableDisks as d (d.mount_point)}
                     <button

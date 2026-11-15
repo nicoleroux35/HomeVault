@@ -147,6 +147,14 @@ violations. `violationKeys()` now collapses `[data-path="…"]` to
 (`nested-interactive`, `label-content-name-mismatch`) without depending on the
 host's root listing.
 
+One stage-B failure on `049936f` was host data again: the HomeVault container's
+`/` is an overlay filesystem, so `GET /api/storage/available-home-disks`
+correctly returned `[]` and the Users 16.x grid stayed empty. The spec now
+settles the grid and, on an empty *successful* answer, skips with the reason
+(the API answer is checked first, so a broken endpoint still fails). The grid
+also stopped showing the loading hint forever: an empty list now says no
+writable disk is available (`users.no_disks`, four locales), covered by 16.7.
+
 Local after the fixes: a11y + typography + ui-kit **108 passed**, compatibility
 (WebKit desktop/mobile + Chromium mobile) **9 passed**. The visual runner showed
 2 data-driven dashboard/docker diffs on this workstation (live CPU/RAM counters

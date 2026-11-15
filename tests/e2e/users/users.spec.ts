@@ -1425,12 +1425,41 @@ test.describe('16 — Home directory size limit', () => {
    * choose by free space so they describe the feature rather than whichever
    * partition happens to be listed first on the host.
    */
+  /**
+   * Wait for the create form's disk grid to settle.
+   *
+   * The list is fetched when the home toggle turns on, and a container whose
+   * `/` is an overlay filesystem legitimately offers no writable disk (the CI
+   * runner is one — the 049936f run failed on exactly that). Distinguish that
+   * state from a broken endpoint by asking the API: an empty *successful*
+   * answer skips, an error fails with the server message.
+   */
+  async function settleDiskGrid(page: Page) {
+    const disks = win(page).locator('[data-testid="users-disk-grid"] [data-testid="users-disk"]');
+    const empty = win(page).locator('[data-testid="users-no-disks"]');
+    await expect
+      .poll(
+        async () => ((await empty.count()) > 0 ? 'empty' : (await disks.count()) > 0 ? 'ready' : 'loading'),
+        { timeout: 15_000 },
+      )
+      .not.toBe('loading');
+    if ((await disks.count()) === 0) {
+      const res = await page.request.get('/api/storage/available-home-disks', {
+        headers: { 'x-session-token': adminTokens.token },
+      });
+      const body = await res.json().catch(() => ({}));
+      expect(res.ok(), `available-home-disks must answer (${res.status()}): ${JSON.stringify(body)}`).toBe(true);
+      expect(Array.isArray(body?.data), `available-home-disks payload: ${JSON.stringify(body)}`).toBe(true);
+      test.skip(true, 'no writable home disk on this host (container overlay filesystem)');
+    }
+    return disks;
+  }
+
   async function openCreateHomeOnDisk(page: Page) {
     await gotoUsers(page, adminTokens);
     await win(page).getByRole('button', { name: 'New user' }).first().click();
     await win(page).locator('[data-testid="users-switch"]').first().click(); // home toggle
-    const disks = win(page).locator('[data-testid="users-disk-grid"] [data-testid="users-disk"]');
-    await expect(disks.first()).toBeVisible();
+    const disks = await settleDiskGrid(page);
 
     const count = await disks.count();
     for (let i = 0; i < count; i++) {
@@ -1525,8 +1554,7 @@ test.describe('16 — Home directory size limit', () => {
       await win(page).locator('#c-fullname').fill('Home Size Probe');
       await win(page).locator('#c-password').fill('BrandNewPassw0rd!');
       await win(page).locator('[data-testid="users-switch"]').first().click();
-      const disks = win(page).locator('[data-testid="users-disk-grid"] [data-testid="users-disk"]');
-      await expect(disks.first()).toBeVisible();
+      const disks = await settleDiskGrid(page);
       // Same free-space rule as `openCreateHomeOnDisk`: a 0-byte mount would
       // give the slider `min == max == 0` and the create would be untestable.
       const diskCount = await disks.count();
@@ -1552,6 +1580,22 @@ test.describe('16 — Home directory size limit', () => {
     } finally {
       await deleteUser(sharedCtx, adminHeaders, username);
     }
+  });
+
+  test('16.7 — an empty disk list says so instead of "loading" forever', async ({ page }) => {
+    // A container whose `/` is an overlay filesystem offers no writable home
+    // disk; the grid used to keep the loading hint forever, which reads as a
+    // stalled request rather than "there is nothing to pick here".
+    await page.route('**/api/storage/available-home-disks', (route) =>
+      route.fulfill({ status: 200, json: { success: true, data: [] } }),
+    );
+    await gotoUsers(page, adminTokens);
+    await win(page).getByRole('button', { name: 'New user' }).first().click();
+    await win(page).locator('[data-testid="users-switch"]').first().click();
+    const empty = win(page).locator('[data-testid="users-no-disks"]');
+    await expect(empty).toBeVisible();
+    await expect(empty).toContainText(/disk|disque|Festplatte|disco/i);
+    await expect(win(page).locator('[data-testid="users-disk"]')).toHaveCount(0);
   });
 });
 
