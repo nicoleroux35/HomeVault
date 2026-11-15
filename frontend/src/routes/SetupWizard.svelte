@@ -1020,7 +1020,7 @@
                     <div class="absolute inset-0 grid place-items-center rounded-2xl bg-[var(--hv-modal-backdrop)] text-white"><IconLoader size={20} strokeWidth={1.8} /></div>
                   {/if}
                 </div>
-                <Button variant="secondary" data-testid="setup-avatar-regen" onclick={regenerateAvatar} disabled={avatarLoading} class="h-9! border-[var(--hv-login-accent-soft-border)]! text-[var(--hv-login-accent)]! hover:bg-[var(--hv-login-accent-soft)]!"><IconRefresh size={16} strokeWidth={1.8} /> {t('setup.avatar.regenerate')}</Button>
+                <Button variant="secondary" data-testid="setup-avatar-regen" onclick={regenerateAvatar} disabled={avatarLoading} class="h-11! border-[var(--hv-login-accent-soft-border)]! text-[var(--hv-login-accent)]! hover:bg-[var(--hv-login-accent-soft)]!"><IconRefresh size={16} strokeWidth={1.8} /> {t('setup.avatar.regenerate')}</Button>
               </div>
 
               <div class="mt-6">

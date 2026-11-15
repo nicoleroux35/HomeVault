@@ -496,6 +496,11 @@ test.describe('4 — Account form', () => {
 
     const regenBtn = page.locator('[data-testid="setup-avatar-regen"]');
     await expect(regenBtn).toBeVisible();
+    // It is a labelled action button, so it must meet the 44px touch target
+    // (it used to be 36px tall — the only sub-44 control in the wizard).
+    const box = await regenBtn.boundingBox();
+    expect(box).not.toBeNull();
+    expect(box!.height).toBeGreaterThanOrEqual(43.5);
 
     // Click regenerate — avatar preview should change
     const srcBefore = await page.locator('[data-testid="setup-avatar-preview"]').getAttribute('src').catch(() => '');
