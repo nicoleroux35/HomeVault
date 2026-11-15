@@ -1240,6 +1240,12 @@ These are correctness rules, enforced by review and by the E2E
   (an `i18n` key — never a hardcoded string, never `title` alone, which
   touch users never see). Forms: every input has a `<label for>` or
   `aria-label` (the 2FA digit boxes name themselves per-field).
+- **Accent as text (1.4.3).** `--hv-primary` paints real labels (e.g. the
+  active window tab), so any accent value must reach 4.5:1 on white — the
+  shipped `#2E72C9` is 4.78:1. The appearance API accepts an arbitrary colour
+  even though the picker is gone, so a value saved by an older release is not
+  automatically safe; reset it with the shipped accent (the design gates do
+  exactly that) before judging a contrast failure.
 - **Label in name (2.5.3).** When an icon button also shows a visible count
   (the dock's Docker/Health/activity badges), the number is part of the
   accessible name: `Docker — 3 running`, `Health — 3 need attention`. An

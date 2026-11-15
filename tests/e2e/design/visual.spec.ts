@@ -19,6 +19,7 @@ import {
   closeLastWindow,
   gotoDesktop,
   openApp,
+  resetShippedAppearance,
   type Tokens,
 } from './designGates';
 
@@ -31,6 +32,8 @@ test.beforeAll(async () => {
   tokens = await apiLogin(ctx, ADMIN_USER, ADMIN_PASS);
   await ctx.dispose();
   expect(tokens.token, 'the seeded admin must log in — is the server seeded?').toBeTruthy();
+  // Screenshots must show the shipped look, not an accent a previous spec saved.
+  await resetShippedAppearance(tokens);
 });
 
 /** Freeze everything that animates or ticks so two runs are comparable. */

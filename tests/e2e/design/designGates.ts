@@ -7,7 +7,7 @@
  * (launchpad tile → window close button). Keeping the list in one place means
  * a new app is covered by every gate in one edit.
  */
-import { expect, type APIRequestContext, type Page } from '@playwright/test';
+import { expect, request, type APIRequestContext, type Page } from '@playwright/test';
 
 export const BASE = process.env.BASE_URL || 'http://localhost:8080';
 export const ADMIN_USER = process.env.E2E_ADMIN_USER || 'e2eadmin';
@@ -59,6 +59,31 @@ export type AppId = (typeof APP_IDS)[number];
 export const DOCK_APPS: Partial<Record<AppId, string>> = {
   settings: '[data-testid="dock-settings"]',
 };
+
+/** The accent the product ships with (`DEFAULT_ACCENT` in handlers/settings.rs). */
+export const SHIPPED_ACCENT = '#2E72C9';
+
+/**
+ * Restore the shipped appearance before a gate measures colours.
+ *
+ * The settings spec saves a custom accent (`#e2725b`, 3.08:1 on white) to prove
+ * the server value wins over this origin's localStorage, and the server keeps
+ * it. A gate that then scans the app reports the active window tab
+ * (`color: var(--hv-primary)`) as a contrast failure that does not exist with
+ * the shipped accent — exactly what happened to the Storage screen. The gates
+ * measure the look the product ships, so they reset it first.
+ */
+export async function resetShippedAppearance(tokens: Tokens): Promise<void> {
+  const ctx = await request.newContext({ baseURL: BASE });
+  try {
+    await ctx.put('/api/settings/appearance', {
+      headers: { 'x-session-token': tokens.token, 'x-csrf-token': tokens.csrf },
+      data: { accent_color: SHIPPED_ACCENT, wallpaper: '' },
+    });
+  } finally {
+    await ctx.dispose();
+  }
+}
 
 export async function apiLogin(ctx: APIRequestContext, user = ADMIN_USER, pass = ADMIN_PASS): Promise<Tokens> {
   const res = await ctx.post(`${BASE}/api/auth/login`, { data: { username: user, password: pass } });

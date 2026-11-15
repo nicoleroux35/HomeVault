@@ -28,6 +28,7 @@ import {
   closeLastWindow,
   gotoDesktop,
   openApp,
+  resetShippedAppearance,
   settleWindow,
   type Tokens,
 } from './designGates';
@@ -94,6 +95,9 @@ test.beforeAll(async () => {
   tokens = await apiLogin(ctx, ADMIN_USER, ADMIN_PASS);
   await ctx.dispose();
   expect(tokens.token, 'the seeded admin must log in — is the server seeded?').toBeTruthy();
+  // The appearance spec saves a custom accent (3.08:1 on white) before these
+  // gates run; measure the look the product ships.
+  await resetShippedAppearance(tokens);
 });
 
 test.afterAll(() => {

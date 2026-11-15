@@ -126,6 +126,17 @@ stopped at the design gates with two failures, both closed:
 - **Login suite moved after every gate.** The Firefox axe `beforeAll` could not
   log in because the login suite had just exhausted its deliberate wrong-password
   lockout — that step now runs last, after design, visual and compatibility.
+- **The gates measure the shipped look.** Stage B's appearance spec saves a
+  custom accent (`#e2725b`, 3.08:1 on white) to prove the server value beats
+  this origin's localStorage, and the server keeps it. The next gate then
+  reports the active window tab (`color: var(--hv-primary)`) as a contrast
+  failure — reproduced locally on both engines in 5 s by setting that accent
+  through the API. `resetShippedAppearance()` now restores `#2E72C9` in the
+  a11y and visual `beforeAll`. This is a gate-state artefact, not a shipped
+  defect: the accent has no editing UI, and the shipped accent is 4.78:1.
+  (Known limitation: the API still accepts an arbitrary accent, and any value
+  below 4.5:1 weakens text painted with `--hv-primary`; see
+  `docs/guides/design-system.md` §7.1.)
 
 Local after the fixes: a11y + typography + ui-kit **108 passed**, compatibility
 (WebKit desktop/mobile + Chromium mobile) **9 passed**. The visual runner showed
