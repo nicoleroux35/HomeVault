@@ -501,7 +501,7 @@
               {/if}
             </span>
             <span class="flex flex-col items-end gap-1.5 flex-none">
-              <span data-testid="groups-badge" class="inline-flex items-center h-6 px-2.5 rounded-full bg-[var(--hv-primary-selected-bg)] text-[var(--hv-primary)] text-c-xs font-bold">
+              <span data-testid="groups-badge" class="inline-flex items-center h-6 px-2.5 rounded-full bg-[var(--hv-primary-selected-bg)] text-[var(--hv-primary-700)] text-c-xs font-bold">
                 {$t('groups.member_count', { count: String(g.member_count) })}
               </span>
               {#if isProtected(g)}

@@ -1256,6 +1256,11 @@ These are correctness rules, enforced by review and by the E2E
   never grows a dead tab stop and an overflowing one passes axe's
   `scrollable-region-focusable`. Any hand-rolled `overflow: auto` container
   needs the same treatment.
+- **Accent text on an accent tint (1.4.3).** The 10–13 % accent wash behind
+  a selected row (`--hv-primary-selected-bg`, `--hv-primary-light`) lightens
+  the surface just enough that `--hv-primary` text drops to ~4.0:1 and fails.
+  Small text on a tint uses **`--hv-primary-700` (#2560AC, 5.3:1)**; keep
+  `--hv-primary` for text on white (4.8:1) and for graphics.
 - **Label in name (2.5.3).** When an icon button also shows a visible count
   (the dock's Docker/Health/activity badges), the number is part of the
   accessible name: `Docker — 3 running`, `Health — 3 need attention`. An

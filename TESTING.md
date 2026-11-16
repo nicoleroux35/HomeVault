@@ -170,6 +170,16 @@ raised the hourly ceiling. Debug builds now honour
 builds ignore both), and the workflow sets it to 100000. Verified locally: 45
 burst logins → 45×200 with the override, and 30×200 then 15×429 without it.
 
+The last design-gate failure (`d4372c5`) was the Groups member-count badge:
+`--hv-primary` on the 13 % accent tint is 4.0:1, below AA. It only appeared
+once the CI database held a group, which is why the screen had no baseline key.
+The badge now uses `--hv-primary-700` (5.3:1). The same tint pattern is still
+frozen as debt on `users` (selected filter, admin badge, **and the "New user"
+primary button, whose `text-white` is dropped by `tailwind-merge` because it
+reads the custom `text-c-*` size utilities as colours — a 3.1:1 ink-on-blue
+label**), `quotas` and `metrics`; fixing that pair properly means teaching
+`cn()` the size class group first, tracked as the next a11y burn-down step.
+
 Local after the fixes: a11y + typography + ui-kit **108 passed**, compatibility
 (WebKit desktop/mobile + Chromium mobile) **9 passed**. The visual runner showed
 2 data-driven dashboard/docker diffs on this workstation (live CPU/RAM counters
