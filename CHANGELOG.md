@@ -4,6 +4,60 @@ All notable changes to HomeVault are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the versioning
 follows [Semantic Versioning](https://semver.org/).
 
+## [1.1.2] - 2026-11-16
+
+### Fixed
+
+- **A page load no longer wipes the desktop widget layout.** Svelte queues
+  store notifications, so the login hydration's `set()` reached the monitor
+  store's subscriber *after* `hydrated` flipped true: 800 ms later the client
+  POSTed the pristine all-off default (`savedAt: 0`) and overwrote the
+  account's real layout on every load. Only layouts with a real stamp are
+  published now, and the change is documented in `docs/guides/widgets.md`.
+- **The terminal's completion popup survives the shell echo.** The PTY echoes
+  the characters just typed, and `ws.onmessage` hid the popup on every frame,
+  dismissing it a few milliseconds after Tab. Incoming output still clears the
+  inline ghost; the popup now closes on the next keystroke (Escape included),
+  a click, a tab switch or a resize (`docs/guides/terminal.md`).
+- **The dock's counts are part of the accessible names (WCAG 2.5.3).** The
+  Docker, Health and background-activity buttons show a numeric badge; their
+  `aria-label` omitted that visible text, which failed
+  `label-content-name-mismatch` on any host with issues. Each name now carries
+  the count from the same i18n key as the badge tooltip.
+- **A scrolling page body is keyboard-reachable (WCAG 2.1.1).** A page whose
+  content overflowed was scrollable with a mouse only. `PageLayout` now adds
+  `tabindex="0"` to the page body **only while it actually overflows** (with a
+  focus ring), so short pages keep a clean tab order.
+- **Any accent that fails text contrast is darkened on write (WCAG 1.4.3).**
+  `--hv-primary` paints real labels (the active window tab), so
+  `normalize_accent()` now keeps a passing colour byte for byte and darkens a
+  failing one in 1 % steps with its hue intact (`#e2725b` → `#B75C4A`), on
+  every path that can introduce an accent: shipped default, persisted load,
+  settings import and `PUT /settings/appearance`. An accent saved by an older
+  release can no longer make labels unreadable.
+- **The Groups member-count badge meets AA on its accent tint.** It drew
+  `--hv-primary` on the 13 % accent wash (4.0:1) and now uses the
+  700 shade (5.3:1); the rule is recorded in `docs/guides/design-system.md`.
+- **The Users home-size picker explains an empty disk list.** A host with no
+  writable filesystem (a container whose `/` is an overlay) used to show
+  "Loading disks…" forever; it now says no writable disk is available and
+  points at the exact-folder path (four locales).
+- **Two 44 px targets were short:** the Traffic Control weekday toggles
+  (43 px) and the setup wizard's avatar-regenerate button (36 px) now meet the
+  touch target, asserted by their E2E specs.
+
+### Changed
+
+- **E2E and CI.** The visual gate runs on a freshly seeded database (its
+  baselines were captured there; stage B had mutated it), the login suite runs
+  after every gate that logs `e2eadmin` in, debug builds honour
+  `HOMEVAULT_E2E_LOGIN_IP_MAX_PER_MINUTE` like the hourly ceiling, the
+  Explorer a11y baseline keys rows by rule instead of by the host's root
+  listing, the coverage job creates `target/coverage` on a fresh checkout, and
+  `e2e-playwright.yml` accepts `workflow_dispatch` inputs (`paths`, `grep`,
+  `project`, `config`) so a single spec can be re-run in minutes instead of
+  the full 2.5 h pipeline.
+
 ## [1.1.1] - 2026-11-12
 
 ### Fixed
