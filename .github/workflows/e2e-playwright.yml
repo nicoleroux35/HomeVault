@@ -291,6 +291,8 @@ jobs:
       # costs minutes instead of hours.
       - name: Targeted run
         if: github.event_name == 'workflow_dispatch' && inputs.paths != ''
+        # The container's default shell is `sh`: the array below needs bash.
+        shell: bash
         env:
           TARGETS: ${{ inputs.paths }}
           GREP: ${{ inputs.grep }}
