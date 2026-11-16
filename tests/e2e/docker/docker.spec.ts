@@ -1083,7 +1083,10 @@ test.describe('16 — Production surface', () => {
     await gotoDocker(page, adminTokens);
     await switchTab(page, 'volumes');
     const panel = win(page).locator('[data-testid="docker-panel"]').first();
-    await expect(panel).toBeVisible();
+    // The table is filled by `docker system df`, which the tab only asks for
+    // after the switch: a cold CI server can answer later than the default
+    // expect budget (flake in run 43914399392).
+    await expect(panel).toBeVisible({ timeout: 20_000 });
     // The table is filled by `docker system df`; it must have a header row with
     // the five columns the backend reports.
     const headers = panel.locator('th');
