@@ -415,11 +415,18 @@ test.describe('4 — All user interactions', () => {
   test('4.7 — the privileged/auto-remove switches toggle', async ({ page }) => {
     await gotoDocker(page, adminTokens);
     if (!(await openCreateContainerModal(page))) test.skip(true, 'no create-container button visible (daemon down?)');
+    // The first switch is "Block privilege escalation", CHECKED by default
+    // (`cNoNewPrivileges` starts hardened, like catalog apps). Flip it from
+    // whatever state it is in instead of assuming an unchecked start — the
+    // assumption only survived in CI because a runner without a Docker daemon
+    // skips the whole modal, and it failed on a dev host with a live daemon.
     const sw = page.locator('[data-slot="dialog-content"] [role="switch"]').first();
+    const initial = await sw.getAttribute('data-state');
+    expect(initial, 'the switch must expose its state').toMatch(/^(checked|unchecked)$/);
     await sw.click();
-    await expect(sw).toHaveAttribute('data-state', 'checked');
+    await expect(sw).toHaveAttribute('data-state', initial === 'checked' ? 'unchecked' : 'checked');
     await sw.click();
-    await expect(sw).not.toHaveAttribute('data-state', 'checked');
+    await expect(sw).toHaveAttribute('data-state', initial!);
   });
 
   test('4.8 — the "Edit" button only shows on compose-managed containers and opens the compose editor', async ({ page }) => {
@@ -1136,9 +1143,13 @@ test.describe('16 — Production surface', () => {
     const buildBtn = win(page).locator('[data-testid="docker-toolbar-actions"] button', {
       hasText: /Build|Construire|Erstellen|Compilar/,
     });
+    // The Images toolbar is rendered from the image list, which the cold CI
+    // server can answer after the tab switch: wait for the action instead of
+    // letting a single click burn its 10 s budget (flake in run 43858471587).
+    await expect(buildBtn).toBeVisible({ timeout: 20_000 });
     await buildBtn.click();
     const modal = page.locator('[data-slot="dialog-content"][role="dialog"]');
-    await expect(modal).toBeVisible();
+    await expect(modal).toBeVisible({ timeout: 15_000 });
     await expect(modal.locator('#buildTag')).toBeVisible();
     // The context is a PathField (browse button), not a free-form input only.
     await expect(modal.locator('input[placeholder*="homevault"], input[placeholder*="/"]').first()).toBeVisible();

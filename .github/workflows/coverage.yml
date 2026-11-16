@@ -46,7 +46,12 @@ jobs:
       - name: Frontend coverage
         run: cd frontend && npm run test:coverage
       - name: Backend coverage (lib)
-        run: cargo llvm-cov --lib --lcov --output-path target/coverage/lcov.info --fail-under-lines "$HV_COVERAGE_MIN_LINES"
+        # A fresh checkout has no target/coverage: cargo-llvm-cov refuses to
+        # create the parent directory itself (run 43859895649 failed with
+        # "failed to create file target/coverage/lcov.info").
+        run: |
+          mkdir -p target/coverage
+          cargo llvm-cov --lib --lcov --output-path target/coverage/lcov.info --fail-under-lines "$HV_COVERAGE_MIN_LINES"
       - name: Backend coverage summary
         run: cargo llvm-cov report --summary-only
       - name: Upload coverage reports
