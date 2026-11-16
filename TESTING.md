@@ -211,6 +211,11 @@ visual → compat → login`). For the visual/compat gates add
 `-f config=playwright.visual.config.ts`. The workflow still builds, resets and
 seeds the server, so a targeted run is minutes, not hours.
 
+Working rule while iterating: push the branch (E2E only runs on `main`), dispatch
+the targeted run against that branch with `--ref <branch>`, and merge to `main`
+only when the release is ready. The full pipeline then runs once, on the release
+commit — see `CLAUDE.md` → "CI while iterating".
+
 ## 2026-11-11 — quality gates added (executed)
 
 The ten missing gates from the test/CI audit are now implemented and were run
