@@ -45,7 +45,10 @@ on:
         default: ''
 
 concurrency:
-  group: e2e-${{ github.ref }}
+  # A targeted dispatch must not cancel the full pipeline on the same ref (and
+  # two different targeted runs must not cancel each other): the requested
+  # paths are part of the group, with "full" for pushes/PRs and an empty input.
+  group: e2e-${{ github.ref }}-${{ inputs.paths || 'full' }}
   cancel-in-progress: true
 
 jobs:
