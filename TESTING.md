@@ -193,6 +193,24 @@ Local after the fixes: a11y + typography + ui-kit **108 passed**, compatibility
 2 data-driven dashboard/docker diffs on this workstation (live CPU/RAM counters
 and local container names, absorbed by the 1 % budget on the CI runner).
 
+
+### Targeted E2E re-runs without the 2.5 h pipeline
+
+`e2e-playwright.yml` accepts `workflow_dispatch` inputs, so a flake can be
+re-checked on its own instead of re-running everything:
+
+```bash
+gh workflow run e2e-playwright.yml -R nicoleroux35/HomeVault \
+  -f paths="tests/e2e/docker/docker.spec.ts" \
+  -f grep="4\.7|16\.4" \
+  -f project=chromium
+```
+
+Leaving `paths` empty runs the full pipeline (`setup → stage B → design →
+visual → compat → login`). For the visual/compat gates add
+`-f config=playwright.visual.config.ts`. The workflow still builds, resets and
+seeds the server, so a targeted run is minutes, not hours.
+
 ## 2026-11-11 — quality gates added (executed)
 
 The ten missing gates from the test/CI audit are now implemented and were run

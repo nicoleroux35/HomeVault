@@ -20,6 +20,29 @@ on:
     branches: [main]
   pull_request:
   workflow_dispatch:
+    # Targeted re-runs: after a flake, re-run only the spec that failed instead
+    # of the whole 2.5 h pipeline. Leave `paths` empty for the full run.
+    #   paths:   tests/e2e/docker/docker.spec.ts      (files or dirs, space-separated)
+    #   grep:    4\.7|16\.4                            (Playwright -g pattern)
+    #   project: chromium                             (chromium | firefox)
+    #   config:  playwright.visual.config.ts          (for the visual/compat gates)
+    inputs:
+      paths:
+        description: 'Targeted run — Playwright files/dirs (empty = full pipeline)'
+        type: string
+        default: ''
+      grep:
+        description: 'Targeted run — Playwright -g pattern (optional)'
+        type: string
+        default: ''
+      project:
+        description: 'Targeted run — Playwright --project (optional)'
+        type: string
+        default: ''
+      config:
+        description: 'Targeted run — Playwright --config (optional)'
+        type: string
+        default: ''
 
 concurrency:
   group: e2e-${{ github.ref }}
@@ -124,6 +147,7 @@ jobs:
       # asserting the wizard, producing timeouts and a negative card
       # position on the login screen).
       - name: E2E stage A — setup wizard
+        if: github.event_name != 'workflow_dispatch' || inputs.paths == ''
         run: npx playwright test tests/e2e/setup --workers=1 --reporter=html --retries=1
       - name: Reset server + seed e2eadmin
         run: |
@@ -183,6 +207,7 @@ jobs:
       # --retries=1 absorbs cold-start timing flakes (a cold debug build
       # shifts layout mid-click); failures that persist warm stay red.
       - name: E2E stage B — all screens except setup
+        if: github.event_name != 'workflow_dispatch' || inputs.paths == ''
         run: |
           E2E_DIRS=$(for d in tests/e2e/*/; do
             case "$d" in
@@ -194,6 +219,7 @@ jobs:
       # D2 — WCAG 2.2 AA (plus the existing typography and UI-kit guards).
       # The baseline freezes existing debt and fails on any new axe violation.
       - name: Design gates — axe-core, typography, UI kit
+        if: github.event_name != 'workflow_dispatch' || inputs.paths == ''
         run: |
           npx playwright test \
             tests/e2e/design/a11y.spec.ts \
@@ -206,6 +232,7 @@ jobs:
       # one), so the screenshots now run against a clean server again. The
       # design gates above are not affected: axe measures structure, not data.
       - name: Reset server + seed before the visual gates
+        if: github.event_name != 'workflow_dispatch' || inputs.paths == ''
         run: |
           E2E_PID=$(cat /tmp/hv-e2e.pid 2>/dev/null || true)
           if [ -n "$E2E_PID" ]; then
@@ -243,16 +270,35 @@ jobs:
       # D3 — visual regression at 360 / 768 / 1280. Baselines are committed
       # under tests/e2e/design/visual.spec.ts-snapshots.
       - name: Visual regression — three widths
+        if: github.event_name != 'workflow_dispatch' || inputs.paths == ''
         run: npx playwright test --config=playwright.visual.config.ts --workers=1 --reporter=line
       # Browser compatibility — WebKit desktop + iPhone and a Pixel viewport.
       - name: Browser compatibility — WebKit + real mobile viewports
+        if: github.event_name != 'workflow_dispatch' || inputs.paths == ''
         run: npx playwright test --config=playwright.compat.config.ts --workers=1 --reporter=line
       # Login really last, after every gate that logs `e2eadmin` in: its
       # deliberate wrong-password and rate-limit tests exhaust the limiter for
       # a minute, which used to fail the *next* stage's admin login (the 4e3d52c
       # run lost the Firefox axe suite that way).
       - name: E2E stage B — login suite last
+        if: github.event_name != 'workflow_dispatch' || inputs.paths == ''
         run: npx playwright test tests/e2e/login --workers=1 --reporter=line --retries=1
+      # Targeted re-run (workflow_dispatch with `paths`): one spec, one gate, one
+      # project — the server above is already built, reset and seeded, so this
+      # costs minutes instead of hours.
+      - name: Targeted run
+        if: github.event_name == 'workflow_dispatch' && inputs.paths != ''
+        env:
+          TARGETS: ${{ inputs.paths }}
+          GREP: ${{ inputs.grep }}
+          PROJECT: ${{ inputs.project }}
+          CONFIG: ${{ inputs.config }}
+        run: |
+          args=( $TARGETS )
+          if [ -n "$CONFIG" ]; then args+=( "--config=$CONFIG" ); fi
+          if [ -n "$GREP" ]; then args+=( "--grep=$GREP" ); fi
+          if [ -n "$PROJECT" ]; then args+=( "--project=$PROJECT" ); fi
+          npx playwright test "${args[@]}" --workers=1 --reporter=line --retries=1
       - name: Stop server
         if: always()
         run: |
