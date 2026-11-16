@@ -180,6 +180,14 @@ reads the custom `text-c-*` size utilities as colours — a 3.1:1 ink-on-blue
 label**), `quotas` and `metrics`; fixing that pair properly means teaching
 `cn()` the size class group first, tracked as the next a11y burn-down step.
 
+The visual gate then failed on `f391250` for a data reason, not a layout one:
+its baselines were captured on a freshly seeded database, but it ran after
+stage B had mutated it. The `raid.png` shot reopened the RAID *create wizard*
+(a pending draft survives in the database) and the dashboard picked up live
+container/health counters. The workflow now restarts the server on a fresh data
+dir and reseeds `e2eadmin` between the design and visual gates; `raid` and
+`groups` match the committed baselines again locally (**6/6**).
+
 Local after the fixes: a11y + typography + ui-kit **108 passed**, compatibility
 (WebKit desktop/mobile + Chromium mobile) **9 passed**. The visual runner showed
 2 data-driven dashboard/docker diffs on this workstation (live CPU/RAM counters

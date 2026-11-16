@@ -200,6 +200,46 @@ jobs:
             tests/e2e/design/typography.spec.ts \
             tests/e2e/design/ui-kit.spec.ts \
             --workers=1 --reporter=line
+      # The visual baselines were captured on a freshly seeded database. Stage B
+      # mutates it (a pending RAID wizard draft reopened the create dialog in
+      # the raid.png shot, live container/health counters moved the dashboard
+      # one), so the screenshots now run against a clean server again. The
+      # design gates above are not affected: axe measures structure, not data.
+      - name: Reset server + seed before the visual gates
+        run: |
+          E2E_PID=$(cat /tmp/hv-e2e.pid 2>/dev/null || true)
+          if [ -n "$E2E_PID" ]; then
+            kill "$E2E_PID" 2>/dev/null || true
+            for i in $(seq 1 30); do
+              kill -0 "$E2E_PID" 2>/dev/null || break
+              sleep 1
+            done
+            kill -9 "$E2E_PID" 2>/dev/null || true
+          fi
+          sleep 1
+          rm -rf /tmp/hv-e2e-data && mkdir -p /tmp/hv-e2e-data
+          DATA_DIRECTORY=/tmp/hv-e2e-data PORT=8080 HOMEVAULT_E2E_LOGIN_IP_MAX_PER_MINUTE=100000 HOMEVAULT_E2E_LOGIN_IP_MAX_PER_HOUR=100000 ./target/debug/homevault > /tmp/hv-e2e.log 2>&1 &
+          echo $! > /tmp/hv-e2e.pid
+          for i in $(seq 1 60); do
+            if curl -sf http://localhost:8080/api/auth/setup-status >/dev/null; then break; fi
+            sleep 2
+          done
+          SEED=""
+          for i in $(seq 1 30); do
+            SEED=$(curl -s -X POST http://localhost:8080/api/auth/setup -H 'Content-Type: application/json' -d '{"username":"e2eadmin","password":"E2eSecret123","fullname":"E2E Admin"}') || SEED=""
+            if echo "$SEED" | grep -q '"success":true'; then break; fi
+            sleep 2
+          done
+          if ! echo "$SEED" | grep -q '"success":true'; then
+            echo "reseed failed: $SEED";
+            exit 1;
+          fi
+          TOKEN=$(echo "$SEED" | sed -n 's/.*"token":"\([^"]*\)".*/\1/p')
+          CSRF=$(echo "$SEED" | sed -n 's/.*"csrf_token":"\([^"]*\)".*/\1/p')
+          curl -s -X POST http://localhost:8080/api/whats-new/seen \
+            -H "X-Session-Token: $TOKEN" -H "X-CSRF-Token: $CSRF" \
+            -H 'Content-Type: application/json' -d '{}' >/dev/null || true
+          curl -s http://localhost:8080/ -o /dev/null || true
       # D3 — visual regression at 360 / 768 / 1280. Baselines are committed
       # under tests/e2e/design/visual.spec.ts-snapshots.
       - name: Visual regression — three widths
