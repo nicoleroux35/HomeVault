@@ -143,7 +143,7 @@ percent-encoding = "2.3.2"
 base64 = "0.23.1"
 ldap3 = { version = "0.12", default-features = false, features = ["tls-rustls-ring"] }
 # Phase 4 — CIDR parsing for UPS server client allowlists
-ipnetwork = "0.20"
+ipnetwork = "0.21"
 
 [dev-dependencies]
 tempfile = "3.27"
