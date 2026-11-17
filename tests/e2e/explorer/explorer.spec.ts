@@ -1735,6 +1735,10 @@ test.describe('16 — Share by link & editor close guard', () => {
     // (No manual Refresh: the list re-lists via the live watcher.)
 
     const row = fileRow(page, fname);
+    // The live watcher re-lists the folder after the upload: wait for the row
+    // instead of letting the first dispatchEvent burn its 10 s budget (flake
+    // in run 44047320123).
+    await expect(row).toBeVisible({ timeout: 20_000 });
     await row.locator('[data-testid="explorer-row-preview"]').dispatchEvent('click');
 
     const modal = page.locator('[data-slot="dialog-content"]');
