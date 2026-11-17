@@ -158,6 +158,7 @@ smart_test_result = "Última prueba: %result%"
 smart_test_not_available = "SMART no disponible"
 smart_test_admin_only = "Iniciar una prueba solo está disponible para administradores"
 disk_usage = "Uso del disco"
+disk_usage_error = "El demonio de Docker no informó del uso de disco. Vuelva a abrir esta pestaña."
 unpartitioned = "Sin particionar"
 
 guided_redundancy = "Sugerir una disposición RAID"

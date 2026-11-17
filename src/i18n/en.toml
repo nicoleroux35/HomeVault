@@ -159,6 +159,7 @@ smart_test_result = "Last test: %result%"
 smart_test_not_available = "SMART not available"
 smart_test_admin_only = "Starting a self-test is available to administrators only"
 disk_usage = "Disk Usage"
+disk_usage_error = "The Docker daemon did not report disk usage. Reopen this tab to try again."
 unpartitioned = "Unpartitioned"
 
 guided_redundancy = "Suggest a RAID layout"

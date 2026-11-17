@@ -1202,11 +1202,25 @@
 
   // ── Disk usage / prune ────────────────────────────────────────────────────
   let diskUsage = $state<DiskUsage | null>(null);
+  let diskUsageError = $state(false);
   let pruneBusy = $state<string | null>(null);
 
   async function loadDiskUsage() {
-    const res = await api.getDockerDiskUsage();
-    if (res.success && res.data) diskUsage = res.data;
+    diskUsageError = false;
+    // `docker system df` occasionally fails while a prune or a deploy keeps
+    // the daemon busy; one quick retry keeps the card honest without asking
+    // the user to do anything. A persistent failure says so instead of
+    // showing the loading line forever.
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const res = await api.getDockerDiskUsage();
+      if (res.success && res.data) {
+        diskUsage = res.data;
+        return;
+      }
+      if (attempt === 0) await new Promise((resolve) => setTimeout(resolve, 600));
+    }
+    diskUsage = null;
+    diskUsageError = true;
   }
 
   /// Localise a `docker system df` row kind ("Images", "Local Volumes", …).
@@ -1804,6 +1818,10 @@
               {/each}
             </tbody>
           </table>
+        {:else if diskUsageError}
+          <p class="m-0 px-4 py-3 text-xs text-[var(--hv-error)]" role="status" data-testid="docker-disk-usage-error">
+            {$t('docker.disk_usage_error')}
+          </p>
         {:else}
           <p class="m-0 px-4 py-3 text-xs text-[var(--hv-shell-text-2)]" role="status">{$t('docker.disk_loading')}</p>
         {/if}
