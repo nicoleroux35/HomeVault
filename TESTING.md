@@ -27,7 +27,7 @@ were not run here (see the 2026-11-11 section and
 | `tests/remote_mounts_integration` | **7 passed** — validation runs before the helper probe, and an invalid edit no longer unmounts a live location |
 | Targeted integration (13 suites, DB + assets + contract) | **327 passed / 0 failed** (incl. `users`, `shares`, `explorer`, `restic`, `settings_core`, `spa_assets`, fuzz smoke, soak) |
 | Accessibility D2 (Firefox) | **33 passed** — no new axe violation after the sidebar count and network-toggle labels were fixed |
-| `cargo audit` | only the 2 documented warnings (`rustls-pemfile`, `lru`); RUSTSEC-2026-0459 is fixed by `libsqlite3-sys` 0.39.1 through `vendor/sqlx-sqlite` |
+| `cargo audit` | only documented warnings: `rustls-pemfile` and `lru` (2025), plus the `chrono` / `chrono-tz` *unmaintained* advisories of 2026-09-14 (no CVE, no fixed version — the jiff/time migration is tracked); RUSTSEC-2026-0459 is fixed by `libsqlite3-sys` 0.39.1 through `vendor/sqlx-sqlite` |
 | Visual regression | **96 snapshots regenerated** at 360 / 768 / 1280 after the v2 palette and dock changes |
 | `cargo test --lib` | **2 960 passed / 0 failed** |
 

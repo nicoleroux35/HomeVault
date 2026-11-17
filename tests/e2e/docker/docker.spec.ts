@@ -144,7 +144,16 @@ function win(page: Page) {
 
 async function switchTab(page: Page, tabId: 'containers' | 'images' | 'volumes' | 'networks' | 'discover' | 'catalog' | 'compose') {
   const index = ['containers', 'images', 'volumes', 'networks', 'discover', 'catalog', 'compose'].indexOf(tabId);
-  await win(page).locator('[data-testid="docker-nav-item"]').nth(index).click();
+  const item = win(page).locator('[data-testid="docker-nav-item"]').nth(index);
+  await expect(item).toBeVisible({ timeout: 20_000 });
+  // A click can land while the page is still rendering the daemon status and
+  // be lost: confirm the tab really became the selected one, retrying if not.
+  // Without this the whole suite flakes on CI (runs 44047320123 / 44079979132:
+  // 1.3, 2.3, 4.5, 15.2 and 16.1 all lost their tab switch).
+  await expect(async () => {
+    if ((await item.getAttribute('aria-selected')) !== 'true') await item.click();
+    expect(await item.getAttribute('aria-selected')).toBe('true');
+  }).toPass({ timeout: 20_000 });
 }
 
 /** Opens the "New container" modal (containers tab's scoped primary toolbar

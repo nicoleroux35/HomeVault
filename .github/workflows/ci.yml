@@ -81,7 +81,15 @@ jobs:
         # - RUSTSEC-2025-0134 (rustls-pemfile): unmaintained but functional, no successor yet
         # - RUSTSEC-2026-0253 (lru): unsound use-after-free via dav-server, unlikely in practice
         # Both are documented in Cargo.toml. All other warnings still fail the job.
-        run: cargo audit --deny warnings --ignore RUSTSEC-2025-0134 --ignore RUSTSEC-2026-0253
+        # RUSTSEC-2026-0543 (`chrono`) and RUSTSEC-2026-0555 (`chrono-tz`) are
+        # "unmaintained" advisories published 2026-09-14, not vulnerabilities,
+        # and both ship no fixed version: the replacement (jiff/time) touches
+        # 133 files and every timestamp the API emits, so it is a tracked
+        # migration, not a release blocker.
+        run: |
+          cargo audit --deny warnings \
+            --ignore RUSTSEC-2025-0134 --ignore RUSTSEC-2026-0253 \
+            --ignore RUSTSEC-2026-0543 --ignore RUSTSEC-2026-0555
 
   frontend:
     name: Frontend — type-check, build, npm audit
