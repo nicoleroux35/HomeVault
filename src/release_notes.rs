@@ -52,6 +52,17 @@ pub fn current_version() -> &'static str {
 /// All curated release notes, newest first.
 pub static RELEASE_NOTES: &[ReleaseNote] = &[
     ReleaseNote {
+        version: "1.1.2",
+        title: "A desktop layout that stays put & a steadier terminal",
+        highlights: &[
+            "Signing in never overwrites your desktop widget layout — only an edit saves it.",
+            "The terminal's Tab completion list no longer disappears the moment it appears.",
+            "Screen readers announce the dock's counts (Docker, Health, activity), and a long page can be scrolled from the keyboard.",
+            "An accent colour too light for readable text is darkened automatically, so labels stay legible.",
+            "The home-size picker says when a server has no writable disk, and two small touch targets now reach 44 px.",
+        ],
+    },
+    ReleaseNote {
         version: "1.1.1",
         title: "Faster, quieter desktop & a green E2E harness",
         highlights: &[
