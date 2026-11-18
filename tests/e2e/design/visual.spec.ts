@@ -48,12 +48,24 @@ async function stabilise(page: import('@playwright/test').Page) {
 }
 
 /**
- * Some screens render live, unbounded data (the Journal's log rows grow as
- * the host logs). A strict pixel ratio would make those baselines flaky
- * without catching a layout regression, so they get a wider tolerance.
+ * Some screens render live, host-owned data. A strict pixel ratio would make
+ * those baselines flaky without catching a layout regression, so they get a
+ * wider tolerance:
+ *
+ * - `journal` — the log rows grow as the host logs;
+ * - `dashboard` — live CPU/RAM gauges and container counts;
+ * - `storage` — the disk/partition table mirrors this machine's devices;
+ * - `docker` — image/container/volume counts come from the daemon.
+ *
+ * The baselines were captured on a freshly seeded database (`Reset server +
+ * seed before the visual gates`), so what remains is the host itself. A layout
+ * regression moves far more than these budgets.
  */
 const TOLERANCE: Partial<Record<(typeof APP_IDS)[number], number>> = {
   journal: 0.12,
+  dashboard: 0.06,
+  storage: 0.06,
+  docker: 0.08,
 };
 
 test('desktop shell at this width', async ({ page }) => {
