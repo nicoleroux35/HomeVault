@@ -43,6 +43,10 @@ on:
         description: 'Targeted run — Playwright --config (optional)'
         type: string
         default: ''
+      visual_update:
+        description: 'Targeted visual run — regenerate the baselines (--update-snapshots)'
+        type: string
+        default: 'false'
 
 concurrency:
   # A targeted dispatch must not cancel the full pipeline on the same ref (and
@@ -298,12 +302,24 @@ jobs:
           GREP: ${{ inputs.grep }}
           PROJECT: ${{ inputs.project }}
           CONFIG: ${{ inputs.config }}
+          UPDATE: ${{ inputs.visual_update }}
         run: |
           args=( $TARGETS )
           if [ -n "$CONFIG" ]; then args+=( "--config=$CONFIG" ); fi
           if [ -n "$GREP" ]; then args+=( "--grep=$GREP" ); fi
           if [ -n "$PROJECT" ]; then args+=( "--project=$PROJECT" ); fi
+          if [ "$UPDATE" = "true" ]; then args+=( "--update-snapshots" ); fi
           npx playwright test "${args[@]}" --workers=1 --reporter=line --retries=1
+
+      # The visual baselines must be captured on the same image the gate runs
+      # on: this artifact carries the regenerated PNGs back for a commit.
+      - name: Upload regenerated visual baselines
+        if: always() && inputs.visual_update == 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          name: visual-snapshots
+          path: tests/e2e/design/visual.spec.ts-snapshots/
+          if-no-files-found: error
       - name: Stop server
         if: always()
         run: |
