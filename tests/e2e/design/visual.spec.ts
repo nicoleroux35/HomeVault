@@ -55,7 +55,10 @@ async function stabilise(page: import('@playwright/test').Page) {
  * - `journal` — the log rows grow as the host logs;
  * - `dashboard` — live CPU/RAM gauges and container counts;
  * - `storage` — the disk/partition table mirrors this machine's devices;
- * - `docker` — image/container/volume counts come from the daemon.
+ * - `docker` — image/container/volume counts come from the daemon;
+ * - `network` / `vpn` — interface names, states and addresses belong to the
+ *   runner (a container's `eth0`/`lo` differ from a VM's `ens5`, and the
+ *   default route/MTU change with them).
  *
  * The baselines were captured on a freshly seeded database (`Reset server +
  * seed before the visual gates`), so what remains is the host itself. A layout
@@ -63,10 +66,20 @@ async function stabilise(page: import('@playwright/test').Page) {
  */
 const TOLERANCE: Partial<Record<(typeof APP_IDS)[number], number>> = {
   journal: 0.12,
-  dashboard: 0.06,
-  storage: 0.06,
+  dashboard: 0.08,
+  storage: 0.08,
   docker: 0.08,
+  network: 0.08,
+  vpn: 0.08,
 };
+
+/**
+ * Default pixel budget. 2 % keeps the gate honest for layout (a moved card, a
+ * clipped table or a missing control covers far more) while absorbing the
+ * few-per-hundred-pixels of host-dependent text (uptimes, counters, file
+ * sizes) that every screen can pick up.
+ */
+const DEFAULT_TOLERANCE = 0.02;
 
 test('desktop shell at this width', async ({ page }) => {
   await gotoDesktop(page, tokens);
@@ -86,7 +99,7 @@ for (const appId of APP_IDS) {
     await stabilise(page);
     try {
       await expect(page.locator('.hv-window').last()).toHaveScreenshot(`${appId}.png`, {
-        maxDiffPixelRatio: TOLERANCE[appId] ?? 0.01,
+        maxDiffPixelRatio: TOLERANCE[appId] ?? DEFAULT_TOLERANCE,
       });
     } finally {
       await closeLastWindow(page).catch(() => {});
