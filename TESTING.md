@@ -216,6 +216,28 @@ the targeted run against that branch with `--ref <branch>`, and merge to `main`
 only when the release is ready. The full pipeline then runs once, on the release
 commit — see `CLAUDE.md` → "CI while iterating".
 
+
+### Regenerating the visual baselines (on the runner)
+
+The PNGs under `tests/e2e/design/visual.spec.ts-snapshots/` must be captured on
+the exact image the gate runs on (`mcr.microsoft.com/playwright:v1.64.1-noble`):
+a dev host renders different fonts/host data and produced a month of false
+diffs. Regenerate them with the targeted dispatch, then commit the artifact:
+
+```bash
+gh workflow run e2e-playwright.yml -R nicoleroux35/HomeVault --ref <branch> \
+  -f paths="tests/e2e/design/visual.spec.ts" \
+  -f config="playwright.visual.config.ts" \
+  -f visual_update="true"
+gh run download <run-id> -R nicoleroux35/HomeVault -n visual-snapshots -D /tmp/snaps
+cp /tmp/snaps/*.png tests/e2e/design/visual.spec.ts-snapshots/
+```
+
+The screens that render host-owned data (`journal`, `dashboard`, `storage`,
+`docker`, `network`, `vpn`) carry a documented 8–12 % pixel budget so a
+different interface name or container count never fails the gate; the default
+is 2 %, which still catches a moved card or a clipped table.
+
 ## 2026-11-11 — quality gates added (executed)
 
 The ten missing gates from the test/CI audit are now implemented and were run
