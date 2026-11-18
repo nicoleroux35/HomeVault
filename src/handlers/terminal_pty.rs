@@ -79,6 +79,32 @@ const TICKET_TTL: Duration = Duration::from_secs(15);
 /// misbehaving or malicious client from exhausting host PIDs/memory.
 const MAX_TABS_PER_USER: usize = 8;
 
+/// Parse a debug-only cap override. Anything unusable (absent, not a number,
+/// zero) falls back to the shipped constant.
+fn parse_tab_cap(raw: Option<&str>, fallback: usize) -> usize {
+    raw.and_then(|v| v.trim().parse::<usize>().ok())
+        .filter(|v| *v > 0)
+        .unwrap_or(fallback)
+}
+
+/// The cap the process enforces. Debug builds honour
+/// `HOMEVAULT_E2E_MAX_TABS_PER_USER`: the E2E suite opens one tab per test and
+/// the server keeps a shell alive for 30 minutes by design, so the production
+/// bound would lock the suite out of its own server (runs 44126011834 and
+/// 44173079928 both lost terminal 19.x that way). Release builds always use
+/// the constant.
+fn max_tabs_per_user() -> usize {
+    if !cfg!(debug_assertions) {
+        return MAX_TABS_PER_USER;
+    }
+    parse_tab_cap(
+        std::env::var("HOMEVAULT_E2E_MAX_TABS_PER_USER")
+            .ok()
+            .as_deref(),
+        MAX_TABS_PER_USER,
+    )
+}
+
 /// Validates a client-supplied tab id before it is used as a map key. Opaque
 /// to the server, but constrained so it can't be huge or carry odd bytes.
 fn is_valid_tab_id(tab_id: &str) -> bool {
@@ -210,10 +236,11 @@ impl PtyManager {
             keep
         });
         let live_for_user = sessions.keys().filter(|(u, _)| u == username).count();
-        if !sessions.contains_key(&key) && live_for_user >= MAX_TABS_PER_USER {
+        let cap = max_tabs_per_user();
+        if !sessions.contains_key(&key) && live_for_user >= cap {
             return Err(format!(
                 "Terminal tab limit reached ({} open); close one before opening another",
-                MAX_TABS_PER_USER
+                cap
             ));
         }
 
@@ -959,6 +986,16 @@ mod tests {
     use super::*;
 
     // -- is_valid_tab_id -------------------------------------------------
+
+    #[test]
+    fn parse_tab_cap_accepts_only_a_positive_integer() {
+        assert_eq!(parse_tab_cap(None, 8), 8);
+        assert_eq!(parse_tab_cap(Some("64"), 8), 64);
+        assert_eq!(parse_tab_cap(Some(" 12 "), 8), 12);
+        for bad in ["", "0", "-1", "abc", "8.5"] {
+            assert_eq!(parse_tab_cap(Some(bad), 8), 8, "{bad:?} must fall back");
+        }
+    }
 
     #[test]
     fn test_is_valid_tab_id_accepts_opaque_client_ids() {

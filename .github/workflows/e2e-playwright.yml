@@ -127,7 +127,7 @@ jobs:
       - name: Start server (scratch data dir)
         run: |
           mkdir -p /tmp/hv-e2e-data
-          DATA_DIRECTORY=/tmp/hv-e2e-data PORT=8080 HOMEVAULT_E2E_LOGIN_IP_MAX_PER_MINUTE=100000 HOMEVAULT_E2E_LOGIN_IP_MAX_PER_HOUR=100000 ./target/debug/homevault > /tmp/hv-e2e.log 2>&1 &
+          DATA_DIRECTORY=/tmp/hv-e2e-data PORT=8080 HOMEVAULT_E2E_LOGIN_IP_MAX_PER_MINUTE=100000 HOMEVAULT_E2E_LOGIN_IP_MAX_PER_HOUR=100000 HOMEVAULT_E2E_MAX_TABS_PER_USER=64 ./target/debug/homevault > /tmp/hv-e2e.log 2>&1 &
           echo $! > /tmp/hv-e2e.pid
           for i in $(seq 1 60); do
             if curl -sf http://localhost:8080/api/auth/setup-status >/dev/null; then break; fi
@@ -169,7 +169,7 @@ jobs:
           fi
           sleep 1
           rm -rf /tmp/hv-e2e-data && mkdir -p /tmp/hv-e2e-data
-          DATA_DIRECTORY=/tmp/hv-e2e-data PORT=8080 HOMEVAULT_E2E_LOGIN_IP_MAX_PER_MINUTE=100000 HOMEVAULT_E2E_LOGIN_IP_MAX_PER_HOUR=100000 ./target/debug/homevault > /tmp/hv-e2e.log 2>&1 &
+          DATA_DIRECTORY=/tmp/hv-e2e-data PORT=8080 HOMEVAULT_E2E_LOGIN_IP_MAX_PER_MINUTE=100000 HOMEVAULT_E2E_LOGIN_IP_MAX_PER_HOUR=100000 HOMEVAULT_E2E_MAX_TABS_PER_USER=64 ./target/debug/homevault > /tmp/hv-e2e.log 2>&1 &
           echo $! > /tmp/hv-e2e.pid
           for i in $(seq 1 60); do
             if curl -sf http://localhost:8080/api/auth/setup-status >/dev/null; then break; fi
@@ -248,7 +248,7 @@ jobs:
           fi
           sleep 1
           rm -rf /tmp/hv-e2e-data && mkdir -p /tmp/hv-e2e-data
-          DATA_DIRECTORY=/tmp/hv-e2e-data PORT=8080 HOMEVAULT_E2E_LOGIN_IP_MAX_PER_MINUTE=100000 HOMEVAULT_E2E_LOGIN_IP_MAX_PER_HOUR=100000 ./target/debug/homevault > /tmp/hv-e2e.log 2>&1 &
+          DATA_DIRECTORY=/tmp/hv-e2e-data PORT=8080 HOMEVAULT_E2E_LOGIN_IP_MAX_PER_MINUTE=100000 HOMEVAULT_E2E_LOGIN_IP_MAX_PER_HOUR=100000 HOMEVAULT_E2E_MAX_TABS_PER_USER=64 ./target/debug/homevault > /tmp/hv-e2e.log 2>&1 &
           echo $! > /tmp/hv-e2e.pid
           for i in $(seq 1 60); do
             if curl -sf http://localhost:8080/api/auth/setup-status >/dev/null; then break; fi
