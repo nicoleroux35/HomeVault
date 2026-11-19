@@ -34,6 +34,10 @@ one-line description. All docs are in English (the product UI defaults to French
   registry, API client, stores, shared components, windowing.
 - [Internationalization (i18n)](./I18N.md) — locales, translation keys, the
   `api.getTranslations` endpoint, how to add a string.
+- [Testing strategy](./TESTING_STRATEGY.md) — test pyramid, coverage gates, the
+  CI pipeline, and when to run each suite.
+- [Advanced testing](./TESTING_ADVANCED.md) — mutation, contract, property,
+  chaos, snapshot, load and soak testing, with their commands.
 
 ## Application / area guides
 

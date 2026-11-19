@@ -1,0 +1,43 @@
+# Mutation Testing Configuration
+# cargo-mutants generates mutations (flip conditions, change operators, etc.)
+# and runs tests against each to verify test quality.
+#
+# Usage:
+#   cargo install cargo-mutants
+#   cargo mutants
+#   cargo mutants --file src/handlers/auth.rs
+
+# Minimum percentage of mutants that must be caught by tests
+minimum_test_timeout = 300
+
+# Files to exclude from mutation (too slow, vendor code, or well-tested)
+exclude_globs = [
+    "src/bin/*",
+    "src/storage/migrations/*",
+    "tests/*",
+]
+
+# Focus on critical security/auth paths first
+[[package.mutants]]
+name = "homevault"
+
+# Test the mutants with these commands
+test_tool = "cargo"
+test_command = ["test", "--lib"]
+
+# Timeout multiplier (mutants often run slower)
+timeout_multiplier = 5
+
+# Dirs to focus mutation testing on (high-value targets)
+examine_dirs = [
+    "src/handlers",
+    "src/auth.rs",
+    "src/shares.rs",
+    "src/firewall.rs",
+    "src/network.rs",
+]
+
+# Exclude low-value or extremely slow tests
+exclude_tests = [
+    "soak_integration",
+]

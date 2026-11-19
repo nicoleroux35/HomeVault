@@ -1,0 +1,67 @@
+name: load-test
+
+# Load testing with k6 (manual trigger only)
+# Do not run against production - use staging/dev instances only
+
+on:
+  workflow_dispatch:
+    inputs:
+      target_url:
+        description: 'Target URL (e.g., http://192.168.1.100:8080)'
+        required: true
+        default: 'http://localhost:8080'
+      test_type:
+        description: 'Test type'
+        required: true
+        type: choice
+        options:
+          - load
+          - spike
+          - stress
+        default: 'load'
+
+jobs:
+  k6-load-test:
+    name: k6 Load Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install k6
+        run: |
+          sudo gpg -k
+          sudo gpg --no-default-keyring --keyring /usr/share/keyrings/k6-archive-keyring.gpg --keyserver hkp://keyserver.ubuntu.com:80 --recv-keys C5AD17C747E3415A3642D57D77C6C491D6AC1D69
+          echo "deb [signed-by=/usr/share/keyrings/k6-archive-keyring.gpg] https://dl.k6.io/deb stable main" | sudo tee /etc/apt/sources.list.d/k6.list
+          sudo apt-get update
+          sudo apt-get install k6
+
+      - name: Run load test
+        if: inputs.test_type == 'load'
+        run: |
+          k6 run --out json=results.json --summary-export=summary.json tests/load/homevault-load-test.js
+        env:
+          BASE_URL: ${{ inputs.target_url }}
+
+      - name: Run spike test
+        if: inputs.test_type == 'spike'
+        run: |
+          k6 run --out json=results.json --summary-export=summary.json tests/load/spike-test.js
+        env:
+          BASE_URL: ${{ inputs.target_url }}
+
+      - name: Run stress test
+        if: inputs.test_type == 'stress'
+        run: |
+          k6 run --out json=results.json --summary-export=summary.json tests/load/stress-test.js
+        env:
+          BASE_URL: ${{ inputs.target_url }}
+
+      - name: Upload results
+        uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: k6-results
+          path: |
+            summary.json
+            results.json
+          retention-days: 30
