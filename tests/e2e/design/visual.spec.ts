@@ -89,9 +89,34 @@ const TOLERANCE: Partial<Record<(typeof APP_IDS)[number], number>> = {
   docker: 0.08,
   network: 0.08,
   vpn: 0.08,
-  'traffic-control': 0.1,
-  rclone: 0.1,
-  shares: 0.1,
+};
+
+/**
+ * Screens whose body is the *host's* configuration, not the app's. The
+ * committed baselines were captured in the CI container, where none of these
+ * tools/configurations exist; a workstation that has them renders a different
+ * card (or an extra list entry), and no pixel budget can absorb that without
+ * also hiding a real reflow. Probe the rendered state and skip with a message:
+ * CI still takes the screenshot, a dev host says why it did not.
+ */
+const HOST_DEPENDENT: Partial<
+  Record<
+    (typeof APP_IDS)[number],
+    { probe: (page: import('@playwright/test').Page) => Promise<boolean>; why: string }
+  >
+> = {
+  'traffic-control': {
+    probe: async (page) => (await page.getByText(/iproute2\) is not installed/).count()) === 0,
+    why: 'the `tc` tool (iproute2) is installed on this host; the baseline is the CI container, where it is not',
+  },
+  rclone: {
+    probe: async (page) => (await page.getByTestId('cloudsync-remote-card').count()) > 0,
+    why: 'the host has remotes in /etc/rclone.conf; the baseline is the CI empty state',
+  },
+  shares: {
+    probe: async (page) => (await page.getByTestId('shares-card').count()) > 0,
+    why: "the host lists Samba's own shares next to the app's; the baseline is the CI empty state",
+  },
 };
 
 /**
@@ -118,6 +143,10 @@ for (const appId of APP_IDS) {
     await gotoDesktop(page, tokens);
     await openApp(page, appId);
     await stabilise(page);
+    const hostDependent = HOST_DEPENDENT[appId];
+    if (hostDependent && (await hostDependent.probe(page))) {
+      test.skip(true, hostDependent.why);
+    }
     try {
       await expect(page.locator('.hv-window').last()).toHaveScreenshot(`${appId}.png`, {
         maxDiffPixelRatio: TOLERANCE[appId] ?? DEFAULT_TOLERANCE,
