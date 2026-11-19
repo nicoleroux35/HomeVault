@@ -149,6 +149,8 @@ ipnetwork = "0.20"
 tempfile = "3.27"
 regex = "1.13"
 tower = { version = "0.5", features = ["util"] }
+http-body-util = "0.1"
+proptest = "1.5"
 
 [patch.crates-io]
 # sqlx 0.9.0's published sqlx-sqlite pins `libsqlite3-sys <0.38.0`, which

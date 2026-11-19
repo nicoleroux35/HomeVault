@@ -356,6 +356,16 @@ async function createMember(
   expect(changed.ok(), await changed.text()).toBeTruthy();
   const ownedTokens = await apiLogin(ctx, name, owned);
   expect(ownedTokens.token, 'the member must log in with the owned password').not.toEqual('');
+  // Every fresh account is shown the release-notes modal once. It is an
+  // overlay: when it opens *after* `dismissWhatsNew()` sampled for it, the
+  // next dock click is swallowed and Settings never opens (the firefox-only
+  // 4.11-after-4.9 failure). Marking it seen here — the same call the E2E
+  // seeding does — removes the race at its source instead of waiting for it.
+  const seen = await ctx.post('/api/whats-new/seen', {
+    headers: { 'x-session-token': ownedTokens.token, 'x-csrf-token': ownedTokens.csrf },
+    data: {},
+  });
+  expect(seen.ok(), 'marking the release notes seen must succeed').toBeTruthy();
   return { name, tokens: ownedTokens };
 }
 

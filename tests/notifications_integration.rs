@@ -794,8 +794,14 @@ async fn test_list_paginates_with_limit_offset_and_total() {
     assert_eq!(items[1]["title"], "middle");
     assert_eq!(body["data"]["total"], 3);
     assert_eq!(body["data"]["offset"], 0);
-    // offset + page < total → a client can show "load older".
-    assert_eq!(0 + 2 < 3, true);
+    // offset + page < total -> a client can show "load older". Derived from the
+    // response, not from the literals this test already asserted.
+    let total = body["data"]["total"].as_i64().unwrap();
+    let offset = body["data"]["offset"].as_i64().unwrap();
+    assert!(
+        offset + (items.len() as i64) < total,
+        "a full first page must leave more rows for the next one"
+    );
 
     // Second page picks up the remainder.
     let (status, body) = send(

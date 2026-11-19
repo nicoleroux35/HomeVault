@@ -789,12 +789,10 @@ async fn test_group_description_is_stored_and_listed() {
     // contract the handler relies on, because the endpoint's happy path ends
     // in `getent`, which has no row to return for a group that only exists
     // in the mirror.
-    assert!(
-        repo.update_description("family", Some("Household"))
-            .await
-            .expect("update")
-            == false
-    );
+    assert!(!repo
+        .update_description("family", Some("Household"))
+        .await
+        .expect("update"));
     let created = repo
         .create("family", Some("Household"))
         .await

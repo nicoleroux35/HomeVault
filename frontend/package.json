@@ -25,8 +25,10 @@
     "preview": "vite preview",
     "check": "svelte-check --tsgo-experimental-api --tsconfig ./tsconfig.app.json && tsc -p tsconfig.node.json",
     "test": "vitest run",
+    "test:unit": "vitest run",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
+    "lint": "npm run lint:ui",
     "lint:i18n": "node scripts/lint-i18n.mjs",
     "lint:tokens": "node scripts/lint-tokens.mjs",
     "lint:ui": "node scripts/lint-i18n.mjs && node scripts/lint-tokens.mjs"
@@ -44,6 +46,7 @@
     "@vitest/coverage-v8": "^5.1.0",
     "autoprefixer": "^10.5.0",
     "deepmerge": "file:./vendor/deepmerge",
+    "happy-dom": "^21.0.4",
     "jsdom": "^31.0.0",
     "lightningcss": "^1.29.3",
     "postcss": "^8.5.29",

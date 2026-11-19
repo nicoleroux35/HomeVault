@@ -58,7 +58,25 @@ async function stabilise(page: import('@playwright/test').Page) {
  * - `docker` — image/container/volume counts come from the daemon;
  * - `network` / `vpn` — interface names, states and addresses belong to the
  *   runner (a container's `eth0`/`lo` differ from a VM's `ens5`, and the
- *   default route/MTU change with them).
+ *   default route/MTU change with them);
+ * - `traffic-control` — the "Shaping is stopped" notice adds one line naming
+ *   the `tc` tool (`iproute2`) when the runner does not have it;
+ * - `rclone` — the remote cards are the *host's* `/etc/rclone.conf`: a runner
+ *   with two configured remotes shows two cards where the CI container shows
+ *   the "no remotes" empty state;
+ * - `shares` — the list is the daemon's own config, so a host with Samba
+ *   installed lists its distro default `[printers]` / `[print$]` next to the
+ *   app's own shares, while the CI container lists none;
+ *
+ * Two screens are deliberately NOT in the budget below because their body is
+ * not host *data* but host *capability*: `backup` and `destinations` switch
+ * between "Restic Not Installed" install hints and the real empty state
+ * depending on whether `restic` / `rest-server` are on the server's PATH, and
+ * that swaps the whole card (a taller notice stack shifts everything below it,
+ * so no pixel budget can absorb it without hiding a reflow). The committed
+ * baselines are the CI ones — a root container with neither tool — so a
+ * workstation that has restic installed must run the server without it
+ * (`PATH=/usr/local/bin:/usr/bin:/bin` before `hv-test.sh serve`) to match.
  *
  * The baselines were captured on a freshly seeded database (`Reset server +
  * seed before the visual gates`), so what remains is the host itself. A layout
@@ -71,6 +89,9 @@ const TOLERANCE: Partial<Record<(typeof APP_IDS)[number], number>> = {
   docker: 0.08,
   network: 0.08,
   vpn: 0.08,
+  'traffic-control': 0.1,
+  rclone: 0.1,
+  shares: 0.1,
 };
 
 /**

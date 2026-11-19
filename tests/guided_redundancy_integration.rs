@@ -1,8 +1,6 @@
 //! Integration tests for guided redundancy recommendations
 
-use homevault::guided_redundancy::{
-    DiskInfo, GuidedRedundancyService, RedundancyLevel, StorageTech,
-};
+use homevault::guided_redundancy::{DiskInfo, GuidedRedundancyService, RedundancyLevel};
 
 fn make_disk(device: &str, size_gb: u64) -> DiskInfo {
     DiskInfo {

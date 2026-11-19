@@ -520,8 +520,10 @@ async fn test_the_saved_configuration_is_what_the_screen_reads_back() {
 async fn test_the_module_refuses_what_the_api_refuses() {
     // The same gate, without HTTP: a configuration the endpoint would answer
     // `400` for is refused by `validate_config`, so neither path can drift.
-    let mut config = LocalDnsConfig::default();
-    config.enabled = true;
+    let mut config = LocalDnsConfig {
+        enabled: true,
+        ..Default::default()
+    };
     config.confirmed = true;
     config.interface = "eth0".to_string();
     assert!(local_dns::validate_config(&config).is_err(), "no forwarder");

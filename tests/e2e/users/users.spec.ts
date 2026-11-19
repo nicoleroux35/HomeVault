@@ -352,9 +352,12 @@ test.beforeAll(async ({ playwright }) => {
 
 test.afterAll(async () => {
   if (sharedCtx) {
-    await deleteUser(sharedCtx, adminHeaders, sharedActive.username);
-    await deleteUser(sharedCtx, adminHeaders, sharedLocked.username);
-    await deleteUser(sharedCtx, adminHeaders, sharedAdmin2.username);
+    // `beforeAll` can abort half-way (a host without passwordless sudo cannot
+    // create the throwaway group), so every fixture is optional here — the
+    // teardown must not throw a TypeError on top of the real failure.
+    await deleteUser(sharedCtx, adminHeaders, sharedActive?.username);
+    await deleteUser(sharedCtx, adminHeaders, sharedLocked?.username);
+    await deleteUser(sharedCtx, adminHeaders, sharedAdmin2?.username);
     await deleteGroup(sharedCtx, adminHeaders, sharedGroup);
   }
   await sharedCtx?.dispose();

@@ -74,7 +74,7 @@
 //!   cargo test --test downloader_integration -- --nocapture
 
 use axum::{
-    routing::{delete, get, post, put},
+    routing::{get, post, put},
     Router,
 };
 use http::{Method, Request, StatusCode};

@@ -1,7 +1,6 @@
 //! Integration tests for UPS server mode
 
 use homevault::ups_server::{ShutdownPolicy, UpsServerConfig, UpsServerService};
-use std::collections::HashMap;
 
 #[tokio::test]
 async fn test_ups_server_availability() {
@@ -40,8 +39,10 @@ fn test_validate_config_accepts_valid() {
 /// service no longer carries).
 #[test]
 fn test_validate_config_requires_a_client_when_enabled() {
-    let mut config = UpsServerConfig::default();
-    config.enabled = true;
+    let mut config = UpsServerConfig {
+        enabled: true,
+        ..Default::default()
+    };
     config.allowed_clients.clear();
 
     let result = UpsServerService::validate_config(&config);
@@ -51,8 +52,10 @@ fn test_validate_config_requires_a_client_when_enabled() {
 
 #[test]
 fn test_validate_config_rejects_empty_interface() {
-    let mut config = UpsServerConfig::default();
-    config.bind_interface = "".to_string();
+    let config = UpsServerConfig {
+        bind_interface: "".to_string(),
+        ..Default::default()
+    };
 
     let result = UpsServerService::validate_config(&config);
     assert!(result.is_err());
@@ -64,8 +67,10 @@ fn test_validate_config_rejects_reserved_ports() {
     let reserved_ports = [22, 80, 443, 8443];
 
     for port in &reserved_ports {
-        let mut config = UpsServerConfig::default();
-        config.port = *port;
+        let config = UpsServerConfig {
+            port: *port,
+            ..Default::default()
+        };
 
         let result = UpsServerService::validate_config(&config);
         assert!(result.is_err());
@@ -75,8 +80,10 @@ fn test_validate_config_rejects_reserved_ports() {
 
 #[test]
 fn test_validate_config_requires_clients_when_enabled() {
-    let mut config = UpsServerConfig::default();
-    config.enabled = true;
+    let mut config = UpsServerConfig {
+        enabled: true,
+        ..Default::default()
+    };
     config.allowed_clients.clear();
 
     let result = UpsServerService::validate_config(&config);
@@ -106,8 +113,10 @@ fn test_validate_client_name_format() {
     ];
 
     for client in valid_clients {
-        let mut config = UpsServerConfig::default();
-        config.enabled = true;
+        let mut config = UpsServerConfig {
+            enabled: true,
+            ..Default::default()
+        };
         config.allowed_clients = vec![client];
 
         let result = UpsServerService::validate_config(&config);
@@ -122,8 +131,10 @@ fn test_validate_client_rejects_invalid_address() {
     let invalid_addresses = vec!["invalid", "999.999.999.999", "not-an-ip"];
 
     for addr in invalid_addresses {
-        let mut config = UpsServerConfig::default();
-        config.enabled = true;
+        let mut config = UpsServerConfig {
+            enabled: true,
+            ..Default::default()
+        };
         config.allowed_clients = vec![UpsClient {
             name: "client1".to_string(),
             address: addr.to_string(),
@@ -172,8 +183,10 @@ fn test_max_clients_validation() {
     let invalid_values = vec![0, 101, 200];
 
     for max_clients in invalid_values {
-        let mut config = UpsServerConfig::default();
-        config.max_clients = max_clients;
+        let config = UpsServerConfig {
+            max_clients,
+            ..Default::default()
+        };
 
         let result = UpsServerService::validate_config(&config);
         assert!(result.is_err());
@@ -193,8 +206,10 @@ fn test_validate_client_username_special_chars() {
     ];
 
     for username in invalid_usernames {
-        let mut config = UpsServerConfig::default();
-        config.enabled = true;
+        let mut config = UpsServerConfig {
+            enabled: true,
+            ..Default::default()
+        };
         config.allowed_clients = vec![UpsClient {
             name: "client1".to_string(),
             address: "192.168.1.100".to_string(),

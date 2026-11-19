@@ -1,0 +1,192 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`Component consistency > all buttons use consistent styling 1`] = `
+[
+  "<button class="btn btn-primary">Primary</button>",
+  "<button class="btn btn-secondary">Secondary</button>",
+  "<button class="btn btn-danger">Danger</button>",
+]
+`;
+
+exports[`Component consistency > all cards use consistent structure 1`] = `
+[
+  "<div class="card">
+        <div class="card-header">Title</div>
+        <div class="card-body">Content</div>
+      </div>",
+  "<div class="card">
+        <div class="card-header">Another Card</div>
+        <div class="card-body">More content</div>
+      </div>",
+]
+`;
+
+exports[`Desktop screen snapshots > renders desktop with open windows 1`] = `
+"
+      <div class="hv-desktop">
+        <div class="hv-topbar"></div>
+        <div class="hv-window" data-app="settings">
+          <div class="hv-window-header">
+            <h1>Settings</h1>
+          </div>
+          <div class="hv-window-body">
+            <!-- Settings content -->
+          </div>
+        </div>
+        <div class="hv-dock"></div>
+      </div>
+    "
+`;
+
+exports[`Desktop screen snapshots > renders empty desktop 1`] = `
+"
+      <div class="hv-desktop" data-testid="hv-desktop">
+        <div class="hv-topbar"></div>
+        <div class="hv-dock">
+          <div class="hv-dock-icon" data-app="settings"></div>
+          <div class="hv-dock-icon" data-app="explorer"></div>
+        </div>
+      </div>
+    "
+`;
+
+exports[`Login screen snapshots > renders 2FA verification screen 1`] = `
+"
+      <div class="login-container">
+        <form>
+          <h1>Two-Factor Authentication</h1>
+          <p>Enter the 6-digit code from your authenticator app</p>
+          <div class="totp-inputs">
+            <input type="text" maxlength="1" />
+            <input type="text" maxlength="1" />
+            <input type="text" maxlength="1" />
+            <input type="text" maxlength="1" />
+            <input type="text" maxlength="1" />
+            <input type="text" maxlength="1" />
+          </div>
+          <button type="submit">Verify</button>
+        </form>
+      </div>
+    "
+`;
+
+exports[`Login screen snapshots > renders login form 1`] = `
+"
+      <div class="login-container">
+        <form>
+          <h1>Sign In</h1>
+          <input type="text" name="username" placeholder="Username" />
+          <input type="password" name="password" placeholder="Password" />
+          <button type="submit">Sign In</button>
+        </form>
+      </div>
+    "
+`;
+
+exports[`Login screen snapshots > renders login form with error 1`] = `
+"
+      <div class="login-container">
+        <form>
+          <h1>Sign In</h1>
+          <div class="alert error">Invalid credentials</div>
+          <input type="text" name="username" placeholder="Username" />
+          <input type="password" name="password" placeholder="Password" />
+          <button type="submit">Sign In</button>
+        </form>
+      </div>
+    "
+`;
+
+exports[`Settings screen snapshots > renders appearance settings with wallpaper grid 1`] = `
+"
+      <div class="appearance-settings">
+        <div class="wallpaper-section">
+          <h3>Wallpaper</h3>
+          <div class="wallpaper-grid">
+            <button class="wallpaper-thumb" data-wallpaper="hv-01"></button><button class="wallpaper-thumb" data-wallpaper="hv-02"></button><button class="wallpaper-thumb" data-wallpaper="hv-03"></button><button class="wallpaper-thumb" data-wallpaper="hv-04"></button><button class="wallpaper-thumb" data-wallpaper="hv-05"></button><button class="wallpaper-thumb" data-wallpaper="hv-06"></button><button class="wallpaper-thumb" data-wallpaper="hv-07"></button><button class="wallpaper-thumb" data-wallpaper="hv-08"></button><button class="wallpaper-thumb" data-wallpaper="hv-09"></button><button class="wallpaper-thumb" data-wallpaper="hv-10"></button><button class="wallpaper-thumb" data-wallpaper="hv-11"></button><button class="wallpaper-thumb" data-wallpaper="hv-12"></button><button class="wallpaper-thumb" data-wallpaper="hv-13"></button><button class="wallpaper-thumb" data-wallpaper="hv-14"></button><button class="wallpaper-thumb" data-wallpaper="hv-15"></button><button class="wallpaper-thumb" data-wallpaper="hv-16"></button><button class="wallpaper-thumb" data-wallpaper="hv-17"></button><button class="wallpaper-thumb" data-wallpaper="hv-18"></button><button class="wallpaper-thumb" data-wallpaper="hv-19"></button><button class="wallpaper-thumb" data-wallpaper="hv-20"></button><button class="wallpaper-thumb" data-wallpaper="hv-21"></button><button class="wallpaper-thumb" data-wallpaper="hv-22"></button><button class="wallpaper-thumb" data-wallpaper="hv-23"></button><button class="wallpaper-thumb" data-wallpaper="hv-24"></button><button class="wallpaper-thumb" data-wallpaper="hv-25"></button><button class="wallpaper-thumb" data-wallpaper="hv-26"></button><button class="wallpaper-thumb" data-wallpaper="hv-27"></button><button class="wallpaper-thumb" data-wallpaper="hv-28"></button><button class="wallpaper-thumb" data-wallpaper="hv-29"></button><button class="wallpaper-thumb" data-wallpaper="hv-30"></button><button class="wallpaper-thumb" data-wallpaper="hv-31"></button><button class="wallpaper-thumb" data-wallpaper="hv-32"></button><button class="wallpaper-thumb" data-wallpaper="hv-33"></button><button class="wallpaper-thumb" data-wallpaper="hv-34"></button><button class="wallpaper-thumb" data-wallpaper="hv-35"></button><button class="wallpaper-thumb" data-wallpaper="hv-36"></button><button class="wallpaper-thumb" data-wallpaper="hv-37"></button><button class="wallpaper-thumb" data-wallpaper="hv-38"></button><button class="wallpaper-thumb" data-wallpaper="hv-39"></button><button class="wallpaper-thumb" data-wallpaper="hv-40"></button><button class="wallpaper-thumb" data-wallpaper="hv-41"></button><button class="wallpaper-thumb" data-wallpaper="hv-42"></button><button class="wallpaper-thumb" data-wallpaper="hv-43"></button><button class="wallpaper-thumb" data-wallpaper="hv-44"></button>
+          </div>
+        </div>
+        <div class="accent-section">
+          <h3>Accent Color</h3>
+          <input type="color" value="#2E72C9" />
+        </div>
+      </div>
+    "
+`;
+
+exports[`Settings screen snapshots > renders settings categories 1`] = `
+"
+      <div class="settings-container">
+        <nav class="settings-nav">
+          <button>General</button>
+          <button>Appearance</button>
+          <button>Security</button>
+          <button>Network</button>
+        </nav>
+        <div class="settings-content">
+          <h2>Appearance</h2>
+          <div class="settings-card">
+            <label>Wallpaper</label>
+            <div class="wallpaper-grid">
+              <!-- Wallpaper thumbnails -->
+            </div>
+          </div>
+        </div>
+      </div>
+    "
+`;
+
+exports[`Widget snapshots > renders CPU widget 1`] = `
+"
+      <div class="widget cpu-widget">
+        <div class="widget-header">
+          <span class="widget-icon">💻</span>
+          <h3>CPU</h3>
+        </div>
+        <div class="widget-body">
+          <div class="metric">
+            <span class="metric-value">45%</span>
+            <span class="metric-label">Usage</span>
+          </div>
+        </div>
+      </div>
+    "
+`;
+
+exports[`Widget snapshots > renders network widget 1`] = `
+"
+      <div class="widget network-widget">
+        <div class="widget-header">
+          <span class="widget-icon">🌐</span>
+          <h3>Network</h3>
+        </div>
+        <div class="widget-body">
+          <div class="metric">
+            <span class="label">↓ Down</span>
+            <span class="value">125 Mbps</span>
+          </div>
+          <div class="metric">
+            <span class="label">↑ Up</span>
+            <span class="value">45 Mbps</span>
+          </div>
+        </div>
+      </div>
+    "
+`;
+
+exports[`Widget snapshots > renders storage widget 1`] = `
+"
+      <div class="widget storage-widget">
+        <div class="widget-header">
+          <span class="widget-icon">💾</span>
+          <h3>Storage</h3>
+        </div>
+        <div class="widget-body">
+          <div class="progress-bar">
+            <div class="progress-fill" style="width: 65%"></div>
+          </div>
+          <p>650 GB / 1 TB used</p>
+        </div>
+      </div>
+    "
+`;

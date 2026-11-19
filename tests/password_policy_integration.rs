@@ -48,6 +48,10 @@ struct Harness {
     _guard: std::sync::MutexGuard<'static, ()>,
 }
 
+// The guard serialises the process-global `DATA_DIRECTORY` across the suite's
+// tests and is stored in the harness for the whole case, so it is deliberately
+// held across the awaits below.
+#[allow(clippy::await_holding_lock)]
 async fn setup() -> Harness {
     let guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let tmp = tempfile::tempdir().expect("temp dir");

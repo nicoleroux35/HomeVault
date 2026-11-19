@@ -1,5 +1,80 @@
 # HomeVault — Test tracking
 
+## 2026-11-18/19 — full Rust + frontend + E2E verification (executed)
+
+| Suite | Result |
+|---|---|
+| `cargo fmt --all --check` | **0 diff** |
+| `cargo clippy --all-targets -- -D warnings` | **0 warning** (152 at the start of the pass — the stable toolchain's new lints plus three test files that did not compile) |
+| `cargo test --lib` | **2 965 passed / 0 failed** (1 min 49) |
+| Rust (`cargo test --tests --no-fail-fast`) | **115 test targets — 4 645 passed / 0 failed / 9 ignored** (42 min) |
+| Frontend unit/component (`cd frontend && npm test`) | **83 passed / 0 failed** (11 files) |
+| Frontend type-check (`npm run check`) | **0 errors / 0 warnings** |
+| i18n + design-token lint (`npm run lint:ui`) | **OK** — 264 / 153 baselined occurrences, 0 new |
+| Frontend build (`npm run build`) | **OK** (103 precompressed files) |
+| E2E stage A (`tests/e2e/setup`, fresh server) | **198 passed / 2 skipped** |
+| E2E stage B (every other screen, firefox + chromium) | **3 238 passed / 4 failed / 276 skipped / 316 not run** (2 h 12) |
+| E2E design (`a11y` + `typography` + `ui-kit`) | **108 passed** |
+| E2E visual (360 / 768 / 1280) | **96 passed** |
+| E2E compat (WebKit / mobile) | **9 passed** |
+| E2E login (last, its limiter tests exhaust the budget) | **210 passed / 2 skipped** |
+
+The 9 ignored Rust tests are the opt-in `login_pam_integration` host cases
+(root + `useradd`/PAM). They were executed for real on 2026-11-19 on this host
+(`sudo … --ignored --test-threads=1` with `HOMEVAULT_DESTRUCTIVE_ROOT_TESTS=1`,
+against the test binary already built by the run): **9 passed / 0 failed** in
+12.8 s, including the `visudo -c` validation of the generated sudoers drop-in.
+The throwaway `hv_*` accounts and `/etc/sudoers.d/homevault` were removed
+afterwards. The 4 remaining stage-B failures are one environment
+case, present in both browsers: `users.spec.ts` 1.1 and `groups.spec.ts` 1.1
+build their throwaway fixture through the API, and the handler runs
+`sudo useradd`/`groupadd`, which cannot read a password on a workstation
+(`sudo: a terminal is required`). CI runs that stage in a root container and
+covers it.
+
+### Fixed in this pass
+
+- **Product** — `Journal.svelte`: `loadEntries()` had no stale-response guard,
+  so a slow `system` read (a `journalctl` through sudo, seconds to fail) landed
+  after the fast `app` read and replaced the source the user had already left,
+  showing "Command failed: sudo…" under *HomeVault Application Log*. A
+  monotonic `entriesRequestSeq` now lets only the newest request touch the view
+  (E2E `journal` 11.1, which caught it).
+- **Test bugs found and corrected** — the new `tests/e2e/i18n` spec drove a
+  `locale` key (the app stores `hv-language`) and `input[name="username"]`
+  (the field is `#username`); three integration files (`chaos_testing`,
+  `property_testing`, `contract_testing`, `common/mod.rs`) did not compile,
+  asserted the pre-envelope response shape, and one property compared a clamped
+  percentage against the unclamped ratio; `docker` 13.1 relied on a refetch
+  that never happens after an out-of-band container create; `explorer` 16.3
+  relied on the watcher's inotify event instead of the documented
+  revalidation; `desktop` 14.13 compared a sub-pixel box exactly.
+- **Flake** — `settings` 4.9→4.11: the release-notes modal of a fresh member
+  opens after `dismissWhatsNew()` sampled for it and then swallows the dock
+  click. The fixture now marks it seen (`POST /whats-new/seen`), which removes
+  the race instead of retrying it.
+- **Environment-gated** — `vpn` 14.3 needs the WireGuard tab, which the screen
+  only renders when `wireguard-tools` is installed; it now skips with that
+  message, like the 16 other `addBtn` guards in the file.
+
+### Visual gate and host capability
+
+Three screens' committed baselines were captured in the CI container and
+depend on what that container has: `backup` and `destinations` switch their
+whole card on `restic` / `rest-server`, and `traffic-control`, `rclone` and
+`shares` reflect `tc`, the host's `/etc/rclone.conf` and Samba's default
+`[printers]`/`[print$]`. The three host-*data* screens joined the documented
+pixel-budget table; the two host-*capability* screens cannot (their notice
+stack shifts everything below it), so the local recipe is to start the server
+without `~/.local/bin` on PATH:
+
+```bash
+NEWPATH=$(echo "$PATH" | tr ':' '\n' | grep -v "^$HOME/.local/bin$" | paste -sd:)
+PATH="$NEWPATH" .opencode/scripts/hv-test.sh e2e
+```
+
+With that PATH, and `libavif16` installed for WebKit, all six stages run here.
+
 ## 2026-11-12 — full Rust + frontend verification (executed)
 
 | Suite | Result |

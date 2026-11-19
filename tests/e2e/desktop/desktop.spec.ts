@@ -2764,8 +2764,12 @@ test.describe('14 — Chrome geometry & material', () => {
     // from the tokens the two rules happen to share.
     expect(m.footer.map((f) => f.id)).toEqual(['win-help', 'win-resize-grip']);
     for (const f of m.footer) {
-      expect(f.btn.w, `${f.id} button width`).toBe(28);
-      expect(f.btn.h, `${f.id} button height`).toBe(28);
+      // `getBoundingClientRect()` on a scaled layout rounds 27.99 to 27 in one
+      // run and 28 in the next, so the box is measured with a 1px tolerance
+      // while the glyph box below stays exact — the drift this test exists for
+      // is the 16px-vs-14px one, never a rounding artefact.
+      expect(Math.abs(f.btn.w - 28), `${f.id} button width`).toBeLessThanOrEqual(1);
+      expect(Math.abs(f.btn.h - 28), `${f.id} button height`).toBeLessThanOrEqual(1);
       expect(f.glyph.w, `${f.id} glyph width matches the trio`).toBe(m.trio[0].w);
       expect(f.glyph.h, `${f.id} glyph height matches the trio`).toBe(m.trio[0].h);
     }

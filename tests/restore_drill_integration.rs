@@ -44,6 +44,7 @@ struct Fixture {
     _guard: std::sync::MutexGuard<'static, ()>,
 }
 
+#[allow(clippy::await_holding_lock)]
 async fn fixture() -> Fixture {
     let guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let tmp = tempfile::tempdir().expect("temp dir");

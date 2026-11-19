@@ -182,9 +182,8 @@ async fn btrfs_corrupt_primary_superblock_mounts_read_only() {
             source: harness.device().to_string(),
             mount_point: harness.mount_point().to_string_lossy().to_string(),
             fstype: "btrfs".to_string(),
-            options: format!(
-                "defaults,nofail,x-systemd.device-timeout=30s,x-systemd.mount-timeout=30s"
-            ),
+            options: "defaults,nofail,x-systemd.device-timeout=30s,x-systemd.mount-timeout=30s"
+                .to_string(),
         };
         let status = recover_one(&entry).await.expect("recovery ladder");
         assert_eq!(

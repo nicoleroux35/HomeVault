@@ -801,7 +801,7 @@ async fn test_bond_endpoints_require_session_and_admin() {
     create_test_user(&state, "admin", "AdminPass123!", 2).await;
     create_test_user(&state, "member", "MemberPass123!", 1).await;
     let mut router = network_router(state.clone());
-    let admin = login(&mut router, "admin", "AdminPass123!").await;
+    let _admin = login(&mut router, "admin", "AdminPass123!").await;
     let member = login(&mut router, "member", "MemberPass123!").await;
 
     let (status, _) = send(&mut router, Method::GET, "/api/network/bonds", None, None).await;

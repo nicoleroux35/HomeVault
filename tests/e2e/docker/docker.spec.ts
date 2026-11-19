@@ -794,6 +794,12 @@ test.describe('13 — Real container lifecycle', () => {
     }
 
     try {
+      // The container was created out-of-band, so nothing evicted the screen's
+      // `/docker/containers` cache entry and re-selecting the tab it is
+      // already on does not refetch. A reload is what a real user would see
+      // after the app's own create flow (which does evict the family).
+      await page.reload();
+      await gotoDocker(page, adminTokens);
       await switchTab(page, 'containers');
       await expect(win(page).locator('[data-testid="docker-ctr-card"]', { hasText: name })).toBeVisible({ timeout: 10_000 });
 

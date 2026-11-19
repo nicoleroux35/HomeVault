@@ -37,6 +37,9 @@ type Req = Request<axum::body::Body>;
 
 static ENV_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 
+// The guard serialises the process-global `DATA_DIRECTORY` across the suite's
+// tests and outlives them, so it is deliberately held across the awaits.
+#[allow(clippy::await_holding_lock)]
 async fn setup_state() -> (
     Arc<AppState>,
     tempfile::TempDir,
@@ -153,6 +156,7 @@ async fn send(
 }
 
 #[tokio::test]
+#[allow(clippy::await_holding_lock)]
 async fn test_schedule_is_admin_only_and_off_by_default() {
     let (state, _tmp, _guard) = setup_state().await;
     create_test_user(&state, "admin1", "Password123!", 2).await;
@@ -196,6 +200,7 @@ async fn test_schedule_is_admin_only_and_off_by_default() {
 }
 
 #[tokio::test]
+#[allow(clippy::await_holding_lock)]
 async fn test_schedule_persists_and_validates_the_interval() {
     let (state, _tmp, _guard) = setup_state().await;
     create_test_user(&state, "admin1", "Password123!", 2).await;
@@ -247,6 +252,7 @@ async fn test_schedule_persists_and_validates_the_interval() {
 }
 
 #[tokio::test]
+#[allow(clippy::await_holding_lock)]
 async fn test_run_now_is_admin_only() {
     let (state, _tmp, _guard) = setup_state().await;
     create_test_user(&state, "admin1", "Password123!", 2).await;

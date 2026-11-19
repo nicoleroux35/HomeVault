@@ -817,6 +817,10 @@ test.describe('14 — Edge cases & memory regression', () => {
     const openvpnTab = page.getByRole('tab', { name: /OpenVPN/ });
     const wgTab = page.getByRole('tab', { name: /WireGuard/ });
     if ((await openvpnTab.count()) === 0) test.skip(true, 'only one/no tab available');
+    // The WireGuard tab only exists when wireguard-tools is installed (the
+    // screen hides a protocol it cannot run), so a host without `wg` has
+    // nothing to switch to.
+    if ((await wgTab.count()) === 0) test.skip(true, 'WireGuard not available on this host');
     for (let i = 0; i < 8; i++) {
       await (i % 2 === 0 ? openvpnTab : wgTab).click();
     }

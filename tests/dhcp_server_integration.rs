@@ -1,7 +1,6 @@
 //! Integration tests for DHCP/TFTP server
 
 use homevault::dhcp_server::{DhcpServerConfig, DhcpServerService};
-use std::collections::HashMap;
 use std::net::Ipv4Addr;
 use std::path::PathBuf;
 
@@ -13,8 +12,10 @@ async fn test_dhcp_server_availability() {
 
 #[test]
 fn test_validate_config_valid() {
-    let mut config = DhcpServerConfig::default();
-    config.confirmed = true;
+    let config = DhcpServerConfig {
+        confirmed: true,
+        ..Default::default()
+    };
 
     let result = DhcpServerService::validate_config(&config);
     assert!(result.is_ok());
@@ -22,8 +23,10 @@ fn test_validate_config_valid() {
 
 #[test]
 fn test_validate_config_requires_interface() {
-    let mut config = DhcpServerConfig::default();
-    config.interface = "".to_string();
+    let config = DhcpServerConfig {
+        interface: "".to_string(),
+        ..Default::default()
+    };
 
     let result = DhcpServerService::validate_config(&config);
     assert!(result.is_err());
@@ -32,8 +35,10 @@ fn test_validate_config_requires_interface() {
 
 #[test]
 fn test_validate_config_range_order() {
-    let mut config = DhcpServerConfig::default();
-    config.dhcp_enabled = true;
+    let mut config = DhcpServerConfig {
+        dhcp_enabled: true,
+        ..Default::default()
+    };
     config.confirmed = true;
     config.dhcp_range_start = Ipv4Addr::new(192, 168, 1, 200);
     config.dhcp_range_end = Ipv4Addr::new(192, 168, 1, 100);
@@ -45,8 +50,10 @@ fn test_validate_config_range_order() {
 
 #[test]
 fn test_validate_config_same_subnet() {
-    let mut config = DhcpServerConfig::default();
-    config.dhcp_enabled = true;
+    let mut config = DhcpServerConfig {
+        dhcp_enabled: true,
+        ..Default::default()
+    };
     config.confirmed = true;
     config.dhcp_range_start = Ipv4Addr::new(192, 168, 1, 100);
     config.dhcp_range_end = Ipv4Addr::new(192, 168, 2, 200);
@@ -62,8 +69,10 @@ fn test_validate_lease_time_bounds() {
     let invalid_values = vec![30, 86400 * 31, 0];
 
     for lease_time in invalid_values {
-        let mut config = DhcpServerConfig::default();
-        config.lease_time_secs = lease_time;
+        let config = DhcpServerConfig {
+            lease_time_secs: lease_time,
+            ..Default::default()
+        };
 
         let result = DhcpServerService::validate_config(&config);
         assert!(result.is_err());
@@ -76,8 +85,10 @@ fn test_validate_lease_time_accepts_valid() {
     let valid_values = vec![60, 3600, 86400, 86400 * 7];
 
     for lease_time in valid_values {
-        let mut config = DhcpServerConfig::default();
-        config.lease_time_secs = lease_time;
+        let mut config = DhcpServerConfig {
+            lease_time_secs: lease_time,
+            ..Default::default()
+        };
         config.confirmed = true;
 
         let result = DhcpServerService::validate_config(&config);
@@ -95,8 +106,10 @@ fn test_validate_mac_format_valid() {
     ];
 
     for mac in valid_macs {
-        let mut config = DhcpServerConfig::default();
-        config.dhcp_enabled = true;
+        let mut config = DhcpServerConfig {
+            dhcp_enabled: true,
+            ..Default::default()
+        };
         config.confirmed = true;
         config
             .reservations
@@ -118,8 +131,10 @@ fn test_validate_mac_format_invalid() {
     ];
 
     for mac in invalid_macs {
-        let mut config = DhcpServerConfig::default();
-        config.dhcp_enabled = true;
+        let mut config = DhcpServerConfig {
+            dhcp_enabled: true,
+            ..Default::default()
+        };
         config.confirmed = true;
         config
             .reservations
@@ -132,8 +147,10 @@ fn test_validate_mac_format_invalid() {
 
 #[test]
 fn test_validate_reservation_in_range() {
-    let mut config = DhcpServerConfig::default();
-    config.dhcp_enabled = true;
+    let mut config = DhcpServerConfig {
+        dhcp_enabled: true,
+        ..Default::default()
+    };
     config.confirmed = true;
     config.dhcp_range_start = Ipv4Addr::new(192, 168, 1, 100);
     config.dhcp_range_end = Ipv4Addr::new(192, 168, 1, 200);
@@ -158,8 +175,10 @@ fn test_validate_reservation_in_range() {
 
 #[test]
 fn test_validate_tftp_root_absolute() {
-    let mut config = DhcpServerConfig::default();
-    config.tftp_enabled = true;
+    let mut config = DhcpServerConfig {
+        tftp_enabled: true,
+        ..Default::default()
+    };
     config.confirmed = true;
     config.tftp_root = PathBuf::from("relative/path");
 
@@ -170,8 +189,10 @@ fn test_validate_tftp_root_absolute() {
 
 #[test]
 fn test_validate_tftp_root_no_parent_dir() {
-    let mut config = DhcpServerConfig::default();
-    config.tftp_enabled = true;
+    let mut config = DhcpServerConfig {
+        tftp_enabled: true,
+        ..Default::default()
+    };
     config.confirmed = true;
     config.tftp_root = PathBuf::from("/srv/../etc");
 
@@ -185,8 +206,10 @@ fn test_validate_tftp_root_forbidden_paths() {
     let forbidden = ["/", "/etc", "/bin", "/boot", "/sys"];
 
     for path in &forbidden {
-        let mut config = DhcpServerConfig::default();
-        config.tftp_enabled = true;
+        let mut config = DhcpServerConfig {
+            tftp_enabled: true,
+            ..Default::default()
+        };
         config.confirmed = true;
         config.tftp_root = PathBuf::from(path);
 
@@ -201,8 +224,10 @@ fn test_validate_tftp_root_allows_safe_paths() {
     let safe_paths = ["/srv/tftp", "/var/tftp", "/mnt/pxe"];
 
     for path in &safe_paths {
-        let mut config = DhcpServerConfig::default();
-        config.tftp_enabled = true;
+        let mut config = DhcpServerConfig {
+            tftp_enabled: true,
+            ..Default::default()
+        };
         config.confirmed = true;
         config.tftp_root = PathBuf::from(path);
 
@@ -213,8 +238,10 @@ fn test_validate_tftp_root_allows_safe_paths() {
 
 #[test]
 fn test_validate_pxe_boot_file_relative() {
-    let mut config = DhcpServerConfig::default();
-    config.tftp_enabled = true;
+    let mut config = DhcpServerConfig {
+        tftp_enabled: true,
+        ..Default::default()
+    };
     config.confirmed = true;
     config.tftp_root = PathBuf::from("/srv/tftp");
     config.pxe_boot_file = Some("/absolute/path".to_string());
@@ -226,8 +253,10 @@ fn test_validate_pxe_boot_file_relative() {
 
 #[test]
 fn test_validate_pxe_boot_file_no_parent_dir() {
-    let mut config = DhcpServerConfig::default();
-    config.tftp_enabled = true;
+    let mut config = DhcpServerConfig {
+        tftp_enabled: true,
+        ..Default::default()
+    };
     config.confirmed = true;
     config.tftp_root = PathBuf::from("/srv/tftp");
     config.pxe_boot_file = Some("../etc/passwd".to_string());
@@ -239,8 +268,10 @@ fn test_validate_pxe_boot_file_no_parent_dir() {
 
 #[test]
 fn test_validate_requires_confirmation() {
-    let mut config = DhcpServerConfig::default();
-    config.dhcp_enabled = true;
+    let mut config = DhcpServerConfig {
+        dhcp_enabled: true,
+        ..Default::default()
+    };
     config.confirmed = false;
 
     let result = DhcpServerService::validate_config(&config);

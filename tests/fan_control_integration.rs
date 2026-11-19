@@ -1,7 +1,6 @@
 //! Integration tests for thermal/fan control
 
 use homevault::fan_control::{FanConfig, FanControlService, FanProfile};
-use std::collections::HashMap;
 
 #[tokio::test]
 async fn test_detect_channels() {
@@ -55,7 +54,7 @@ fn test_calculate_duty_interpolation() {
     // At 50°C (midpoint), should be around 50% duty
     let duty = FanControlService::calculate_duty(50, &curve, 0);
     assert!(
-        duty >= 48 && duty <= 52,
+        (48..=52).contains(&duty),
         "Duty at midpoint should be ~50%, got {}",
         duty
     );
@@ -242,11 +241,13 @@ async fn test_restore_auto_does_not_error() {
 
 #[test]
 fn test_fan_config_channel_override() {
-    let mut config = FanConfig::default();
-    config.profile = FanProfile::Balanced;
+    let mut config = FanConfig {
+        profile: FanProfile::Balanced,
+        ..Default::default()
+    };
 
     // Add channel-specific override
-    let mut override_cfg = homevault::fan_control::FanChannelConfig {
+    let override_cfg = homevault::fan_control::FanChannelConfig {
         profile: Some(FanProfile::Quiet),
         manual_duty: None,
         temp_sensor: None,
