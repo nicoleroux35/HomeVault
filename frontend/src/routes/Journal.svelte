@@ -50,6 +50,15 @@
   let sources: JournalSource[] = [];
   let entries: JournalEntry[] = [];
   let loading = true;
+  /**
+   * Monotonic id of the newest entries request. A `system` read can take
+   * seconds (it shells out to `journalctl`), so a slow answer for a source the
+   * user has already left must never overwrite the current one — that race is
+   * what made a fast "HomeVault Application Log" view flip back to the previous
+   * "Command failed: sudo…" error (Journal E2E 11.1). Only the request whose id
+   * is still the latest is allowed to touch the view.
+   */
+  let entriesRequestSeq = 0;
   let loadingSources = true;
   let selectedSource = 'app';
   let unitFilter = '';
@@ -179,6 +188,7 @@
   }
 
   async function loadEntries() {
+    const requestSeq = ++entriesRequestSeq;
     loading = true;
     if (!sourcesFailed) loadError = '';
     const isAudit = selectedSource === 'audit';
@@ -197,6 +207,8 @@
       action: isAudit ? auditAction.trim() || undefined : undefined,
       offset: isAudit ? auditOffset : undefined,
     });
+    // A newer load started while this one was in flight: it owns the view now.
+    if (requestSeq !== entriesRequestSeq) return;
     if (res.success && res.data) {
       entries = res.data;
       // The backend scans a bounded window wider than the page; when it filled

@@ -358,6 +358,17 @@ and shows the message inside it (`journal-clear-error` /
 - A new source id must be added to `source_kind` **and** to `text_log_path`:
   `source_kind` decides the privilege level, `text_log_path` the file. A
   source missing from `source_kind` is a 400 for everyone.
+- **Only the newest entries request may touch the view** (2026-11-18).
+  `Journal.svelte`'s `loadEntries()` stamps each call with a monotonic
+  `entriesRequestSeq` and drops its own answer when a newer call has started
+  since (`if (requestSeq !== entriesRequestSeq) return;`). Without that guard a
+  slow `system` read — it shells out to `journalctl`, and without passwordless
+  sudo it takes seconds to fail — landed after the fast `app` read and flipped
+  a source the user had already left back to the previous error: the list
+  disappeared and the screen showed "Command failed: sudo: a terminal is
+  required" under the *HomeVault Application Log* source. The same applies to
+  `loading`/`loadError`: only the winning request clears or sets them. Guard:
+  `tests/e2e/journal/journal.spec.ts` 11.1 (rapid source switching).
 - The `[journal]` i18n table must never be declared twice across the 4
   locale files — TOML doesn't allow a duplicate table header, and it will
   crash the server at startup the same way a stray `;` inside a SQL
@@ -418,7 +429,7 @@ and shows the message inside it (`journal-clear-error` /
   an invalid unit filter as a 400, an unknown source as a 400, `clear`
   touching only `homevault.log*`, and the cleanup-settings default /
   round-trip / clamp.
-- `tests/e2e/journal/journal.spec.ts` — 30 `test(`: page load, sources,
+- `tests/e2e/journal/journal.spec.ts` — 37 `test(`: page load, sources,
   filters (+ the bounded-search hint), the clear flow (never confirmed), the
   cleanup modal, navigation, responsive, accessibility (a failed read is an
   error with a retry, not the empty state), console/network, security
