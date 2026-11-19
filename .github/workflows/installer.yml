@@ -37,3 +37,5 @@ jobs:
         run: bash installer/tests/data-dir.test.sh
       - name: Upgrade → failed readiness → rollback
         run: bash installer/tests/upgrade-rollback.test.sh
+      - name: Classic sudo on sudo-rs hosts (Ubuntu 26.04)
+        run: bash installer/tests/classic-sudo.test.sh

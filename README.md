@@ -81,7 +81,10 @@ Svelte 5 frontend rendered as a desktop-like windowing UI.
 ## Requirements
 
 - **Debian 10+** or **Ubuntu 20.04+** (and derivatives such as
-  Raspberry Pi OS 64-bit)
+  Raspberry Pi OS 64-bit). On Ubuntu 26.04, where `sudo` defaults to
+  `sudo-rs`, the installer keeps classic `sudo`: the scoped grants in
+  `/etc/sudoers.d/homevault` rely on argument wildcards that `sudo-rs`
+  rejects.
 - **x86_64**, **aarch64** or **armv7l** architecture
 - **1 CPU core**, **1 GB of RAM**, **8 GB of system disk** — plus the data
   disk(s) of your choice

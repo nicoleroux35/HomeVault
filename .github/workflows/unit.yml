@@ -17,10 +17,12 @@ concurrency:
 
 jobs:
   unit:
-    # Pinned to 24.04: `ubuntu-latest` moved to 26.04 (sudo-rs), whose parser
-    # rejects wildcards in command arguments while `render_sudoers` still emits
-    # them — see `test_rendered_sudoers_is_visudo_valid`. Unpin once the
-    # generated grants are sudo-rs-compatible.
+    # Pinned to 24.04: `ubuntu-latest` moved to 26.04, whose `visudo` is
+    # sudo-rs and refuses the argument wildcards our grants use, so
+    # `test_rendered_sudoers_is_visudo_valid` cannot pass there. The installer
+    # selects classic sudo on such hosts (installer/install.sh →
+    # ensure_classic_sudo); this gate stays on 24.04 until the grants move to a
+    # single root helper that validates its own argv.
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7

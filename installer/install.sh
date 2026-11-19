@@ -1052,6 +1052,52 @@ on_system_filesystem() {
     [[ "$(_data_dir_device "$1")" == "$(_data_dir_device /)" ]]
 }
 
+# ---------------------------------------------------------------------------
+# Classic sudo (Ubuntu 26.04 ships sudo-rs)
+# ---------------------------------------------------------------------------
+# Ubuntu 26.04 makes `sudo-rs` the default `sudo`. Its parser accepts a
+# wildcard only as a bare `*` in the last argument, while HomeVault's scoped
+# grants use argument wildcards (`mount -t zfs * /tmp/restic-snap-*`,
+# `smartctl -H /dev/*`, `chown -R * /home/homevault/*`, …). `visudo -c` on such
+# an image therefore rejects `/etc/sudoers.d/homevault` and `--install-sudoers`
+# aborts, leaving the unprivileged unit without its grants. Classic sudo is
+# still packaged: select it rather than rewrite the 88 grants (the single
+# root-helper redesign is a separate, security-reviewed change).
+sudo_is_classic() {
+    command -v sudo >/dev/null 2>&1 || return 1
+    local resolved
+    resolved=$(readlink -f "$(command -v sudo)" 2>/dev/null || true)
+    [[ "$resolved" != *sudo-rs* ]] || return 1
+    ! sudo -V 2>&1 | grep -qi 'sudo-rs'
+}
+
+ensure_classic_sudo() {
+    if sudo_is_classic; then
+        return 0
+    fi
+    warn "sudo-rs is the active sudo: it rejects the argument wildcards HomeVault's grants rely on"
+    if ! command -v apt-get >/dev/null 2>&1; then
+        err "Install classic sudo (the package providing /usr/bin/sudo.ws), then re-run."
+        return 1
+    fi
+    apt-get install -y --no-install-recommends -qq sudo >/dev/null 2>&1 || true
+    if command -v update-alternatives >/dev/null 2>&1; then
+        local candidate
+        while IFS= read -r candidate; do
+            [[ -x "$candidate" ]] || continue
+            if ! "$candidate" -V 2>&1 | grep -qi 'sudo-rs'; then
+                update-alternatives --set sudo "$candidate" >/dev/null 2>&1 && break
+            fi
+        done < <(update-alternatives --list sudo 2>/dev/null || true)
+    fi
+    if sudo_is_classic; then
+        ok "Classic sudo selected (argument wildcards supported)"
+        return 0
+    fi
+    err "sudo-rs is still active — run 'update-alternatives --config sudo', pick the classic sudo, then re-run."
+    return 1
+}
+
 # Sourced by `installer/tests/*.test.sh`: stop here.
 if [[ "${HV_LIB_ONLY:-0}" == "1" ]]; then
     return 0 2>/dev/null || exit 0
@@ -2654,6 +2700,9 @@ if [[ "$RUN_USER" == "homevault" ]]; then
     chown "$RUN_USER:$RUN_GROUP" /home/homevault
     # One source of truth for the grants: the same renderer the unit tests
     # assert on, executed here as root before the unprivileged unit starts.
+    # `--install-sudoers` validates with the host's `visudo`; on Ubuntu 26.04
+    # that is sudo-rs, which rejects the argument wildcards the grants use.
+    ensure_classic_sudo || exit 1
     if ! DATA_DIRECTORY="$DATA_DIR" "$INSTALL_DIR/homevault" --install-sudoers; then
         err "Could not write /etc/sudoers.d/homevault — refusing to start an unprivileged unit without its grants."
         exit 1

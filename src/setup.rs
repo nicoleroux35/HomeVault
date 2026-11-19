@@ -3215,7 +3215,10 @@ mod tests {
         if let Ok(output) = result {
             assert!(
                 output.status.success(),
-                "visudo rejected the rendered sudoers file: {}",
+                "visudo rejected the rendered sudoers file: {}\n\
+                 On Ubuntu 26.04 `visudo` is sudo-rs, which refuses wildcards in command \
+                 arguments; the installer selects classic sudo before writing the drop-in \
+                 (installer/install.sh → ensure_classic_sudo).",
                 String::from_utf8_lossy(&output.stderr)
             );
         }

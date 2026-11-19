@@ -19,9 +19,11 @@ concurrency:
 
 jobs:
   integration:
-    # Pinned to 24.04: `ubuntu-latest` moved to 26.04 (sudo-rs), whose parser
-    # rejects wildcards in command arguments while `render_sudoers` still emits
-    # them — see the unit gate. Unpin once the grants are sudo-rs-compatible.
+    # Pinned to 24.04: `ubuntu-latest` moved to 26.04, whose `visudo` is
+    # sudo-rs and refuses the argument wildcards our grants use (see the unit
+    # gate). The installer selects classic sudo on such hosts
+    # (installer/install.sh → ensure_classic_sudo); this gate stays on 24.04
+    # until the grants move to a single root helper.
     runs-on: ubuntu-24.04
     services:
       postgres:

@@ -19,10 +19,11 @@ concurrency:
 jobs:
   coverage:
     name: Rust + frontend coverage
-    # Pinned to 24.04: `ubuntu-latest` moved to 26.04 (sudo-rs), whose parser
-    # rejects wildcards in command arguments while `render_sudoers` still emits
-    # them — `cargo llvm-cov --lib` runs the same unit tests. Unpin once the
-    # grants are sudo-rs-compatible.
+    # Pinned to 24.04: `ubuntu-latest` moved to 26.04, whose `visudo` is
+    # sudo-rs and refuses the argument wildcards our grants use — and
+    # `cargo llvm-cov --lib` runs the same unit tests. The installer selects
+    # classic sudo on such hosts (installer/install.sh → ensure_classic_sudo);
+    # this gate stays on 24.04 until the grants move to a single root helper.
     runs-on: ubuntu-24.04
     env:
       CARGO_PROFILE_DEV_DEBUG: "0"
