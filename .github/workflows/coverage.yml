@@ -19,7 +19,11 @@ concurrency:
 jobs:
   coverage:
     name: Rust + frontend coverage
-    runs-on: ubuntu-latest
+    # Pinned to 24.04: `ubuntu-latest` moved to 26.04 (sudo-rs), whose parser
+    # rejects wildcards in command arguments while `render_sudoers` still emits
+    # them — `cargo llvm-cov --lib` runs the same unit tests. Unpin once the
+    # grants are sudo-rs-compatible.
+    runs-on: ubuntu-24.04
     env:
       CARGO_PROFILE_DEV_DEBUG: "0"
       CARGO_PROFILE_TEST_DEBUG: "0"

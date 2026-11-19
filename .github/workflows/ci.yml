@@ -22,7 +22,13 @@ env:
 jobs:
   backend:
     name: Rust — build, test, clippy
-    runs-on: ubuntu-latest
+    # Pinned to 24.04: `ubuntu-latest` moved to 26.04, which ships sudo-rs.
+    # Its parser rejects wildcards in command arguments (only a trailing bare
+    # `*` is allowed), while HomeVault's generated sudoers file still uses
+    # them (`src/setup.rs` → `render_sudoers`), so
+    # `test_rendered_sudoers_is_visudo_valid` fails there. Unpin once the
+    # grants are sudo-rs-compatible.
+    runs-on: ubuntu-24.04
     env:
       # `debug` only controls DWARF debuginfo — assertions, overflow
       # checks and backtrace symbols stay intact. Without this, the

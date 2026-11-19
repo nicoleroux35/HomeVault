@@ -17,7 +17,11 @@ concurrency:
 
 jobs:
   unit:
-    runs-on: ubuntu-latest
+    # Pinned to 24.04: `ubuntu-latest` moved to 26.04 (sudo-rs), whose parser
+    # rejects wildcards in command arguments while `render_sudoers` still emits
+    # them — see `test_rendered_sudoers_is_visudo_valid`. Unpin once the
+    # generated grants are sudo-rs-compatible.
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
       - name: Install Rust toolchain

@@ -19,7 +19,10 @@ concurrency:
 
 jobs:
   integration:
-    runs-on: ubuntu-latest
+    # Pinned to 24.04: `ubuntu-latest` moved to 26.04 (sudo-rs), whose parser
+    # rejects wildcards in command arguments while `render_sudoers` still emits
+    # them — see the unit gate. Unpin once the grants are sudo-rs-compatible.
+    runs-on: ubuntu-24.04
     services:
       postgres:
         image: postgres:18-alpine
