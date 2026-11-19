@@ -805,11 +805,10 @@ mod tests {
         let read = &spec["paths"]["/api/settings/general"]["get"];
         assert!(read.get("security").is_none());
         assert_eq!(read["x-homevault-auth"], "session");
-        assert_eq!(
+        assert!(
             spec["paths"]["/api/auth/login"]["post"]["responses"]
                 .get("401")
                 .is_none(),
-            true,
             "a public operation must not advertise a session refusal"
         );
     }

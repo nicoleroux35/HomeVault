@@ -148,9 +148,7 @@ pub async fn resume_interrupted() -> Result<Option<String>, String> {
     let pool = marker.pool.clone();
     let pool_type = marker.kind.pool_type();
     let status = tokio::task::spawn_blocking(move || {
-        PoolService::get_scrub_status(&pool, pool_type)
-            .map(|s| s)
-            .unwrap_or_else(|e| e.to_string())
+        PoolService::get_scrub_status(&pool, pool_type).unwrap_or_else(|e| e.to_string())
     })
     .await
     .map_err(|e| format!("scrub status check panicked: {e}"))?;

@@ -681,8 +681,10 @@ mod tests {
 
     #[test]
     fn test_validate_config_requires_interface() {
-        let mut config = DhcpServerConfig::default();
-        config.interface = "".to_string();
+        let config = DhcpServerConfig {
+            interface: "".to_string(),
+            ..Default::default()
+        };
 
         let result = DhcpServerService::validate_config(&config);
         assert!(result.is_err());
@@ -690,8 +692,10 @@ mod tests {
 
     #[test]
     fn test_validate_config_range_order() {
-        let mut config = DhcpServerConfig::default();
-        config.dhcp_enabled = true;
+        let mut config = DhcpServerConfig {
+            dhcp_enabled: true,
+            ..Default::default()
+        };
         config.dhcp_range_start = Ipv4Addr::new(192, 168, 1, 200);
         config.dhcp_range_end = Ipv4Addr::new(192, 168, 1, 100);
 
@@ -702,8 +706,10 @@ mod tests {
 
     #[test]
     fn test_validate_lease_time_bounds() {
-        let mut config = DhcpServerConfig::default();
-        config.lease_time_secs = 30;
+        let mut config = DhcpServerConfig {
+            lease_time_secs: 30,
+            ..Default::default()
+        };
 
         let result = DhcpServerService::validate_config(&config);
         assert!(result.is_err());
@@ -750,8 +756,10 @@ mod tests {
 
     #[test]
     fn test_validate_requires_confirmation() {
-        let mut config = DhcpServerConfig::default();
-        config.dhcp_enabled = true;
+        let mut config = DhcpServerConfig {
+            dhcp_enabled: true,
+            ..Default::default()
+        };
         config.confirmed = false;
 
         let result = DhcpServerService::validate_config(&config);
@@ -813,8 +821,10 @@ mod tests {
 
     #[test]
     fn test_render_conf_only_binds_the_interfaces_that_serve_something() {
-        let mut dhcp = DhcpServerConfig::default();
-        dhcp.dhcp_enabled = true;
+        let mut dhcp = DhcpServerConfig {
+            dhcp_enabled: true,
+            ..Default::default()
+        };
         dhcp.interface = "eth0".to_string();
 
         let conf = DhcpServerService::render_conf(&dhcp, &LocalDnsConfig::default());
@@ -826,8 +836,10 @@ mod tests {
 
     #[test]
     fn test_render_conf_binds_both_halves_and_lists_one_interface_once() {
-        let mut dhcp = DhcpServerConfig::default();
-        dhcp.dhcp_enabled = true;
+        let mut dhcp = DhcpServerConfig {
+            dhcp_enabled: true,
+            ..Default::default()
+        };
         dhcp.interface = "eth0".to_string();
 
         // Same interface on both halves: one `interface=` line, not two.
@@ -860,8 +872,10 @@ mod tests {
 
     #[test]
     fn test_advertising_the_appliance_replaces_the_dns_server_list() {
-        let mut dhcp = DhcpServerConfig::default();
-        dhcp.dhcp_enabled = true;
+        let mut dhcp = DhcpServerConfig {
+            dhcp_enabled: true,
+            ..Default::default()
+        };
         dhcp.dns_servers = vec![Ipv4Addr::new(9, 9, 9, 9)];
 
         // Server off: the DHCP card's list is what clients get.

@@ -197,6 +197,7 @@ fn build_settings(request: SettingsRequest, updated_by: Option<&str>) -> saml::S
 
 /// Parses an admin request body only after `require_admin` has answered, so an
 /// anonymous visitor cannot use the body parser as a format oracle.
+#[allow(clippy::result_large_err)]
 fn parse_admin_body<T: serde::de::DeserializeOwned>(body: &Bytes) -> Result<T, Response> {
     serde_json::from_slice(body)
         .map_err(|_| ResponseHelper::json_error("The request body is not valid JSON".to_string()))

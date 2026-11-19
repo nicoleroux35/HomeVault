@@ -159,7 +159,11 @@ mod tests {
         // A share root outside the explorer roots still contributes a trash
         // folder, and a non-admin gets it too.
         let share = PathBuf::from("/mnt/pool/media");
-        let out = roots_from(&[PathBuf::from("/home")], &[share.clone()], false);
+        let out = roots_from(
+            &[PathBuf::from("/home")],
+            std::slice::from_ref(&share),
+            false,
+        );
         assert!(out.contains(&share.join(TRASH_DIR_NAME)));
         assert!(!out.contains(&crate::config::paths::base_dir().join("trash")));
     }
@@ -167,7 +171,11 @@ mod tests {
     #[test]
     fn test_roots_from_deduplicates_a_share_under_an_allowed_root() {
         let home = PathBuf::from("/home");
-        let out = roots_from(&[home.clone()], &[home.clone()], false);
+        let out = roots_from(
+            std::slice::from_ref(&home),
+            std::slice::from_ref(&home),
+            false,
+        );
         let expected = home.join(TRASH_DIR_NAME);
         assert_eq!(out.iter().filter(|r| **r == expected).count(), 1);
     }

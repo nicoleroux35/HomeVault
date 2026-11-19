@@ -236,6 +236,7 @@ fn err(
 /// The new WireGuard-client endpoints answer `Response` (they need `503` and
 /// `409`, which the legacy `(StatusCode, Json<ApiError>)` result cannot
 /// express without changing every existing handler).
+#[allow(clippy::result_large_err)]
 async fn guard_admin_response(
     state: &AppStateArc,
     headers: &HeaderMap,

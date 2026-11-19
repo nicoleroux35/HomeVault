@@ -1085,8 +1085,10 @@ mod tests {
     #[test]
     fn test_the_general_block_round_trips_the_language() {
         let (p, _dir) = persistence();
-        let mut general = GeneralSettings::default();
-        general.language = Some("fr".to_string());
+        let general = GeneralSettings {
+            language: Some("fr".to_string()),
+            ..Default::default()
+        };
         p.save_all(
             &general,
             &EmailSettings::default(),
@@ -1122,8 +1124,10 @@ mod tests {
     #[test]
     fn test_an_import_from_a_newer_schema_is_refused() {
         let (p, _dir) = persistence();
-        let mut newer = PersistedSettings::default();
-        newer.schema_version = CURRENT_SETTINGS_SCHEMA + 1;
+        let newer = PersistedSettings {
+            schema_version: CURRENT_SETTINGS_SCHEMA + 1,
+            ..Default::default()
+        };
         let json = serde_json::to_string(&newer).unwrap();
         let err = p.import(&json).unwrap_err();
         assert!(
@@ -1144,68 +1148,78 @@ mod tests {
 
     #[test]
     fn test_import_validation_names_the_offending_field() {
-        let mut bad_port = PersistedSettings::default();
-        bad_port.email = Some(PersistedEmail {
-            smtp_server: Some("mail.example.com".to_string()),
-            smtp_port: Some(0),
-            smtp_username: None,
-            smtp_password: None,
-            from_address: None,
-            use_tls: Some(true),
-        });
+        let bad_port = PersistedSettings {
+            email: Some(PersistedEmail {
+                smtp_server: Some("mail.example.com".to_string()),
+                smtp_port: Some(0),
+                smtp_username: None,
+                smtp_password: None,
+                from_address: None,
+                use_tls: Some(true),
+            }),
+            ..Default::default()
+        };
         let err = validate_import(&bad_port).unwrap_err();
         assert!(err.contains("smtp_port"), "{err}");
 
-        let mut bad_tz = PersistedSettings::default();
-        bad_tz.general = Some(PersistedGeneral {
-            server_name: None,
-            timezone: Some("Mars/Olympus".to_string()),
-            language: None,
-            mdns_enabled: None,
-            terminal_enabled: None,
-        });
+        let bad_tz = PersistedSettings {
+            general: Some(PersistedGeneral {
+                server_name: None,
+                timezone: Some("Mars/Olympus".to_string()),
+                language: None,
+                mdns_enabled: None,
+                terminal_enabled: None,
+            }),
+            ..Default::default()
+        };
         let err = validate_import(&bad_tz).unwrap_err();
         assert!(err.contains("timezone"), "{err}");
 
-        let mut bad_url = PersistedSettings::default();
-        bad_url.notifications = Some(PersistedNotifications {
-            email: None,
-            enable_alerts: None,
-            alert_threshold: Some(80),
-            smtp_enabled: None,
-            webhook_url: Some("ftp://example.com/hook".to_string()),
-            webhook_enabled: Some(true),
-            event_toggles: None,
-            webhook_format: None,
-            sms: None,
-        });
+        let bad_url = PersistedSettings {
+            notifications: Some(PersistedNotifications {
+                email: None,
+                enable_alerts: None,
+                alert_threshold: Some(80),
+                smtp_enabled: None,
+                webhook_url: Some("ftp://example.com/hook".to_string()),
+                webhook_enabled: Some(true),
+                event_toggles: None,
+                webhook_format: None,
+                sms: None,
+            }),
+            ..Default::default()
+        };
         let err = validate_import(&bad_url).unwrap_err();
         assert!(err.contains("webhook_url"), "{err}");
 
-        let mut bad_threshold = PersistedSettings::default();
-        bad_threshold.notifications = Some(PersistedNotifications {
-            email: None,
-            enable_alerts: None,
-            alert_threshold: Some(200),
-            smtp_enabled: None,
-            webhook_url: None,
-            webhook_enabled: None,
-            event_toggles: None,
-            webhook_format: None,
-            sms: None,
-        });
+        let bad_threshold = PersistedSettings {
+            notifications: Some(PersistedNotifications {
+                email: None,
+                enable_alerts: None,
+                alert_threshold: Some(200),
+                smtp_enabled: None,
+                webhook_url: None,
+                webhook_enabled: None,
+                event_toggles: None,
+                webhook_format: None,
+                sms: None,
+            }),
+            ..Default::default()
+        };
         assert!(validate_import(&bad_threshold)
             .unwrap_err()
             .contains("alert_threshold"));
 
-        let mut bad_language = PersistedSettings::default();
-        bad_language.general = Some(PersistedGeneral {
-            server_name: None,
-            timezone: None,
-            language: Some("it".to_string()),
-            mdns_enabled: None,
-            terminal_enabled: None,
-        });
+        let bad_language = PersistedSettings {
+            general: Some(PersistedGeneral {
+                server_name: None,
+                timezone: None,
+                language: Some("it".to_string()),
+                mdns_enabled: None,
+                terminal_enabled: None,
+            }),
+            ..Default::default()
+        };
         assert!(validate_import(&bad_language)
             .unwrap_err()
             .contains("language"));

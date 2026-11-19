@@ -27,7 +27,7 @@
 use crate::groups::{
     run_group_op, AddMemberRequest, CreateGroupRequest, GroupService, UpdateGroupMetaRequest,
 };
-use crate::handlers::admin_guard::{require_account_manager, require_admin, require_auth};
+use crate::handlers::admin_guard::{require_account_manager, require_auth};
 use crate::handlers::AppState;
 use crate::storage::database::ADMIN_GROUP_NAME;
 use crate::utils::ResponseHelper;

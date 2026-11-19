@@ -363,6 +363,11 @@ mod tests {
         );
     }
 
+    // The guard serialises the process-global `DATA_DIRECTORY` env var across
+    // tests, so it is deliberately held for the whole body — including the
+    // awaits. `#[tokio::test]`'s current-thread runtime makes that safe here;
+    // the lint cannot see it.
+    #[allow(clippy::await_holding_lock)]
     #[tokio::test]
     async fn test_save_and_load_config() {
         let _guard = env_guard();
@@ -393,6 +398,7 @@ mod tests {
         std::env::remove_var("DATA_DIRECTORY");
     }
 
+    #[allow(clippy::await_holding_lock)]
     #[tokio::test]
     async fn test_load_config_returns_default_when_missing() {
         let _guard = env_guard();

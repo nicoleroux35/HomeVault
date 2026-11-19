@@ -562,7 +562,7 @@ async fn virtual_disk_type(name: &str) -> Option<crate::pools::PoolType> {
 /// Destroys a virtual disk, dispatching to the right teardown for its
 /// technology (mdadm → `DiskService::delete_raid`, which also cleans
 /// `mdadm.conf`/`fstab`; ZFS/Btrfs → `PoolService::delete_pool`).
-async fn destroy_virtual_disk(state: &Arc<AppState>, name: &str) -> Result<(), String> {
+async fn destroy_virtual_disk(_state: &Arc<AppState>, name: &str) -> Result<(), String> {
     let kind = virtual_disk_type(name)
         .await
         .ok_or_else(|| format!("Virtual disk '{}' not found", name))?;

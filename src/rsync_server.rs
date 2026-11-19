@@ -380,7 +380,7 @@ pub fn allowed_share_roots() -> Vec<PathBuf> {
         let Ok(canonical) = std::fs::canonicalize(&share.path) else {
             continue;
         };
-        if !roots.iter().any(|r| *r == canonical) {
+        if !roots.contains(&canonical) {
             roots.push(canonical);
         }
     }
@@ -821,7 +821,7 @@ mod tests {
     #[test]
     fn test_render_unit_runs_the_dedicated_daemon() {
         let unit = render_unit(Path::new("/etc/homevault-rsync/rsyncd.conf"));
-        assert!(unit.contains(&format!("--config=/etc/homevault-rsync/rsyncd.conf")));
+        assert!(unit.contains(&"--config=/etc/homevault-rsync/rsyncd.conf".to_string()));
         assert!(
             unit.contains("--no-detach"),
             "systemd needs a foreground daemon: {unit}"
@@ -903,18 +903,30 @@ mod tests {
 
         // The share itself and a subdirectory are both acceptable…
         assert_eq!(
-            validate_module_path(&share.to_string_lossy(), &[canonical_share.clone()]).unwrap(),
+            validate_module_path(
+                &share.to_string_lossy(),
+                std::slice::from_ref(&canonical_share)
+            )
+            .unwrap(),
             canonical_share
         );
         let sub = share.join("sub");
         std::fs::create_dir_all(&sub).unwrap();
-        assert!(validate_module_path(&sub.to_string_lossy(), &[canonical_share.clone()]).is_ok());
+        assert!(validate_module_path(
+            &sub.to_string_lossy(),
+            std::slice::from_ref(&canonical_share)
+        )
+        .is_ok());
 
         // …a sibling directory, a relative path and a traversal are not.
+        assert!(validate_module_path(
+            &outside.to_string_lossy(),
+            std::slice::from_ref(&canonical_share)
+        )
+        .is_err());
         assert!(
-            validate_module_path(&outside.to_string_lossy(), &[canonical_share.clone()]).is_err()
+            validate_module_path("relative/path", std::slice::from_ref(&canonical_share)).is_err()
         );
-        assert!(validate_module_path("relative/path", &[canonical_share.clone()]).is_err());
         assert!(
             validate_module_path(&share.join("..").to_string_lossy(), &[canonical_share]).is_err()
         );

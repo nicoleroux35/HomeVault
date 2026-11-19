@@ -179,7 +179,7 @@ impl NewSyncJob {
             ScheduleKind::None => Ok(()),
             ScheduleKind::Interval => match self.interval_minutes {
                 None => Err("an interval schedule needs interval_minutes".to_string()),
-                Some(m) if m < MIN_INTERVAL_MINUTES || m > MAX_INTERVAL_MINUTES => Err(format!(
+                Some(m) if !(MIN_INTERVAL_MINUTES..=MAX_INTERVAL_MINUTES).contains(&m) => Err(format!(
                     "interval_minutes must be between {MIN_INTERVAL_MINUTES} and {MAX_INTERVAL_MINUTES}"
                 )),
                 Some(_) => Ok(()),

@@ -467,10 +467,10 @@ ProtocolBinding=\"{binding}\" AssertionConsumerServiceURL=\"{acs}\">\
 </samlp:AuthnRequest>",
         id = request_id,
         instant = issue_instant(at),
-        dest = escape_attr(&settings.idp_sso_url.trim()),
+        dest = escape_attr(settings.idp_sso_url.trim()),
         binding = BINDING_POST,
-        acs = escape_attr(&settings.acs_url.trim()),
-        issuer = escape_text(&settings.sp_entity_id.trim()),
+        acs = escape_attr(settings.acs_url.trim()),
+        issuer = escape_text(settings.sp_entity_id.trim()),
         nameid = NAMEID_UNSPECIFIED,
     )
 }

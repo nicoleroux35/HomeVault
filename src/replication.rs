@@ -256,7 +256,7 @@ pub fn validate_job(job: &ReplicationJob) -> Result<(), String> {
     }
     validate_dataset(&job.source_dataset)?;
     validate_dataset(&job.destination_dataset)?;
-    let Some(backend) = job.backend_kind() else {
+    let Some(_backend) = job.backend_kind() else {
         return Err("the backend must be 'zfs' or 'btrfs'".to_string());
     };
     let Some(kind) = job.destination() else {

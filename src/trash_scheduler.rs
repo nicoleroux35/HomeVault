@@ -113,7 +113,6 @@ async fn run_due(state: &Arc<crate::handlers::AppState>) -> Result<(), String> {
             .map_err(|e| format!("Failed to record the retention baseline: {}", e)),
         TickPlan::Due => {
             let state = state.clone();
-            let policy = policy;
             let result =
                 tokio::task::spawn_blocking(move || crate::trash::purge_all(&state, &policy))
                     .await

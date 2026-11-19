@@ -234,12 +234,12 @@ fn open_optional_with_key(key: &[u8; 32], scope: &str, value: &str) -> Result<St
 impl PersistedAgentConfig {
     /// Seal an in-memory config for `snmp-agent.json`.
     pub fn from_config(config: &AgentConfig) -> Result<Self, String> {
-        Self::from_config_with(config, |scope, value| seal_optional(scope, value))
+        Self::from_config_with(config, seal_optional)
     }
 
     /// Open a stored config back into the runtime shape.
     pub fn into_config(self) -> Result<AgentConfig, String> {
-        self.into_config_with(|scope, value| open_optional(scope, value))
+        self.into_config_with(open_optional)
     }
 
     /// The pure core of [`Self::from_config`]: the seal function is injected
@@ -618,7 +618,7 @@ pub fn render_config(config: &AgentConfig) -> String {
     let mut s = String::new();
     s.push_str("# Written by HomeVault from the SNMP agent settings.\n");
     s.push_str("# Delete this file and restart snmpd to hand the agent back.\n");
-    s.push_str(&match config.version {
+    s.push_str(match config.version {
         AgentVersion::V2c => "# Read-only, SNMPv2c, no write community, no routing table.\n",
         AgentVersion::V3 => {
             "# Read-only, SNMPv3 (auth SHA, priv AES), no write user, no routing table.\n"

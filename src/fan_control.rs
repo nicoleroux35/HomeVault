@@ -22,12 +22,11 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::time::{Duration, SystemTime};
+use std::time::Duration;
 use tokio::fs;
 
 const HWMON_BASE: &str = "/sys/class/hwmon";
 const MIN_SAFE_PWM: u8 = 51; // ~20% duty cycle (0-255 scale)
-const HYSTERESIS_TEMP: i32 = 2; // 2°C hysteresis
 
 /// Hard floor as a percentage duty (0-100), derived once from the raw PWM
 /// floor. Kept as `u32` so the multiply in the other direction cannot overflow
@@ -212,7 +211,7 @@ impl FanControlService {
                     .unwrap_or("unknown");
 
                 channels.push(FanChannel {
-                    id: format!("{}_{}", hwmon_name, format!("pwm{}", pwm_num)),
+                    id: format!("{}_pwm{}", hwmon_name, pwm_num),
                     name,
                     hwmon_path: hwmon_path.clone(),
                     pwm_num,
@@ -501,7 +500,7 @@ impl FanControlService {
 
         for channel in &channels {
             if channel.supports_auto {
-                let _ = Self::set_pwm_mode(&channel, 2).await;
+                let _ = Self::set_pwm_mode(channel, 2).await;
             }
         }
 
@@ -568,7 +567,7 @@ mod tests {
 
         // At 50°C (midpoint), should be ~50% duty
         let duty = FanControlService::calculate_duty(50, &curve, 0);
-        assert!(duty >= 48 && duty <= 52);
+        assert!((48..=52).contains(&duty));
     }
 
     #[test]

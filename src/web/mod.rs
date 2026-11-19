@@ -3486,11 +3486,11 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // Dynamic DNS: one pass every five minutes, inert while disabled. Kept in
     // the same place as the certificate worker because the two features are
     // only useful together: the certificate names the DDNS name.
-    crate::scheduler_supervisor::spawn("ddns", || crate::ddns::run());
+    crate::scheduler_supervisor::spawn("ddns", crate::ddns::run);
 
     // Remote syslog forwarding: one queue drained by one worker, inert while
     // the feature is disabled, so enabling it later needs no restart.
-    crate::scheduler_supervisor::spawn("syslog-forward", || crate::syslog_forward::run());
+    crate::scheduler_supervisor::spawn("syslog-forward", crate::syslog_forward::run);
 
     let app = create_app(state.clone());
 

@@ -601,8 +601,10 @@ mod tests {
 
     #[test]
     fn test_security_data_owner_is_numeric_only() {
-        let mut policy = SecurityPolicy::default();
-        policy.user = Some("1000".to_string());
+        let mut policy = SecurityPolicy {
+            user: Some("1000".to_string()),
+            ..Default::default()
+        };
         assert_eq!(policy.data_owner(), Some((1000, None)));
         policy.user = Some("1000:1001".to_string());
         assert_eq!(policy.data_owner(), Some((1000, Some(1001))));

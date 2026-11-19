@@ -72,7 +72,9 @@ pub const MAX_OPTIONS: usize = 16;
 /// Which remote protocol a mount speaks.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
+#[derive(Default)]
 pub enum RemoteKind {
+    #[default]
     Cifs,
     Nfs,
 }
@@ -108,12 +110,6 @@ impl RemoteKind {
             Self::Cifs => "mount.cifs",
             Self::Nfs => "mount.nfs",
         }
-    }
-}
-
-impl Default for RemoteKind {
-    fn default() -> Self {
-        Self::Cifs
     }
 }
 

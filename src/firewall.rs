@@ -323,7 +323,7 @@ pub fn validate_port(port: &str) -> Result<String, FirewallError> {
 fn port_number(value: &str) -> Result<u16, FirewallError> {
     let value = value.trim();
     match value.parse::<u32>() {
-        Ok(n) if n >= 1 && n <= 65535 => Ok(n as u16),
+        Ok(n) if (1..=65535).contains(&n) => Ok(n as u16),
         _ => Err(FirewallError::InvalidInput(format!(
             "Port '{}' is not a number between 1 and 65535",
             value

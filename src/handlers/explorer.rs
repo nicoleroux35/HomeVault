@@ -193,17 +193,18 @@ fn merge_permission_level(
     level: &str,
 ) {
     use crate::storage::resource_share_repo::ResourcePermission;
-    match ResourcePermission::parse(level) {
-        Some(ResourcePermission::Deny) => *deny = true,
-        Some(permission) => {
-            if best
-                .map(|current| permission.implies(current))
-                .unwrap_or(true)
-            {
-                *best = Some(permission);
-            }
-        }
-        None => {}
+    let Some(permission) = ResourcePermission::parse(level) else {
+        return;
+    };
+    if permission == ResourcePermission::Deny {
+        *deny = true;
+        return;
+    }
+    if best
+        .map(|current| permission.implies(current))
+        .unwrap_or(true)
+    {
+        *best = Some(permission);
     }
 }
 
@@ -8098,10 +8099,12 @@ Path = stage/inside/link\nFolder = -\nAttributes =  lrwxrwxrwx\n\n";
     #[test]
     fn the_chunk_cap_is_far_below_the_router_body_limit() {
         assert_eq!(MAX_UPLOAD_CHUNK_BYTES, 32 * 1024 * 1024);
-        assert!(
-            MAX_UPLOAD_CHUNK_BYTES < 10 * 1024 * 1024 * 1024,
-            "the route cap must be the binding one"
-        );
+        const {
+            assert!(
+                MAX_UPLOAD_CHUNK_BYTES < 10 * 1024 * 1024 * 1024,
+                "the route cap must be the binding one"
+            );
+        }
     }
 
     /// The restriction matrix is what makes `disable_download` real: preview

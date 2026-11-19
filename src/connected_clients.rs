@@ -513,7 +513,7 @@ pub async fn collect() -> ConnectedClients {
 
     let nfs_result: Result<Vec<ConnectedClient>, String> = nfs
         .as_deref()
-        .map(|raw| parse_showmount(raw))
+        .map(parse_showmount)
         .map_err(|e| e.to_string());
     push_source("nfs", &nfs_result, &mut sources, &mut clients);
 

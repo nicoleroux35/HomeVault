@@ -712,7 +712,10 @@ fn parse_accent_rgb(accent: &str) -> Option<(u8, u8, u8)> {
             (expanded, 255u8)
         }
         6 => (hex.to_string(), 255u8),
-        8 => (hex[..6].to_string(), u8::from_str_radix(&hex[6..], 16).ok()?),
+        8 => (
+            hex[..6].to_string(),
+            u8::from_str_radix(&hex[6..], 16).ok()?,
+        ),
         _ => return None,
     };
     let channel = |range: std::ops::Range<usize>| u8::from_str_radix(&body[range], 16).ok();
@@ -2554,7 +2557,10 @@ mod tests {
             contrast_on_white(clamped) >= MIN_ACCENT_CONTRAST,
             "a clamped accent must meet §1.4.3"
         );
-        assert!(clamped.0 > clamped.1 && clamped.1 > clamped.2, "hue preserved");
+        assert!(
+            clamped.0 > clamped.1 && clamped.1 > clamped.2,
+            "hue preserved"
+        );
 
         // Short and alpha forms composite over white before the maths, so the
         // near-white accent lands on the same readable grey.

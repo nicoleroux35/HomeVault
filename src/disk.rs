@@ -274,7 +274,7 @@ pub fn raid_level_change_refusal(from: &str, to: &str, member_count: usize) -> O
         return Some(reason);
     }
 
-    if to == "raid10" && member_count % 2 != 0 {
+    if to == "raid10" && !member_count.is_multiple_of(2) {
         return Some(format!(
             "RAID 10 needs an even number of member disks; this array has {}",
             member_count
@@ -1668,7 +1668,7 @@ impl DiskService {
         }
 
         // RAID 10 is a stripe of mirror pairs — a clean pair split is required.
-        if req.level == "raid10" && member_count % 2 != 0 {
+        if req.level == "raid10" && !member_count.is_multiple_of(2) {
             return Err(DiskError::Parse(
                 "RAID 10 requires an even number of member slots".to_string(),
             ));
@@ -1771,9 +1771,7 @@ impl DiskService {
         for device in members.iter().take(req.members.len()) {
             args.push(device);
         }
-        for _ in 0..missing_slots {
-            args.push("missing");
-        }
+        args.extend(std::iter::repeat_n("missing", missing_slots));
         for device in members.iter().skip(req.members.len()) {
             args.push(device);
         }
@@ -2262,10 +2260,7 @@ impl DiskService {
                     "UUID={} {} {} {} 0 2",
                     uuid, mount_point, filesystem, fstab_options
                 );
-                if let Err(e) = Self::append_marked_entry("/etc/fstab", &marker, &fstab_line).await
-                {
-                    return Err(e);
-                }
+                Self::append_marked_entry("/etc/fstab", &marker, &fstab_line).await?;
                 // A malformed fstab line breaks the next boot — worth a
                 // verify + rollback rather than fire-and-forget. `findmnt
                 // --verify` parses /etc/fstab exactly like mount does;
@@ -2482,7 +2477,7 @@ impl DiskService {
         // raidz3: triple parity (ZFS-only level)
         // mirror: 2-disk mirror (like raid1) / striped mirrors (like raid10)
         // (`zfs_create_args` owns the mapping so the argv is unit-testable.)
-        if raid_level == "raid10" && devices.len() % 2 != 0 {
+        if raid_level == "raid10" && !devices.len().is_multiple_of(2) {
             return Err(DiskError::Parse(
                 "A ZFS raid10 pool needs pairs of devices (even count)".to_string(),
             ));
@@ -3269,9 +3264,7 @@ impl DiskService {
             // disk — not the system disk, not partitioned, not carrying
             // another array's superblock. `mdadm --add` used to accept any
             // device silently here.
-            if let Err(e) = Self::validate_pool_devices(&[replacement_path.clone()]).await {
-                return Err(e);
-            }
+            Self::validate_pool_devices(std::slice::from_ref(&replacement_path)).await?;
 
             let output = bounded(
                 Command::new("sudo").arg("mdadm").args([
@@ -3380,7 +3373,7 @@ impl DiskService {
                 new_device
             )));
         }
-        Self::validate_pool_devices(&[new_path.clone()]).await?;
+        Self::validate_pool_devices(std::slice::from_ref(&new_path)).await?;
 
         // Plug the disk in, then promote it to an active member. For a
         // degraded array --add starts recovery onto it immediately; --grow
@@ -3905,19 +3898,18 @@ impl DiskService {
         // so the API rejects before the job ever starts. They run BEFORE the
         // device-count floor on purpose: they are the sharper diagnostics, and
         // a 3-member raid10 must say "pairs", not "needs 4 devices".
-        if req.filesystem == "zfs" {
-            if req.level == "raid10" && slots_total % 2 != 0 {
-                return Err(DiskError::Parse(
-                    "A ZFS raid10 pool needs pairs of devices (even count)".to_string(),
-                ));
-            }
+        if req.filesystem == "zfs" && req.level == "raid10" && !slots_total.is_multiple_of(2) {
+            return Err(DiskError::Parse(
+                "A ZFS raid10 pool needs pairs of devices (even count)".to_string(),
+            ));
         }
-        if req.filesystem == "ext4" || req.filesystem == "xfs" {
-            if req.level == "raid10" && slots_total % 2 != 0 {
-                return Err(DiskError::Parse(
-                    "RAID 10 requires an even number of members".to_string(),
-                ));
-            }
+        if (req.filesystem == "ext4" || req.filesystem == "xfs")
+            && req.level == "raid10"
+            && !slots_total.is_multiple_of(2)
+        {
+            return Err(DiskError::Parse(
+                "RAID 10 requires an even number of members".to_string(),
+            ));
         }
 
         if req.filesystem == "zfs" {
@@ -4036,7 +4028,7 @@ impl DiskService {
         Self::validate_pool_devices(&devices).await?;
         progress.report(8, "Validating target devices");
 
-        let mount_point = format!("{}/{}", crate::config::paths::RAID_MOUNT_BASE, &req.name);
+        let mount_point = format!("{}/{}", crate::config::paths::RAID_MOUNT_BASE, req.name);
 
         match req.filesystem.as_str() {
             "zfs" => {
@@ -4072,7 +4064,7 @@ impl DiskService {
                 })
                 .await
                 .map_err(|e| DiskError::Parse(format!("Internal error: {}", e)))?
-                .map_err(|e| DiskError::Parse(e))?;
+                .map_err(DiskError::Parse)?;
             }
             // ext4 / xfs — mdadm underneath.
             "ext4" | "xfs" => {

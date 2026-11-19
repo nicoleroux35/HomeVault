@@ -48,8 +48,10 @@ pub const MAX_LISTED: usize = 500;
 /// How a folder keeps old copies of a replaced file.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
+#[derive(Default)]
 pub enum VersioningMode {
     /// No versioning: a replaced file is gone.
+    #[default]
     Off,
     /// Replaced files sit in `.stversions` until the cleanout period ends.
     Trashcan,
@@ -57,12 +59,6 @@ pub enum VersioningMode {
     Simple,
     /// Keep versions until a per-file age limit, thinned out over time.
     Staggered,
-}
-
-impl Default for VersioningMode {
-    fn default() -> Self {
-        Self::Off
-    }
 }
 
 impl VersioningMode {

@@ -110,7 +110,7 @@ pub fn save_speed_profile(profile: SpeedProfile) -> Result<(), String> {
         profile: profile.as_str().to_string(),
     })
     .map_err(|e| format!("could not encode the RAID speed profile: {e}"))?;
-    AtomicWriter::write(&speed_path(), &raw)
+    AtomicWriter::write(speed_path(), &raw)
         .map_err(|e| format!("could not save the RAID speed profile: {e}"))
 }
 
@@ -196,7 +196,7 @@ fn state_path() -> PathBuf {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-struct ArrayState {
+pub struct ArrayState {
     name: String,
     state: String,
 }
@@ -300,7 +300,7 @@ pub async fn poll_once(state: &Arc<AppState>) -> Result<Vec<String>, String> {
         let _ = std::fs::create_dir_all(parent);
     }
     if let Ok(raw) = serde_json::to_string(&current) {
-        let _ = AtomicWriter::write(&state_path(), &raw);
+        let _ = AtomicWriter::write(state_path(), &raw);
     }
     Ok(degraded.into_iter().map(|(name, _)| name).collect())
 }

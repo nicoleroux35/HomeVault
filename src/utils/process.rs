@@ -268,7 +268,7 @@ fn describe_stage_failure(program: &str, status: &std::process::ExitStatus) -> O
         if signal == libc::SIGPIPE {
             return None;
         }
-        return Some(format!("{program} was killed by signal {signal}"));
+        Some(format!("{program} was killed by signal {signal}"))
     }
     #[cfg(not(unix))]
     Some(format!("{program} exited with an unknown status"))
@@ -724,11 +724,8 @@ mod tests {
         // never does must not park the caller (`start_openvpn_connection`)
         // forever.
         let started = Instant::now();
-        let err = run_timed_detached(
-            &mut Command::new("sleep").arg("30"),
-            Duration::from_millis(150),
-        )
-        .expect_err("a hung command must not succeed");
+        let err = run_timed_detached(Command::new("sleep").arg("30"), Duration::from_millis(150))
+            .expect_err("a hung command must not succeed");
         assert!(err.contains("did not finish within"), "{err}");
         assert!(started.elapsed() < Duration::from_secs(5));
     }
@@ -863,6 +860,7 @@ mod tests {
     /// 2. **The helpers that build a command for a caller** (`smart::std_command`
     ///    / `tokio_command`, `encryption::run`, the test shims): the bound lives
     ///    at the call site, which this guard also scans.
+    ///
     /// Every entry carries the reason it exists; the guard prints the file and
     /// the line, so a new exemption is a deliberate edit here.
     const LONG_RUNNING_CHILDREN: &[(&str, &str)] = &[

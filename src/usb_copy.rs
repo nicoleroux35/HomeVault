@@ -43,7 +43,6 @@ const POOL_PROBE_TIMEOUT: Duration = Duration::from_secs(10);
 /// Deadline for a mount / unmount / power-off. udisks2 talks to the kernel and
 /// to the device itself; a wedged USB bridge must not hold the copy job.
 const DEVICE_OP_TIMEOUT: Duration = Duration::from_secs(30);
-const COPY_BUFFER_SIZE: usize = 8 * 1024 * 1024; // 8MB buffer
 
 /// How many `.versions/<stamp>/` folders a versioned profile keeps by default
 /// (FIAB-26). Older snapshots are removed after a successful run.
@@ -273,7 +272,7 @@ impl UsbCopyService {
                 let device = format!("/dev/{}", block["name"].as_str().unwrap_or(""));
                 let uuid = block["uuid"].as_str().map(|s| s.to_string());
                 let label = block["label"].as_str().map(|s| s.to_string());
-                let mount_point = block["mountpoint"].as_str().map(|s| PathBuf::from(s));
+                let mount_point = block["mountpoint"].as_str().map(PathBuf::from);
                 let size = block["size"]
                     .as_str()
                     .and_then(|s| s.parse::<u64>().ok())

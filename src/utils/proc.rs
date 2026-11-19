@@ -1299,10 +1299,8 @@ mod tests {
         let second = cpu_usage_percent_since_last_sample("__test_beta");
         // First sample for each key falls back to the since-boot average,
         // which is a real number in [0, 100].
-        for value in [first, second] {
-            if let Some(percent) = value {
-                assert!((0.0..=100.0).contains(&percent), "{percent}");
-            }
+        for percent in [first, second].into_iter().flatten() {
+            assert!((0.0..=100.0).contains(&percent), "{percent}");
         }
     }
 }

@@ -111,7 +111,7 @@ pub async fn handle_update_apply(
         Ok(req) => req,
         Err(e) => return ResponseHelper::json_error(format!("Malformed request body: {e}")),
     };
-    if req.confirm.trim().eq_ignore_ascii_case("apply") == false {
+    if !req.confirm.trim().eq_ignore_ascii_case("apply") {
         return ResponseHelper::json_error(
             "Confirm the update: it restarts HomeVault and can take a few minutes.".to_string(),
         );

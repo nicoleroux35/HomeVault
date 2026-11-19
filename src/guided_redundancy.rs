@@ -17,7 +17,6 @@
 //! - Conservative: prefers safety over maximum capacity
 
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 
 /// Disk in the system
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -215,7 +214,7 @@ impl GuidedRedundancyService {
                 // 4+ disks
 
                 // RAID 10 if even number
-                if disk_count % 2 == 0 && min_redundancy <= RedundancyLevel::Single {
+                if disk_count.is_multiple_of(2) && min_redundancy <= RedundancyLevel::Single {
                     recommendations.push(Self::raid10_layout(&sorted_disks));
                 }
 

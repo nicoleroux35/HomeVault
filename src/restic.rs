@@ -544,14 +544,14 @@ fn read_child_stderr(child: &mut Child) -> String {
 
 fn unmount_path(mount_point: &str) -> Result<(), ResticError> {
     for tool in ["fusermount3", "fusermount"] {
-        let available = run_timed(&mut Command::new("which").arg(tool), RESTIC_PROBE_TIMEOUT)
+        let available = run_timed(Command::new("which").arg(tool), RESTIC_PROBE_TIMEOUT)
             .map(|out| out.status.success())
             .unwrap_or(false);
         if !available {
             continue;
         }
         let output = run_timed(
-            &mut Command::new(tool).args(["-u", mount_point]),
+            Command::new(tool).args(["-u", mount_point]),
             RESTIC_FUSE_UNMOUNT_TIMEOUT,
         )
         .map_err(ResticError::CommandFailed)?;
@@ -570,7 +570,7 @@ fn unmount_path(mount_point: &str) -> Result<(), ResticError> {
     // way to unmount under the optional non-root deployment; the sudoers
     // grant is confined to `/tmp/restic-snap-*`.
     let output = run_timed(
-        &mut Command::new("sudo").arg("umount").arg(mount_point),
+        Command::new("sudo").arg("umount").arg(mount_point),
         RESTIC_FUSE_UNMOUNT_TIMEOUT,
     )
     .map_err(ResticError::CommandFailed)?;
@@ -615,10 +615,7 @@ pub struct ResticService;
 
 impl ResticService {
     fn restic_cmd() -> Result<Command, ResticError> {
-        let which = run_timed(
-            &mut Command::new("which").arg("restic"),
-            RESTIC_PROBE_TIMEOUT,
-        );
+        let which = run_timed(Command::new("which").arg("restic"), RESTIC_PROBE_TIMEOUT);
         match which {
             Ok(out) if out.status.success() => Ok(Command::new("restic")),
             _ => Err(ResticError::NotFound),
@@ -933,20 +930,14 @@ impl ResticService {
     // -----------------------------------------------------------------------
 
     pub fn is_available() -> bool {
-        run_timed(
-            &mut Command::new("restic").arg("version"),
-            RESTIC_PROBE_TIMEOUT,
-        )
-        .map(|o| o.status.success())
-        .unwrap_or(false)
+        run_timed(Command::new("restic").arg("version"), RESTIC_PROBE_TIMEOUT)
+            .map(|o| o.status.success())
+            .unwrap_or(false)
     }
 
     pub fn get_version() -> Result<String, ResticError> {
-        let output = run_timed(
-            &mut Command::new("restic").arg("version"),
-            RESTIC_PROBE_TIMEOUT,
-        )
-        .map_err(ResticError::CommandFailed)?;
+        let output = run_timed(Command::new("restic").arg("version"), RESTIC_PROBE_TIMEOUT)
+            .map_err(ResticError::CommandFailed)?;
         if output.status.success() {
             Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
         } else {
@@ -2013,26 +2004,20 @@ impl SnapshotMount {
         std::fs::create_dir_all(mount_point)
             .map_err(|e| ResticError::CommandFailed(format!("Cannot create {mount_point}: {e}")))?;
 
-        let is_zfs = run_timed(
-            &mut Command::new("zfs").arg("--version"),
-            RESTIC_PROBE_TIMEOUT,
-        )
-        .map(|o| o.status.success())
-        .unwrap_or(false);
+        let is_zfs = run_timed(Command::new("zfs").arg("--version"), RESTIC_PROBE_TIMEOUT)
+            .map(|o| o.status.success())
+            .unwrap_or(false);
 
         let output = if is_zfs {
             run_timed(
-                &mut Command::new("sudo").arg("mount").args([
-                    "-t",
-                    "zfs",
-                    snapshot_path,
-                    mount_point,
-                ]),
+                Command::new("sudo")
+                    .arg("mount")
+                    .args(["-t", "zfs", snapshot_path, mount_point]),
                 RESTIC_MOUNT_TIMEOUT,
             )
         } else {
             run_timed(
-                &mut Command::new("sudo")
+                Command::new("sudo")
                     .arg("mount")
                     .args(["--bind", dataset, mount_point]),
                 RESTIC_MOUNT_TIMEOUT,
@@ -2059,7 +2044,7 @@ impl SnapshotMount {
 impl Drop for SnapshotMount {
     fn drop(&mut self) {
         let _ = run_timed(
-            &mut Command::new("sudo").arg("umount").arg(&self.mount_point),
+            Command::new("sudo").arg("umount").arg(&self.mount_point),
             RESTIC_MOUNT_TIMEOUT,
         );
         let _ = std::fs::remove_dir(&self.mount_point);

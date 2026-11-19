@@ -54,6 +54,7 @@ pub struct UpsConfigRequest {
 /// Every `upsc`/`systemctl` call is blocking, so it runs on the blocking
 /// pool (ROADMAP X.1) — the handlers below never touch a child process on
 /// the runtime thread.
+#[allow(clippy::result_large_err)]
 async fn blocking<T, F>(f: F) -> Result<T, Response>
 where
     F: FnOnce() -> T + Send + 'static,

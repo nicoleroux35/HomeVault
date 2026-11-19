@@ -202,10 +202,8 @@ impl DbBackupService {
         })
         .await;
 
-        if let Ok(settings) = loaded {
-            if let Some(saved) = settings {
-                *self.settings.inner.lock() = saved;
-            }
+        if let Ok(Some(saved)) = loaded {
+            *self.settings.inner.lock() = saved;
         }
     }
 
@@ -450,10 +448,7 @@ where
         Ok(result) => result,
         // A panicking blocking task must read as a failed snapshot, not as a
         // silently missing reason.
-        Err(e) => Err(std::io::Error::new(
-            std::io::ErrorKind::Other,
-            format!("blocking task failed: {e}"),
-        )),
+        Err(e) => Err(std::io::Error::other(format!("blocking task failed: {e}"))),
     }
 }
 
@@ -775,7 +770,7 @@ mod tests {
         assert_eq!(second, "homevault-20261017-083000_2.db");
 
         // The duplicate must read as *newer*, not older, in a reverse sort.
-        let mut names = vec![base.to_string(), second];
+        let mut names = [base.to_string(), second];
         names.sort_by(|a, b| b.cmp(a));
         assert_eq!(names[0], "homevault-20261017-083000_2.db");
     }

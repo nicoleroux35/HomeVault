@@ -97,6 +97,7 @@ impl SnapshotScheduleRequest {
     /// Normalises the optional share target: both fields or neither, a valid
     /// share name and a known protocol. The stored `share_type` is the
     /// canonical lowercase spelling.
+    #[allow(clippy::result_large_err)]
     fn normalized_share(&self) -> Result<Option<(String, String)>, Response> {
         let share = self
             .share

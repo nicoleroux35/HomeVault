@@ -146,10 +146,10 @@ pub fn decode_material(text: &str) -> Result<Vec<u8>, String> {
     if cleaned.is_empty() {
         return Err("the value is empty".to_string());
     }
-    if cleaned.len() % 2 == 0 && cleaned.chars().all(|c| c.is_ascii_hexdigit()) {
+    if cleaned.len().is_multiple_of(2) && cleaned.chars().all(|c| c.is_ascii_hexdigit()) {
         let mut out = Vec::with_capacity(cleaned.len() / 2);
         let bytes = cleaned.as_bytes();
-        for pair in bytes.chunks_exact(2) {
+        for pair in bytes.as_chunks::<2>().0 {
             let high = ((pair[0] as char).to_digit(16)).ok_or("invalid hex")?;
             let low = ((pair[1] as char).to_digit(16)).ok_or("invalid hex")?;
             out.push(((high << 4) | low) as u8);

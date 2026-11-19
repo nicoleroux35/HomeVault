@@ -163,7 +163,7 @@ impl OAuthProvider {
 ///
 /// The two secrets are sealed blobs, never plaintext; `client_id` is public
 /// (it appears in the browser's authorization URL) and therefore stored as-is.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct EmailOAuthSettings {
     #[serde(default)]
     pub provider: OAuthProvider,
@@ -183,20 +183,6 @@ pub struct EmailOAuthSettings {
     /// Last refresh/exchange failure, already bounded and token-free.
     #[serde(default)]
     pub last_error: Option<String>,
-}
-
-impl Default for EmailOAuthSettings {
-    fn default() -> Self {
-        Self {
-            provider: OAuthProvider::default(),
-            client_id: String::new(),
-            client_secret_sealed: None,
-            refresh_token_sealed: None,
-            redirect_url: String::new(),
-            connected_at: None,
-            last_error: None,
-        }
-    }
 }
 
 impl EmailOAuthSettings {

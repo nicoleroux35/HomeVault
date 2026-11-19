@@ -716,10 +716,7 @@ fn journal_to_csv(entries: &[JournalEntry]) -> String {
             // (spreadsheet, `cut`, `wc -l`) treats a record as a line. A line
             // break inside a message becomes a space, so the file cannot
             // silently gain a record.
-            let field = field
-                .replace("\r\n", " ")
-                .replace('\r', " ")
-                .replace('\n', " ");
+            let field = field.replace("\r\n", " ").replace(['\r', '\n'], " ");
             if field.contains(',') || field.contains('"') {
                 out.push('"');
                 out.push_str(&field.replace('"', "\"\""));

@@ -662,9 +662,7 @@ pub async fn handle_network_bond_create(
                     // Apply + verify the file we just wrote; a failure rolls the
                     // netplan half back and reports it instead of pretending the
                     // device survives a reboot.
-                    if let Err(e) = net::netplan_apply_and_verify(&spec.name) {
-                        return Err(e);
-                    }
+                    net::netplan_apply_and_verify(&spec.name)?;
                     change.backend
                 }
                 Err(e) => {
@@ -722,7 +720,7 @@ pub async fn handle_network_bond_delete(
             .into_iter()
             .find(|b| b.name == to_delete)
             .ok_or_else(|| format!("No bond named '{}' exists", to_delete))?;
-        net::refuse_if_carries_session_address(peer_ip, &[bond.name.clone()])?;
+        net::refuse_if_carries_session_address(peer_ip, std::slice::from_ref(&bond.name))?;
         net::delete_virtual_device(&to_delete)
     })
     .await;
@@ -787,7 +785,7 @@ pub async fn handle_network_vlan_create(
     let outcome = tokio::task::spawn_blocking(move || -> Result<(String, bool), String> {
         let interfaces = net::list_interfaces();
         let spec = net::validate_vlan_spec(&req.parent, req.vid, &interfaces)?;
-        net::refuse_if_carries_session_address(peer_ip, &[spec.parent.clone()])?;
+        net::refuse_if_carries_session_address(peer_ip, std::slice::from_ref(&spec.parent))?;
         net::create_vlan_device(&spec)?;
         let persisted = match net::persist_virtual_device(
             &spec.name,
@@ -848,7 +846,7 @@ pub async fn handle_network_vlan_delete(
         if !net::list_vlans().iter().any(|v| v.name == to_delete) {
             return Err(format!("No VLAN interface named '{}' exists", to_delete));
         }
-        net::refuse_if_carries_session_address(peer_ip, &[to_delete.clone()])?;
+        net::refuse_if_carries_session_address(peer_ip, std::slice::from_ref(&to_delete))?;
         net::delete_virtual_device(&to_delete)
     })
     .await;

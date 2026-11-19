@@ -1327,6 +1327,7 @@ mod tests {
     /// - installing `dracut` *alongside* it to satisfy an audit would risk
     ///   switching the kernel postinst regime on an apt-based host, a much
     ///   worse outcome than skipping an optional regeneration.
+    ///
     /// Each base therefore already ships exactly one of the two (this is the
     /// same "cannot be missing on a bootable base" class BASE_BINARIES pins,
     /// kept out of it because the pair is an either/or, not a single package).

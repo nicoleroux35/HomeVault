@@ -3210,14 +3210,14 @@ mod tests {
         cmd.args(["-c", "-f"]).arg(&path);
         let result = run_timed(&mut cmd, SETUP_OP_TIMEOUT);
         let _ = std::fs::remove_file(&path);
-        match result {
-            Ok(output) => assert!(
+        // A dev box without sudo installed has nothing to validate, hence the
+        // `Err` branch is intentionally a no-op.
+        if let Ok(output) = result {
+            assert!(
                 output.status.success(),
                 "visudo rejected the rendered sudoers file: {}",
                 String::from_utf8_lossy(&output.stderr)
-            ),
-            // A dev box without sudo installed has nothing to validate.
-            Err(_) => {}
+            );
         }
     }
 

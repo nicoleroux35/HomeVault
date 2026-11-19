@@ -217,7 +217,7 @@ pub async fn handle_share_permissions_sync(
 /// The protocol bindings of one logical share (same name, same path).
 async fn bindings_for(name: &str) -> Result<Vec<Share>, String> {
     let wanted = name.to_string();
-    tokio::task::spawn_blocking(move || SharesService::get_shares())
+    tokio::task::spawn_blocking(SharesService::get_shares)
         .await
         .map_err(|e| format!("share list worker failed: {e}"))?
         .map_err(|e| e.to_string())

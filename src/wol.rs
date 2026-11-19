@@ -235,7 +235,7 @@ pub fn ipv4_interfaces(interfaces: &[NetworkInterface]) -> Vec<IfaceV4> {
                 .as_deref()
                 .and_then(|m| m.parse::<Ipv4Addr>().ok())
                 .or_else(|| {
-                    iface.ipv6_prefix.and_then(|_| None)
+                    iface.ipv6_prefix.and(None)
                     // No netmask reported: assume a /24, the home default,
                     // rather than refusing to wake anything.
                 })
@@ -260,10 +260,7 @@ pub fn ipv4_interfaces(interfaces: &[NetworkInterface]) -> Vec<IfaceV4> {
 /// * without one, the first **up** interface that is not loopback — a home box
 ///   has one LAN, and its directed broadcast is the honest default;
 /// * an interface that exists but is down is never chosen.
-pub fn select_interface<'a>(
-    ifaces: &'a [IfaceV4],
-    target: Option<Ipv4Addr>,
-) -> Option<&'a IfaceV4> {
+pub fn select_interface(ifaces: &[IfaceV4], target: Option<Ipv4Addr>) -> Option<&IfaceV4> {
     match target {
         Some(target) => ifaces
             .iter()

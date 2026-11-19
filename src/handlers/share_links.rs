@@ -1236,11 +1236,9 @@ pub async fn handle_share_link_download(
     } else {
         use tokio::io::{AsyncReadExt, AsyncSeekExt, SeekFrom};
         let start = range.map(|(s, _)| s).unwrap_or(0);
-        if start > 0 {
-            if file.seek(SeekFrom::Start(start)).await.is_err() {
-                let _ = repo.finish_download(&token, false).await;
-                return (StatusCode::INTERNAL_SERVER_ERROR, "Failed to seek file").into_response();
-            }
+        if start > 0 && file.seek(SeekFrom::Start(start)).await.is_err() {
+            let _ = repo.finish_download(&token, false).await;
+            return (StatusCode::INTERNAL_SERVER_ERROR, "Failed to seek file").into_response();
         }
         let limited = file.take(send_len);
         let stream = CompletionShareStream {

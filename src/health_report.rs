@@ -195,7 +195,7 @@ pub async fn maybe_send(state: &Arc<AppState>) -> Result<bool, String> {
     if let Some(parent) = state_path().parent() {
         let _ = std::fs::create_dir_all(parent);
     }
-    let _ = AtomicWriter::write(&state_path(), &now.to_rfc3339());
+    let _ = AtomicWriter::write(state_path(), &now.to_rfc3339());
     crate::events::log_event("Weekly health report sent");
     Ok(true)
 }

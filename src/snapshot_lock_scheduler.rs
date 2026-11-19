@@ -37,10 +37,7 @@ const POLL_INTERVAL_SECS: u64 = 3600;
 
 /// Which active locks this tick must release. Pure, so the "an unexpired lock
 /// is never released" rule is testable.
-pub fn due_for_release<'a>(
-    locks: &'a [SnapshotLock],
-    now: chrono::DateTime<Utc>,
-) -> Vec<&'a SnapshotLock> {
+pub fn due_for_release(locks: &[SnapshotLock], now: chrono::DateTime<Utc>) -> Vec<&SnapshotLock> {
     locks
         .iter()
         .filter(|lock| lock.is_active() && lock.is_expired(now))

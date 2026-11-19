@@ -506,6 +506,7 @@ fn nil_or(value: &str, max: usize) -> String {
 ///
 /// Pure on purpose: this is the wire format, so it is asserted byte for byte.
 /// `structured_data` is `-` in this module (HomeVault has no SD-IDs to publish).
+#[allow(clippy::too_many_arguments)]
 pub fn frame_rfc5424(
     facility: u8,
     severity: u8,
@@ -689,7 +690,7 @@ impl SyslogQueue {
 }
 
 static QUEUE: LazyLock<Mutex<SyslogQueue>> = LazyLock::new(|| Mutex::new(SyslogQueue::default()));
-static WAKE: LazyLock<Notify> = LazyLock::new(|| Notify::new());
+static WAKE: LazyLock<Notify> = LazyLock::new(Notify::new);
 
 /// Cached `enabled` flag, so the hot path (`events::log_event`, called by every
 /// audited mutation) does not read and parse `data/syslog_forward.json` on every

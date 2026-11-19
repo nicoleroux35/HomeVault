@@ -68,6 +68,7 @@ impl BackupTenantRepository {
 
     /// Create one tenant. The caller hashes the token and seals the repository
     /// password; nothing secret is ever passed to the database in clear text.
+    #[allow(clippy::too_many_arguments)]
     pub async fn create(
         &self,
         name: &str,

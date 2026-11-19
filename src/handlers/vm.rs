@@ -3128,7 +3128,7 @@ mod tests {
     #[test]
     fn the_iso_bounds_are_sane_and_shared() {
         assert_eq!(MIN_ISO_BYTES, 10_000_000);
-        assert!(MIN_ISO_BYTES < MAX_ISO_BYTES);
+        const { assert!(MIN_ISO_BYTES < MAX_ISO_BYTES) };
         let src = include_str!("vm.rs");
         // Built by `concat!` so this file cannot match its own needle.
         let literal = concat!("meta.len() < 10", "_000_000");

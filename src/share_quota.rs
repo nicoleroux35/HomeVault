@@ -581,11 +581,9 @@ pub async fn inspect(share_path: &str, quota_bytes: u64) -> Result<ShareQuotaSta
     };
 
     let free_bytes = quota_bytes.saturating_sub(used_bytes);
-    let percent = if quota_bytes == 0 {
-        0
-    } else {
-        ((used_bytes.min(quota_bytes) * 100) / quota_bytes) as u8
-    };
+    let percent = (used_bytes.min(quota_bytes) * 100)
+        .checked_div(quota_bytes)
+        .map_or(0, |percent| percent as u8);
     Ok(ShareQuotaState {
         backend: backend.as_str().to_string(),
         supported: true,

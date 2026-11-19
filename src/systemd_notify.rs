@@ -93,9 +93,7 @@ pub fn heartbeat() -> bool {
 /// The returned handle is intentionally detached: if the runtime is blocked,
 /// the loop stops, which is exactly the signal systemd must see.
 pub fn spawn_heartbeat() -> Option<tokio::task::JoinHandle<()>> {
-    if std::env::var_os("NOTIFY_SOCKET").is_none() {
-        return None;
-    }
+    std::env::var_os("NOTIFY_SOCKET")?;
     Some(tokio::spawn(async move {
         let mut tick = tokio::time::interval(WATCHDOG_INTERVAL);
         tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);

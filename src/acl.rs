@@ -237,7 +237,7 @@ impl AclService {
     pub fn get_acl(path: &str) -> Result<FileAcl, AclError> {
         Self::validate_acl_path(path)?;
 
-        let output = acl_run(&mut Command::new("getfacl").arg(path), ACL_PROBE_TIMEOUT)?;
+        let output = acl_run(Command::new("getfacl").arg(path), ACL_PROBE_TIMEOUT)?;
 
         if !output.status.success() {
             return Err(AclError::CommandFailed(
@@ -330,7 +330,7 @@ impl AclService {
             args.push(path.to_string());
 
             let output = acl_run(
-                &mut Command::new("sudo").arg("setfacl").args(&args),
+                Command::new("sudo").arg("setfacl").args(&args),
                 ACL_WRITE_TIMEOUT,
             )?;
 
@@ -437,7 +437,7 @@ impl AclService {
             args.push(path.to_string());
 
             let output = acl_run(
-                &mut Command::new("sudo").arg("setfacl").args(&args),
+                Command::new("sudo").arg("setfacl").args(&args),
                 ACL_WRITE_TIMEOUT,
             )?;
 
@@ -476,7 +476,7 @@ impl AclService {
         // best-effort: `setfacl -x` errors if the entry isn't there (a
         // non-recursive grant), which must not fail the revoke.
         let output = acl_run(
-            &mut Command::new("sudo")
+            Command::new("sudo")
                 .arg("setfacl")
                 .args(["-x", spec.as_str(), path]),
             ACL_WRITE_TIMEOUT,
@@ -492,7 +492,7 @@ impl AclService {
         // for). Still never unbounded — a hung `sudo` must not outlive the
         // request (ROADMAP X.9).
         let _ = acl_run(
-            &mut Command::new("sudo")
+            Command::new("sudo")
                 .arg("setfacl")
                 .args(["-d", "-x", spec.as_str(), path]),
             ACL_WRITE_TIMEOUT,
@@ -524,7 +524,7 @@ impl AclService {
         Self::validate_acl_path(path)?;
 
         let output = acl_run(
-            &mut Command::new("sudo").arg("setfacl").args(["-b", path]),
+            Command::new("sudo").arg("setfacl").args(["-b", path]),
             ACL_WRITE_TIMEOUT,
         )?;
 
@@ -554,10 +554,10 @@ impl AclService {
 
     /// Return `true` if the system has `getfacl` and `setfacl` available.
     pub fn check_acl_support() -> bool {
-        acl_run(&mut Command::new("which").arg("getfacl"), ACL_PROBE_TIMEOUT)
+        acl_run(Command::new("which").arg("getfacl"), ACL_PROBE_TIMEOUT)
             .map(|o| o.status.success())
             .unwrap_or(false)
-            && acl_run(&mut Command::new("which").arg("setfacl"), ACL_PROBE_TIMEOUT)
+            && acl_run(Command::new("which").arg("setfacl"), ACL_PROBE_TIMEOUT)
                 .map(|o| o.status.success())
                 .unwrap_or(false)
     }

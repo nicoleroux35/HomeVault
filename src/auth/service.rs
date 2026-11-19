@@ -768,7 +768,7 @@ except Exception as e:
         // Bounded: a PyPAM module whose backing service is unreachable (a
         // stopped `sssd`, an LDAP server that stopped answering) blocks the
         // helper for ever, and this runs on the login path (ROADMAP X.9).
-        let output = pam_run(&mut Command::new("python3").args(["-c", &script]));
+        let output = pam_run(Command::new("python3").args(["-c", &script]));
 
         match output {
             Ok(out) => {
@@ -1015,7 +1015,7 @@ except Exception as e:
             return false;
         }
 
-        pam_run(&mut Command::new("id").args(["-un", username]))
+        pam_run(Command::new("id").args(["-un", username]))
             .map(|o| o.status.success())
             .unwrap_or(false)
     }
@@ -1030,7 +1030,7 @@ except Exception as e:
 
         let username = username.to_string();
         let output = tokio::task::spawn_blocking(move || {
-            pam_run(&mut Command::new("id").args(["-Gn", &username]))
+            pam_run(Command::new("id").args(["-Gn", &username]))
         })
         .await
         .map_err(|e| AuthError::Database(e.to_string()))?

@@ -399,13 +399,11 @@ pub async fn recover_one(entry: &FstabEntry) -> Result<&'static str, String> {
                     return Ok("mounted-ro");
                 }
             }
-            "ro" => {
-                if run_sudo(&["mount", "-o", "ro", &entry.source, &entry.mount_point])
-                    .await
-                    .is_ok()
-                {
-                    return Ok("mounted-ro");
-                }
+            "ro" if run_sudo(&["mount", "-o", "ro", &entry.source, &entry.mount_point])
+                .await
+                .is_ok() =>
+            {
+                return Ok("mounted-ro");
             }
             _ => {}
         }

@@ -242,7 +242,7 @@ pub fn read_entries(dir: &Path) -> Vec<VmExport> {
             },
         ));
     }
-    list.sort_by(|a, b| b.0.cmp(&a.0));
+    list.sort_by_key(|a| std::cmp::Reverse(a.0));
     list.into_iter().take(MAX_LISTED).map(|(_, e)| e).collect()
 }
 

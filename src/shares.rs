@@ -4813,8 +4813,10 @@ mod tests {
         // idmap Samba actually needs. A bare mode is still a 400 rather than a
         // silently broken daemon; `server` remains unimplemented.
         for mode in ["domain", "ads"] {
-            let mut config = SmbConfig::default();
-            config.security_mode = mode.to_string();
+            let mut config = SmbConfig {
+                security_mode: mode.to_string(),
+                ..Default::default()
+            };
             let error = validate_smb_config(&config).expect_err("a realm is required");
             assert!(error.contains("realm is required"), "{error}");
 
@@ -4853,21 +4855,27 @@ mod tests {
             }
         }
 
-        let mut config = SmbConfig::default();
-        config.security_mode = "server".to_string();
+        let config = SmbConfig {
+            security_mode: "server".to_string(),
+            ..Default::default()
+        };
         let error = validate_smb_config(&config).expect_err("server mode is not implemented");
         assert!(error.contains("not implemented"), "{error}");
 
         for version in ["NT1", "SMB1", "CIFS"] {
-            let mut config = SmbConfig::default();
-            config.protocol_version = version.to_string();
+            let config = SmbConfig {
+                protocol_version: version.to_string(),
+                ..Default::default()
+            };
             assert!(
                 validate_smb_config(&config).is_err(),
                 "{version} must be refused"
             );
         }
-        let mut config = SmbConfig::default();
-        config.protocol_version = "SMB2".to_string();
+        let config = SmbConfig {
+            protocol_version: "SMB2".to_string(),
+            ..Default::default()
+        };
         assert!(validate_smb_config(&config).is_ok());
     }
 

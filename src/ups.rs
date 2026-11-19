@@ -100,7 +100,7 @@ impl UpsService {
     }
 
     fn check_upsc() -> Result<(), UpsError> {
-        let output = run_timed(&mut Command::new("upsc").arg("-L"), NUT_QUERY_TIMEOUT);
+        let output = run_timed(Command::new("upsc").arg("-L"), NUT_QUERY_TIMEOUT);
 
         match output {
             Ok(out) => {
@@ -122,7 +122,7 @@ impl UpsService {
     }
 
     pub fn list_ups() -> Result<Vec<UpsInfo>, UpsError> {
-        let output = run_timed(&mut Command::new("upsc").arg("-L"), NUT_QUERY_TIMEOUT)
+        let output = run_timed(Command::new("upsc").arg("-L"), NUT_QUERY_TIMEOUT)
             .map_err(UpsError::CommandFailed)?;
 
         if !output.status.success() {
@@ -138,7 +138,7 @@ impl UpsService {
     pub fn get_ups_status(name: &str) -> Result<UpsStatus, UpsError> {
         validate_ups_name(name).map_err(UpsError::InvalidName)?;
         let output = run_timed(
-            &mut Command::new("upsc").args(upsc_args(name, None)),
+            Command::new("upsc").args(upsc_args(name, None)),
             NUT_QUERY_TIMEOUT,
         )
         .map_err(UpsError::CommandFailed)?;
@@ -159,7 +159,7 @@ impl UpsService {
     pub fn get_ups_variables(name: &str) -> Result<Vec<UpsVariable>, UpsError> {
         validate_ups_name(name).map_err(UpsError::InvalidName)?;
         let output = run_timed(
-            &mut Command::new("upsc").args(upsc_args(name, None)),
+            Command::new("upsc").args(upsc_args(name, None)),
             NUT_QUERY_TIMEOUT,
         )
         .map_err(UpsError::CommandFailed)?;
@@ -184,7 +184,7 @@ impl UpsService {
         validate_ups_name(name).map_err(UpsError::InvalidName)?;
         validate_ups_variable(var).map_err(UpsError::InvalidName)?;
         let output = run_timed(
-            &mut Command::new("upsc").args(upsc_args(name, Some(var))),
+            Command::new("upsc").args(upsc_args(name, Some(var))),
             NUT_QUERY_TIMEOUT,
         )
         .map_err(UpsError::CommandFailed)?;

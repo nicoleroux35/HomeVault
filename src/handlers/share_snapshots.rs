@@ -53,6 +53,7 @@ pub struct RestoreShareSnapshotRequest {
     pub confirm: bool,
 }
 
+#[allow(clippy::result_large_err)]
 fn parse_share_type(raw: &str) -> Result<ShareType, Response> {
     ShareType::parse(raw).ok_or_else(|| {
         ResponseHelper::json_error(format!(

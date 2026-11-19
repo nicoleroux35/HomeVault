@@ -322,6 +322,7 @@ impl TransferHistoryRepository {
     /// `all_users` is the administrator's view; the handler decides it and the
     /// query binds the username otherwise, so a non-admin can never widen the
     /// scope by crafting a filter.
+    #[allow(clippy::too_many_arguments)]
     pub async fn list(
         &self,
         username: &str,

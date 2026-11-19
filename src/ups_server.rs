@@ -21,10 +21,8 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::net::IpAddr;
-use std::path::{Path, PathBuf};
 use std::time::Duration;
 use tokio::process::Command;
-use tokio::time::timeout;
 
 use crate::utils::process::run_timed_async;
 
@@ -370,7 +368,7 @@ impl UpsServerService {
             if client.master {
                 content.push_str("    actions = SET FSD\n"); // Allow shutdown
             }
-            content.push_str("\n");
+            content.push('\n');
         }
 
         Self::write_config_file("/etc/nut/upsd.users", &content).await
@@ -378,8 +376,6 @@ impl UpsServerService {
 
     /// Write a config file with proper permissions
     async fn write_config_file(path: &str, content: &str) -> Result<(), String> {
-        use tokio::io::AsyncWriteExt;
-
         // Write via sudo tee to handle root-owned files. The stdin is piped and
         // the whole exchange is bounded: a `sudo tee` blocked on a password
         // prompt must not hold the caller forever.
@@ -569,8 +565,10 @@ mod tests {
 
     #[test]
     fn test_validate_config_requires_bind_interface() {
-        let mut config = UpsServerConfig::default();
-        config.bind_interface = "".to_string();
+        let config = UpsServerConfig {
+            bind_interface: "".to_string(),
+            ..Default::default()
+        };
 
         let result = UpsServerService::validate_config(&config);
         assert!(result.is_err());
